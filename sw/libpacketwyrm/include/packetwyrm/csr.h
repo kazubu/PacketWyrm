@@ -1,0 +1,186 @@
+/* PacketWyrm: AS02MC04 CSR / flow / classifier wire structures.
+ * These mirror the bit layouts documented in docs/design/csr-map.md.
+ * They are the contract between FPGA RTL and the host control software,
+ * and as such must change only with a matching version bump. */
+#ifndef PACKETWYRM_CSR_H
+#define PACKETWYRM_CSR_H
+
+#include "packetwyrm/types.h"
+
+/* Top-level register offsets in BAR0. */
+enum {
+    PWFPGA_REG_DEVICE_ID            = 0x0000,
+    PWFPGA_REG_VERSION              = 0x0004,
+    PWFPGA_REG_BUILD_ID             = 0x0008,
+    PWFPGA_REG_GIT_HASH             = 0x000c,
+    PWFPGA_REG_CAPABILITIES         = 0x0010,
+    PWFPGA_REG_NUM_LOCAL_PORTS      = 0x0014,
+    PWFPGA_REG_NUM_LOCAL_FLOWS      = 0x0018,
+    PWFPGA_REG_NUM_LOGICAL_IFS      = 0x001c,
+    PWFPGA_REG_NUM_CLASSIFIER       = 0x0020,
+    PWFPGA_REG_NUM_HIST_BINS        = 0x0024,
+
+    PWFPGA_REG_GLOBAL_CONTROL       = 0x0100,
+    PWFPGA_REG_GLOBAL_STATUS        = 0x0104,
+    PWFPGA_REG_TIMESTAMP_LOW        = 0x0108,
+    PWFPGA_REG_TIMESTAMP_HIGH       = 0x010c,
+    PWFPGA_REG_ERROR_STATUS         = 0x0110,
+    PWFPGA_REG_IRQ_STATUS           = 0x0114,
+    PWFPGA_REG_IRQ_MASK             = 0x0118,
+
+    PWFPGA_REG_PORT0_BASE           = 0x0200,
+    PWFPGA_REG_PORT1_BASE           = 0x0300,
+    PWFPGA_REG_PORT_STRIDE          = 0x0100,
+
+    PWFPGA_WIN_CLASSIFIER           = 0x1000,
+    PWFPGA_WIN_FLOW_TABLE           = 0x2000,
+    PWFPGA_WIN_STATS_SNAPSHOT       = 0x3000,
+    PWFPGA_WIN_HISTOGRAM            = 0x4000,
+    PWFPGA_WIN_SLOW_RX              = 0x8000,
+    PWFPGA_WIN_SLOW_TX              = 0x9000,
+};
+
+/* global_control bits */
+enum {
+    PWFPGA_GCTL_ENABLE          = 1u << 0,
+    PWFPGA_GCTL_ARM             = 1u << 1,
+    PWFPGA_GCTL_RESET_COUNTERS  = 1u << 2,
+};
+
+/* global_status bits */
+enum {
+    PWFPGA_GSTAT_READY    = 1u << 0,
+    PWFPGA_GSTAT_ARMED    = 1u << 1,
+    PWFPGA_GSTAT_RUNNING  = 1u << 2,
+    PWFPGA_GSTAT_ERROR    = 1u << 3,
+    PWFPGA_GSTAT_DEGRADED = 1u << 4,
+};
+
+/* capability bits */
+enum {
+    PWFPGA_CAP_HAS_DMA            = 1u << 0,
+    PWFPGA_CAP_HAS_MSIX           = 1u << 1,
+    PWFPGA_CAP_HAS_HISTOGRAM      = 1u << 2,
+    PWFPGA_CAP_HAS_QINQ_PARSER    = 1u << 3,
+    PWFPGA_CAP_HAS_TIMESTAMP_SYNC = 1u << 4,
+    PWFPGA_CAP_HAS_MIRROR         = 1u << 5,
+};
+
+/* Classifier actions. */
+enum pwfpga_action {
+    PWFPGA_ACT_DROP             = 0,
+    PWFPGA_ACT_TEST_RX          = 1,
+    PWFPGA_ACT_PUNT_TO_HOST     = 2,
+    PWFPGA_ACT_MIRROR_TO_HOST   = 3,
+    PWFPGA_ACT_FORWARD_PORT     = 4,
+};
+
+/* Match key fields the classifier evaluates. Mask of equal layout. */
+struct pwfpga_match_key {
+    uint16_t ethertype;
+    uint16_t vlan_id;
+    uint8_t  pcp;
+    uint8_t  l3_proto;       /* IP proto for v4, next-header for v6 */
+    uint8_t  ingress_local_port;
+    uint8_t  ip_version;     /* 4 or 6, 0 means don't care via mask */
+    uint16_t udp_src_port;
+    uint16_t udp_dst_port;
+    uint32_t ipv4_src;
+    uint32_t ipv4_dst;
+    uint8_t  mac_src[6];
+    uint8_t  mac_dst[6];
+    uint32_t test_magic;
+    uint32_t global_flow_id; /* matched against decoded test header */
+};
+
+struct pwfpga_classifier_entry {
+    struct pwfpga_match_key key;
+    struct pwfpga_match_key mask;
+    uint32_t logical_if_id;
+    uint32_t local_flow_id;
+    uint8_t  action;     /* enum pwfpga_action */
+    uint8_t  priority;   /* lower numbers win */
+    uint16_t flags;
+};
+
+enum pwfpga_payload_mode {
+    PWFPGA_PAYLOAD_ZERO      = 0,
+    PWFPGA_PAYLOAD_INCREMENT = 1,
+    PWFPGA_PAYLOAD_PRBS      = 2,
+    PWFPGA_PAYLOAD_RANDOM    = 3,
+};
+
+struct pwfpga_flow_config {
+    uint8_t  enable;
+    uint8_t  egress_local_port;
+
+    uint32_t global_flow_id;
+    uint32_t local_flow_id;
+    uint32_t logical_if_id;
+
+    uint8_t  dst_mac[6];
+    uint8_t  src_mac[6];
+
+    uint8_t  vlan_enable;
+    uint16_t vlan_id;
+    uint8_t  pcp;
+
+    uint8_t  ip_version;
+    uint32_t src_ipv4;
+    uint32_t dst_ipv4;
+    uint8_t  dscp;
+    uint8_t  ttl;
+
+    uint16_t udp_src_port;
+    uint16_t udp_dst_port;
+
+    uint16_t frame_len_min;
+    uint16_t frame_len_max;
+    uint16_t frame_len_step;
+
+    uint64_t rate_bps;
+    uint64_t rate_pps;
+    uint32_t burst_size;
+    uint32_t burst_gap_ticks;
+
+    uint8_t  payload_mode;       /* enum pwfpga_payload_mode */
+    uint32_t payload_seed;
+
+    uint8_t  insert_sequence;
+    uint8_t  insert_timestamp;
+
+    /* RX side knobs (used when this row is programmed on the RX card
+     * of a cross-card flow). */
+    uint8_t  tx_enable;
+    uint8_t  rx_check_enable;
+};
+
+/* On-wire test packet header (carried inside the UDP payload). */
+struct pwfpga_test_hdr {
+    uint32_t magic;          /* PW_TEST_HDR_MAGIC */
+    uint16_t version;
+    uint16_t reserved;
+    uint32_t global_flow_id;
+    uint64_t sequence;
+    uint64_t tx_timestamp;
+    uint32_t payload_crc_or_prbs_state;
+};
+
+/* Slow-path DMA descriptor (Phase 2+). */
+struct pwfpga_dma_desc {
+    uint64_t addr;
+    uint32_t len;
+    uint32_t logical_if_id;
+    uint16_t flags;
+    uint16_t reserved;
+};
+
+/* Slow-path DMA completion. */
+struct pwfpga_dma_cpl {
+    uint32_t desc_index;
+    uint32_t actual_len;
+    uint64_t timestamp;
+    uint32_t status;
+};
+
+#endif
