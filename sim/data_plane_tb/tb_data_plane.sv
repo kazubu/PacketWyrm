@@ -21,7 +21,7 @@ import pw_classifier_pkg::*;
 module tb_data_plane;
 
     localparam int PORTS = 2;
-    localparam int FLOWS = 4;
+    localparam int FLOWS = 8;
 
     logic clk = 1'b0;
     always #5 clk = ~clk;
@@ -89,6 +89,34 @@ module tb_data_plane;
         .flow_last_seq  (flow_last_seq),
         .port_drops_o   (port_drops)
     );
+
+    // --- sticky monitor for short-pulse outputs (FORWARD_PORT etc.)
+    logic [PORTS-1:0] tx_seen;
+    pw_frame_t        tx_seen_frame [PORTS];
+    logic             tx_seen_clear;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            tx_seen <= '0;
+            for (int p = 0; p < PORTS; p++) tx_seen_frame[p] <= '0;
+        end else if (tx_seen_clear) begin
+            tx_seen <= '0;
+            for (int p = 0; p < PORTS; p++) tx_seen_frame[p] <= '0;
+        end else begin
+            for (int p = 0; p < PORTS; p++) begin
+                if (tx_valid[p]) begin
+                    tx_seen[p]       <= 1'b1;
+                    tx_seen_frame[p] <= tx_frame[p];
+                end
+            end
+        end
+    end
+
+    task automatic reset_tx_seen();
+        tx_seen_clear = 1'b1;
+        @(posedge clk);
+        tx_seen_clear = 1'b0;
+    endtask
 
     int     errors = 0;
     string  scenario = "init";
@@ -232,7 +260,8 @@ module tb_data_plane;
             gen_usp[p]    = 16'd49152;
             gen_udp[p]    = 16'd50001;
         end
-        cls_table = '0;
+        cls_table     = '0;
+        tx_seen_clear = 1'b0;
 
         repeat (4) @(posedge clk);
         rst_n = 1'b1;
@@ -318,6 +347,97 @@ module tb_data_plane;
         inject(1, make_frame(1, 1'b0, 1'b1, 32'd9, 64'd12));
         @(posedge clk);
         check_eq("dup count", flow_dup[1], 1);
+
+        // ---------------- scenario 6: VLAN-tagged TEST_RX ----------------
+        // Match a VLAN-tagged test flow distinct from the previous slots.
+        // Exercises the parser's 802.1Q path and the classifier's
+        // match_vlan_id mask bit.
+        scenario = "vlan";
+        cls_table[2].enable             = 1'b0;           // disable flow_id=9 rule
+        cls_table[3].enable             = 1'b1;
+        cls_table[3].action             = PW_ACT_TEST_RX;
+        cls_table[3].priority_          = 8'd5;
+        cls_table[3].local_flow_id      = 32'd2;
+        cls_table[3].mask.match_vlan_id = 1'b1;
+        cls_table[3].mask.match_udp_dst = 1'b1;
+        cls_table[3].mask.match_is_test = 1'b1;
+        cls_table[3].mask.match_flow_id = 1'b1;
+        cls_table[3].key.vlan_id        = 12'd100;
+        cls_table[3].key.udp_dst        = 16'd50001;
+        cls_table[3].key.test_flow_id   = 32'd20;
+        @(posedge clk);
+
+        for (int s = 0; s < 4; s++)
+            inject(1, make_frame(1, 1'b1, 1'b1, 32'd20, 64'(s)));
+        @(posedge clk);
+        check_eq("vlan rx",   flow_rx[2],   4);
+        check_eq("vlan lost", flow_lost[2], 0);
+
+        // Untagged frame with the same flow_id must NOT match (mask
+        // requires VLAN); it falls to DROP via the catch-all path.
+        inject(1, make_frame(1, 1'b0, 1'b1, 32'd20, 64'd99));
+        @(posedge clk);
+        check_eq("vlan rx (no extra)", flow_rx[2], 4);
+
+        // ---------------- scenario 7: FORWARD_PORT ----------------
+        scenario = "forward";
+        reset_tx_seen();
+
+        cls_table[4].enable               = 1'b1;
+        cls_table[4].action               = PW_ACT_FORWARD_PORT;
+        cls_table[4].priority_            = 8'd8;
+        cls_table[4].egress_port          = 4'd1;
+        cls_table[4].mask.match_ingress_port = 1'b1;
+        cls_table[4].mask.match_udp_dst   = 1'b1;
+        cls_table[4].key.ingress_port     = 4'd0;
+        cls_table[4].key.udp_dst          = 16'd60000;
+        @(posedge clk);
+
+        // Build a test frame on port 0 with udp_dst=60000.
+        begin
+            pw_frame_t fwd;
+            fwd = make_frame(0, 1'b0, 1'b0, 32'd0, 64'd0);
+            fwd.data[36] = 16'd60000 >> 8;     // UDP dst high byte
+            fwd.data[37] = 16'd60000 & 8'hFF;  // UDP dst low byte
+            inject(0, fwd);
+        end
+        @(posedge clk);
+        @(posedge clk);
+        check_eq("forward tx[1] seen", tx_seen[1] ? 1 : 0, 1);
+        if (tx_seen[1]) begin
+            check_eq("forward dst MAC byte0", tx_seen_frame[1].data[0], 8'h02);
+            check_eq("forward ethertype",
+                     {tx_seen_frame[1].data[12], tx_seen_frame[1].data[13]},
+                     16'h0800);
+        end
+        check_eq("forward tx[0] not seen", tx_seen[0] ? 1 : 0, 0);
+
+        // ---------------- scenario 8: out-of-order ----------------
+        // Same checker logic but with explicit OOO injection. Seq
+        // sequence: 0,1,2,3,5,4 -> rx=6, lost=1 (gap 5>expected=4),
+        // ooo=1 (4 arriving after expected=6).
+        scenario = "ooo";
+        cls_table[5].enable             = 1'b1;
+        cls_table[5].action             = PW_ACT_TEST_RX;
+        cls_table[5].priority_          = 8'd5;
+        cls_table[5].local_flow_id      = 32'd3;
+        cls_table[5].mask.match_udp_dst = 1'b1;
+        cls_table[5].mask.match_is_test = 1'b1;
+        cls_table[5].mask.match_flow_id = 1'b1;
+        cls_table[5].key.udp_dst        = 16'd50001;
+        cls_table[5].key.test_flow_id   = 32'd30;
+        @(posedge clk);
+
+        for (int s = 0; s < 4; s++)
+            inject(1, make_frame(1, 1'b0, 1'b1, 32'd30, 64'(s)));
+        // jump to seq 5 then back to seq 4
+        inject(1, make_frame(1, 1'b0, 1'b1, 32'd30, 64'd5));
+        inject(1, make_frame(1, 1'b0, 1'b1, 32'd30, 64'd4));
+        @(posedge clk);
+        check_eq("ooo rx ",  flow_rx[3],   6);
+        check_eq("ooo lost", flow_lost[3], 1);
+        check_eq("ooo ooo ", flow_ooo[3],  1);
+        check_eq("ooo dup ", flow_dup[3],  0);
 
         if (errors == 0) begin
             $display("ALL DATA PLANE SCENARIOS PASS");
