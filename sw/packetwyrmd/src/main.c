@@ -477,6 +477,28 @@ static void handle_client(int cfd,
             if (json_object_object_get_ex(req, "id", &jc))
                 filter = json_object_get_int(jc);
             resp = build_flow_stats(cfg, prog, cards, filter);
+        } else if (!strcmp(name, "test.start") || !strcmp(name, "test.stop") ||
+                   !strcmp(name, "test.arm")) {
+            bool en = (strcmp(name, "test.start") == 0);
+            int  changed = 0, failed = 0;
+            /* test.arm pushes the compiled program again (idempotent
+             * resync) but leaves enable as-is. test.start /
+             * test.stop walk every flow and flip the enable bit. */
+            if (!strcmp(name, "test.arm")) {
+                program_backends(prog, cfg, cards);
+            } else {
+                for (size_t k = 0; k < prog->n_flow_meta; k++) {
+                    pw_status s = set_flow_enable(prog, cards,
+                                                  prog->flow_meta[k].global_flow_id,
+                                                  en);
+                    if (s == PW_OK) changed++;
+                    else            failed++;
+                }
+            }
+            resp = json_object_new_object();
+            json_object_object_add(resp, "action", json_object_new_string(name));
+            json_object_object_add(resp, "changed", json_object_new_int(changed));
+            json_object_object_add(resp, "failed",  json_object_new_int(failed));
         } else if (!strcmp(name, "flow.start") || !strcmp(name, "flow.stop")) {
             struct json_object *jid;
             if (!json_object_object_get_ex(req, "id", &jid)) {

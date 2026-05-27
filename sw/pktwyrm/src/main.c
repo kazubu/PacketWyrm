@@ -346,6 +346,7 @@ static int cmd_help(void) {
     puts("  pktwyrm stats [--socket PATH] [--card N] [--watch MS] [--json]");
     puts("  pktwyrm flow start|stop <id> [--socket PATH]");
     puts("  pktwyrm flow stats [--flow N] [--socket PATH]");
+    puts("  pktwyrm test arm|start|stop [--socket PATH]");
     return 0;
 }
 
@@ -362,6 +363,29 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "load"))   return cmd_load(argc - 2, argv + 2);
     if (!strcmp(sub, "rpc"))    return cmd_rpc(argc - 2, argv + 2);
     if (!strcmp(sub, "stats"))  return cmd_stats(argc - 2, argv + 2);
+    if (!strcmp(sub, "test")) {
+        if (argc < 3) {
+            fprintf(stderr,
+                "usage: pktwyrm test arm|start|stop [--socket PATH]\n");
+            return 2;
+        }
+        const char *action = argv[2];
+        if (strcmp(action, "arm") && strcmp(action, "start") && strcmp(action, "stop")) {
+            fprintf(stderr, "unknown test action: %s\n", action); return 2;
+        }
+        const char *sock = PW_IPC_DEFAULT_PATH;
+        for (int i = 3; i < argc; i++)
+            if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
+        char req[128];
+        snprintf(req, sizeof(req), "{\"rpc\":\"test.%s\"}", action);
+        char  resp[PW_IPC_FRAME_MAX]; size_t got = 0;
+        if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
+            fprintf(stderr, "rpc call failed (socket=%s)\n", sock);
+            return 1;
+        }
+        fwrite(resp, 1, got, stdout); fputc('\n', stdout);
+        return 0;
+    }
     if (!strcmp(sub, "flow")) {
         if (argc < 3) {
             fprintf(stderr,
