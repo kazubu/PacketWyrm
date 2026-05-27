@@ -5,5 +5,7 @@ sw/**/*.so
 *.swp
 .DS_Store
 fpga/as02mc04/builds/
+fpga/as02mc04/build/
+sim/sim_build/
 sim/work/
 *.log
