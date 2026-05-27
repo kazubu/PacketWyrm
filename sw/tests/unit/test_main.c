@@ -4,9 +4,11 @@
  * build dependency surface minimal. Each test is a void function that
  * asserts via PW_ASSERT macros and counts failures. */
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -318,9 +320,11 @@ static void test_bar_backend_path(void) {
     PW_ASSERT_EQ(b.ops->read32 (b.ctx, PWFPGA_REG_GLOBAL_CONTROL, &v), PW_OK);
     PW_ASSERT_EQ(v, 0xC0FFEE01);
 
-    /* Table windows are honest about not being implemented yet. */
+    /* Table window writes succeed via the structured window
+     * protocol (see test_bar_backend_window_writes for the
+     * detailed layout check). */
     struct pwfpga_flow_config f = {0};
-    PW_ASSERT_EQ(b.ops->flow_write(b.ctx, 0, &f), PW_E_NOT_IMPLEMENTED);
+    PW_ASSERT_EQ(b.ops->flow_write(b.ctx, 0, &f), PW_OK);
 
     pw_card_backend_close(&b);
     unlink(path);
@@ -366,6 +370,141 @@ static void test_fake_backend_slow_path(void) {
     PW_ASSERT(memcmp(tx_frame, drained, sizeof(tx_frame)) == 0);
 
     pw_card_backend_close(&b);
+}
+
+static void test_bar_backend_window_writes(void) {
+    /* Verify the BAR backend lays out classifier / flow / commit
+     * registers exactly where csr.h says it does. Uses a tmpfs file
+     * as a synthetic BAR; reads the bytes back directly so the test
+     * doesn't trust the backend's own readers.            */
+    char path[] = "/tmp/pw_bar_win_XXXXXX";
+    int fd = mkstemp(path);
+    PW_ASSERT(fd >= 0);
+    if (fd < 0) return;
+    PW_ASSERT_EQ(ftruncate(fd, 65536), 0);
+    close(fd);
+
+    struct pw_card_backend b;
+    PW_ASSERT_EQ(pw_bar_backend_open_path(path, &b), PW_OK);
+
+    /* --- classifier_write at row 3 --- */
+    struct pwfpga_classifier_entry e = {0};
+    e.action       = PWFPGA_ACT_TEST_RX;
+    e.priority     = 7;
+    e.flags        = 0xabcd;
+    e.local_flow_id = 0x12345678;
+    e.logical_if_id = 0x87654321;
+    e.key.udp_dst_port = 50001;
+    e.mask.udp_dst_port = 0xFFFF;
+    PW_ASSERT_EQ(b.ops->classifier_write(b.ctx, 3, &e), PW_OK);
+    PW_ASSERT_EQ(b.ops->classifier_commit(b.ctx), PW_OK);
+
+    /* Re-mmap the file and inspect what landed at row 3 + commit. */
+    fd = open(path, O_RDONLY);
+    PW_ASSERT(fd >= 0);
+    uint8_t *raw = mmap(NULL, 65536, PROT_READ, MAP_SHARED, fd, 0);
+    PW_ASSERT(raw != MAP_FAILED);
+    close(fd);
+
+    size_t row_base = PWFPGA_WIN_CLASSIFIER + 3 * PWFPGA_CLASSIFIER_STRIDE;
+    struct pwfpga_classifier_entry back;
+    memcpy(&back, raw + row_base, sizeof(back));
+    PW_ASSERT_EQ(back.action, PWFPGA_ACT_TEST_RX);
+    PW_ASSERT_EQ(back.priority, 7);
+    PW_ASSERT_EQ(back.flags, 0xabcd);
+    PW_ASSERT_EQ(back.local_flow_id, 0x12345678);
+    PW_ASSERT_EQ(back.logical_if_id, 0x87654321);
+    PW_ASSERT_EQ(back.key.udp_dst_port, 50001);
+    PW_ASSERT_EQ(back.mask.udp_dst_port, 0xFFFF);
+
+    uint32_t commit_val;
+    memcpy(&commit_val, raw + PWFPGA_REG_CLASSIFIER_COMMIT, 4);
+    PW_ASSERT_EQ(commit_val, 1u);
+
+    /* --- flow_write at row 5 --- */
+    struct pwfpga_flow_config f = {0};
+    f.enable            = 1;
+    f.egress_local_port = 1;
+    f.global_flow_id    = 42;
+    f.local_flow_id     = 5;
+    f.rate_bps          = 1000000000ull;
+    PW_ASSERT_EQ(b.ops->flow_write(b.ctx, 5, &f), PW_OK);
+    PW_ASSERT_EQ(b.ops->flow_commit(b.ctx), PW_OK);
+
+    /* re-read */
+    munmap(raw, 65536);
+    fd = open(path, O_RDONLY);
+    raw = mmap(NULL, 65536, PROT_READ, MAP_SHARED, fd, 0);
+    close(fd);
+    size_t flow_base = PWFPGA_WIN_FLOW_TABLE + 5 * PWFPGA_FLOW_STRIDE;
+    struct pwfpga_flow_config fback;
+    memcpy(&fback, raw + flow_base, sizeof(fback));
+    PW_ASSERT_EQ(fback.enable, 1);
+    PW_ASSERT_EQ(fback.egress_local_port, 1);
+    PW_ASSERT_EQ(fback.global_flow_id, 42);
+    PW_ASSERT_EQ(fback.local_flow_id, 5);
+    PW_ASSERT_EQ((long long)fback.rate_bps, (long long)1000000000ull);
+
+    memcpy(&commit_val, raw + PWFPGA_REG_FLOW_COMMIT, 4);
+    PW_ASSERT_EQ(commit_val, 1u);
+
+    munmap(raw, 65536);
+    pw_card_backend_close(&b);
+    unlink(path);
+}
+
+static void test_bar_backend_stats_reads(void) {
+    /* Stamp known counter bytes into the stats-snapshot window and
+     * confirm bar_port_stats_read / bar_flow_stats_read decode them
+     * at the right offsets. */
+    char path[] = "/tmp/pw_bar_stats_XXXXXX";
+    int fd = mkstemp(path);
+    PW_ASSERT(fd >= 0);
+    if (fd < 0) return;
+    PW_ASSERT_EQ(ftruncate(fd, 65536), 0);
+    /* Build a synthetic port_stats block for port 1 and a flow_stats
+     * block for lfid 4. */
+    struct pw_port_stats ps = {0};
+    ps.rx_frames = 0x1111;
+    ps.tx_frames = 0x2222;
+    ps.link_up_count = 3;
+    {
+        ssize_t w1 = pwrite(fd, &ps, sizeof(ps),
+                            PWFPGA_WIN_STATS_SNAPSHOT + 1 * PWFPGA_PORT_STATS_STRIDE);
+        PW_ASSERT_EQ((long long)w1, (long long)sizeof(ps));
+    }
+    struct pw_flow_stats fs = {0};
+    fs.rx_frames = 99;
+    fs.lost_packets_estimated = 7;
+    fs.sum_latency = 12345;
+    fs.sample_count = 50;
+    {
+        ssize_t w2 = pwrite(fd, &fs, sizeof(fs),
+                            PWFPGA_WIN_STATS_SNAPSHOT + PWFPGA_FLOW_STATS_BASE +
+                            4 * PWFPGA_FLOW_STATS_STRIDE);
+        PW_ASSERT_EQ((long long)w2, (long long)sizeof(fs));
+    }
+    close(fd);
+
+    struct pw_card_backend b;
+    PW_ASSERT_EQ(pw_bar_backend_open_path(path, &b), PW_OK);
+    PW_ASSERT_EQ(b.ops->stats_snapshot(b.ctx), PW_OK);
+
+    struct pw_port_stats ps_back = {0};
+    PW_ASSERT_EQ(b.ops->port_stats_read(b.ctx, 1, &ps_back), PW_OK);
+    PW_ASSERT_EQ(ps_back.rx_frames, 0x1111);
+    PW_ASSERT_EQ(ps_back.tx_frames, 0x2222);
+    PW_ASSERT_EQ(ps_back.link_up_count, 3);
+
+    struct pw_flow_stats fs_back = {0};
+    PW_ASSERT_EQ(b.ops->flow_stats_read(b.ctx, 4, &fs_back), PW_OK);
+    PW_ASSERT_EQ(fs_back.rx_frames, 99);
+    PW_ASSERT_EQ(fs_back.lost_packets_estimated, 7);
+    PW_ASSERT_EQ(fs_back.sum_latency, 12345);
+    PW_ASSERT_EQ(fs_back.sample_count, 50);
+
+    pw_card_backend_close(&b);
+    unlink(path);
 }
 
 static void test_host_plane_socketpair(void) {
@@ -578,6 +717,8 @@ int main(void) {
         { "cross_card_flow_compiles", test_cross_card_flow_compiles },
         { "fake_backend", test_fake_backend },
         { "bar_backend_path", test_bar_backend_path },
+        { "bar_backend_window_writes", test_bar_backend_window_writes },
+        { "bar_backend_stats_reads", test_bar_backend_stats_reads },
         { "pci_discover_no_match", test_pci_discover_no_match },
         { "fake_backend_slow_path", test_fake_backend_slow_path },
         { "host_plane_socketpair", test_host_plane_socketpair },

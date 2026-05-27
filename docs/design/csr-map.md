@@ -96,88 +96,77 @@ register so the next read of `_high` returns the matched value.
 
 ## Classifier table window
 
+A double-buffered row table. Each row is a packed
+`struct pwfpga_classifier_entry` (see
+`sw/libpacketwyrm/include/packetwyrm/csr.h`) at:
+
 ```
-classifier_addr      RW     row index
-classifier_match_*   RW     match key (ethertype, vid, l3 proto,
-                            udp ports, ipv4 src/dst, mac src/dst,
-                            test_magic, ingress_local_port)
-classifier_mask_*    RW     match mask (same layout as key)
-classifier_action    RW     action enum + priority + flags
-classifier_local_flow_id RW
-classifier_logical_if_id RW
-classifier_commit    W      1 = atomically swap shadow -> active
+PWFPGA_WIN_CLASSIFIER + row_index * PWFPGA_CLASSIFIER_STRIDE  (128 bytes)
 ```
 
-A double-buffered shadow table holds the staged entry; `commit` swaps
-the staged entry into the live row. Mid-update classifier lookups
-always see either the previous or the new entry, never a torn one.
+A write-1-to-commit register lives at the last dword of the
+window:
+
+```
+PWFPGA_REG_CLASSIFIER_COMMIT = PWFPGA_WIN_CLASSIFIER + 0xFFC
+```
+
+The shadow table holds the staged entry; writing 1 to
+`CLASSIFIER_COMMIT` atomically swaps the staged entry into the
+live row. Mid-update classifier lookups always see either the
+previous or the new entry, never a torn one.
 
 ## Flow table window
 
+Each row is a packed `struct pwfpga_flow_config` at:
+
 ```
-flow_addr            RW     row index
-flow_enable          RW
-flow_egress_local_port RW
-flow_global_flow_id  RW     opaque tag passed through to test header
-flow_local_flow_id   RW     usually equals row index but exposed for tooling
-flow_logical_if_id   RW
-flow_dst_mac_*       RW     6 bytes split across two registers
-flow_src_mac_*       RW
-flow_vlan            RW     [12:0] vid, [15:13] pcp, [16] vlan_enable
-flow_ip              RW     src_ip, dst_ip, dscp, ttl, ip_version
-flow_udp             RW     src_port, dst_port
-flow_len             RW     min, max, step
-flow_rate_bps_low / _high   RW
-flow_rate_pps       RW
-flow_burst          RW     burst_size + burst_gap_ticks
-flow_payload        RW     payload_mode + payload_seed
-flow_options        RW     [0] insert_sequence, [1] insert_timestamp,
-                          [8] tx_enable, [9] rx_check_enable
-flow_commit          W     1 = atomically activate this row
+PWFPGA_WIN_FLOW_TABLE + row_index * PWFPGA_FLOW_STRIDE  (128 bytes)
+```
+
+Commit register at:
+
+```
+PWFPGA_REG_FLOW_COMMIT = PWFPGA_WIN_FLOW_TABLE + 0xFFC
 ```
 
 ## Stats snapshot window
 
 ```
-stats_snapshot_trigger W   write 1 to snapshot all per-flow counters
-stats_addr             RW  row index
-stats_tx_frames_l/h    R
-stats_tx_bytes_l/h     R
-stats_rx_frames_l/h    R
-stats_rx_bytes_l/h     R
-stats_expected_seq_l/h R
-stats_seq_gap          R
-stats_lost_est         R
-stats_dup              R
-stats_out_of_order     R
-stats_late             R
-stats_min_latency      R
-stats_max_latency      R
-stats_sum_latency_l/h  R
-stats_sample_count_l/h R
-stats_jitter_min       R
-stats_jitter_max       R
-stats_jitter_sum_l/h   R
+PWFPGA_REG_STATS_SNAPSHOT_TRIGGER  = PWFPGA_WIN_STATS_SNAPSHOT + 0xFFC
+   W     write 1 to copy live counters into the shadow region
+
+per-port block (read-only after snapshot):
+   PWFPGA_WIN_STATS_SNAPSHOT + N * PWFPGA_PORT_STATS_STRIDE  (128 B)
+   N = 0..PW_PORTS_PER_CARD-1
+   layout = `struct pw_port_stats`
+
+per-flow block (read-only after snapshot):
+   PWFPGA_WIN_STATS_SNAPSHOT + PWFPGA_FLOW_STATS_BASE
+                              + N * PWFPGA_FLOW_STATS_STRIDE
+   N = local_flow_id (0..num_local_flows-1)
+   layout = `struct pw_flow_stats`
 ```
 
-`stats_snapshot_trigger` causes the FPGA to copy all live per-flow
-counters into a shadow region in a single cycle. Host reads the shadow,
-not the live counters. This makes `pktwyrm stats --watch` consistent
-across many flows.
+`STATS_SNAPSHOT_TRIGGER` causes the FPGA to copy all live per-flow
+counters into the shadow region in a single cycle. Host reads the
+shadow region, not the live counters. This makes
+`pktwyrm stats --watch` consistent across many flows.
 
 ## Histogram window
 
 ```
-hist_addr            RW   row index = local_flow_id
-hist_bin_addr        RW   bin index
-hist_bin_count_l/h   R    bin count (64-bit)
-hist_bin_low_edge    R    bin low edge in ticks (read-only descriptor)
-hist_bin_high_edge   R
+PWFPGA_WIN_HISTOGRAM + N * PWFPGA_FLOW_HIST_STRIDE  (512 B = 64 bins)
+   N = local_flow_id
+
+Bin layout: 64 power-of-two buckets keyed off log2(latency)
+(matches `pw_test_rx_checker` in `rtl/phase3/`). Buckets are u64
+each; the stride leaves room for 64 of them.
 ```
 
-Bin layout is fixed in RTL (e.g. 64 log-spaced bins between 100 ns and
-1 ms). The host reads `hist_bin_low_edge` / `hist_bin_high_edge` once
-per build and caches them by `build_id`.
+Concrete strides and offsets are defined as preprocessor macros
+in `sw/libpacketwyrm/include/packetwyrm/csr.h` and used by the
+host BAR backend.
 
 ## Slow-path DMA rings (Phase 2)
 

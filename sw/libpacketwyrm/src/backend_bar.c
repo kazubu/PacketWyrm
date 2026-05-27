@@ -60,61 +60,125 @@ static pw_status bar_card_info(void *vctx, struct pw_card_info *out) {
     return PW_OK;
 }
 
-/* Classifier / flow table windows are not yet present in the Phase 1
- * RTL. Return PW_E_NOT_IMPLEMENTED honestly so packetwyrmd surfaces
- * the gap instead of silently dropping configuration. */
+/* Compile-time sanity: the packed wire structs must fit in their
+ * window row stride. */
+_Static_assert(sizeof(struct pwfpga_classifier_entry) <= PWFPGA_CLASSIFIER_STRIDE,
+               "classifier_entry exceeds PWFPGA_CLASSIFIER_STRIDE");
+_Static_assert(sizeof(struct pwfpga_flow_config) <= PWFPGA_FLOW_STRIDE,
+               "flow_config exceeds PWFPGA_FLOW_STRIDE");
+
+/* Helper: word-by-word memcpy into the BAR. The BAR may be marked
+ * uncached / require aligned accesses, so use volatile uint32_t
+ * dst writes rather than memcpy. */
+static void bar_copy_words(volatile uint32_t *dst,
+                           const void *src, size_t nbytes) {
+    const uint8_t *p = src;
+    size_t i = 0;
+    /* whole words */
+    for (; i + 4 <= nbytes; i += 4) {
+        uint32_t v;
+        memcpy(&v, p + i, 4);
+        *dst++ = v;
+    }
+    /* tail bytes (zero-padded to a full word) */
+    if (i < nbytes) {
+        uint8_t tail[4] = {0};
+        memcpy(tail, p + i, nbytes - i);
+        uint32_t v;
+        memcpy(&v, tail, 4);
+        *dst = v;
+    }
+}
+
+static void bar_copy_words_out(void *dst, volatile const uint32_t *src,
+                               size_t nbytes) {
+    uint8_t *p = dst;
+    size_t i = 0;
+    for (; i + 4 <= nbytes; i += 4) {
+        uint32_t v = *src++;
+        memcpy(p + i, &v, 4);
+    }
+    if (i < nbytes) {
+        uint32_t v = *src;
+        uint8_t tail[4];
+        memcpy(tail, &v, 4);
+        memcpy(p + i, tail, nbytes - i);
+    }
+}
+
 static pw_status bar_classifier_write(void *vctx, uint32_t row,
                                       const struct pwfpga_classifier_entry *e) {
-    (void)vctx; (void)row; (void)e;
-    return PW_E_NOT_IMPLEMENTED;
+    struct bar_ctx *c = vctx;
+    if (!e) return PW_E_INVAL;
+    uint32_t base = PWFPGA_WIN_CLASSIFIER + row * PWFPGA_CLASSIFIER_STRIDE;
+    if ((size_t)base + PWFPGA_CLASSIFIER_STRIDE > c->size) return PW_E_OUT_OF_RANGE;
+    bar_copy_words(reg_at(c, base), e, sizeof(*e));
+    return PW_OK;
 }
+
 static pw_status bar_classifier_commit(void *vctx) {
-    (void)vctx;
-    return PW_E_NOT_IMPLEMENTED;
+    struct bar_ctx *c = vctx;
+    if (PWFPGA_REG_CLASSIFIER_COMMIT + 4 > c->size) return PW_E_OUT_OF_RANGE;
+    *reg_at(c, PWFPGA_REG_CLASSIFIER_COMMIT) = 1u;
+    return PW_OK;
 }
+
 static pw_status bar_flow_write(void *vctx, uint32_t row,
                                 const struct pwfpga_flow_config *f) {
-    (void)vctx; (void)row; (void)f;
-    return PW_E_NOT_IMPLEMENTED;
+    struct bar_ctx *c = vctx;
+    if (!f) return PW_E_INVAL;
+    uint32_t base = PWFPGA_WIN_FLOW_TABLE + row * PWFPGA_FLOW_STRIDE;
+    if ((size_t)base + PWFPGA_FLOW_STRIDE > c->size) return PW_E_OUT_OF_RANGE;
+    bar_copy_words(reg_at(c, base), f, sizeof(*f));
+    return PW_OK;
 }
+
 static pw_status bar_flow_commit(void *vctx) {
-    (void)vctx;
-    return PW_E_NOT_IMPLEMENTED;
+    struct bar_ctx *c = vctx;
+    if (PWFPGA_REG_FLOW_COMMIT + 4 > c->size) return PW_E_OUT_OF_RANGE;
+    *reg_at(c, PWFPGA_REG_FLOW_COMMIT) = 1u;
+    return PW_OK;
 }
 
 static pw_status bar_stats_snapshot(void *vctx) {
-    /* No-op in Phase 1: stats snapshot window is not yet implemented. */
-    (void)vctx;
+    struct bar_ctx *c = vctx;
+    if (PWFPGA_REG_STATS_SNAPSHOT_TRIGGER + 4 > c->size) return PW_E_OUT_OF_RANGE;
+    *reg_at(c, PWFPGA_REG_STATS_SNAPSHOT_TRIGGER) = 1u;
     return PW_OK;
 }
 
 static pw_status bar_port_stats_read(void *vctx, uint8_t local_port,
                                      struct pw_port_stats *out) {
-    (void)vctx;
+    struct bar_ctx *c = vctx;
     if (!out || local_port >= PW_PORTS_PER_CARD) return PW_E_INVAL;
-    /* Phase 1 has no MAC; counters read zero. The structure is valid
-     * once Phase 2 populates port[0/1]_* in BAR0. */
-    memset(out, 0, sizeof(*out));
+    uint32_t base = PWFPGA_WIN_STATS_SNAPSHOT + local_port * PWFPGA_PORT_STATS_STRIDE;
+    if ((size_t)base + sizeof(*out) > c->size) return PW_E_OUT_OF_RANGE;
+    bar_copy_words_out(out, reg_at(c, base), sizeof(*out));
     return PW_OK;
 }
 
 static pw_status bar_flow_stats_read(void *vctx, uint32_t lfid,
                                      struct pw_flow_stats *out) {
-    (void)vctx; (void)lfid;
+    struct bar_ctx *c = vctx;
     if (!out) return PW_E_INVAL;
-    memset(out, 0, sizeof(*out));
+    uint32_t base = PWFPGA_WIN_STATS_SNAPSHOT + PWFPGA_FLOW_STATS_BASE
+                  + lfid * PWFPGA_FLOW_STATS_STRIDE;
+    if ((size_t)base + sizeof(*out) > c->size) return PW_E_OUT_OF_RANGE;
+    bar_copy_words_out(out, reg_at(c, base), sizeof(*out));
     return PW_OK;
 }
 
 static pw_status bar_flow_hist_read(void *vctx, uint32_t lfid,
                                     uint64_t *buckets, size_t n_buckets,
                                     size_t *n_buckets_out) {
-    (void)vctx; (void)lfid;
+    struct bar_ctx *c = vctx;
     if (!buckets || !n_buckets_out) return PW_E_INVAL;
-    /* Phase 1 RTL has no histogram window yet. Return zeros so the
-     * RPC shape is stable; the real implementation reads the CSR
-     * histogram window once Phase 3 RTL ships. */
-    for (size_t i = 0; i < n_buckets; i++) buckets[i] = 0;
+    uint32_t base = PWFPGA_WIN_HISTOGRAM + lfid * PWFPGA_FLOW_HIST_STRIDE;
+    /* The window holds up to 64 buckets of 64 bits. */
+    size_t cap = PWFPGA_FLOW_HIST_STRIDE / sizeof(uint64_t);
+    if (n_buckets > cap) n_buckets = cap;
+    if ((size_t)base + n_buckets * sizeof(uint64_t) > c->size) return PW_E_OUT_OF_RANGE;
+    bar_copy_words_out(buckets, reg_at(c, base), n_buckets * sizeof(uint64_t));
     *n_buckets_out = n_buckets;
     return PW_OK;
 }

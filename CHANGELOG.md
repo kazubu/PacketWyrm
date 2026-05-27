@@ -21,6 +21,20 @@ push and is the source of truth for "what's working today".
   - Power-of-two latency histogram
 - **Flow generator**
   - Token-bucket rate limit with Q16.16 bytes/cycle + burst-byte cap
+- **CSR / BAR backend**
+  - Wire-format structs (`pwfpga_classifier_entry`,
+    `pwfpga_flow_config`, `pwfpga_test_hdr`, DMA descriptor /
+    completion) are now `__attribute__((packed))` so the host
+    and the RTL share a byte-for-byte view.
+  - CSR window strides + commit register offsets centralised in
+    `csr.h` (`PWFPGA_CLASSIFIER_STRIDE`,
+    `PWFPGA_REG_CLASSIFIER_COMMIT`, etc.).
+  - `pw_bar_backend_*` ops are functional end-to-end:
+    classifier_write / flow_write / classifier_commit /
+    flow_commit / stats_snapshot / port_stats_read /
+    flow_stats_read / flow_hist_read all use word-aligned BAR
+    writes/reads against the documented window layout.
+
 - **Host stack**
   - `libpacketwyrm/tap.h` &mdash; create / configure TAP devices via
     `/dev/net/tun` + ioctl (no libnl dependency)

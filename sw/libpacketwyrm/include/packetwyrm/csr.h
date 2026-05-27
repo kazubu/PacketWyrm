@@ -75,7 +75,8 @@ enum pwfpga_action {
     PWFPGA_ACT_FORWARD_PORT     = 4,
 };
 
-/* Match key fields the classifier evaluates. Mask of equal layout. */
+/* Match key fields the classifier evaluates. Mask of equal layout.
+ * Packed to give the host + the RTL the same byte-for-byte view. */
 struct pwfpga_match_key {
     uint16_t ethertype;
     uint16_t vlan_id;
@@ -91,7 +92,7 @@ struct pwfpga_match_key {
     uint8_t  mac_dst[6];
     uint32_t test_magic;
     uint32_t global_flow_id; /* matched against decoded test header */
-};
+} __attribute__((packed));
 
 struct pwfpga_classifier_entry {
     struct pwfpga_match_key key;
@@ -101,7 +102,7 @@ struct pwfpga_classifier_entry {
     uint8_t  action;     /* enum pwfpga_action */
     uint8_t  priority;   /* lower numbers win */
     uint16_t flags;
-};
+} __attribute__((packed));
 
 enum pwfpga_payload_mode {
     PWFPGA_PAYLOAD_ZERO      = 0,
@@ -153,7 +154,7 @@ struct pwfpga_flow_config {
      * of a cross-card flow). */
     uint8_t  tx_enable;
     uint8_t  rx_check_enable;
-};
+} __attribute__((packed));
 
 /* On-wire test packet header (carried inside the UDP payload). */
 struct pwfpga_test_hdr {
@@ -164,7 +165,7 @@ struct pwfpga_test_hdr {
     uint64_t sequence;
     uint64_t tx_timestamp;
     uint32_t payload_crc_or_prbs_state;
-};
+} __attribute__((packed));
 
 /* Slow-path DMA descriptor (Phase 2+). */
 struct pwfpga_dma_desc {
@@ -173,7 +174,7 @@ struct pwfpga_dma_desc {
     uint32_t logical_if_id;
     uint16_t flags;
     uint16_t reserved;
-};
+} __attribute__((packed));
 
 /* Slow-path DMA completion. */
 struct pwfpga_dma_cpl {
@@ -181,6 +182,41 @@ struct pwfpga_dma_cpl {
     uint32_t actual_len;
     uint64_t timestamp;
     uint32_t status;
-};
+} __attribute__((packed));
+
+/* ------------- Window layout for the BAR backend --------------------
+ *
+ * Each table window owns a small region (4 KB). Rows have a fixed
+ * power-of-two stride large enough for the packed struct above; a
+ * write-1-to-commit register lives at the *last* dword of each
+ * window so the row table fits below it without colliding.
+ *
+ *   classifier window 0x1000..0x1FFF
+ *     row N data:     PWFPGA_WIN_CLASSIFIER + N * PWFPGA_CLASSIFIER_STRIDE
+ *     commit:         PWFPGA_REG_CLASSIFIER_COMMIT
+ *
+ *   flow window 0x2000..0x2FFF
+ *     row N data:     PWFPGA_WIN_FLOW_TABLE + N * PWFPGA_FLOW_STRIDE
+ *     commit:         PWFPGA_REG_FLOW_COMMIT
+ *
+ *   stats snapshot window 0x3000..0x3FFF
+ *     trigger:        PWFPGA_REG_STATS_SNAPSHOT_TRIGGER (write 1)
+ *     port[N] block:  PWFPGA_WIN_STATS_SNAPSHOT + N * PWFPGA_PORT_STATS_STRIDE
+ *     flow[N] block:  PWFPGA_WIN_STATS_SNAPSHOT + PWFPGA_FLOW_STATS_BASE +
+ *                                                 N * PWFPGA_FLOW_STATS_STRIDE
+ *
+ *   histogram window 0x4000..0x4FFF
+ *     flow[N] base:   PWFPGA_WIN_HISTOGRAM + N * PWFPGA_FLOW_HIST_STRIDE
+ */
+#define PWFPGA_CLASSIFIER_STRIDE       128u
+#define PWFPGA_FLOW_STRIDE             128u
+#define PWFPGA_PORT_STATS_STRIDE       128u
+#define PWFPGA_FLOW_STATS_STRIDE       128u
+#define PWFPGA_FLOW_HIST_STRIDE        512u   /* 64 * 8 bytes = 64 buckets */
+#define PWFPGA_FLOW_STATS_BASE         0x80u
+
+#define PWFPGA_REG_CLASSIFIER_COMMIT       (PWFPGA_WIN_CLASSIFIER + 0xFFCu)
+#define PWFPGA_REG_FLOW_COMMIT             (PWFPGA_WIN_FLOW_TABLE + 0xFFCu)
+#define PWFPGA_REG_STATS_SNAPSHOT_TRIGGER  (PWFPGA_WIN_STATS_SNAPSHOT + 0xFFCu)
 
 #endif
