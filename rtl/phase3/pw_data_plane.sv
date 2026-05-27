@@ -44,7 +44,8 @@ module pw_data_plane #(
 
     // Flow gen control (one generator per egress port, flow 0)
     input  wire                       gen_enable_i   [PW_PORTS],
-    input  wire [15:0]                gen_gap_i      [PW_PORTS],
+    input  wire [31:0]                gen_tokens_fp_i[PW_PORTS],
+    input  wire [15:0]                gen_burst_i    [PW_PORTS],
     input  wire [47:0]                gen_src_mac_i  [PW_PORTS],
     input  wire [47:0]                gen_dst_mac_i  [PW_PORTS],
     input  wire                       gen_vlan_en_i  [PW_PORTS],
@@ -238,11 +239,12 @@ module pw_data_plane #(
     generate
         for (gp = 0; gp < PW_PORTS; gp++) begin : g_tx
             pw_flow_gen #(.GLOBAL_FLOW_ID(32'd1 + gp), .LOCAL_FLOW_ID(32'd0)) u_gen (
-                .clk            (clk),
-                .rst_n          (rst_n),
-                .enable_i       (gen_enable_i[gp]),
-                .gap_cycles_i   (gen_gap_i[gp]),
-                .egress_port_i  (4'(gp)),
+                .clk                  (clk),
+                .rst_n                (rst_n),
+                .enable_i             (gen_enable_i[gp]),
+                .tokens_per_tick_fp_i (gen_tokens_fp_i[gp]),
+                .burst_bytes_i        (gen_burst_i[gp]),
+                .egress_port_i        (4'(gp)),
                 .src_mac_i      (gen_src_mac_i[gp]),
                 .dst_mac_i      (gen_dst_mac_i[gp]),
                 .vlan_enable_i  (gen_vlan_en_i[gp]),

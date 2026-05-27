@@ -6,6 +6,25 @@
 // time. The IPv4 / UDP header checksums are left zero - the
 // simulation classifier does not verify them, and Phase 2 RTL
 // recomputes them in the MAC TX path.
+//
+// Rate control is a proper token bucket:
+//   - `tokens_q` is a Q16.16 byte accumulator (16 integer +
+//     16 fractional bits = 0..65535 bytes of headroom).
+//   - Every cycle, `tokens_per_tick_fp_i` Q16.16 bytes are added.
+//   - When `enable_i` is high and `tokens_q >= frame_bytes`, the
+//     generator emits a frame and subtracts `frame_bytes` from
+//     the bucket.
+//   - `burst_bytes_i` caps the bucket so an idle generator does
+//     not accumulate arbitrary headroom and then dump a burst at
+//     line rate the instant it is enabled.
+//
+// Worked examples (assuming 100 MHz clock):
+//   - 10 Gbps  -> 12.5 bytes/cycle  -> tokens_per_tick_fp = 12*65536 + 32768
+//   - 1  Gbps  ->  1.25 byte/cycle  -> tokens_per_tick_fp = 65536 + 16384
+//   - 100 Mbps -> 0.125 byte/cycle  -> tokens_per_tick_fp = 8192
+//
+// Phase 2 RTL recomputes the per-cycle rate from a user-facing
+// bps value at config time and writes the fixed-point form here.
 
 `default_nettype none
 
@@ -20,7 +39,8 @@ module pw_flow_gen #(
     input  wire           rst_n,
 
     input  wire           enable_i,
-    input  wire [15:0]    gap_cycles_i,
+    input  wire [31:0]    tokens_per_tick_fp_i,  // Q16.16 bytes / cycle
+    input  wire [15:0]    burst_bytes_i,         // bucket cap in bytes
 
     input  wire [3:0]     egress_port_i,
     input  wire [47:0]    src_mac_i,
@@ -42,13 +62,24 @@ module pw_flow_gen #(
 
     localparam logic [31:0] PW_TEST_HDR_MAGIC = 32'hA502_7E57;
 
-    typedef enum logic [1:0] { S_IDLE, S_WAIT, S_EMIT } state_e;
-    state_e        state_q;
-    logic [15:0]   gap_cnt_q;
-    logic [63:0]   sequence_q;
+    /* Total wire bytes per frame (IPv4 + UDP + test_hdr + extra
+     * payload). Used as the token-bucket cost per emission. The
+     * skeleton frame length is constant; Phase 3 production RTL
+     * derives this from the configured frame_len_min/max/step. */
+    function automatic int frame_bytes();
+        return 14 /*ETH*/ + (4) + 20 /*IP*/ + 8 /*UDP*/ + FRAME_LEN_PAYLOAD;
+    endfunction
 
-    pw_frame_t     frame_build;
+    logic [63:0]   sequence_q;
+    logic [31:0]   tokens_q;        // Q16.16 bytes
     logic          fire;
+    pw_frame_t     frame_build;
+
+    wire [31:0] cap_q = {burst_bytes_i, 16'h0};
+    wire [31:0] cost_q = {16'(frame_bytes()), 16'h0};
+    wire        have_tokens = (tokens_q >= cost_q);
+    assign      frame_valid_o = enable_i && have_tokens;
+    assign      fire = frame_valid_o && frame_ready_i;
 
     function automatic pw_frame_t build_frame(input logic [63:0] seq,
                                               input logic [63:0] ts);
@@ -162,42 +193,27 @@ module pw_flow_gen #(
 
     always_comb frame_build   = build_frame(sequence_q, timestamp_i);
     assign      frame_o       = frame_build;
-    assign      frame_valid_o = (state_q == S_EMIT);
-    assign      fire          = frame_valid_o && frame_ready_i;
 
     always_ff @(posedge clk or negedge rst_n) begin
+        automatic logic [32:0] sum;       // 1 extra bit for overflow
         if (!rst_n) begin
-            state_q    <= S_IDLE;
-            gap_cnt_q  <= '0;
+            tokens_q   <= '0;
             sequence_q <= '0;
+        end else if (!enable_i) begin
+            /* Drain the bucket gracefully when disabled so a re-
+             * enable doesn't dump the maximum burst on cycle 1. */
+            tokens_q   <= '0;
         end else begin
-            unique case (state_q)
-                S_IDLE: begin
-                    if (enable_i) begin
-                        state_q   <= S_EMIT;
-                        gap_cnt_q <= gap_cycles_i;
-                    end
-                end
-                S_EMIT: begin
-                    if (fire) begin
-                        sequence_q <= sequence_q + 64'd1;
-                        if (!enable_i)             state_q <= S_IDLE;
-                        else if (gap_cycles_i == 0) state_q <= S_EMIT;
-                        else begin
-                            gap_cnt_q <= gap_cycles_i;
-                            state_q   <= S_WAIT;
-                        end
-                    end else if (!enable_i) begin
-                        state_q <= S_IDLE;
-                    end
-                end
-                S_WAIT: begin
-                    if (!enable_i) state_q <= S_IDLE;
-                    else if (gap_cnt_q == 0) state_q <= S_EMIT;
-                    else gap_cnt_q <= gap_cnt_q - 16'd1;
-                end
-                default: state_q <= S_IDLE;
-            endcase
+            sum = {1'b0, tokens_q} + {1'b0, tokens_per_tick_fp_i};
+            if (fire) begin
+                sequence_q <= sequence_q + 64'd1;
+                /* On the cycle we emit, we *also* accumulate this
+                 * cycle's tokens but then deduct the frame cost. */
+                if (sum >= {1'b0, cost_q}) sum = sum - {1'b0, cost_q};
+                else                         sum = '0;
+            end
+            if (sum > {1'b0, cap_q}) sum = {1'b0, cap_q};
+            tokens_q <= sum[31:0];
         end
     end
 

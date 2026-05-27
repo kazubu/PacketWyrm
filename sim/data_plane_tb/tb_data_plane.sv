@@ -43,16 +43,17 @@ module tb_data_plane;
     pw_frame_t            punt_frame;
     logic                 punt_valid;
 
-    logic                 gen_en   [PORTS];
-    logic [15:0]          gen_gap  [PORTS];
-    logic [47:0]          gen_smac [PORTS];
-    logic [47:0]          gen_dmac [PORTS];
+    logic                 gen_en      [PORTS];
+    logic [31:0]          gen_tok_fp  [PORTS];
+    logic [15:0]          gen_burst   [PORTS];
+    logic [47:0]          gen_smac    [PORTS];
+    logic [47:0]          gen_dmac    [PORTS];
     logic                 gen_vlan_en [PORTS];
     logic [11:0]          gen_vlan_id [PORTS];
-    logic [31:0]          gen_sip  [PORTS];
-    logic [31:0]          gen_dip  [PORTS];
-    logic [15:0]          gen_usp  [PORTS];
-    logic [15:0]          gen_udp  [PORTS];
+    logic [31:0]          gen_sip     [PORTS];
+    logic [31:0]          gen_dip     [PORTS];
+    logic [15:0]          gen_usp     [PORTS];
+    logic [15:0]          gen_udp     [PORTS];
 
     logic [63:0] flow_rx        [FLOWS];
     logic [63:0] flow_lost      [FLOWS];
@@ -82,9 +83,10 @@ module tb_data_plane;
         .tx_ready_i     (tx_ready),
         .punt_frame_o   (punt_frame),
         .punt_valid_o   (punt_valid),
-        .gen_enable_i   (gen_en),
-        .gen_gap_i      (gen_gap),
-        .gen_src_mac_i  (gen_smac),
+        .gen_enable_i    (gen_en),
+        .gen_tokens_fp_i (gen_tok_fp),
+        .gen_burst_i     (gen_burst),
+        .gen_src_mac_i   (gen_smac),
         .gen_dst_mac_i  (gen_dmac),
         .gen_vlan_en_i  (gen_vlan_en),
         .gen_vlan_id_i  (gen_vlan_id),
@@ -265,7 +267,11 @@ module tb_data_plane;
             rx_valid[p]   = 1'b0;
             tx_ready[p]   = 1'b1;
             gen_en[p]     = 1'b0;
-            gen_gap[p]    = 16'd0;
+            /* 0x40000 = 4.0 bytes/cycle in Q16.16, with cap 256B
+             * burst -> emits ~1 frame every 25 cycles at our
+             * 100-byte frame size. */
+            gen_tok_fp[p] = 32'h00040000;
+            gen_burst[p]  = 16'd256;
             gen_smac[p]   = 48'h02_a5_02_00_00_01;
             gen_dmac[p]   = 48'h02_a5_02_00_00_02;
             gen_vlan_en[p]= 1'b0;
@@ -316,8 +322,8 @@ module tb_data_plane;
         cls_table[1].mask.match_is_test = 1'b1;
         cls_table[1].key.udp_dst        = 16'd50001;
 
-        gen_en[0]  = 1'b1;
-        gen_gap[0] = 16'd4;
+        gen_en[0]    = 1'b1;
+        /* token-bucket rate set by the per-port defaults */
 
         // External loopback: tx[0] -> rx[1] cycle by cycle.
         for (int n = 0; n < 200; n++) begin
@@ -465,6 +471,49 @@ module tb_data_plane;
         check_eq("ooo lost", flow_lost[3], 1);
         check_eq("ooo ooo ", flow_ooo[3],  1);
         check_eq("ooo dup ", flow_dup[3],  0);
+
+        // ---------------- scenario 9: token-bucket rate ----------------
+        // Pick a rate that should emit 8-12 frames over 200 cycles
+        // at the skeleton's ~106-byte frame size. Verify the count
+        // is within that window after a fixed run.
+        scenario = "rate";
+        // disable previous TEST_RX rules so they don't fire
+        cls_table[3].enable = 1'b0;
+        cls_table[5].enable = 1'b0;
+        // a fresh TEST_RX rule on local_flow_id=4 catching flow_id=1
+        // (matches flow_gen[0] which uses GLOBAL_FLOW_ID=32'd1+gp=1)
+        cls_table[6].enable             = 1'b1;
+        cls_table[6].action             = PW_ACT_TEST_RX;
+        cls_table[6].priority_          = 8'd5;
+        cls_table[6].local_flow_id      = 32'd4;
+        cls_table[6].mask.match_udp_dst = 1'b1;
+        cls_table[6].mask.match_is_test = 1'b1;
+        cls_table[6].mask.match_flow_id = 1'b1;
+        cls_table[6].key.udp_dst        = 16'd50001;
+        cls_table[6].key.test_flow_id   = 32'd1;
+
+        // 4.0 bytes/cycle, cap 256 -> at 106-byte frames over 200
+        // cycles, expect ~ (4 * 200) / 106 = ~7.5 frames (round to
+        // window [4, 12] for skeleton tolerance).
+        gen_tok_fp[0] = 32'h00040000;
+        gen_burst[0]  = 16'd256;
+        gen_en[0]     = 1'b1;
+        @(posedge clk);
+
+        for (int n = 0; n < 200; n++) begin
+            @(posedge clk);
+            rx_frame[1] = tx_frame[0];
+            rx_valid[1] = tx_valid[0];
+        end
+        gen_en[0]   = 1'b0;
+        rx_valid[1] = 1'b0;
+        rx_frame[1] = pw_frame_zero();
+        @(posedge clk);
+        @(posedge clk);
+
+        check_eq("rate rx >= 4",  (flow_rx[4] >= 4)  ? 1 : 0, 1);
+        check_eq("rate rx <= 12", (flow_rx[4] <= 12) ? 1 : 0, 1);
+        check_eq("rate lost==0",  flow_lost[4], 0);
 
         if (errors == 0) begin
             $display("ALL DATA PLANE SCENARIOS PASS");
