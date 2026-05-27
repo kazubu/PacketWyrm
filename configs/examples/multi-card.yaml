@@ -1,0 +1,81 @@
+# Multi-card PacketWyrm example: two AS02MC04 cards, four ports
+# (p0..p3), one same-card flow on card0, and one cross-card flow
+# p0 (card0) -> p2 (card1). Cross-card latency / jitter are
+# intentionally disabled because no clock synchronisation is
+# available yet; the daemon would refuse the config otherwise.
+
+system:
+  name: "pw-dual-card"
+  mode: "multi-card"
+  default_speed: "10g"
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:03:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+  - id: 1
+    name: "card1"
+    pci: "0000:04:00.0"
+    ports:
+      - { local_port: 0, global_port: 2, name: "p2" }
+      - { local_port: 1, global_port: 3, name: "p3" }
+
+logical_interfaces:
+  - id: 1000
+    global_port: 0
+    vlan: 100
+    mac: "02:a5:02:00:00:64"
+    punt: { arp: true, ipv6_nd: true, lldp: true, icmp: true, bgp: true, ospf: true }
+
+  - id: 1001
+    global_port: 2
+    vlan: 100
+    mac: "02:a5:02:02:00:64"
+    punt: { arp: true, ipv6_nd: true, icmp: true, bgp: true, ospf: true }
+
+flows:
+  - id: 1
+    name: "same-card-flow"
+    tx_global_port: 0
+    rx_global_port: 1
+    logical_if_id: 1000
+    l2:
+      src_mac: "02:a5:02:00:00:01"
+      dst_mac: "02:a5:02:00:00:02"
+      vlan: 100
+    ipv4: { src: "192.0.2.1", dst: "192.0.2.2", ttl: 64 }
+    udp:  { src_port: 49152, dst_port: 50001 }
+    traffic:
+      frame_len: 512
+      rate_bps: 1000000000
+      insert_sequence: true
+      insert_timestamp: true
+    measurements:
+      loss: true
+      latency: true
+      jitter: true
+
+  - id: 2
+    name: "cross-card-flow"
+    tx_global_port: 0
+    rx_global_port: 2
+    logical_if_id: 1000
+    l2:
+      src_mac: "02:a5:02:00:00:11"
+      dst_mac: "02:a5:02:02:00:11"
+      vlan: 100
+    ipv4: { src: "198.51.100.1", dst: "198.51.100.2", ttl: 64 }
+    udp:  { src_port: 49153, dst_port: 50002 }
+    traffic:
+      frame_len: 512
+      rate_bps: 1000000000
+      insert_sequence: true
+      insert_timestamp: true
+    measurements:
+      loss: true
+      latency: false
+      jitter: false
