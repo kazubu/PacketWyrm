@@ -2,8 +2,9 @@
 
 Goal of this phase: produce a bitstream that
 
-1. configures the on-board Kintex UltraScale+ KU3P,
-2. blinks a heartbeat LED at 1 Hz,
+1. configures the on-board Kintex UltraScale+ KU3P
+   (`xcku3p-ffvb676-1-e`, JTAG IDCODE `0x04a63093`),
+2. blinks the `led_hb` LED (B9) at 1 Hz,
 3. enumerates as a PCIe Gen3 endpoint, and
 4. exposes a 64 KB BAR0 whose first 32-bit word is the PacketWyrm
    `device_id` (`0xA502BEEF`) followed by `version`, `build_id`,
@@ -13,6 +14,33 @@ Once `lspci` sees the card and `bringup-check.sh` validates the
 identity registers, Phase 1 is done. SFP+ MAC / PCS, classifier,
 flow generator, slow-path DMA and Linux daemon integration ride on
 this foundation in Phases 2&ndash;5.
+
+## Pin assignments
+
+Fully populated in `xdc/pinout.xdc`. All values are derived from:
+
+- **Julia Desmazes**' reverse engineering article
+  &mdash; <https://essenceia.github.io/projects/alibaba_cloud_fpga/>
+  (100 MHz LVDS clock, 156.25 MHz MGT refclk, LEDs, JTAG, IDCODE).
+- **Alex Forencich**'s **Taxi** AS02MC04 board support
+  &mdash; <https://github.com/fpganinja/taxi> (MIT)
+  (full PCIe / SFP+ / control-pin pinout).
+
+| Function                | Pin(s)              | Bank / Function        |
+|-------------------------|---------------------|------------------------|
+| 100 MHz LVDS sysclk     | `E18` / `D18`       | bank 67, IS_GLOBAL_CLK |
+| PCIe MGT refclk (100 M) | `T7` / `T6`         | MGTREFCLK1_225         |
+| PCIe PERST#             | `A9`                | LVCMOS33               |
+| PCIe Gen3 x8 lanes      | banks 224 + 225     | GTYE4 X0Y0..X0Y7       |
+| Heartbeat LED `led_hb`  | `B9` (DS5)          | LVCMOS33               |
+| User LEDs `led[0..3]`   | `B11`, `C11`, `A10`, `B10` | LVCMOS33        |
+| SFP+ MGT refclk (Phase 2) | `K7` / `K6`       | MGTREFCLK0_227, 156.25 MHz |
+| SFP+ port 0 (Phase 2)   | `A4`/`A3`, `B7`/`B6`| GTYE4 X0Y15            |
+| SFP+ port 1 (Phase 2)   | `B2`/`B1`, `D7`/`D6`| GTYE4 X0Y14            |
+
+> **Voltage note**: many AS02MC04 LVCMOS interfaces silk-screened as
+> "1.8 V" are actually wired at 3.3 V. The XDC uses `LVCMOS33`
+> everywhere it matters, following the Taxi board support.
 
 ## Source layout
 
@@ -24,53 +52,36 @@ fpga/as02mc04/
 │   ├── pcie_axi_lite_bridge.sv   thin shim over the PCIe Gen3 IP
 │   └── pcie_gen3_stub.sv         placeholder until `make ip` runs
 ├── xdc/
-│   ├── pinout.xdc                ALL pin assignments (TODO)
-│   ├── timing.xdc                clock-domain crossings + false paths
-│   └── physical.xdc              bitstream config / SPI flash mode
+│   ├── pinout.xdc                full real pin assignments
+│   ├── timing.xdc                clock definitions + false paths
+│   └── physical.xdc              CFGBVS / SPIx4 boot settings
 ├── ip/
 │   ├── pcie_gen3.tcl             generates `pcie_gen3_wrapper`
-│   └── clk_wiz.tcl               MMCM for the 100 MHz housekeeping
+│   └── clk_wiz.tcl               (optional) MMCM housekeeping
+├── docs/
+│   └── jtag-bringup.md           OpenOCD + J-Link workflow
 ├── project.tcl                   reproducible project creation
-├── Makefile                      project / synth / impl / program
+├── Makefile                      project / synth / impl / program / lint
 └── scripts/
     ├── program.tcl               JTAG programmer
+    ├── lint.sh                   Verilator lint of all Phase 1 RTL
     └── bringup-check.sh          host-side identity-register check
 ```
 
 Board-agnostic RTL (the CSR fabric, heartbeat, timestamp counter,
 shared package) lives in `../../rtl/shared/` and is consumed by the
-project script. Future 25G or alternate-board projects reuse it.
+project script.
 
 ## Required prerequisites
 
 | Item                                  | Where to get it                       |
 |---------------------------------------|---------------------------------------|
-| Vivado 2023.2+ (UltraScale+ licence)  | Xilinx                                |
-| AS02MC04 schematic                    | Alibaba Cloud / board vendor          |
-| JTAG cable (FTDI / Xilinx HW-USB)     |                                       |
-| Linux host with a free PCIe Gen3 slot |                                       |
-
-## Pin assignments (TODO)
-
-Every entry in `xdc/pinout.xdc` marked `AS02MC04_PIN_TBD` must be
-filled in from the AS02MC04 schematic before the bitstream is
-usable. The placeholders compile but place silently to wrong pads;
-this is intentional &mdash; the rest of the project (RTL, IP,
-build flow) can be verified before the board is in front of you.
-
-Concretely, fill in:
-
-- PCIe x8 lanes (refclk + PERST# only; lane RX / TX pairs are
-  auto-placed by the PCIe Gen3 IP based on its GTY quad selection).
-- Board reference clock pair (LVDS, MMCM-capable bank).
-- Board reset (push button / PERST# fanout).
-- 4 user LEDs.
-- (Phase 2) Two SFP+ cages and the 156.25 MHz refclk for the GTY
-  quad driving them.
-
-The PCIe IP itself is configured in `ip/pcie_gen3.tcl`. The Vendor /
-Device IDs there (`0x1AF4 / 0xA502`) are placeholders; replace with
-the AS02MC04 PCI ID allocation before final production.
+| Vivado 2023.2+ (UltraScale+ licence)  | AMD/Xilinx                            |
+| AS02MC04 board                        | eBay / second-hand                    |
+| JTAG cable (J-Link / USB Blaster /    | Any 4-GPIO TAP-driving probe;         |
+| FT232H)                               | see `docs/jtag-bringup.md`            |
+| Linux host with a free PCIe Gen3 slot | x8 ideally; x1 also works (downgrade) |
+| Active cooling for the FPGA           | KU3P runs hot                         |
 
 ## Build flow
 
@@ -80,8 +91,7 @@ cd fpga/as02mc04
 # 1. Create the Vivado project (no synth)
 make project
 
-# 2. (Once you have a licensed UltraScale+ Vivado in front of the
-#    real board) generate the Xilinx PCIe Gen3 + MMCM IP
+# 2. Generate the Xilinx PCIe Gen3 + MMCM IP
 make ip
 
 # 3. Synthesise
@@ -90,9 +100,14 @@ make synth
 # 4. Implement + write bitstream
 make impl
 
-# 5. Program over JTAG (set HW_TARGET to the JTAG cable serial)
-make program HW_TARGET=*ftdi*
+# 5. Program over JTAG (set HW_TARGET to the JTAG cable serial / glob)
+make program HW_TARGET=*jlink*
 ```
+
+If you prefer OpenOCD (no licensed Vivado on the lab box), generate
+the SVF from Vivado and follow `docs/jtag-bringup.md` &mdash; that
+recipe is verified working on AS02MC04 via Segger J-Link and Altera
+USB Blaster.
 
 Outputs: `build/pwfpga_as02mc04_phase1/.../pwfpga_top_phase1.bit`.
 
@@ -121,29 +136,44 @@ Expected output:
 [hh:mm:ss] OK: AS02MC04 Phase 1 bring-up checks passed.
 ```
 
+> The original Alibaba bitstream that ships on second-hand boards
+> enumerates as `dabc:1017` (class `0x020000` Ethernet) &mdash; if
+> you see that vendor / device ID, the board is alive but still
+> running its factory NIC firmware. After PacketWyrm programming the
+> ID changes to PacketWyrm's `1af4:a502` (placeholder Red Hat /
+> QEMU virtio vendor, change in `ip/pcie_gen3.tcl` when a real PCI
+> ID is allocated).
+
 `packetwyrmd` Phase 4 reads the same registers through the
 forthcoming BAR backend (`pw_bar_backend_open`). Phase 1 only proves
 that the BAR is reachable and the FPGA presents the right identity.
 
 ## Definition of done
 
-| Check                                                  | Status |
-|--------------------------------------------------------|--------|
-| JTAG identifies the FPGA                               |        |
-| Bitstream loads without errors                         |        |
-| `led[0]` blinks at ~1 Hz                               |        |
-| `led[1]` is high (PCIe link up)                        |        |
-| `lspci -d 1af4:a502` returns the card                  |        |
-| `bringup-check.sh` prints `device_id=0xa502beef`       |        |
-| BAR0 size in sysfs matches the IP configuration (64K)  |        |
-| Timing report closes (no negative WNS / WHS)           |        |
+| Check                                                       | Status |
+|-------------------------------------------------------------|--------|
+| JTAG IDCODE reads as `0x04a63093` (KU3P)                    |        |
+| Bitstream loads without errors                              |        |
+| `led_hb` blinks at ~1 Hz                                    |        |
+| `led[1]` is high (PCIe link up)                             |        |
+| `lspci -d 1af4:a502` returns the card                       |        |
+| `bringup-check.sh` prints `device_id=0xa502beef`            |        |
+| BAR0 size in sysfs matches the IP configuration (64K)       |        |
+| Timing report closes (no negative WNS / WHS)                |        |
 
-When every row is checked, Phase 2 (MAC / PCS frame loopback) starts.
+When every row is checked, Phase 2 (10G MAC / PCS frame loopback)
+starts.
 
-## What gets removed in Phase 2
+## Why we are not just using Taxi / Corundum
 
-`pcie_gen3_stub.sv` ships only so the project synthesises before the
-Xilinx IP is generated. As soon as `make ip` has produced
-`pcie_gen3_wrapper` from the IP catalog, the stub becomes dead code
-and is excluded from the synthesis fileset in `project.tcl`. Track
-that swap explicitly when Phase 2 lands.
+Alex Forencich's **Corundum** project (built on the **Taxi** RTL
+library) already provides a working high-performance NIC bitstream
+for the AS02MC04 and even a Linux driver. PacketWyrm builds a
+different thing &mdash; an FPGA-side packet generator + classifier +
+loss / latency / jitter tester &mdash; so the data plane is
+custom. The board-support work (XDC, IP configuration, SPI flash
+boot mode) is identical and is borrowed from Taxi with attribution.
+
+If you only want a NIC on this card, Corundum is the right answer;
+PacketWyrm is the right answer if you want to drive line-rate
+synthetic traffic and measure what the DUT does to it.

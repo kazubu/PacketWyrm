@@ -1,33 +1,36 @@
 // AS02MC04 Phase 1 top-level.
 //
 // Goals:
-//   - PCIe Gen3 endpoint enumerates on the host
-//   - BAR0 exposes pw_csr_min (device_id, version, capabilities, ...)
-//   - LED heartbeat shows the FPGA is alive
-//   - Free-running 64-bit timestamp counter is readable via BAR0
+//   - PCIe Gen3 endpoint enumerates on the host (vendor/device ID
+//     defined in ip/pcie_gen3.tcl).
+//   - BAR0 exposes pw_csr_min (device_id, version, build_id,
+//     git_hash, capabilities, num_ports, timestamp pair, ...).
+//   - led_hb blinks at 1 Hz off the 100 MHz LVDS housekeeping clock.
+//   - led[1] lit when PCIe link is up.
+//   - Timestamp counter free-running in the PCIe user-clock domain.
 //
-// Out of scope for Phase 1: SFP+ data plane, classifier, flow gen,
-// punt queues, DMA rings. Those land in Phases 2 - 4.
+// Pin assignments live in xdc/pinout.xdc; port names here match
+// what that file binds.
 
 `default_nettype none
 
 module pwfpga_top_phase1 (
-    // PCIe
-    input  wire        pcie_refclk_p,
-    input  wire        pcie_refclk_n,
-    input  wire        pcie_perst_n,
+    // 100 MHz LVDS housekeeping clock (E18 / D18)
+    input  wire        clk_100mhz_p,
+    input  wire        clk_100mhz_n,
+
+    // PCIe Gen3 x8
+    input  wire        pcie_refclk_p,    // T7
+    input  wire        pcie_refclk_n,    // T6
+    input  wire        pcie_reset_n,     // A9 (PERST#)
     input  wire [7:0]  pcie_rx_p,
     input  wire [7:0]  pcie_rx_n,
     output wire [7:0]  pcie_tx_p,
     output wire [7:0]  pcie_tx_n,
 
-    // Board reference clock + reset (pinned in XDC)
-    input  wire        sys_clk_p,
-    input  wire        sys_clk_n,
-    input  wire        sys_rst_n,
-
-    // User LEDs (count and polarity from board schematic)
-    output wire [3:0]  led
+    // Status LEDs
+    output wire        led_hb,           // B9 - 1 Hz heartbeat
+    output wire [3:0]  led               // B11 / C11 / A10 / B10
 );
 
     import pw_pkg::*;
@@ -59,7 +62,7 @@ module pwfpga_top_phase1 (
     pcie_axi_lite_bridge #(.AXIL_ADDR_W(12)) u_pcie (
         .pcie_refclk_p (pcie_refclk_p),
         .pcie_refclk_n (pcie_refclk_n),
-        .pcie_perst_n  (pcie_perst_n),
+        .pcie_perst_n  (pcie_reset_n),
         .pcie_rx_p     (pcie_rx_p),
         .pcie_rx_n     (pcie_rx_n),
         .pcie_tx_p     (pcie_tx_p),
@@ -89,14 +92,14 @@ module pwfpga_top_phase1 (
         .link_up       (pcie_link_up)
     );
 
-    // --- Clocking + reset ----------------------------------------------------
+    // --- Housekeeping clock + reset (100 MHz LVDS domain) --------------------
     wire clk_100mhz;
     wire rst_n_100;
 
     clock_reset u_clkrst (
-        .sys_clk_p        (sys_clk_p),
-        .sys_clk_n        (sys_clk_n),
-        .sys_rst_n        (sys_rst_n),
+        .sys_clk_p        (clk_100mhz_p),
+        .sys_clk_n        (clk_100mhz_n),
+        .sys_rst_n        (pcie_reset_n),
         .clk_100mhz       (clk_100mhz),
         .rst_n_100        (rst_n_100),
         .pcie_user_clk    (axi_aclk),
@@ -147,17 +150,16 @@ module pwfpga_top_phase1 (
     );
 
     // --- LEDs ----------------------------------------------------------------
-    // led[0]: 1 Hz heartbeat (FPGA alive)
-    // led[1]: PCIe link up
-    // led[2..3]: reserved for SFP link status (Phase 2)
-    wire heartbeat;
+    // led_hb : 1 Hz heartbeat (FPGA alive)
+    // led[1] : PCIe link up
+    // led[0,2,3]: reserved for Phase 2 SFP+ status
     pw_heartbeat #(.CLK_HZ(100_000_000), .RATE_HZ(1)) u_hb (
         .clk   (clk_100mhz),
         .rst_n (rst_n_100),
-        .led_o (heartbeat)
+        .led_o (led_hb)
     );
 
-    assign led = {2'b00, pcie_link_up, heartbeat};
+    assign led = {2'b00, pcie_link_up, 1'b0};
 
 endmodule
 

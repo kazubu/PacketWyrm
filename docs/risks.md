@@ -9,6 +9,19 @@ GTY transceiver settings, reference clock, board layout quirks, and
 SFP power can all gate link-up. No software work is meaningful until
 this works.
 
+Confirmed knowns (Phase 1 unblock):
+
+- SFP MGT refclk = 156.25 MHz on `K7 / K6` (MGTREFCLK0_227).
+- SFP+ port 0 = GTYE4 X0Y15 (lanes `A4/A3`, `B7/B6`).
+- SFP+ port 1 = GTYE4 X0Y14 (lanes `B2/B1`, `D7/D6`).
+- Source: Essenceia reverse-engineering and Alex Forencich's Taxi
+  AS02MC04 board support &mdash; both verified on real boards.
+
+Remaining risk: SFP power, cage condition, and equalisation. Some
+second-hand boards have been reported with mechanically damaged or
+even unsoldered SFP modules pre-installed; always inspect before
+plugging in optics.
+
 Mitigations:
 
 - Internal PCS loopback path available before SFP cages are trusted.

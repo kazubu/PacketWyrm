@@ -13,7 +13,7 @@ set repo_root  [file normalize "$script_dir/../.."]
 
 set proj_name   "pwfpga_as02mc04_phase1"
 set proj_dir    "$script_dir/build/$proj_name"
-set part        "xcku3p-ffvb676-2-e"   ;# Kintex UltraScale+ KU3P. Confirm exact package against AS02MC04 schematic.
+set part        "xcku3p-ffvb676-1-e"   ;# Kintex UltraScale+ KU3P -1 speed, confirmed by JTAG IDCODE 0x04a63093 and Taxi board support.
 set top_module  "pwfpga_top_phase1"
 
 # Allow the caller to override the part / top via -tclargs key=value.
