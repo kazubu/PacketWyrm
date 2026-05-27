@@ -345,6 +345,7 @@ static int cmd_help(void) {
     puts("  pktwyrm rpc cards|ports|flows|stats [--socket PATH] [--card N]");
     puts("  pktwyrm stats [--socket PATH] [--card N] [--watch MS] [--json]");
     puts("  pktwyrm flow start|stop <id> [--socket PATH]");
+    puts("  pktwyrm flow stats [--flow N] [--socket PATH]");
     return 0;
 }
 
@@ -371,6 +372,24 @@ int main(int argc, char **argv) {
         }
         const char *what = argv[2];
         if (!strcmp(what, "show")) return cmd_flow_show(argc - 3, argv + 3);
+        if (!strcmp(what, "stats")) {
+            const char *sock = PW_IPC_DEFAULT_PATH;
+            int id = -1;
+            for (int i = 3; i < argc; i++) {
+                if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
+                else if (!strcmp(argv[i], "--flow") && i + 1 < argc) id = atoi(argv[++i]);
+            }
+            char req[128];
+            if (id >= 0) snprintf(req, sizeof(req), "{\"rpc\":\"flow.stats\",\"id\":%d}", id);
+            else         snprintf(req, sizeof(req), "{\"rpc\":\"flow.stats\"}");
+            char  resp[PW_IPC_FRAME_MAX]; size_t got = 0;
+            if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
+                fprintf(stderr, "rpc call failed (socket=%s)\n", sock);
+                return 1;
+            }
+            fwrite(resp, 1, got, stdout); fputc('\n', stdout);
+            return 0;
+        }
         if (!strcmp(what, "start") || !strcmp(what, "stop")) {
             if (argc < 4) {
                 fprintf(stderr, "usage: pktwyrm flow %s <id> [--socket PATH]\n", what);

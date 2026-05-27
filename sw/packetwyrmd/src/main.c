@@ -351,6 +351,84 @@ static struct json_object *build_stats(const struct pw_config *cfg,
     return r;
 }
 
+/* Per-flow stats: looks up each flow's RX card, asks for a
+ * snapshot, and packs the resulting counters into JSON. */
+static struct json_object *build_flow_stats(const struct pw_config *cfg,
+                                            const struct pw_program *prog,
+                                            struct card_runtime cards[],
+                                            int filter_flow_id) {
+    /* Trigger one snapshot per card so the counters are consistent
+     * across the report. Cheap on the fake backend; the real BAR
+     * backend writes the stats_snapshot_trigger CSR. */
+    for (size_t ci = 0; ci < cfg->n_cards; ci++) {
+        if (cards[ci].open && cards[ci].backend.ops->stats_snapshot)
+            (void)cards[ci].backend.ops->stats_snapshot(cards[ci].backend.ctx);
+    }
+
+    struct json_object *r   = json_object_new_object();
+    struct json_object *arr = json_object_new_array();
+    for (size_t i = 0; i < prog->n_flow_meta; i++) {
+        const struct pw_flow_meta *m = &prog->flow_meta[i];
+        if (filter_flow_id >= 0 && (int)m->global_flow_id != filter_flow_id)
+            continue;
+        /* Find the RX card to pull stats from. */
+        size_t rx_ci = (size_t)-1;
+        for (size_t ci = 0; ci < cfg->n_cards; ci++)
+            if (cfg->cards[ci].id == m->rx_card_id) { rx_ci = ci; break; }
+        size_t tx_ci = (size_t)-1;
+        for (size_t ci = 0; ci < cfg->n_cards; ci++)
+            if (cfg->cards[ci].id == m->tx_card_id) { tx_ci = ci; break; }
+
+        struct pw_flow_stats rs = {0}, ts = {0};
+        if (rx_ci != (size_t)-1 && cards[rx_ci].open &&
+            cards[rx_ci].backend.ops->flow_stats_read) {
+            (void)cards[rx_ci].backend.ops->flow_stats_read(
+                cards[rx_ci].backend.ctx, m->rx_local_flow_id, &rs);
+        }
+        if (tx_ci != (size_t)-1 && cards[tx_ci].open &&
+            cards[tx_ci].backend.ops->flow_stats_read) {
+            (void)cards[tx_ci].backend.ops->flow_stats_read(
+                cards[tx_ci].backend.ctx, m->tx_local_flow_id, &ts);
+        }
+
+        struct json_object *f = json_object_new_object();
+        json_object_object_add(f, "id", json_object_new_int64(m->global_flow_id));
+        json_object_object_add(f, "tx_card_id", json_object_new_int(m->tx_card_id));
+        json_object_object_add(f, "rx_card_id", json_object_new_int(m->rx_card_id));
+        json_object_object_add(f, "tx_frames", json_object_new_int64((int64_t)ts.tx_frames));
+        json_object_object_add(f, "tx_bytes",  json_object_new_int64((int64_t)ts.tx_bytes));
+        json_object_object_add(f, "rx_frames", json_object_new_int64((int64_t)rs.rx_frames));
+        json_object_object_add(f, "rx_bytes",  json_object_new_int64((int64_t)rs.rx_bytes));
+        json_object_object_add(f, "lost",      json_object_new_int64((int64_t)rs.lost_packets_estimated));
+        json_object_object_add(f, "duplicate", json_object_new_int64((int64_t)rs.duplicate_count));
+        json_object_object_add(f, "out_of_order", json_object_new_int64((int64_t)rs.out_of_order_count));
+        json_object_object_add(f, "seq_gap",   json_object_new_int64((int64_t)rs.sequence_gap_count));
+        json_object_object_add(f, "expected_seq", json_object_new_int64((int64_t)rs.expected_sequence));
+
+        json_object_object_add(f, "latency_valid",
+                               json_object_new_boolean(m->latency_valid));
+        if (m->latency_valid) {
+            json_object_object_add(f, "min_latency", json_object_new_int64((int64_t)rs.min_latency));
+            json_object_object_add(f, "max_latency", json_object_new_int64((int64_t)rs.max_latency));
+            int64_t avg = rs.sample_count
+                ? (int64_t)(rs.sum_latency / rs.sample_count)
+                : 0;
+            json_object_object_add(f, "avg_latency", json_object_new_int64(avg));
+            json_object_object_add(f, "sample_count",
+                                   json_object_new_int64((int64_t)rs.sample_count));
+            json_object_object_add(f, "jitter_min", json_object_new_int64((int64_t)rs.jitter_min));
+            json_object_object_add(f, "jitter_max", json_object_new_int64((int64_t)rs.jitter_max));
+            int64_t jit_avg = rs.sample_count
+                ? (int64_t)(rs.jitter_sum / rs.sample_count)
+                : 0;
+            json_object_object_add(f, "jitter_avg", json_object_new_int64(jit_avg));
+        }
+        json_object_array_add(arr, f);
+    }
+    json_object_object_add(r, "flows", arr);
+    return r;
+}
+
 static struct json_object *build_error(const char *msg) {
     struct json_object *r = json_object_new_object();
     json_object_object_add(r, "error", json_object_new_string(msg));
@@ -393,6 +471,12 @@ static void handle_client(int cfd,
                 card_filter = json_object_get_int(jc);
             }
             resp = build_stats(cfg, cards, hps, card_filter);
+        } else if (!strcmp(name, "flow.stats")) {
+            struct json_object *jc;
+            int filter = -1;
+            if (json_object_object_get_ex(req, "id", &jc))
+                filter = json_object_get_int(jc);
+            resp = build_flow_stats(cfg, prog, cards, filter);
         } else if (!strcmp(name, "flow.start") || !strcmp(name, "flow.stop")) {
             struct json_object *jid;
             if (!json_object_object_get_ex(req, "id", &jid)) {
