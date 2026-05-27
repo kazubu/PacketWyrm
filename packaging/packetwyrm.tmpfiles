@@ -1,0 +1,5 @@
+# systemd-tmpfiles entry for PacketWyrm.
+# Install as /usr/lib/tmpfiles.d/packetwyrm.conf
+d /run/packetwyrm     0755 root root -
+d /var/lib/packetwyrm 0755 root root -
+d /var/log/packetwyrm 0755 root root -

@@ -84,3 +84,66 @@ $(TEST_BIN): $(TEST_SRC) $(LIBA) | $(BUILD_DIR)
 clean:
 	rm -f $(LIB_OBJ)
 	rm -rf $(BUILD_DIR)
+
+# --- install / uninstall ---------------------------------------------------
+
+DESTDIR    ?=
+PREFIX     ?= /usr/local
+SBINDIR    ?= $(PREFIX)/sbin
+BINDIR     ?= $(PREFIX)/bin
+LIBDIR     ?= $(PREFIX)/lib
+INCDIR     ?= $(PREFIX)/include
+SYSCONFDIR ?= /etc
+UNITDIR    ?= /lib/systemd/system
+SYSUSERDIR ?= /usr/lib/sysusers.d
+TMPFILESDIR ?= /usr/lib/tmpfiles.d
+UDEVDIR    ?= /etc/udev/rules.d
+PKGROOT    ?= ..
+
+INSTALL ?= install
+INST_MK = $(INSTALL) -d
+INST    = $(INSTALL) -m
+
+.PHONY: install uninstall
+install: all
+	$(INST_MK) $(DESTDIR)$(SBINDIR)
+	$(INST) 0755 $(BUILD_DIR)/packetwyrmd $(DESTDIR)$(SBINDIR)/packetwyrmd
+	$(INST_MK) $(DESTDIR)$(BINDIR)
+	$(INST) 0755 $(BUILD_DIR)/pktwyrm     $(DESTDIR)$(BINDIR)/pktwyrm
+	$(INST_MK) $(DESTDIR)$(LIBDIR)
+	$(INST) 0644 $(BUILD_DIR)/libpacketwyrm.a  $(DESTDIR)$(LIBDIR)/libpacketwyrm.a
+	$(INST) 0755 $(BUILD_DIR)/libpacketwyrm.so $(DESTDIR)$(LIBDIR)/libpacketwyrm.so
+	$(INST_MK) $(DESTDIR)$(INCDIR)/packetwyrm
+	$(INST) 0644 $(LIB_INC)/packetwyrm/*.h $(DESTDIR)$(INCDIR)/packetwyrm/
+	$(INST_MK) $(DESTDIR)$(SYSCONFDIR)/packetwyrm
+	$(INST) 0644 $(PKGROOT)/configs/examples/single-card.yaml \
+	    $(DESTDIR)$(SYSCONFDIR)/packetwyrm/single-card.yaml.example
+	$(INST) 0644 $(PKGROOT)/configs/examples/multi-card.yaml \
+	    $(DESTDIR)$(SYSCONFDIR)/packetwyrm/multi-card.yaml.example
+	$(INST_MK) $(DESTDIR)$(UNITDIR)
+	$(INST) 0644 $(PKGROOT)/packaging/packetwyrmd.service \
+	    $(DESTDIR)$(UNITDIR)/packetwyrmd.service
+	$(INST_MK) $(DESTDIR)$(SYSUSERDIR)
+	$(INST) 0644 $(PKGROOT)/packaging/packetwyrm.sysusers \
+	    $(DESTDIR)$(SYSUSERDIR)/packetwyrm.conf
+	$(INST_MK) $(DESTDIR)$(TMPFILESDIR)
+	$(INST) 0644 $(PKGROOT)/packaging/packetwyrm.tmpfiles \
+	    $(DESTDIR)$(TMPFILESDIR)/packetwyrm.conf
+	$(INST_MK) $(DESTDIR)$(UDEVDIR)
+	$(INST) 0644 $(PKGROOT)/scripts/99-packetwyrm.rules \
+	    $(DESTDIR)$(UDEVDIR)/99-packetwyrm.rules
+	@echo "Installed under $(DESTDIR)$(PREFIX). Don't forget:"
+	@echo "  systemd-sysusers && systemd-tmpfiles --create && systemctl daemon-reload"
+	@echo "  udevadm control --reload && udevadm trigger"
+
+uninstall:
+	rm -f $(DESTDIR)$(SBINDIR)/packetwyrmd
+	rm -f $(DESTDIR)$(BINDIR)/pktwyrm
+	rm -f $(DESTDIR)$(LIBDIR)/libpacketwyrm.a
+	rm -f $(DESTDIR)$(LIBDIR)/libpacketwyrm.so
+	rm -rf $(DESTDIR)$(INCDIR)/packetwyrm
+	rm -f $(DESTDIR)$(UNITDIR)/packetwyrmd.service
+	rm -f $(DESTDIR)$(SYSUSERDIR)/packetwyrm.conf
+	rm -f $(DESTDIR)$(TMPFILESDIR)/packetwyrm.conf
+	rm -f $(DESTDIR)$(UDEVDIR)/99-packetwyrm.rules
+	@echo "Note: $(DESTDIR)$(SYSCONFDIR)/packetwyrm/ left in place."

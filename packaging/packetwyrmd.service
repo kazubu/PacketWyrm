@@ -1,0 +1,45 @@
+[Unit]
+Description=PacketWyrm tester daemon
+Documentation=https://github.com/kazubu/packetwyrm
+After=network.target
+Requires=sys-subsystem-net-devices-tun.device
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/packetwyrmd -c /etc/packetwyrm/packetwyrm.yaml \
+                                     -s 5000 -p 9100
+Restart=on-failure
+RestartSec=2s
+
+# CAP_NET_ADMIN: create TAP devices.
+# We keep User=root for now because the BAR backend mmap of
+# /sys/bus/pci/devices/.../resource0 requires it on most systems
+# unless the supplied udev rule (scripts/99-packetwyrm.rules) has
+# been installed. Drop to User=packetwyrm once that udev rule is
+# in place and the operator's setup is comfortable with it.
+User=root
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+
+# systemd-managed directories (created on start, removed on stop).
+RuntimeDirectory=packetwyrm
+RuntimeDirectoryMode=0755
+StateDirectory=packetwyrm
+LogsDirectory=packetwyrm
+ConfigurationDirectory=packetwyrm
+
+# Hardening. Adjust as needed for your deployment; PrivateNetwork
+# would break TAP creation, ProtectKernelTunables blocks sysfs PCI
+# scans, so neither is enabled here.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/run/packetwyrm /var/lib/packetwyrm /var/log/packetwyrm
+ProtectHome=true
+ProtectControlGroups=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

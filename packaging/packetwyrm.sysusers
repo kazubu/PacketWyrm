@@ -1,0 +1,3 @@
+# systemd-sysusers entry for PacketWyrm.
+# Install as /usr/lib/sysusers.d/packetwyrm.conf
+g packetwyrm - "PacketWyrm operators"
