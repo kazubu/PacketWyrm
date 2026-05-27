@@ -81,6 +81,22 @@ struct pw_card_backend_ops {
     pw_status (*flow_stats_read)(void *ctx, uint32_t local_flow_id,
                                  struct pw_flow_stats *out);
 
+    /* Slow-path RX (FPGA -> host). Pops one frame if available.
+     * Returns: > 0  = bytes copied into buf (and *out_lif_id set);
+     *         == 0  = no frame waiting;
+     *         <  0  = pw_status error code. May be NULL on backends
+     *               that do not implement the slow path yet. */
+    int       (*slow_path_rx)(void *ctx, void *buf, size_t buflen,
+                              uint32_t *out_lif_id);
+
+    /* Slow-path TX (host -> FPGA). Enqueues one frame for the FPGA's
+     * TX arbiter to send out the given egress local port. May be
+     * NULL on backends that do not implement the slow path yet. */
+    pw_status (*slow_path_tx)(void *ctx,
+                              const void *frame, size_t len,
+                              uint32_t logical_if_id,
+                              uint8_t  egress_local_port);
+
     void      (*close)(void *ctx);
 };
 
@@ -96,6 +112,23 @@ struct pw_card_backend {
  * daemon when no real hardware is attached (e.g. on a developer
  * laptop). */
 pw_status pw_fake_backend_open(const char *pci_bdf, struct pw_card_backend *out);
+
+/* Fake-backend-only helpers exercised by the host_plane tests:
+ *
+ *   pw_fake_backend_inject_punt  - simulate an FPGA punt event; the
+ *                                  next slow_path_rx() returns this
+ *                                  frame.
+ *   pw_fake_backend_drain_tx     - pop one frame the host_plane
+ *                                  injected via slow_path_tx().
+ */
+pw_status pw_fake_backend_inject_punt(struct pw_card_backend *b,
+                                      uint32_t logical_if_id,
+                                      const void *frame, size_t len);
+
+int       pw_fake_backend_drain_tx(struct pw_card_backend *b,
+                                   void *buf, size_t buflen,
+                                   uint32_t *out_lif_id,
+                                   uint8_t  *out_egress_local_port);
 
 /* Real backend: opens /sys/bus/pci/devices/<bdf>/resource0, mmaps it,
  * and drives the CSRs. Phase 4+. */

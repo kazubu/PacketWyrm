@@ -141,6 +141,16 @@ Backpressure on TAP side: TAP fds are non-blocking. If a TAP would
 block, the daemon drops with a counter; control-plane protocols
 retransmit. Slow-path packet plane is intentionally not lossless.
 
+Implementation: `pw_host_plane` in `libpacketwyrm` is the concrete
+data-mover. `pw_tap_open()` / `pw_tap_set_*()` create the TAP
+devices via `/dev/net/tun` and ioctl; the host plane binds each
+logical interface to its FD and drains both directions on each
+`pw_host_plane_step()` call. The fake card backend implements
+`slow_path_rx` / `slow_path_tx` so the entire host plane runs in
+unit tests against a software model (`make -C sw test`); a real
+TAP integration is also covered (Linux kernel TAP device created,
+host plane writes a synthesised punt frame to it).
+
 ### Stats aggregator
 
 Polls each card on a configurable interval (default 100 ms). Steps:

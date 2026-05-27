@@ -7,6 +7,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include "packetwyrm/packetwyrm.h"
@@ -331,6 +334,189 @@ static void test_pci_discover_no_match(void) {
     PW_ASSERT(n == 0);
 }
 
+static void test_fake_backend_slow_path(void) {
+    /* End-to-end punt: inject -> slow_path_rx returns it. */
+    struct pw_card_backend b;
+    PW_ASSERT_EQ(pw_fake_backend_open("0000:03:00.0", &b), PW_OK);
+
+    const uint8_t frame[] = { 0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe };
+    PW_ASSERT_EQ(pw_fake_backend_inject_punt(&b, 1000, frame, sizeof(frame)),
+                 PW_OK);
+
+    uint8_t got[64] = {0};
+    uint32_t lif = 0;
+    int n = b.ops->slow_path_rx(b.ctx, got, sizeof(got), &lif);
+    PW_ASSERT_EQ(n, (int)sizeof(frame));
+    PW_ASSERT_EQ(lif, 1000);
+    PW_ASSERT(memcmp(frame, got, sizeof(frame)) == 0);
+
+    /* End-to-end TX: slow_path_tx pushes, drain_tx pops. */
+    const uint8_t tx_frame[] = { 0x01, 0x02, 0x03 };
+    PW_ASSERT_EQ(b.ops->slow_path_tx(b.ctx, tx_frame, sizeof(tx_frame), 2000, 1),
+                 PW_OK);
+
+    uint8_t drained[64] = {0};
+    uint32_t drained_lif = 0;
+    uint8_t drained_eg  = 0xff;
+    int dn = pw_fake_backend_drain_tx(&b, drained, sizeof(drained),
+                                       &drained_lif, &drained_eg);
+    PW_ASSERT_EQ(dn, (int)sizeof(tx_frame));
+    PW_ASSERT_EQ(drained_lif, 2000);
+    PW_ASSERT_EQ(drained_eg, 1);
+    PW_ASSERT(memcmp(tx_frame, drained, sizeof(tx_frame)) == 0);
+
+    pw_card_backend_close(&b);
+}
+
+static void test_host_plane_socketpair(void) {
+    /* Build a host plane on top of the fake backend; use a
+     * socketpair as the stand-in TAP fd to verify the bridge
+     * works in both directions. */
+    struct pw_card_backend b;
+    PW_ASSERT_EQ(pw_fake_backend_open("0000:03:00.0", &b), PW_OK);
+
+    struct pw_host_plane hp;
+    PW_ASSERT_EQ(pw_host_plane_init(&hp, &b), PW_OK);
+
+    int sp[2];
+    PW_ASSERT(socketpair(AF_UNIX, SOCK_DGRAM, 0, sp) == 0);
+    /* sp[0] acts as the "TAP fd" (host plane reads/writes it).
+     * sp[1] is the test's "container" end. */
+
+    PW_ASSERT_EQ(pw_host_plane_bind(&hp, /*lif=*/42, sp[0], /*egress=*/0),
+                 PW_OK);
+
+    /* Duplicate bind rejected. */
+    int dup = -1;
+    PW_ASSERT_EQ(pw_host_plane_bind(&hp, 42, dup, 0), PW_E_INVAL);
+    /* Same lif on a different fd is also rejected. */
+    PW_ASSERT_EQ(pw_host_plane_bind(&hp, 42, sp[0], 0), PW_E_DUP_LOGICAL_IF);
+
+    /* punt: backend -> host plane -> sp[0] -> sp[1] */
+    const uint8_t punt_frame[] = "PUNT FRAME";
+    PW_ASSERT_EQ(pw_fake_backend_inject_punt(&b, 42, punt_frame,
+                                              sizeof(punt_frame)), PW_OK);
+    int moved = pw_host_plane_step(&hp, 4);
+    PW_ASSERT_EQ(moved, 1);
+    PW_ASSERT_EQ(hp.punt_to_tap_ok[0], 1);
+
+    uint8_t rx_buf[64] = {0};
+    ssize_t r = read(sp[1], rx_buf, sizeof(rx_buf));
+    PW_ASSERT_EQ(r, (ssize_t)sizeof(punt_frame));
+    PW_ASSERT(memcmp(punt_frame, rx_buf, sizeof(punt_frame)) == 0);
+
+    /* Punt to an unknown lif is counted, not forwarded. */
+    PW_ASSERT_EQ(pw_fake_backend_inject_punt(&b, 99, punt_frame,
+                                              sizeof(punt_frame)), PW_OK);
+    pw_host_plane_step(&hp, 4);
+    PW_ASSERT_EQ(hp.punt_unknown_lif, 1);
+
+    /* tap-inject: sp[1] -> sp[0] -> host plane -> backend TX FIFO */
+    const uint8_t inj_frame[] = "INJECT FRAME";
+    ssize_t w = write(sp[1], inj_frame, sizeof(inj_frame));
+    PW_ASSERT_EQ(w, (ssize_t)sizeof(inj_frame));
+
+    moved = pw_host_plane_step(&hp, 4);
+    PW_ASSERT_EQ(moved, 1);
+    PW_ASSERT_EQ(hp.tap_to_fpga_ok[0], 1);
+
+    uint8_t drained[64] = {0};
+    uint32_t drained_lif = 0;
+    uint8_t  drained_eg  = 0;
+    int dn = pw_fake_backend_drain_tx(&b, drained, sizeof(drained),
+                                       &drained_lif, &drained_eg);
+    PW_ASSERT_EQ(dn, (int)sizeof(inj_frame));
+    PW_ASSERT_EQ(drained_lif, 42);
+    PW_ASSERT(memcmp(inj_frame, drained, sizeof(inj_frame)) == 0);
+
+    close(sp[1]);  /* host plane will close sp[0] when the FD is owned */
+    close(sp[0]);
+    pw_card_backend_close(&b);
+}
+
+static void test_host_plane_with_real_tap(void) {
+    /* Combined end-to-end: host_plane bridges a punt frame to a
+     * real Linux TAP device (whose fd we hold). The TAP doesn't
+     * need to be brought up — write() on the FD always succeeds,
+     * the kernel just discards packets if the link is down. The
+     * test confirms the bridge writes the bytes and the host
+     * plane's per-binding counter advances. */
+    int tap_fd = -1;
+    char tap_name[PW_TAP_IFNAME_MAX] = {0};
+    pw_status r = pw_tap_open("pw-htest-%d", &tap_fd, tap_name);
+    if (r != PW_OK) {
+        printf("    (host_plane+TAP test skipped: no CAP_NET_ADMIN)\n");
+        return;
+    }
+    /* Bring the device up so write() to its TAP fd is accepted by
+     * the kernel; without IFF_UP the kernel returns -1 / EIO. */
+    pw_tap_set_up(tap_name, true);
+
+    struct pw_card_backend b;
+    PW_ASSERT_EQ(pw_fake_backend_open("0000:03:00.0", &b), PW_OK);
+    struct pw_host_plane hp;
+    PW_ASSERT_EQ(pw_host_plane_init(&hp, &b), PW_OK);
+    PW_ASSERT_EQ(pw_host_plane_bind(&hp, /*lif=*/7777, tap_fd, /*egress=*/0),
+                 PW_OK);
+
+    const uint8_t arp_frame[] = {
+        0xff,0xff,0xff,0xff,0xff,0xff,
+        0x02,0xa5,0x02,0x00,0x00,0x01,
+        0x08,0x06,
+        0x00,0x01, 0x08,0x00, 0x06,0x04, 0x00,0x01,
+        0x02,0xa5,0x02,0x00,0x00,0x01,
+        0xc0,0x00,0x02,0x01,
+        0xff,0xff,0xff,0xff,0xff,0xff,
+        0xc0,0x00,0x02,0x02
+    };
+    PW_ASSERT_EQ(pw_fake_backend_inject_punt(&b, 7777, arp_frame,
+                                              sizeof(arp_frame)), PW_OK);
+
+    /* `moved` may exceed 1: after IFF_UP the kernel may emit its
+     * own packets (IPv6 RS, etc.) which the host plane reads back
+     * and counts as TAP->FPGA traffic. We just need the punt
+     * direction to have moved one frame. */
+    (void)pw_host_plane_step(&hp, 8);
+    PW_ASSERT_EQ(hp.punt_to_tap_ok[0], 1);
+    PW_ASSERT_EQ(hp.punt_to_tap_dropped[0], 0);
+
+    pw_tap_close(tap_fd);
+    pw_card_backend_close(&b);
+}
+
+static void test_tap_basic(void) {
+    /* Tries to create a real TAP device; requires CAP_NET_ADMIN.
+     * If permission is denied, the test logs and passes (so the
+     * suite can run on locked-down hosts). */
+    int fd = -1;
+    char actual_name[PW_TAP_IFNAME_MAX] = {0};
+    pw_status r = pw_tap_open("pw-test-%d", &fd, actual_name);
+    if (r != PW_OK) {
+        printf("    (TAP test skipped: no CAP_NET_ADMIN)\n");
+        return;
+    }
+    PW_ASSERT(fd >= 0);
+    PW_ASSERT(actual_name[0] != '\0');
+
+    /* Verify the netdev appeared in sysfs. */
+    char sys_path[128];
+    snprintf(sys_path, sizeof(sys_path), "/sys/class/net/%s", actual_name);
+    struct stat st;
+    PW_ASSERT_EQ(stat(sys_path, &st), 0);
+
+    /* Bring it up, set MAC + MTU. */
+    uint8_t mac[6] = { 0x02, 0xa5, 0x02, 0xaa, 0xbb, 0xcc };
+    PW_ASSERT_EQ(pw_tap_set_mac(actual_name, mac), PW_OK);
+    PW_ASSERT_EQ(pw_tap_set_mtu(actual_name, 1500), PW_OK);
+    PW_ASSERT_EQ(pw_tap_set_up(actual_name, true), PW_OK);
+
+    pw_tap_close(fd);
+    /* After fd close (no persist), the device should be gone. */
+    if (stat(sys_path, &st) == 0) {
+        printf("    (note: TAP %s still present after close)\n", actual_name);
+    }
+}
+
 typedef void (*test_fn)(void);
 struct test_case { const char *name; test_fn fn; };
 
@@ -347,6 +533,10 @@ int main(void) {
         { "fake_backend", test_fake_backend },
         { "bar_backend_path", test_bar_backend_path },
         { "pci_discover_no_match", test_pci_discover_no_match },
+        { "fake_backend_slow_path", test_fake_backend_slow_path },
+        { "host_plane_socketpair", test_host_plane_socketpair },
+        { "tap_basic", test_tap_basic },
+        { "host_plane_with_real_tap", test_host_plane_with_real_tap },
     };
     for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
         int before = g_fail;

@@ -12,6 +12,22 @@
 #define FAKE_NUM_FLOWS      256
 #define FAKE_NUM_CLASSIFIER 256
 #define FAKE_NUM_HIST_BINS  64
+#define FAKE_SLOW_PATH_DEPTH 64
+#define FAKE_SLOW_FRAME_MAX  2048
+
+struct fake_slow_entry {
+    uint8_t  data[FAKE_SLOW_FRAME_MAX];
+    size_t   len;
+    uint32_t logical_if_id;
+    uint8_t  egress_local_port;   /* TX only */
+};
+
+struct fake_slow_fifo {
+    struct fake_slow_entry q[FAKE_SLOW_PATH_DEPTH];
+    size_t                 head;   /* push */
+    size_t                 tail;   /* pop  */
+    size_t                 count;
+};
 
 struct fake_ctx {
     char     pci[PW_PCI_BDF_MAX];
@@ -29,7 +45,37 @@ struct fake_ctx {
 
     struct pw_flow_stats            flow_stats[FAKE_NUM_FLOWS];
     struct pw_flow_stats            flow_stats_snapshot[FAKE_NUM_FLOWS];
+
+    struct fake_slow_fifo punt_rx;   /* FPGA -> host */
+    struct fake_slow_fifo tx_inject; /* host -> FPGA */
 };
+
+static int slow_push(struct fake_slow_fifo *f, const void *data, size_t len,
+                     uint32_t lif, uint8_t egress) {
+    if (f->count >= FAKE_SLOW_PATH_DEPTH) return -1;
+    if (len > FAKE_SLOW_FRAME_MAX) return -1;
+    struct fake_slow_entry *e = &f->q[f->head];
+    memcpy(e->data, data, len);
+    e->len               = len;
+    e->logical_if_id     = lif;
+    e->egress_local_port = egress;
+    f->head = (f->head + 1) % FAKE_SLOW_PATH_DEPTH;
+    f->count++;
+    return 0;
+}
+
+static int slow_pop(struct fake_slow_fifo *f, void *buf, size_t buflen,
+                    uint32_t *out_lif, uint8_t *out_egress) {
+    if (f->count == 0) return 0;
+    struct fake_slow_entry *e = &f->q[f->tail];
+    size_t copy = e->len < buflen ? e->len : buflen;
+    memcpy(buf, e->data, copy);
+    if (out_lif)    *out_lif    = e->logical_if_id;
+    if (out_egress) *out_egress = e->egress_local_port;
+    f->tail = (f->tail + 1) % FAKE_SLOW_PATH_DEPTH;
+    f->count--;
+    return (int)copy;
+}
 
 static pw_status fake_read32(void *vctx, uint32_t off, uint32_t *out) {
     struct fake_ctx *c = vctx;
@@ -139,6 +185,21 @@ static pw_status fake_flow_stats_read(void *vctx, uint32_t lfid,
     return PW_OK;
 }
 
+static int fake_slow_path_rx(void *vctx, void *buf, size_t buflen,
+                             uint32_t *out_lif) {
+    struct fake_ctx *c = vctx;
+    return slow_pop(&c->punt_rx, buf, buflen, out_lif, NULL);
+}
+
+static pw_status fake_slow_path_tx(void *vctx, const void *frame, size_t len,
+                                   uint32_t logical_if_id,
+                                   uint8_t  egress_local_port) {
+    struct fake_ctx *c = vctx;
+    if (slow_push(&c->tx_inject, frame, len, logical_if_id, egress_local_port) < 0)
+        return PW_E_NO_RESOURCES;
+    return PW_OK;
+}
+
 static void fake_close(void *vctx) { free(vctx); }
 
 static const struct pw_card_backend_ops fake_ops = {
@@ -152,8 +213,32 @@ static const struct pw_card_backend_ops fake_ops = {
     .stats_snapshot      = fake_stats_snapshot,
     .port_stats_read     = fake_port_stats_read,
     .flow_stats_read     = fake_flow_stats_read,
+    .slow_path_rx        = fake_slow_path_rx,
+    .slow_path_tx        = fake_slow_path_tx,
     .close               = fake_close,
 };
+
+pw_status pw_fake_backend_inject_punt(struct pw_card_backend *b,
+                                      uint32_t logical_if_id,
+                                      const void *frame, size_t len) {
+    if (!b || !b->ctx || !frame) return PW_E_INVAL;
+    if (b->ops != &fake_ops) return PW_E_BACKEND;
+    struct fake_ctx *c = b->ctx;
+    if (slow_push(&c->punt_rx, frame, len, logical_if_id, 0) < 0)
+        return PW_E_NO_RESOURCES;
+    return PW_OK;
+}
+
+int pw_fake_backend_drain_tx(struct pw_card_backend *b,
+                             void *buf, size_t buflen,
+                             uint32_t *out_lif_id,
+                             uint8_t  *out_egress_local_port) {
+    if (!b || !b->ctx || !buf) return PW_E_INVAL;
+    if (b->ops != &fake_ops) return PW_E_BACKEND;
+    struct fake_ctx *c = b->ctx;
+    return slow_pop(&c->tx_inject, buf, buflen,
+                    out_lif_id, out_egress_local_port);
+}
 
 pw_status pw_fake_backend_open(const char *pci_bdf, struct pw_card_backend *out) {
     if (!out) return PW_E_INVAL;
