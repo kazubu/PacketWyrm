@@ -166,11 +166,3 @@ pw_status pw_fake_backend_open(const char *pci_bdf, struct pw_card_backend *out)
     out->card_id = 0;
     return PW_OK;
 }
-
-pw_status pw_bar_backend_open(const char *pci_bdf, struct pw_card_backend *out) {
-    (void)pci_bdf;
-    (void)out;
-    /* Phase 4 will implement this against
-     * /sys/bus/pci/devices/<bdf>/resource0 mmap. */
-    return PW_E_NOT_IMPLEMENTED;
-}

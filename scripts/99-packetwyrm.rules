@@ -1,0 +1,17 @@
+# udev rule for PacketWyrm PCIe cards.
+#
+# Without this rule, /sys/bus/pci/devices/<bdf>/resource0 is only
+# readable by root, so packetwyrmd (and pktwyrm cards) must run as
+# root. Install this file as /etc/udev/rules.d/99-packetwyrm.rules
+# and add the operator user to the `packetwyrm` group:
+#
+#   sudo groupadd -r packetwyrm
+#   sudo usermod -aG packetwyrm $USER
+#   sudo install -m 644 scripts/99-packetwyrm.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger
+#
+# PCI IDs match docs/design/pci-ids.md (Vendor=0x10ee Device=0xa502).
+# If you change those, update this file too.
+
+SUBSYSTEM=="pci", ATTR{vendor}=="0x10ee", ATTR{device}=="0xa502", \
+    MODE="0660", GROUP="packetwyrm"

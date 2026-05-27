@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "packetwyrm/packetwyrm.h"
 
@@ -274,6 +275,62 @@ static void test_fake_backend(void) {
     pw_card_backend_close(&b);
 }
 
+static void test_bar_backend_path(void) {
+    /* Stage a 64K "BAR image" with the identity registers populated
+     * exactly as the FPGA would. The path-variant BAR backend mmaps
+     * it and the test inspects what card_info() reads back. */
+    char path[] = "/tmp/pw_bar_test_XXXXXX";
+    int fd = mkstemp(path);
+    PW_ASSERT(fd >= 0);
+    if (fd < 0) return;
+    PW_ASSERT_EQ(ftruncate(fd, 65536), 0);
+
+    uint32_t hdr[10] = {0};
+    hdr[0] = 0xA502BEEF;   /* device_id */
+    hdr[1] = 0x00010000;   /* version */
+    hdr[2] = 0xFACE0001;   /* build_id */
+    hdr[3] = 0xDEADBEEF;   /* git_hash */
+    hdr[4] = 0x00000004;   /* capabilities = HAS_HISTOGRAM */
+    hdr[5] = 2;            /* num_local_ports */
+    hdr[6] = 64;           /* num_local_flows */
+    hdr[7] = 32;           /* num_logical_ifs */
+    hdr[8] = 128;          /* num_classifier */
+    hdr[9] = 64;           /* num_hist_bins */
+    PW_ASSERT_EQ(pwrite(fd, hdr, sizeof(hdr), 0), (ssize_t)sizeof(hdr));
+    close(fd);
+
+    struct pw_card_backend b;
+    PW_ASSERT_EQ(pw_bar_backend_open_path(path, &b), PW_OK);
+    struct pw_card_info info = {0};
+    PW_ASSERT_EQ(b.ops->card_info(b.ctx, &info), PW_OK);
+    PW_ASSERT_EQ(info.device_id,    0xA502BEEF);
+    PW_ASSERT_EQ(info.version,      0x00010000);
+    PW_ASSERT_EQ(info.capabilities, 0x4);
+    PW_ASSERT_EQ(info.num_local_ports, 2);
+    PW_ASSERT_EQ(info.num_local_flows, 64);
+
+    /* read32 / write32 should round-trip through the mmap. */
+    uint32_t v = 0;
+    PW_ASSERT_EQ(b.ops->write32(b.ctx, PWFPGA_REG_GLOBAL_CONTROL, 0xC0FFEE01), PW_OK);
+    PW_ASSERT_EQ(b.ops->read32 (b.ctx, PWFPGA_REG_GLOBAL_CONTROL, &v), PW_OK);
+    PW_ASSERT_EQ(v, 0xC0FFEE01);
+
+    /* Table windows are honest about not being implemented yet. */
+    struct pwfpga_flow_config f = {0};
+    PW_ASSERT_EQ(b.ops->flow_write(b.ctx, 0, &f), PW_E_NOT_IMPLEMENTED);
+
+    pw_card_backend_close(&b);
+    unlink(path);
+}
+
+static void test_pci_discover_no_match(void) {
+    /* Searching for an obviously fake vendor returns 0 cleanly and
+     * does not crash whether /sys/bus/pci exists or not. */
+    int n = pw_pci_discover(0xBAD1, 0xBAD2, NULL, 0);
+    PW_ASSERT(n >= 0);  /* 0 on no match, or PW_E_IO on hosts without sysfs */
+    PW_ASSERT(n == 0);
+}
+
 typedef void (*test_fn)(void);
 struct test_case { const char *name; test_fn fn; };
 
@@ -288,6 +345,8 @@ int main(void) {
         { "resolve_port_multi_card", test_resolve_port_multi_card },
         { "cross_card_flow_compiles", test_cross_card_flow_compiles },
         { "fake_backend", test_fake_backend },
+        { "bar_backend_path", test_bar_backend_path },
+        { "pci_discover_no_match", test_pci_discover_no_match },
     };
     for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
         int before = g_fail;

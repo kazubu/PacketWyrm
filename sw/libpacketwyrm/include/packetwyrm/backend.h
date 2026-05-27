@@ -98,8 +98,13 @@ struct pw_card_backend {
 pw_status pw_fake_backend_open(const char *pci_bdf, struct pw_card_backend *out);
 
 /* Real backend: opens /sys/bus/pci/devices/<bdf>/resource0, mmaps it,
- * and drives the CSRs. Phase 4. */
+ * and drives the CSRs. Phase 4+. */
 pw_status pw_bar_backend_open(const char *pci_bdf, struct pw_card_backend *out);
+
+/* Variant taking an arbitrary file path - used by unit tests against
+ * a tmpfs file, and by debugging tools that want to point the
+ * backend at a captured / synthesised BAR image. */
+pw_status pw_bar_backend_open_path(const char *path, struct pw_card_backend *out);
 
 static inline void pw_card_backend_close(struct pw_card_backend *b) {
     if (b && b->ops && b->ops->close) b->ops->close(b->ctx);

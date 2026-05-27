@@ -8,6 +8,7 @@
 #include "packetwyrm/config.h"
 #include "packetwyrm/flow_compiler.h"
 #include "packetwyrm/backend.h"
+#include "packetwyrm/pci.h"
 #include "packetwyrm/stats.h"
 
 #define PACKETWYRM_VERSION_MAJOR 0

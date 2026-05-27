@@ -38,8 +38,42 @@ static int load_config(const char *path, struct pw_config **out_cfg,
 
 static int cmd_cards(int argc, char **argv) {
     if (argc < 1) {
-        fprintf(stderr, "usage: pktwyrm cards <config.yaml>\n");
-        return 2;
+        /* No config: discover real PacketWyrm cards via PCI sysfs. */
+        struct pw_pci_device devs[PW_MAX_CARDS] = {0};
+        int n = pw_pci_discover(PW_DEFAULT_PCI_VENDOR, PW_DEFAULT_PCI_DEVICE,
+                                devs, PW_MAX_CARDS);
+        if (n < 0) {
+            fprintf(stderr, "PCI discovery failed: %s\n", pw_strerror((pw_status)n));
+            return 1;
+        }
+        if (n == 0) {
+            printf("No PacketWyrm cards found (vendor=0x%04x device=0x%04x).\n",
+                   PW_DEFAULT_PCI_VENDOR, PW_DEFAULT_PCI_DEVICE);
+            printf("  (Pass a YAML config to inspect a configured card map instead.)\n");
+            return 0;
+        }
+        printf("ID  PCI BDF        Vendor:Device  Subsys         Status\n");
+        for (int i = 0; i < n && i < PW_MAX_CARDS; i++) {
+            struct pw_card_backend b;
+            const char *st = "ready";
+            pw_status r = pw_bar_backend_open(devs[i].bdf, &b);
+            uint32_t dev_id = 0;
+            if (r == PW_OK) {
+                b.ops->read32(b.ctx, PWFPGA_REG_DEVICE_ID, &dev_id);
+                pw_card_backend_close(&b);
+                if (dev_id != 0xA502BEEFu) st = "wrong-id";
+            } else {
+                st = "noaccess";
+            }
+            printf("%-3d %-14s %04x:%04x      %04x:%04x      %s\n",
+                   i, devs[i].bdf, devs[i].vendor, devs[i].device,
+                   devs[i].subsystem_vendor, devs[i].subsystem_device, st);
+        }
+        if (n > PW_MAX_CARDS) {
+            printf("  (%d more cards not shown; PW_MAX_CARDS=%d)\n",
+                   n - PW_MAX_CARDS, PW_MAX_CARDS);
+        }
+        return 0;
     }
     struct pw_config *cfg; struct pw_program *prog;
     if (load_config(argv[0], &cfg, &prog) < 0) return 1;
@@ -140,15 +174,16 @@ static int cmd_flow_show(int argc, char **argv) {
 static int cmd_help(void) {
     puts("pktwyrm - PacketWyrm CLI");
     puts("");
-    puts("Phase 0 commands (offline, against a YAML file):");
-    puts("  pktwyrm cards <config.yaml>          list configured cards");
+    puts("Commands:");
+    puts("  pktwyrm cards                        discover real PacketWyrm PCI cards");
+    puts("  pktwyrm cards <config.yaml>          list configured cards from YAML");
     puts("  pktwyrm ports <config.yaml>          list configured ports");
     puts("  pktwyrm map   <config.yaml>          show port -> logical-if map");
     puts("  pktwyrm load  <config.yaml>          parse + validate + compile");
     puts("  pktwyrm flow show <config.yaml>      list flows");
     puts("  pktwyrm version");
     puts("");
-    puts("Online commands (cards, ports, stats live ...) ship in Phase 4+.");
+    puts("Online stats / flow start / test orchestration ship in Phase 5+.");
     return 0;
 }
 

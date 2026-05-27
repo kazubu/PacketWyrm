@@ -109,12 +109,18 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* Phase 0 stops here: open fake backends for declared cards so the
-     * code paths are exercised, then exit. Phase 4 will replace this
-     * with the event loop, control socket, and BAR backends. */
+    /* Phase 0/4 stop here: for each declared card, prefer the real
+     * BAR backend; fall back to the fake backend if the card is not
+     * present (or unreadable). The full event loop / control socket
+     * land in Phase 5. */
     for (size_t i = 0; i < cfg->n_cards; i++) {
         struct pw_card_backend b;
-        pw_status br = pw_fake_backend_open(cfg->cards[i].pci, &b);
+        const char *which = "bar";
+        pw_status br = pw_bar_backend_open(cfg->cards[i].pci, &b);
+        if (br != PW_OK) {
+            which = "fake";
+            br = pw_fake_backend_open(cfg->cards[i].pci, &b);
+        }
         if (br != PW_OK) {
             fprintf(stderr, "could not open backend for %s: %s\n",
                     cfg->cards[i].pci, pw_strerror(br));
@@ -122,15 +128,15 @@ int main(int argc, char **argv) {
         }
         struct pw_card_info info = {0};
         b.ops->card_info(b.ctx, &info);
-        printf("  card%u backend=fake device_id=0x%08x flows=%u caps=0x%08x\n",
-               (unsigned)cfg->cards[i].id, info.device_id,
-               info.num_local_flows, info.capabilities);
+        printf("  card%u %-14s backend=%s device_id=0x%08x flows=%u caps=0x%08x\n",
+               (unsigned)cfg->cards[i].id, cfg->cards[i].pci, which,
+               info.device_id, info.num_local_flows, info.capabilities);
         pw_card_backend_close(&b);
     }
 
     pw_program_free(prog);
     pw_config_free(cfg);
     fprintf(stderr,
-            "packetwyrmd: Phase 0 dry-run complete; daemon event loop ships in Phase 4.\n");
+            "packetwyrmd: Phase 4 startup complete; long-running event loop ships in Phase 5.\n");
     return 0;
 }

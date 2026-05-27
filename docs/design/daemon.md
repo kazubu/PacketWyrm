@@ -30,9 +30,20 @@ read-mostly, updated only on config reload via RCU-style swap.
 
 ### Global controller (main thread)
 
-- PCIe device discovery (`pci_iterate` &rarr; vendor / device match).
-- `card_id` assignment in stable BDF order.
-- BAR0 mmap and `device_id` / `version` / `capabilities` read.
+- PCIe device discovery via `pw_pci_discover()` in `libpacketwyrm`,
+  which walks `/sys/bus/pci/devices/` and matches `vendor` / `device`
+  files. No `libpci` dependency.
+- `card_id` assignment in stable BDF order (the sysfs walk is sorted
+  in `pw_pci_discover()`).
+- BAR0 mmap via `pw_bar_backend_open()` &rarr;
+  `/sys/bus/pci/devices/<bdf>/resource0`. The same backend interface
+  has a path-variant used by unit tests against a tmpfs file.
+- `device_id` / `version` / `capabilities` / port-count read through
+  the backend's `card_info` op.
+
+Non-root operation: install `scripts/99-packetwyrm.rules` and add the
+operator user to the `packetwyrm` group. Otherwise the daemon needs
+root for BAR0 mmap.
 - YAML config load + validation via `libpacketwyrm`.
 - Builds:
   - logical interface map (`logical_if_id` &harr; TAP fd &harr;
