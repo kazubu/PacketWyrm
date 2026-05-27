@@ -241,6 +241,118 @@ module tb_data_plane;
         return f;
     endfunction
 
+    // QinQ-tagged TEST_RX frame (802.1ad outer + 802.1Q inner).
+    function automatic pw_frame_t make_qinq(input int port_i,
+                                            input logic [11:0] outer_vid,
+                                            input logic [11:0] inner_vid,
+                                            input logic [31:0] tflow,
+                                            input logic [63:0] tseq);
+        pw_frame_t f;
+        int        off, l4_pay_off;
+        f = pw_frame_zero();
+        f.ingress_port = port_i[3:0];
+        // dst/src MAC
+        f.data[0]=8'h02; f.data[1]=8'ha5; f.data[2]=8'h02;
+        f.data[3]=8'h00; f.data[4]=8'h00; f.data[5]=8'h02;
+        f.data[6]=8'h02; f.data[7]=8'ha5; f.data[8]=8'h02;
+        f.data[9]=8'h00; f.data[10]=8'h00; f.data[11]=8'h01;
+        // outer S-VLAN, ethertype 0x88a8
+        f.data[12]=8'h88; f.data[13]=8'ha8;
+        f.data[14]={4'h0, outer_vid[11:8]}; f.data[15]=outer_vid[7:0];
+        // inner C-VLAN, ethertype 0x8100
+        f.data[16]=8'h81; f.data[17]=8'h00;
+        f.data[18]={4'h0, inner_vid[11:8]}; f.data[19]=inner_vid[7:0];
+        off = 20;
+        // IPv4 ethertype
+        f.data[off+0]=8'h08; f.data[off+1]=8'h00; off += 2;
+        // IPv4 header
+        f.data[off+0]=8'h45; f.data[off+1]=8'h00;
+        f.data[off+2]=8'h00; f.data[off+3]=8'h3c;
+        f.data[off+4]=8'h00; f.data[off+5]=8'h00;
+        f.data[off+6]=8'h40; f.data[off+7]=8'h00;
+        f.data[off+8]=8'h40; f.data[off+9]=8'h11;
+        f.data[off+10]=8'h00; f.data[off+11]=8'h00;
+        f.data[off+12]=8'hc0; f.data[off+13]=8'h00;
+        f.data[off+14]=8'h02; f.data[off+15]=8'h01;
+        f.data[off+16]=8'hc0; f.data[off+17]=8'h00;
+        f.data[off+18]=8'h02; f.data[off+19]=8'h02;
+        off += 20;
+        // UDP
+        f.data[off+0]=8'hc0; f.data[off+1]=8'h00;
+        f.data[off+2]=8'hc3; f.data[off+3]=8'h51;
+        f.data[off+4]=8'h00; f.data[off+5]=8'h28;
+        f.data[off+6]=8'h00; f.data[off+7]=8'h00;
+        off += 8;
+        // test header
+        l4_pay_off = off;
+        f.data[l4_pay_off+0]=8'hA5; f.data[l4_pay_off+1]=8'h02;
+        f.data[l4_pay_off+2]=8'h7E; f.data[l4_pay_off+3]=8'h57;
+        f.data[l4_pay_off+4]=8'h00; f.data[l4_pay_off+5]=8'h01;
+        f.data[l4_pay_off+6]=8'h00; f.data[l4_pay_off+7]=8'h00;
+        f.data[l4_pay_off+8] =tflow[31:24];
+        f.data[l4_pay_off+9] =tflow[23:16];
+        f.data[l4_pay_off+10]=tflow[15:8];
+        f.data[l4_pay_off+11]=tflow[7:0];
+        for (int i = 0; i < 8; i++)
+            f.data[l4_pay_off+12+i] = tseq[(7-i)*8 +: 8];
+        off += 32;
+        f.len = PW_FRAME_LEN_W'(off);
+        return f;
+    endfunction
+
+    // TCP frame to a configurable dst port (no test header).
+    function automatic pw_frame_t make_tcp(input int port_i,
+                                           input logic [15:0] dst_port);
+        pw_frame_t f;
+        int        off;
+        f = pw_frame_zero();
+        f.ingress_port = port_i[3:0];
+        f.data[0]=8'h02; f.data[1]=8'ha5; f.data[2]=8'h02;
+        f.data[3]=8'h00; f.data[4]=8'h00; f.data[5]=8'h02;
+        f.data[6]=8'h02; f.data[7]=8'ha5; f.data[8]=8'h02;
+        f.data[9]=8'h00; f.data[10]=8'h00; f.data[11]=8'h01;
+        f.data[12]=8'h08; f.data[13]=8'h00;
+        off = 14;
+        // IPv4 hdr, proto = 6 (TCP)
+        f.data[off+0]=8'h45;
+        f.data[off+9]=8'h06;
+        f.data[off+12]=8'hc0; f.data[off+13]=8'h00;
+        f.data[off+14]=8'h02; f.data[off+15]=8'h01;
+        f.data[off+16]=8'hc0; f.data[off+17]=8'h00;
+        f.data[off+18]=8'h02; f.data[off+19]=8'h02;
+        off += 20;
+        // TCP src=12345 dst=dst_port; rest 0
+        f.data[off+0]=8'h30; f.data[off+1]=8'h39;
+        f.data[off+2]=dst_port[15:8]; f.data[off+3]=dst_port[7:0];
+        off += 20;
+        f.len = PW_FRAME_LEN_W'(off);
+        return f;
+    endfunction
+
+    // ICMP / OSPF / generic-IP frame: proto-only, no L4 port.
+    function automatic pw_frame_t make_ipproto(input int port_i,
+                                               input logic [7:0] proto);
+        pw_frame_t f;
+        int        off;
+        f = pw_frame_zero();
+        f.ingress_port = port_i[3:0];
+        f.data[0]=8'h02; f.data[1]=8'ha5; f.data[2]=8'h02;
+        f.data[3]=8'h00; f.data[4]=8'h00; f.data[5]=8'h02;
+        f.data[6]=8'h02; f.data[7]=8'ha5; f.data[8]=8'h02;
+        f.data[9]=8'h00; f.data[10]=8'h00; f.data[11]=8'h01;
+        f.data[12]=8'h08; f.data[13]=8'h00;
+        off = 14;
+        f.data[off+0]=8'h45;
+        f.data[off+9]=proto;
+        f.data[off+12]=8'hc0; f.data[off+13]=8'h00;
+        f.data[off+14]=8'h02; f.data[off+15]=8'h01;
+        f.data[off+16]=8'hc0; f.data[off+17]=8'h00;
+        f.data[off+18]=8'h02; f.data[off+19]=8'h02;
+        off += 20;
+        f.len = PW_FRAME_LEN_W'(off);
+        return f;
+    endfunction
+
     function automatic pw_frame_t make_arp(input int port_i);
         pw_frame_t f;
         f = pw_frame_zero();
@@ -514,6 +626,90 @@ module tb_data_plane;
         check_eq("rate rx >= 4",  (flow_rx[4] >= 4)  ? 1 : 0, 1);
         check_eq("rate rx <= 12", (flow_rx[4] <= 12) ? 1 : 0, 1);
         check_eq("rate lost==0",  flow_lost[4], 0);
+
+        // ---------------- scenario 10: QinQ TEST_RX ----------------
+        scenario = "qinq";
+        cls_table[6].enable = 1'b0;
+        cls_table[7].enable             = 1'b1;
+        cls_table[7].action             = PW_ACT_TEST_RX;
+        cls_table[7].priority_          = 8'd5;
+        cls_table[7].local_flow_id      = 32'd5;
+        cls_table[7].mask.match_vlan_id       = 1'b1;
+        cls_table[7].mask.match_inner_vlan_id = 1'b1;
+        cls_table[7].mask.match_is_test       = 1'b1;
+        cls_table[7].mask.match_flow_id       = 1'b1;
+        cls_table[7].key.vlan_id              = 12'd200;  // outer S-VLAN
+        cls_table[7].key.inner_vlan_id        = 12'd300;  // inner C-VLAN
+        cls_table[7].key.test_flow_id         = 32'd50;
+        @(posedge clk);
+
+        for (int s = 0; s < 3; s++)
+            inject(0, make_qinq(0, 12'd200, 12'd300, 32'd50, 64'(s)));
+        @(posedge clk);
+        check_eq("qinq rx",   flow_rx[5],   3);
+        check_eq("qinq lost", flow_lost[5], 0);
+
+        // Inner VLAN mismatch -> rejected (falls to default DROP)
+        inject(0, make_qinq(0, 12'd200, 12'd999, 32'd50, 64'd99));
+        @(posedge clk);
+        check_eq("qinq inner-vlan miss", flow_rx[5], 3);
+
+        // ---------------- scenario 11: TCP/179 (BGP) PUNT ----------------
+        // punt_valid is combinational off rx_kv (which is the parser's
+        // registered key_valid_o). It is high during the 1-cycle
+        // window that begins ONE cycle after rx_valid_i went high;
+        // by the time inject()'s second posedge returns, rx_kv has
+        // already dropped back to 0. We therefore drive rx_valid
+        // manually and check while it is still asserted, like
+        // scenario 2.
+        scenario = "bgp";
+        reset_tx_seen();
+        cls_table[0].enable               = 1'b1;
+        cls_table[0].action               = PW_ACT_PUNT_TO_HOST;
+        cls_table[0].priority_            = 8'd10;
+        cls_table[0].mask.match_ethertype = 1'b0;
+        cls_table[0].mask.match_is_tcp    = 1'b1;
+        cls_table[0].mask.match_l4_dst    = 1'b1;
+        cls_table[0].key.l4_dst           = 16'd179;
+        @(posedge clk);
+
+        rx_frame[0] = make_tcp(0, 16'd179);
+        rx_valid[0] = 1'b1;
+        @(posedge clk);                  // parser registers
+        @(posedge clk);                  // combinational propagation
+        check_eq("bgp punt seen", punt_valid ? 1 : 0, 1);
+        rx_valid[0] = 1'b0;
+        rx_frame[0] = pw_frame_zero();
+
+        // Force the punt to drop, then send a non-BGP TCP frame.
+        @(posedge clk);
+        @(posedge clk);
+        rx_frame[0] = make_tcp(0, 16'd80);
+        rx_valid[0] = 1'b1;
+        @(posedge clk);
+        @(posedge clk);
+        check_eq("non-bgp not punted", punt_valid ? 1 : 0, 0);
+        rx_valid[0] = 1'b0;
+        rx_frame[0] = pw_frame_zero();
+
+        // ---------------- scenario 12: OSPF PUNT ----------------
+        scenario = "ospf";
+        cls_table[0].enable = 1'b0;
+        cls_table[1].enable             = 1'b1;
+        cls_table[1].action             = PW_ACT_PUNT_TO_HOST;
+        cls_table[1].priority_          = 8'd10;
+        cls_table[1].mask = '0;
+        cls_table[1].mask.match_is_ospf = 1'b1;
+        @(posedge clk);
+        @(posedge clk);
+
+        rx_frame[0] = make_ipproto(0, 8'd89);
+        rx_valid[0] = 1'b1;
+        @(posedge clk);
+        @(posedge clk);
+        check_eq("ospf punt seen", punt_valid ? 1 : 0, 1);
+        rx_valid[0] = 1'b0;
+        rx_frame[0] = pw_frame_zero();
 
         if (errors == 0) begin
             $display("ALL DATA PLANE SCENARIOS PASS");

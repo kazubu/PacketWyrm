@@ -36,34 +36,52 @@ module pw_classifier (
             assign e               = table_i[gi];
             assign entry_enable[gi] = e.enable;
 
-            logic m_iport, m_etype, m_vlan, m_l3, m_ipsrc, m_ipdst,
-                  m_usrc, m_udst, m_test, m_flow;
+            logic m_iport, m_etype, m_vlan, m_ivlan, m_l3,
+                  m_ipsrc, m_ipdst, m_l4src, m_l4dst,
+                  m_usrc, m_udst,
+                  m_test, m_arp, m_tcp, m_udp_class, m_icmp, m_ospf,
+                  m_flow;
 
-            assign m_iport = ~e.mask.match_ingress_port |
-                              (key_i.ingress_port == e.key.ingress_port);
-            assign m_etype = ~e.mask.match_ethertype    |
-                              (key_i.ethertype     == e.key.ethertype);
-            assign m_vlan  = ~e.mask.match_vlan_id      |
-                              (key_i.vlan_valid && key_i.vlan_id == e.key.vlan_id);
-            assign m_l3    = ~e.mask.match_l3_proto     |
-                              (key_i.l3_proto      == e.key.l3_proto);
-            assign m_ipsrc = ~e.mask.match_ipv4_src     |
-                              (key_i.ipv4_src      == e.key.ipv4_src);
-            assign m_ipdst = ~e.mask.match_ipv4_dst     |
-                              (key_i.ipv4_dst      == e.key.ipv4_dst);
-            assign m_usrc  = ~e.mask.match_udp_src      |
-                              (key_i.udp_src       == e.key.udp_src);
-            assign m_udst  = ~e.mask.match_udp_dst      |
-                              (key_i.udp_dst       == e.key.udp_dst);
-            assign m_test  = ~e.mask.match_is_test      | key_i.is_test;
-            assign m_flow  = ~e.mask.match_flow_id      |
-                              (key_i.is_test &&
-                               key_i.test_flow_id  == e.key.test_flow_id);
+            assign m_iport     = ~e.mask.match_ingress_port |
+                                  (key_i.ingress_port == e.key.ingress_port);
+            assign m_etype     = ~e.mask.match_ethertype |
+                                  (key_i.ethertype     == e.key.ethertype);
+            assign m_vlan      = ~e.mask.match_vlan_id   |
+                                  (key_i.vlan_valid && key_i.vlan_id == e.key.vlan_id);
+            assign m_ivlan     = ~e.mask.match_inner_vlan_id |
+                                  (key_i.inner_vlan_valid &&
+                                   key_i.inner_vlan_id == e.key.inner_vlan_id);
+            assign m_l3        = ~e.mask.match_l3_proto  |
+                                  (key_i.l3_proto      == e.key.l3_proto);
+            assign m_ipsrc     = ~e.mask.match_ipv4_src  |
+                                  (key_i.ipv4_src      == e.key.ipv4_src);
+            assign m_ipdst     = ~e.mask.match_ipv4_dst  |
+                                  (key_i.ipv4_dst      == e.key.ipv4_dst);
+            assign m_l4src     = ~e.mask.match_l4_src    |
+                                  (key_i.l4_src        == e.key.l4_src);
+            assign m_l4dst     = ~e.mask.match_l4_dst    |
+                                  (key_i.l4_dst        == e.key.l4_dst);
+            // udp_src/udp_dst masks are legacy aliases of the L4 masks.
+            assign m_usrc      = ~e.mask.match_udp_src   |
+                                  (key_i.udp_src       == e.key.udp_src);
+            assign m_udst      = ~e.mask.match_udp_dst   |
+                                  (key_i.udp_dst       == e.key.udp_dst);
+            assign m_test      = ~e.mask.match_is_test   | key_i.is_test;
+            assign m_arp       = ~e.mask.match_is_arp    | key_i.is_arp;
+            assign m_tcp       = ~e.mask.match_is_tcp    | key_i.is_tcp;
+            assign m_udp_class = ~e.mask.match_is_udp    | key_i.is_udp;
+            assign m_icmp      = ~e.mask.match_is_icmp   | key_i.is_icmp;
+            assign m_ospf      = ~e.mask.match_is_ospf   | key_i.is_ospf;
+            assign m_flow      = ~e.mask.match_flow_id   |
+                                  (key_i.is_test &&
+                                   key_i.test_flow_id  == e.key.test_flow_id);
 
             assign entry_hit[gi] = e.enable && key_valid_i &&
-                                   m_iport & m_etype & m_vlan & m_l3 &
-                                   m_ipsrc & m_ipdst & m_usrc & m_udst &
-                                   m_test  & m_flow;
+                                   m_iport & m_etype & m_vlan & m_ivlan & m_l3 &
+                                   m_ipsrc & m_ipdst & m_l4src & m_l4dst &
+                                   m_usrc & m_udst &
+                                   m_test  & m_arp & m_tcp & m_udp_class &
+                                   m_icmp  & m_ospf & m_flow;
         end
     endgenerate
 

@@ -17,10 +17,16 @@ module pw_parser (
     output logic          key_valid_o
 );
 
-    localparam logic [31:0] PW_TEST_HDR_MAGIC = 32'hA502_7E57;
-    localparam logic [15:0] ETHERTYPE_VLAN    = 16'h8100;
-    localparam logic [15:0] ETHERTYPE_IPV4    = 16'h0800;
-    localparam logic [7:0]  IPV4_PROTO_UDP    = 8'd17;
+    localparam logic [31:0] PW_TEST_HDR_MAGIC   = 32'hA502_7E57;
+    localparam logic [15:0] ETHERTYPE_VLAN      = 16'h8100;
+    localparam logic [15:0] ETHERTYPE_QINQ_88A8 = 16'h88A8;
+    localparam logic [15:0] ETHERTYPE_QINQ_9100 = 16'h9100;
+    localparam logic [15:0] ETHERTYPE_IPV4      = 16'h0800;
+    localparam logic [15:0] ETHERTYPE_ARP       = 16'h0806;
+    localparam logic [7:0]  IPV4_PROTO_ICMP     = 8'd1;
+    localparam logic [7:0]  IPV4_PROTO_TCP      = 8'd6;
+    localparam logic [7:0]  IPV4_PROTO_UDP      = 8'd17;
+    localparam logic [7:0]  IPV4_PROTO_OSPF     = 8'd89;
 
     // First N header bytes pre-extracted via continuous assigns
     // into a *packed* array of bytes.
@@ -66,7 +72,17 @@ module pw_parser (
                 k.ingress_port = frame_i.ingress_port;
                 etype0 = {hdr[12], hdr[13]};
 
-                if (etype0 == ETHERTYPE_VLAN && frame_i.len >= 18) begin
+                if ((etype0 == ETHERTYPE_QINQ_88A8 || etype0 == ETHERTYPE_QINQ_9100)
+                        && frame_i.len >= 22 &&
+                        {hdr[16], hdr[17]} == ETHERTYPE_VLAN) begin
+                    // Outer (S-VLAN) + inner (C-VLAN) 802.1ad
+                    k.vlan_valid       = 1'b1;
+                    k.vlan_id          = {hdr[14][3:0], hdr[15]};
+                    k.inner_vlan_valid = 1'b1;
+                    k.inner_vlan_id    = {hdr[18][3:0], hdr[19]};
+                    k.ethertype        = {hdr[20], hdr[21]};
+                    l3_off             = 22;
+                end else if (etype0 == ETHERTYPE_VLAN && frame_i.len >= 18) begin
                     k.vlan_valid = 1'b1;
                     k.vlan_id    = {hdr[14][3:0], hdr[15]};
                     k.ethertype  = {hdr[16], hdr[17]};
@@ -76,21 +92,39 @@ module pw_parser (
                     l3_off       = 14;
                 end
 
-                if (k.ethertype == ETHERTYPE_IPV4 && frame_i.len >= l3_off + 20) begin
+                k.is_arp  = (k.ethertype == ETHERTYPE_ARP);
+                k.is_ipv4 = (k.ethertype == ETHERTYPE_IPV4);
+
+                if (k.is_ipv4 && frame_i.len >= l3_off + 20) begin
                     ip_hlen     = int'(hdr[l3_off][3:0]) * 4;
                     k.l3_proto  = hdr[l3_off + 9];
                     k.ipv4_src  = {hdr[l3_off + 12], hdr[l3_off + 13],
                                    hdr[l3_off + 14], hdr[l3_off + 15]};
                     k.ipv4_dst  = {hdr[l3_off + 16], hdr[l3_off + 17],
                                    hdr[l3_off + 18], hdr[l3_off + 19]};
+                    k.is_icmp   = (k.l3_proto == IPV4_PROTO_ICMP);
+                    k.is_tcp    = (k.l3_proto == IPV4_PROTO_TCP);
+                    k.is_udp    = (k.l3_proto == IPV4_PROTO_UDP);
+                    k.is_ospf   = (k.l3_proto == IPV4_PROTO_OSPF);
 
-                    if (k.l3_proto == IPV4_PROTO_UDP
+                    // Both UDP and TCP have the L4 source / destination
+                    // port in the first 4 bytes after the IP header.
+                    if ((k.is_udp || k.is_tcp)
+                            && ip_hlen >= 20
+                            && frame_i.len >= l3_off + ip_hlen + 4) begin
+                        udp_off  = l3_off + ip_hlen;
+                        k.l4_src = {hdr[udp_off],     hdr[udp_off + 1]};
+                        k.l4_dst = {hdr[udp_off + 2], hdr[udp_off + 3]};
+                        // Legacy aliases (testbench transition):
+                        k.udp_src = k.l4_src;
+                        k.udp_dst = k.l4_dst;
+                    end
+
+                    // Extract the test header inside UDP only.
+                    if (k.is_udp
                             && ip_hlen >= 20
                             && frame_i.len >= l3_off + ip_hlen + 8) begin
                         udp_off = l3_off + ip_hlen;
-                        k.udp_src = {hdr[udp_off],     hdr[udp_off + 1]};
-                        k.udp_dst = {hdr[udp_off + 2], hdr[udp_off + 3]};
-
                         pay_off = udp_off + 8;
                         if (frame_i.len >= pay_off + 32 &&
                             pay_off + 32 <= HDR_BYTES) begin
