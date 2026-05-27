@@ -4,6 +4,8 @@ All notable changes to PacketWyrm. The project is in active
 pre-release development; this file is updated per development
 push and is the source of truth for "what's working today".
 
+For where work is going next, see `NEXT-STEPS.md`.
+
 ## Unreleased
 
 ### Added

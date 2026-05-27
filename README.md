@@ -149,6 +149,8 @@ container.
 
 Start here:
 
+- `NEXT-STEPS.md` &mdash; **read this first if you're picking the
+  project up.** Priority-ordered TODO + Verilator hazards we hit.
 - `docs/guides/getting-started.md` &mdash; 5-minute walkthrough
 - `docs/design/rpc-protocol.md` &mdash; control-socket RPC
   reference (JSON wire format + every method)
