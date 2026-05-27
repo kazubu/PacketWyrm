@@ -1,0 +1,163 @@
+# Statistics aggregation
+
+The FPGA owns per-port and per-flow counters; the daemon owns the
+**global** view that the user sees. This document specifies the
+counters, their semantics, and how multi-card aggregation works.
+
+## Per-port counters (from FPGA)
+
+| Counter                | Type | Notes                                  |
+|------------------------|------|----------------------------------------|
+| `rx_frames`            | u64  | post-FCS, valid + invalid              |
+| `rx_bytes`             | u64  | wire bytes including FCS               |
+| `rx_fcs_error`         | u64  | FCS mismatch                           |
+| `rx_bad_frame`         | u64  | length / alignment errors              |
+| `rx_oversize`          | u64  | > MTU                                  |
+| `rx_undersize`         | u64  | < 64 B                                 |
+| `tx_frames`            | u64  |                                        |
+| `tx_bytes`             | u64  |                                        |
+| `link_up_count`        | u32  | edge counter                           |
+| `link_down_count`      | u32  | edge counter                           |
+| `block_lock_loss`      | u32  | PCS block-lock loss events             |
+
+These live next to the MAC and snapshot using the `_low` read-latch
+mechanism.
+
+## Per-flow counters (from FPGA)
+
+| Counter                  | Type | Same-card | Cross-card |
+|--------------------------|------|-----------|------------|
+| `tx_frames`              | u64  | yes       | yes        |
+| `tx_bytes`               | u64  | yes       | yes        |
+| `rx_frames`              | u64  | yes       | yes        |
+| `rx_bytes`               | u64  | yes       | yes        |
+| `expected_sequence`      | u64  | yes       | yes        |
+| `sequence_gap_count`     | u64  | yes       | yes        |
+| `lost_packets_estimated` | u64  | yes       | yes        |
+| `duplicate_count`        | u64  | yes       | yes        |
+| `out_of_order_count`     | u64  | yes       | yes        |
+| `late_packet_count`      | u64  | yes       | yes        |
+| `min_latency`            | u32  | **yes**   | invalid    |
+| `max_latency`            | u32  | **yes**   | invalid    |
+| `sum_latency`            | u64  | **yes**   | invalid    |
+| `sample_count`           | u64  | **yes**   | invalid    |
+| `jitter_min/max/sum`     | u32/64| **yes**  | invalid    |
+| latency histogram bins   | u64[]| **yes**   | invalid    |
+
+The "invalid" entries are computed by the FPGA anyway (it has no
+notion of cross-card), but the daemon discards them and reports
+`latency: unsupported` for the flow. The stats aggregator does this
+based on the compiler's `latency_valid` annotation; the FPGA is not
+authoritative.
+
+## Snapshot protocol
+
+```
+host writes stats_snapshot_trigger = 1
+   |
+   v
+FPGA copies per-flow counters into the shadow region (single cycle)
+   |
+   v
+host reads stats_addr / stats_* registers row by row
+```
+
+Critical: 64-bit counter `_low/_high` pairs use the read-latch rule.
+The shadow region is **not** updated again until the host writes the
+trigger again, so the host can take its time reading a single
+snapshot.
+
+## Global aggregation rules
+
+The aggregator joins per-card snapshots into a global view keyed by
+`global_flow_id`. For each flow:
+
+- Look up `tx_card_id`, `rx_card_id` from the compiler's flow_meta.
+- `tx_frames`, `tx_bytes` &larr; TX card's counters for that
+  `local_flow_id`.
+- `rx_*`, `lost_est`, `duplicate`, `out_of_order`, `late`,
+  `expected_sequence`, `sequence_gap_count` &larr; RX card's counters.
+- `latency` / `jitter`: same-card only. If cross-card, set
+  `latency_valid = false` and skip latency / jitter in output.
+- `loss = max(0, tx_frames - rx_frames)` for reporting; the flow's
+  own `lost_packets_estimated` is the authoritative loss number.
+
+Per-port aggregates roll up across cards naturally; each
+`global_port_id` is owned by exactly one card so no cross-card
+summing is needed at the port level.
+
+## Output forms
+
+### CLI tables
+
+```
+$ pktwyrm stats --flow 1
+Flow  TX       RX       Loss   Dup  Reord  Late  MinLat  AvgLat  MaxLat
+1     12345    12340    5      0    0      0     1.20us  1.34us  2.10us
+
+$ pktwyrm stats --flow 2
+Flow  TX       RX       Loss   Dup  Reord  Late  Latency
+2     12345    12340    5      0    0      0     unsupported (cross-card)
+```
+
+### JSON
+
+```json
+{
+  "flows": [
+    {
+      "id": 1,
+      "tx_frames": 12345,
+      "rx_frames": 12340,
+      "lost_est": 5,
+      "duplicate": 0,
+      "out_of_order": 0,
+      "late": 0,
+      "latency_valid": true,
+      "latency_ns": { "min": 1200, "avg": 1340, "max": 2100 },
+      "jitter_ns":  { "min": 0,    "max": 800,  "avg": 120  }
+    },
+    {
+      "id": 2,
+      "tx_frames": 12345,
+      "rx_frames": 12340,
+      "lost_est": 5,
+      "duplicate": 0,
+      "out_of_order": 0,
+      "late": 0,
+      "latency_valid": false,
+      "latency_reason": "cross-card without clock sync"
+    }
+  ]
+}
+```
+
+### Prometheus (optional)
+
+`packetwyrmd` may export `/metrics` with:
+
+- `packetwyrm_port_rx_frames_total{card="0",port="p0"} ...`
+- `packetwyrm_flow_tx_frames_total{flow="1"} ...`
+- `packetwyrm_flow_lost_total{flow="1"} ...`
+- `packetwyrm_flow_latency_ns{flow="1",quantile="0.5"} ...` (same-card only)
+
+A `packetwyrm_flow_latency_supported{flow="2"} 0` gauge advertises
+the unsupported state.
+
+## Overflow and reset
+
+- 64-bit counters do not realistically overflow on 10G in a daemon
+  lifetime, but the aggregator handles 64-bit subtraction with
+  wrap-around just in case (uses unsigned arithmetic).
+- `pktwyrm test stop` does not clear counters by default. Counter
+  reset is an explicit action (`global_control.reset_counters` =
+  bit 2) and is logged.
+- Histogram bins follow the same reset semantics.
+
+## Watchdog
+
+The aggregator timestamps each snapshot. If a card's snapshot ages
+beyond N intervals (default 5 &times; poll interval), it logs a
+warning and surfaces the card as `degraded` in `pktwyrm cards`. The
+counters from that card freeze at the last known good values rather
+than going to zero.

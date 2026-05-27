@@ -1,0 +1,9 @@
+sw/build/
+sw/**/*.o
+sw/**/*.a
+sw/**/*.so
+*.swp
+.DS_Store
+fpga/as02mc04/builds/
+sim/work/
+*.log

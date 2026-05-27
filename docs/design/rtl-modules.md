@@ -1,0 +1,178 @@
+# FPGA RTL module breakdown (AS02MC04)
+
+The AS02MC04 carries a Kintex UltraScale+ KU3P, two SFP+ cages, and a
+PCIe endpoint. RTL only deals with **one card at a time**; no global ID
+ever crosses the PCIe boundary.
+
+## Top-level module hierarchy
+
+```
+pwfpga_top
++-- pcie_endpoint                  PCIe Gen3 x8 Xilinx IP wrapper
+|   +-- bar_csr                    AXI-Lite slave -> CSR fabric
+|   +-- slow_path_rx_dma           (Phase 2)
+|   +-- slow_path_tx_dma           (Phase 2)
+|
++-- csr_fabric                     register decode, write-1-to-clear,
+|                                  shadow / commit logic
+|   +-- regfile_top
+|   +-- classifier_table_window
+|   +-- flow_table_window
+|   +-- stats_snapshot_window
+|   +-- histogram_window
+|   +-- slow_path_ring_window
+|
++-- timestamp_unit                 free-running 64-bit counter,
+|                                  exposed at 0x0108/0x010c
+|
++-- port[0]
+|   +-- gty_wrapper                GTY quad, 10.3125 Gbps line
+|   +-- mac_pcs_10gbaser           10GBASE-R MAC + PCS
+|   +-- rx_pipeline
+|   |   +-- parser
+|   |   +-- classifier
+|   |   +-- test_rx_checker
+|   |   +-- punt_queue             slow-path RX FIFO (->PCIe)
+|   |   +-- per_port_counters
+|   |
+|   +-- tx_pipeline
+|   |   +-- flow_gen_array         N TX flow generators
+|   |   +-- tx_arbiter             token-bucket + slow-path priority
+|   |   +-- slow_path_tx_fifo      from PCIe
+|   |   +-- per_port_tx_counters
+|
++-- port[1]                        same as port[0]
+|
++-- shared
+    +-- flow_table_ram             RAM holding per-flow config / state
+    +-- classifier_table_ram       RAM holding classifier rules
+    +-- counters_ram               per-flow counter array
+    +-- histogram_ram              per-flow latency histogram
+```
+
+## Module responsibilities
+
+### pcie_endpoint / bar_csr
+
+- Wrap the Xilinx PCIe Gen3 hard IP.
+- Expose BAR0 as a 64 KB CSR space (AXI-Lite).
+- Implement the read-latch behaviour for 64-bit counter pairs
+  (`_low` read latches `_high`).
+- No DMA in Phase 1. Phase 2 adds slow-path RX / TX DMA rings.
+
+### csr_fabric
+
+- Register decode and per-register access policy (`RW`, `R`, `W1C`, `W`).
+- Stage / commit logic for the classifier and flow table windows.
+- Drives `global_status`, snapshots `timestamp_unit` into the
+  `timestamp_*` registers on read.
+
+### timestamp_unit
+
+- 64-bit free-running counter at the MAC clock (or a fixed shared
+  reference).
+- Used by `test_rx_checker` for ingress latency stamping and by
+  `flow_gen` for egress `tx_timestamp` insertion.
+- **Local to a single card.** Cross-card latency is meaningless until a
+  future `CAP_HAS_TIMESTAMP_SYNC` capability is added.
+
+### gty_wrapper / mac_pcs_10gbaser
+
+- Bring up GTY transceivers for 10.3125 Gbps.
+- Standard 10GBASE-R PCS / MAC.
+- Expose link state, block-lock, RX fault to `port[N]_status`.
+- Phase 1 deliverable: stable link over a DAC.
+
+### rx_pipeline / parser
+
+The parser must reach into at least:
+
+- Ethernet header.
+- 802.1Q VLAN (single tag).
+- 802.1ad QinQ (optional, capability bit).
+- ARP.
+- IPv4 (and option skip / drop on options).
+- IPv6 (fixed header; ND through IPv6 + ICMPv6).
+- UDP, TCP.
+- ICMP, ICMPv6.
+- LLDP (ethertype 0x88cc).
+- OSPF (IP protocol 89).
+- BGP TCP destination port 179.
+- IS-IS (optional, capability bit).
+- LACP (optional).
+
+Output: a flat "header descriptor" with all extracted fields plus a
+"hit indicator" for the test header magic.
+
+### classifier
+
+- Priority-ordered linear table (Phase 1).
+- Each entry: match key + mask, action, priority,
+  `local_flow_id`, `logical_if_id`.
+- Actions: `DROP`, `TEST_RX`, `PUNT_TO_HOST`, `MIRROR_TO_HOST`,
+  `FORWARD_PORT`.
+- Double-buffered: stage row, then write `commit` to swap.
+- Returns the matched action + IDs to the rest of the RX pipeline.
+
+### test_rx_checker
+
+- Triggered on `TEST_RX` action.
+- Verifies the `pwfpga_test_hdr` magic.
+- Tracks per-flow expected sequence, increments
+  `lost / duplicate / out_of_order / late` counters.
+- Computes `rx_timestamp - tx_timestamp` (both from this card's
+  `timestamp_unit`) and updates min / max / sum / sample_count plus
+  the histogram bin.
+- Cross-card flows still hit `test_rx_checker`; daemon flags
+  `latency_valid = false` on those flows and the host does not surface
+  the (invalid) latency numbers.
+
+### punt_queue
+
+- Slow-path RX FIFO from RX pipeline to PCIe.
+- Per-packet metadata: `logical_if_id`, ingress `local_port_id`,
+  ingress timestamp (low 32 bits), action source.
+- Backpressures into the RX pipeline only after dropping per the
+  classifier's overflow policy (initial: drop and bump
+  `punt_drop_counter`).
+
+### flow_gen_array / tx_arbiter
+
+- N parallel flow generators, each reading one row of the flow table.
+- Per-flow token-bucket rate limit (bps and pps).
+- Per-port aggregate token bucket on top.
+- Slow-path TX FIFO is mixed in at high priority (subject to its own
+  rate limit so it cannot starve test traffic either).
+- Generators inject the `pwfpga_test_hdr` if `insert_sequence` /
+  `insert_timestamp` are set.
+- Strict respect of minimum IFG; cannot generate runt frames.
+
+### per_port_counters / counters_ram / histogram_ram
+
+- Per-port counters live next to the MAC.
+- Per-flow counters + histogram bins live in BRAM, addressed by
+  `local_flow_id`.
+- Snapshot to a shadow region on `stats_snapshot_trigger` so the host
+  reads a consistent set of counters.
+
+## Build / project layout
+
+`fpga/as02mc04/` contains:
+
+```
+fpga/as02mc04/
++-- project.tcl              Vivado project create script
++-- xdc/
+|   +-- timing.xdc
+|   +-- pinout.xdc
+|   +-- physical.xdc
++-- ip/                      Xilinx IP wrappers (GTY, PCIe, MAC)
++-- src/                     board-support RTL (clocking, reset, LEDs)
++-- bd/                      block design (if used)
++-- constraints/             non-pin constraints
++-- README.md
+```
+
+Shared, board-agnostic RTL (parser, classifier, flow_gen, csr_fabric,
+test_rx_checker) lives in `rtl/` and is included by the AS02MC04
+project. Future 25G or alternate boards reuse the same `rtl/`.
