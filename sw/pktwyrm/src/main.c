@@ -345,7 +345,7 @@ static int cmd_help(void) {
     puts("  pktwyrm rpc cards|ports|flows|stats [--socket PATH] [--card N]");
     puts("  pktwyrm stats [--socket PATH] [--card N] [--watch MS] [--json]");
     puts("  pktwyrm flow start|stop <id> [--socket PATH]");
-    puts("  pktwyrm flow stats [--flow N] [--socket PATH]");
+    puts("  pktwyrm flow stats [--flow N] [--socket PATH] [--watch MS] [--json]");
     puts("  pktwyrm test arm|start|stop [--socket PATH]");
     puts("  pktwyrm hist latency --flow N [--socket PATH]");
     return 0;
@@ -465,20 +465,80 @@ int main(int argc, char **argv) {
         if (!strcmp(what, "show")) return cmd_flow_show(argc - 3, argv + 3);
         if (!strcmp(what, "stats")) {
             const char *sock = PW_IPC_DEFAULT_PATH;
-            int id = -1;
+            int  id = -1;
+            int  watch_ms = 0;
+            bool raw = false;
             for (int i = 3; i < argc; i++) {
                 if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
                 else if (!strcmp(argv[i], "--flow") && i + 1 < argc) id = atoi(argv[++i]);
+                else if (!strcmp(argv[i], "--watch") && i + 1 < argc) watch_ms = atoi(argv[++i]);
+                else if (!strcmp(argv[i], "--json")) raw = true;
             }
             char req[128];
             if (id >= 0) snprintf(req, sizeof(req), "{\"rpc\":\"flow.stats\",\"id\":%d}", id);
             else         snprintf(req, sizeof(req), "{\"rpc\":\"flow.stats\"}");
-            char  resp[PW_IPC_FRAME_MAX]; size_t got = 0;
-            if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
-                fprintf(stderr, "rpc call failed (socket=%s)\n", sock);
-                return 1;
-            }
-            fwrite(resp, 1, got, stdout); fputc('\n', stdout);
+            do {
+                char  resp[PW_IPC_FRAME_MAX]; size_t got = 0;
+                if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
+                    fprintf(stderr, "rpc call failed (socket=%s)\n", sock);
+                    return 1;
+                }
+                if (watch_ms > 0) printf("\033[2J\033[H");
+                if (raw) {
+                    fwrite(resp, 1, got, stdout); fputc('\n', stdout);
+                } else {
+                    struct json_tokener *tok = json_tokener_new();
+                    struct json_object  *root = json_tokener_parse_ex(tok, resp, (int)got);
+                    json_tokener_free(tok);
+                    struct json_object  *arr = NULL;
+                    if (!root || !json_object_object_get_ex(root, "flows", &arr) ||
+                        json_object_get_type(arr) != json_type_array) {
+                        fwrite(resp, 1, got, stdout); fputc('\n', stdout);
+                        if (root) json_object_put(root);
+                    } else {
+                        printf("%-4s %-5s %-5s %10s %10s %8s %8s %8s %10s %10s %10s %s\n",
+                               "id", "tx_c", "rx_c", "tx_frames", "rx_frames",
+                               "lost", "dup", "reord",
+                               "min_lat", "avg_lat", "max_lat", "lat_valid");
+                        size_t n = json_object_array_length(arr);
+                        for (size_t i = 0; i < n; i++) {
+                            struct json_object *f = json_object_array_get_idx(arr, i);
+                            struct json_object *v;
+                            int64_t fid=0,tc=0,rc=0,tx=0,rx=0,lost=0,dup=0,reord=0;
+                            int64_t mn=0,mx=0,avg=0; bool lv=false;
+                            #define GETI(k, dst) do { if (json_object_object_get_ex(f, k, &v)) dst = json_object_get_int64(v); } while(0)
+                            #define GETB(k, dst) do { if (json_object_object_get_ex(f, k, &v)) dst = json_object_get_boolean(v); } while(0)
+                            GETI("id", fid);
+                            GETI("tx_card_id", tc);
+                            GETI("rx_card_id", rc);
+                            GETI("tx_frames", tx);
+                            GETI("rx_frames", rx);
+                            GETI("lost", lost);
+                            GETI("duplicate", dup);
+                            GETI("out_of_order", reord);
+                            GETI("min_latency", mn);
+                            GETI("max_latency", mx);
+                            GETI("avg_latency", avg);
+                            GETB("latency_valid", lv);
+                            #undef GETI
+                            #undef GETB
+                            printf("%-4ld %-5ld %-5ld %10ld %10ld %8ld %8ld %8ld %10ld %10ld %10ld %s\n",
+                                   (long)fid, (long)tc, (long)rc,
+                                   (long)tx, (long)rx,
+                                   (long)lost, (long)dup, (long)reord,
+                                   lv ? (long)mn : 0,
+                                   lv ? (long)avg : 0,
+                                   lv ? (long)mx : 0,
+                                   lv ? "yes" : "no");
+                        }
+                        json_object_put(root);
+                    }
+                }
+                if (watch_ms > 0) {
+                    struct timespec ts = { watch_ms / 1000, (watch_ms % 1000) * 1000000L };
+                    nanosleep(&ts, NULL);
+                }
+            } while (watch_ms > 0);
             return 0;
         }
         if (!strcmp(what, "start") || !strcmp(what, "stop")) {

@@ -57,8 +57,10 @@ In another terminal:
 # Pretty-printed table of host_plane counters per card
 pktwyrm stats
 
-# Full per-flow stats as JSON
+# Full per-flow stats as a table (use --json for raw)
 pktwyrm flow stats
+pktwyrm flow stats --watch 1000      # top-like refresh
+pktwyrm flow stats --flow 1 --json   # one flow, raw JSON
 
 # Toggle a flow
 pktwyrm flow start 1
