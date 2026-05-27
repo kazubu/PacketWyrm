@@ -126,7 +126,7 @@ sudo fpga/as02mc04/scripts/bringup-check.sh
 Expected output:
 
 ```
-[hh:mm:ss] 1. searching for 1af4:a502 via lspci ...
+[hh:mm:ss] 1. searching for 10ee:a502 via lspci ...
 [hh:mm:ss]    found at 03:00.0
 [hh:mm:ss] 2. checking BAR0 ...
 [hh:mm:ss]    BAR0 size = 65536 bytes
@@ -140,9 +140,9 @@ Expected output:
 > enumerates as `dabc:1017` (class `0x020000` Ethernet) &mdash; if
 > you see that vendor / device ID, the board is alive but still
 > running its factory NIC firmware. After PacketWyrm programming the
-> ID changes to PacketWyrm's `1af4:a502` (placeholder Red Hat /
-> QEMU virtio vendor, change in `ip/pcie_gen3.tcl` when a real PCI
-> ID is allocated).
+> ID changes to **`10ee:a502`** (Xilinx vendor / PacketWyrm device,
+> subsystem `10ee:7e57`). See `docs/design/pci-ids.md` for the
+> rationale behind those values.
 
 `packetwyrmd` Phase 4 reads the same registers through the
 forthcoming BAR backend (`pw_bar_backend_open`). Phase 1 only proves

@@ -24,9 +24,9 @@ set_property -dict [list \
     CONFIG.axisten_freq                        {250}                  \
     CONFIG.coreclk_freq                        {500}                  \
     CONFIG.PF0_DEVICE_ID                       {0xA502}               \
-    CONFIG.PF0_VENDOR_ID                       {0x1AF4}               \
-    CONFIG.PF0_SUBSYSTEM_VENDOR_ID             {0x1AF4}               \
-    CONFIG.PF0_SUBSYSTEM_ID                    {0x4D43}               \
+    CONFIG.PF0_VENDOR_ID                       {0x10EE}               \
+    CONFIG.PF0_SUBSYSTEM_VENDOR_ID             {0x10EE}               \
+    CONFIG.PF0_SUBSYSTEM_ID                    {0x7E57}               \
     CONFIG.PF0_CLASS_CODE                      {0x028000}             \
     CONFIG.PF0_REVISION_ID                     {0x01}                 \
     CONFIG.PF0_BAR0_SIZE                       {64}                   \
@@ -39,4 +39,5 @@ generate_target {synthesis simulation} [get_ips $ip_name]
 catch { synth_ip [get_ips $ip_name] }
 
 puts "INFO: PCIe Gen3 IP generated as $ip_name"
-puts "INFO: Vendor=0x1AF4 Device=0xA502 (placeholder; finalise with the AS02MC04 PCI ID assignment)"
+puts "INFO: Vendor=0x10EE (Xilinx) Device=0xA502 Subsystem=0x10EE:0x7E57 Class=0x028000"
+puts "INFO: see docs/design/pci-ids.md for rationale; replace with a proper PCI-SIG allocation before production"
