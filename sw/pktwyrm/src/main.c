@@ -6,7 +6,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
+
+#include <json-c/json.h>
 
 #include "packetwyrm/packetwyrm.h"
 
@@ -172,6 +175,104 @@ static int cmd_flow_show(int argc, char **argv) {
     return 0;
 }
 
+/* Send one RPC request, return the raw response in `resp` (size in
+ * `*out_len`). 0 on success, -1 on failure. */
+static int rpc_call(const char *sock, const char *json_req,
+                    char *resp, size_t resp_cap, size_t *out_len) {
+    int fd = -1;
+    if (pw_ipc_connect(sock, &fd) != PW_OK) return -1;
+    int rc = -1;
+    if (pw_ipc_write_frame(fd, json_req, strlen(json_req)) == PW_OK &&
+        pw_ipc_read_frame(fd, resp, resp_cap, out_len) == PW_OK) {
+        rc = 0;
+    }
+    close(fd);
+    return rc;
+}
+
+/* Pretty-print the "stats" response. Falls back to printing the
+ * raw JSON if the structure isn't what we expect. */
+static void pretty_print_stats(const char *json, size_t len) {
+    struct json_tokener *tok = json_tokener_new();
+    struct json_object *root = json_tokener_parse_ex(tok, json, (int)len);
+    json_tokener_free(tok);
+    if (!root) { printf("%.*s\n", (int)len, json); return; }
+
+    struct json_object *err;
+    if (json_object_object_get_ex(root, "error", &err)) {
+        printf("error: %s\n", json_object_get_string(err));
+        json_object_put(root);
+        return;
+    }
+    struct json_object *arr;
+    if (!json_object_object_get_ex(root, "stats", &arr) ||
+        json_object_get_type(arr) != json_type_array) {
+        printf("%.*s\n", (int)len, json);
+        json_object_put(root);
+        return;
+    }
+
+    printf("%-5s %-7s %-8s %12s %12s %12s %12s %12s\n",
+           "card", "open", "backend",
+           "punt_ok", "punt_drop", "inject_ok", "inject_drop", "unk_lif");
+    size_t n = json_object_array_length(arr);
+    for (size_t i = 0; i < n; i++) {
+        struct json_object *c = json_object_array_get_idx(arr, i);
+        struct json_object *v;
+        int    id = 0; bool open = false;
+        const char *be = "?";
+        int64_t pok=0, pdrop=0, tok2=0, tdrop=0, unk=0;
+        if (json_object_object_get_ex(c, "card_id", &v))           id    = json_object_get_int(v);
+        if (json_object_object_get_ex(c, "open", &v))              open  = json_object_get_boolean(v);
+        if (json_object_object_get_ex(c, "backend", &v))           be    = json_object_get_string(v);
+        if (json_object_object_get_ex(c, "punt_to_tap_ok", &v))    pok   = json_object_get_int64(v);
+        if (json_object_object_get_ex(c, "punt_to_tap_dropped", &v))pdrop= json_object_get_int64(v);
+        if (json_object_object_get_ex(c, "tap_to_fpga_ok", &v))    tok2  = json_object_get_int64(v);
+        if (json_object_object_get_ex(c, "tap_to_fpga_dropped", &v))tdrop= json_object_get_int64(v);
+        if (json_object_object_get_ex(c, "punt_unknown_lif", &v))  unk   = json_object_get_int64(v);
+        printf("%-5d %-7s %-8s %12ld %12ld %12ld %12ld %12ld\n",
+               id, open ? "yes" : "no", be,
+               (long)pok, (long)pdrop, (long)tok2, (long)tdrop, (long)unk);
+    }
+    json_object_put(root);
+}
+
+static int cmd_stats(int argc, char **argv) {
+    /* pktwyrm stats [--socket PATH] [--card N] [--watch MS] [--json] */
+    const char *sock = PW_IPC_DEFAULT_PATH;
+    int  card = -1;
+    int  watch_ms = 0;
+    bool raw = false;
+
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
+        else if (!strcmp(argv[i], "--card") && i + 1 < argc) card = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--watch") && i + 1 < argc) watch_ms = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--json")) raw = true;
+    }
+
+    char req[128];
+    if (card >= 0) snprintf(req, sizeof(req), "{\"rpc\":\"stats\",\"card\":%d}", card);
+    else           snprintf(req, sizeof(req), "{\"rpc\":\"stats\"}");
+
+    do {
+        char   resp[PW_IPC_FRAME_MAX];
+        size_t got = 0;
+        if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
+            fprintf(stderr, "rpc call failed (socket=%s)\n", sock);
+            return 1;
+        }
+        if (watch_ms > 0) printf("\033[2J\033[H");  /* clear screen */
+        if (raw) { fwrite(resp, 1, got, stdout); fputc('\n', stdout); }
+        else     pretty_print_stats(resp, got);
+        if (watch_ms > 0) {
+            struct timespec ts = { watch_ms / 1000, (watch_ms % 1000) * 1000000L };
+            nanosleep(&ts, NULL);
+        }
+    } while (watch_ms > 0);
+    return 0;
+}
+
 static int cmd_rpc(int argc, char **argv) {
     /* pktwyrm rpc <method> [--socket PATH] [--card N] */
     const char *method = NULL;
@@ -242,6 +343,7 @@ static int cmd_help(void) {
     puts("Online (talks to a running packetwyrmd over a Unix socket):");
     puts("  pktwyrm rpc version");
     puts("  pktwyrm rpc cards|ports|flows|stats [--socket PATH] [--card N]");
+    puts("  pktwyrm stats [--socket PATH] [--card N] [--watch MS] [--json]");
     return 0;
 }
 
@@ -257,6 +359,7 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "map"))    return cmd_map(argc - 2, argv + 2);
     if (!strcmp(sub, "load"))   return cmd_load(argc - 2, argv + 2);
     if (!strcmp(sub, "rpc"))    return cmd_rpc(argc - 2, argv + 2);
+    if (!strcmp(sub, "stats"))  return cmd_stats(argc - 2, argv + 2);
     if (!strcmp(sub, "flow")) {
         if (argc < 3 || strcmp(argv[2], "show")) {
             fprintf(stderr, "usage: pktwyrm flow show <config.yaml>\n"); return 2;
