@@ -166,6 +166,92 @@ static uint64_t now_ms(void) {
     return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
 }
 
+/* ---- Backend programming -------------------------------------------- */
+
+/* Push the compiled per-card program into each open backend. Errors
+ * (e.g. NOT_IMPLEMENTED on the BAR backend whose RTL has no flow
+ * table yet) are logged but not fatal. */
+static void program_backends(const struct pw_program *prog,
+                             const struct pw_config *cfg,
+                             struct card_runtime cards[]) {
+    for (size_t ci = 0; ci < prog->n_cards; ci++) {
+        const struct pw_card_program *cp = &prog->per_card[ci];
+        if (!cards[ci].open) continue;
+        const struct pw_card_backend *b = &cards[ci].backend;
+        bool any_err = false;
+        for (size_t r = 0; r < cp->n_classifier_rows; r++) {
+            pw_status s = b->ops->classifier_write
+                ? b->ops->classifier_write(b->ctx, (uint32_t)r, &cp->classifier_rows[r])
+                : PW_E_NOT_IMPLEMENTED;
+            if (s != PW_OK) any_err = true;
+        }
+        if (b->ops->classifier_commit) (void)b->ops->classifier_commit(b->ctx);
+        for (size_t r = 0; r < cp->n_flow_rows; r++) {
+            pw_status s = b->ops->flow_write
+                ? b->ops->flow_write(b->ctx, (uint32_t)r, &cp->flow_rows[r])
+                : PW_E_NOT_IMPLEMENTED;
+            if (s != PW_OK) any_err = true;
+        }
+        if (b->ops->flow_commit) (void)b->ops->flow_commit(b->ctx);
+        if (any_err) {
+            fprintf(stderr,
+                "  card%u(%s): some table writes returned not-implemented; "
+                "RTL table windows not in this bitstream yet\n",
+                (unsigned)cfg->cards[ci].id, cards[ci].which);
+        }
+    }
+}
+
+/* Look up the (tx) row index for a given global_flow_id. */
+static int find_tx_row(const struct pw_program *prog,
+                       uint32_t global_flow_id,
+                       int *out_card_idx, uint32_t *out_row) {
+    const struct pw_flow_meta *m = NULL;
+    for (size_t i = 0; i < prog->n_flow_meta; i++) {
+        if (prog->flow_meta[i].global_flow_id == global_flow_id) {
+            m = &prog->flow_meta[i];
+            break;
+        }
+    }
+    if (!m) return -1;
+    for (size_t ci = 0; ci < prog->n_cards; ci++) {
+        if (prog->per_card[ci].card_id != m->tx_card_id) continue;
+        const struct pw_card_program *cp = &prog->per_card[ci];
+        for (size_t r = 0; r < cp->n_flow_rows; r++) {
+            if (cp->flow_rows[r].local_flow_id == m->tx_local_flow_id) {
+                *out_card_idx = (int)ci;
+                *out_row      = (uint32_t)r;
+                return 0;
+            }
+        }
+    }
+    return -1;
+}
+
+/* Re-write the TX flow row of `global_flow_id` with `enable` set
+ * accordingly, then commit. */
+static pw_status set_flow_enable(struct pw_program *prog,
+                                 struct card_runtime cards[],
+                                 uint32_t global_flow_id,
+                                 bool enable) {
+    int      ci  = -1;
+    uint32_t row = 0;
+    if (find_tx_row(prog, global_flow_id, &ci, &row) < 0) return PW_E_INVAL;
+    if (!cards[ci].open) return PW_E_NO_CARD;
+    struct pwfpga_flow_config *fc = &prog->per_card[ci].flow_rows[row];
+    fc->enable    = enable ? 1 : 0;
+    fc->tx_enable = enable ? 1 : 0;
+    const struct pw_card_backend *b = &cards[ci].backend;
+    pw_status s = b->ops->flow_write
+        ? b->ops->flow_write(b->ctx, row, fc)
+        : PW_E_NOT_IMPLEMENTED;
+    if (s == PW_OK && b->ops->flow_commit)
+        s = b->ops->flow_commit(b->ctx);
+    return s;
+}
+
+/* ---- end backend programming ---------------------------------------- */
+
 /* ---- JSON RPC ----------------------------------------------------- */
 
 static struct json_object *build_version(void) {
@@ -275,7 +361,7 @@ static struct json_object *build_error(const char *msg) {
  * one response frame. */
 static void handle_client(int cfd,
                           const struct pw_config *cfg,
-                          const struct pw_program *prog,
+                          struct pw_program *prog,
                           struct card_runtime cards[],
                           struct pw_host_plane *hps[MAX_CARDS]) {
     uint8_t buf[PW_IPC_FRAME_MAX];
@@ -307,6 +393,19 @@ static void handle_client(int cfd,
                 card_filter = json_object_get_int(jc);
             }
             resp = build_stats(cfg, cards, hps, card_filter);
+        } else if (!strcmp(name, "flow.start") || !strcmp(name, "flow.stop")) {
+            struct json_object *jid;
+            if (!json_object_object_get_ex(req, "id", &jid)) {
+                resp = build_error("missing id");
+            } else {
+                bool en = (strcmp(name, "flow.start") == 0);
+                uint32_t id = (uint32_t)json_object_get_int64(jid);
+                pw_status s = set_flow_enable(prog, cards, id, en);
+                resp = json_object_new_object();
+                json_object_object_add(resp, "id",     json_object_new_int64(id));
+                json_object_object_add(resp, "enable", json_object_new_boolean(en));
+                json_object_object_add(resp, "status", json_object_new_string(pw_strerror(s)));
+            }
         } else {
             resp = build_error("unknown rpc");
         }
@@ -482,6 +581,7 @@ int main(int argc, char **argv) {
     struct tap_handle    taps[PW_HOST_PLANE_MAX_BINDINGS] = {0};
 
     open_all_backends(cfg, cards);
+    program_backends(prog, cfg, cards);
     int n_taps = setup_taps(cfg, cards, hps, taps, true);
     if (n_taps == 0) {
         fprintf(stderr, "warning: no TAPs were created\n");

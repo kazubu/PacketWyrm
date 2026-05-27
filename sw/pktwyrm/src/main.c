@@ -344,6 +344,7 @@ static int cmd_help(void) {
     puts("  pktwyrm rpc version");
     puts("  pktwyrm rpc cards|ports|flows|stats [--socket PATH] [--card N]");
     puts("  pktwyrm stats [--socket PATH] [--card N] [--watch MS] [--json]");
+    puts("  pktwyrm flow start|stop <id> [--socket PATH]");
     return 0;
 }
 
@@ -361,10 +362,38 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "rpc"))    return cmd_rpc(argc - 2, argv + 2);
     if (!strcmp(sub, "stats"))  return cmd_stats(argc - 2, argv + 2);
     if (!strcmp(sub, "flow")) {
-        if (argc < 3 || strcmp(argv[2], "show")) {
-            fprintf(stderr, "usage: pktwyrm flow show <config.yaml>\n"); return 2;
+        if (argc < 3) {
+            fprintf(stderr,
+                "usage: pktwyrm flow show <config.yaml>\n"
+                "       pktwyrm flow start <id> [--socket PATH]\n"
+                "       pktwyrm flow stop  <id> [--socket PATH]\n");
+            return 2;
         }
-        return cmd_flow_show(argc - 3, argv + 3);
+        const char *what = argv[2];
+        if (!strcmp(what, "show")) return cmd_flow_show(argc - 3, argv + 3);
+        if (!strcmp(what, "start") || !strcmp(what, "stop")) {
+            if (argc < 4) {
+                fprintf(stderr, "usage: pktwyrm flow %s <id> [--socket PATH]\n", what);
+                return 2;
+            }
+            int id = atoi(argv[3]);
+            const char *sock = PW_IPC_DEFAULT_PATH;
+            for (int i = 4; i < argc; i++) {
+                if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
+            }
+            char req[128];
+            snprintf(req, sizeof(req), "{\"rpc\":\"flow.%s\",\"id\":%d}", what, id);
+            char  resp[PW_IPC_FRAME_MAX];
+            size_t got = 0;
+            if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
+                fprintf(stderr, "rpc call failed (socket=%s)\n", sock);
+                return 1;
+            }
+            fwrite(resp, 1, got, stdout); fputc('\n', stdout);
+            return 0;
+        }
+        fprintf(stderr, "unknown flow subcommand: %s\n", what);
+        return 2;
     }
     fprintf(stderr, "unknown subcommand: %s\n", sub);
     return cmd_help();
