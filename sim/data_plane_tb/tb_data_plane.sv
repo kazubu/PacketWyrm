@@ -353,6 +353,61 @@ module tb_data_plane;
         return f;
     endfunction
 
+    // IPv6/UDP TEST_RX frame.
+    function automatic pw_frame_t make_v6_test(input int port_i,
+                                               input logic [31:0] tflow,
+                                               input logic [63:0] tseq);
+        pw_frame_t f;
+        int        off, l4_pay_off;
+        f = pw_frame_zero();
+        f.ingress_port = port_i[3:0];
+        f.data[0]=8'h02; f.data[1]=8'ha5; f.data[2]=8'h02;
+        f.data[3]=8'h00; f.data[4]=8'h00; f.data[5]=8'h02;
+        f.data[6]=8'h02; f.data[7]=8'ha5; f.data[8]=8'h02;
+        f.data[9]=8'h00; f.data[10]=8'h00; f.data[11]=8'h01;
+        // IPv6 ethertype
+        f.data[12]=8'h86; f.data[13]=8'hDD;
+        off = 14;
+        // IPv6 header (40 bytes)
+        f.data[off+0]=8'h60;             // version 6
+        f.data[off+1]=8'h00; f.data[off+2]=8'h00; f.data[off+3]=8'h00;
+        f.data[off+4]=8'h00; f.data[off+5]=8'h28;   // payload len = 40
+        f.data[off+6]=8'h11;             // next_header = UDP
+        f.data[off+7]=8'h40;             // hop_limit = 64
+        // src 2001:db8::1
+        f.data[off+8] =8'h20; f.data[off+9] =8'h01;
+        f.data[off+10]=8'h0d; f.data[off+11]=8'hb8;
+        for (int i = 0; i < 11; i++) f.data[off+12+i] = 8'h00;
+        f.data[off+23]=8'h01;
+        // dst 2001:db8::2
+        f.data[off+24]=8'h20; f.data[off+25]=8'h01;
+        f.data[off+26]=8'h0d; f.data[off+27]=8'hb8;
+        for (int i = 0; i < 11; i++) f.data[off+28+i] = 8'h00;
+        f.data[off+39]=8'h02;
+        off += 40;
+        // UDP src=49152 dst=50001
+        f.data[off+0]=8'hc0; f.data[off+1]=8'h00;
+        f.data[off+2]=8'hc3; f.data[off+3]=8'h51;
+        f.data[off+4]=8'h00; f.data[off+5]=8'h28;
+        f.data[off+6]=8'h00; f.data[off+7]=8'h00;
+        off += 8;
+        l4_pay_off = off;
+        // test header
+        f.data[l4_pay_off+0]=8'hA5; f.data[l4_pay_off+1]=8'h02;
+        f.data[l4_pay_off+2]=8'h7E; f.data[l4_pay_off+3]=8'h57;
+        f.data[l4_pay_off+4]=8'h00; f.data[l4_pay_off+5]=8'h01;
+        f.data[l4_pay_off+6]=8'h00; f.data[l4_pay_off+7]=8'h00;
+        f.data[l4_pay_off+8] =tflow[31:24];
+        f.data[l4_pay_off+9] =tflow[23:16];
+        f.data[l4_pay_off+10]=tflow[15:8];
+        f.data[l4_pay_off+11]=tflow[7:0];
+        for (int i = 0; i < 8; i++)
+            f.data[l4_pay_off+12+i] = tseq[(7-i)*8 +: 8];
+        off += 32;
+        f.len = PW_FRAME_LEN_W'(off);
+        return f;
+    endfunction
+
     function automatic pw_frame_t make_arp(input int port_i);
         pw_frame_t f;
         f = pw_frame_zero();
@@ -710,6 +765,36 @@ module tb_data_plane;
         check_eq("ospf punt seen", punt_valid ? 1 : 0, 1);
         rx_valid[0] = 1'b0;
         rx_frame[0] = pw_frame_zero();
+        cls_table[1].enable = 1'b0;
+        @(posedge clk);
+
+        // ---------------- scenario 13: IPv6 TEST_RX ----------------
+        scenario = "ipv6";
+        cls_table[6].enable             = 1'b1;
+        cls_table[6].action             = PW_ACT_TEST_RX;
+        cls_table[6].priority_          = 8'd5;
+        cls_table[6].local_flow_id      = 32'd6;
+        cls_table[6].mask = '0;
+        cls_table[6].mask.match_is_ipv6 = 1'b1;
+        cls_table[6].mask.match_is_udp  = 1'b1;
+        cls_table[6].mask.match_l4_dst  = 1'b1;
+        cls_table[6].mask.match_is_test = 1'b1;
+        cls_table[6].mask.match_flow_id = 1'b1;
+        cls_table[6].key.l4_dst         = 16'd50001;
+        cls_table[6].key.test_flow_id   = 32'd60;
+        @(posedge clk);
+
+        for (int s = 0; s < 4; s++)
+            inject(0, make_v6_test(0, 32'd60, 64'(s)));
+        @(posedge clk);
+        check_eq("ipv6 rx",   flow_rx[6],   4);
+        check_eq("ipv6 lost", flow_lost[6], 0);
+
+        // An IPv4 frame with the same UDP/flow_id must NOT match
+        // (is_ipv6 rule excludes it).
+        inject(0, make_frame(0, 1'b0, 1'b1, 32'd60, 64'd99));
+        @(posedge clk);
+        check_eq("ipv6 not v4-poisoned", flow_rx[6], 4);
 
         if (errors == 0) begin
             $display("ALL DATA PLANE SCENARIOS PASS");

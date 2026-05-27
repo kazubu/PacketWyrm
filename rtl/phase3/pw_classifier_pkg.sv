@@ -24,10 +24,12 @@ package pw_classifier_pkg;
         logic         is_test;           // test_magic match
         logic         is_arp;            // ethertype == 0x0806
         logic         is_ipv4;           // ethertype == 0x0800
-        logic         is_tcp;            // IPv4 + protocol == 6
-        logic         is_udp;            // IPv4 + protocol == 17
-        logic         is_icmp;           // IPv4 + protocol == 1
-        logic         is_ospf;           // IPv4 + protocol == 89
+        logic         is_ipv6;           // ethertype == 0x86DD
+        logic         is_tcp;            // protocol == 6  (IPv4 or IPv6)
+        logic         is_udp;            // protocol == 17 (IPv4 or IPv6)
+        logic         is_icmp;           // IPv4 protocol == 1
+        logic         is_icmp6;          // IPv6 next-header == 58
+        logic         is_ospf;           // IPv4 protocol == 89
         logic [3:0]   ingress_port;
         logic [15:0]  ethertype;
         logic         vlan_valid;
@@ -37,6 +39,8 @@ package pw_classifier_pkg;
         logic [7:0]   l3_proto;
         logic [31:0]  ipv4_src;
         logic [31:0]  ipv4_dst;
+        logic [127:0] ipv6_src;
+        logic [127:0] ipv6_dst;
         // L4 ports: populated for both TCP and UDP via the same fields
         logic [15:0]  l4_src;
         logic [15:0]  l4_dst;
@@ -58,15 +62,20 @@ package pw_classifier_pkg;
         logic         match_l3_proto;
         logic         match_ipv4_src;
         logic         match_ipv4_dst;
+        logic         match_ipv6_src;
+        logic         match_ipv6_dst;
         logic         match_l4_src;
         logic         match_l4_dst;
         logic         match_udp_src;   // legacy aliases of match_l4_*
         logic         match_udp_dst;
         logic         match_is_test;
         logic         match_is_arp;
+        logic         match_is_ipv4;
+        logic         match_is_ipv6;
         logic         match_is_tcp;
         logic         match_is_udp;
         logic         match_is_icmp;
+        logic         match_is_icmp6;
         logic         match_is_ospf;
         logic         match_flow_id;
     } pw_match_mask_t;

@@ -22,11 +22,13 @@ module pw_parser (
     localparam logic [15:0] ETHERTYPE_QINQ_88A8 = 16'h88A8;
     localparam logic [15:0] ETHERTYPE_QINQ_9100 = 16'h9100;
     localparam logic [15:0] ETHERTYPE_IPV4      = 16'h0800;
+    localparam logic [15:0] ETHERTYPE_IPV6      = 16'h86DD;
     localparam logic [15:0] ETHERTYPE_ARP       = 16'h0806;
     localparam logic [7:0]  IPV4_PROTO_ICMP     = 8'd1;
     localparam logic [7:0]  IPV4_PROTO_TCP      = 8'd6;
     localparam logic [7:0]  IPV4_PROTO_UDP      = 8'd17;
     localparam logic [7:0]  IPV4_PROTO_OSPF     = 8'd89;
+    localparam logic [7:0]  IPV6_NH_ICMP6       = 8'd58;
 
     // First N header bytes pre-extracted via continuous assigns
     // into a *packed* array of bytes.
@@ -94,8 +96,63 @@ module pw_parser (
 
                 k.is_arp  = (k.ethertype == ETHERTYPE_ARP);
                 k.is_ipv4 = (k.ethertype == ETHERTYPE_IPV4);
+                k.is_ipv6 = (k.ethertype == ETHERTYPE_IPV6);
 
-                if (k.is_ipv4 && frame_i.len >= l3_off + 20) begin
+                if (k.is_ipv6 && frame_i.len >= l3_off + 40) begin
+                    // IPv6 fixed header: 40 bytes. Field offsets
+                    // relative to l3_off:
+                    //   +6  next header (l4 protocol)
+                    //   +7  hop limit
+                    //   +8..23  source address
+                    //   +24..39 destination address
+                    automatic int i;
+                    k.l3_proto = hdr[l3_off + 6];
+                    for (i = 0; i < 16; i++)
+                        k.ipv6_src[127 - i*8 -: 8] = hdr[l3_off + 8 + i];
+                    for (i = 0; i < 16; i++)
+                        k.ipv6_dst[127 - i*8 -: 8] = hdr[l3_off + 24 + i];
+                    k.is_tcp    = (k.l3_proto == IPV4_PROTO_TCP);
+                    k.is_udp    = (k.l3_proto == IPV4_PROTO_UDP);
+                    k.is_icmp6  = (k.l3_proto == IPV6_NH_ICMP6);
+
+                    ip_hlen = 40;
+                    if ((k.is_udp || k.is_tcp) &&
+                        frame_i.len >= l3_off + ip_hlen + 4) begin
+                        udp_off  = l3_off + ip_hlen;
+                        k.l4_src = {hdr[udp_off],     hdr[udp_off + 1]};
+                        k.l4_dst = {hdr[udp_off + 2], hdr[udp_off + 3]};
+                        k.udp_src = k.l4_src;
+                        k.udp_dst = k.l4_dst;
+                    end
+                    if (k.is_udp &&
+                        frame_i.len >= l3_off + ip_hlen + 8) begin
+                        udp_off = l3_off + ip_hlen;
+                        pay_off = udp_off + 8;
+                        if (frame_i.len >= pay_off + 32 &&
+                            pay_off + 32 <= HDR_BYTES) begin
+                            k.test_magic = {hdr[pay_off + 0],
+                                            hdr[pay_off + 1],
+                                            hdr[pay_off + 2],
+                                            hdr[pay_off + 3]};
+                            k.test_flow_id = {hdr[pay_off + 8],
+                                              hdr[pay_off + 9],
+                                              hdr[pay_off + 10],
+                                              hdr[pay_off + 11]};
+                            k.test_sequence = {
+                                hdr[pay_off + 12], hdr[pay_off + 13],
+                                hdr[pay_off + 14], hdr[pay_off + 15],
+                                hdr[pay_off + 16], hdr[pay_off + 17],
+                                hdr[pay_off + 18], hdr[pay_off + 19]};
+                            k.test_tx_timestamp = {
+                                hdr[pay_off + 20], hdr[pay_off + 21],
+                                hdr[pay_off + 22], hdr[pay_off + 23],
+                                hdr[pay_off + 24], hdr[pay_off + 25],
+                                hdr[pay_off + 26], hdr[pay_off + 27]};
+                            k.is_test = (k.test_magic == PW_TEST_HDR_MAGIC);
+                        end
+                    end
+                    ok = 1'b1;
+                end else if (k.is_ipv4 && frame_i.len >= l3_off + 20) begin
                     ip_hlen     = int'(hdr[l3_off][3:0]) * 4;
                     k.l3_proto  = hdr[l3_off + 9];
                     k.ipv4_src  = {hdr[l3_off + 12], hdr[l3_off + 13],

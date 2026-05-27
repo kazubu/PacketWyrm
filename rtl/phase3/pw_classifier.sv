@@ -37,9 +37,10 @@ module pw_classifier (
             assign entry_enable[gi] = e.enable;
 
             logic m_iport, m_etype, m_vlan, m_ivlan, m_l3,
-                  m_ipsrc, m_ipdst, m_l4src, m_l4dst,
-                  m_usrc, m_udst,
-                  m_test, m_arp, m_tcp, m_udp_class, m_icmp, m_ospf,
+                  m_ipsrc, m_ipdst, m_v6src, m_v6dst,
+                  m_l4src, m_l4dst, m_usrc, m_udst,
+                  m_test, m_arp, m_ipv4_class, m_ipv6_class,
+                  m_tcp, m_udp_class, m_icmp, m_icmp6, m_ospf,
                   m_flow;
 
             assign m_iport     = ~e.mask.match_ingress_port |
@@ -57,20 +58,26 @@ module pw_classifier (
                                   (key_i.ipv4_src      == e.key.ipv4_src);
             assign m_ipdst     = ~e.mask.match_ipv4_dst  |
                                   (key_i.ipv4_dst      == e.key.ipv4_dst);
+            assign m_v6src     = ~e.mask.match_ipv6_src  |
+                                  (key_i.ipv6_src      == e.key.ipv6_src);
+            assign m_v6dst     = ~e.mask.match_ipv6_dst  |
+                                  (key_i.ipv6_dst      == e.key.ipv6_dst);
             assign m_l4src     = ~e.mask.match_l4_src    |
                                   (key_i.l4_src        == e.key.l4_src);
             assign m_l4dst     = ~e.mask.match_l4_dst    |
                                   (key_i.l4_dst        == e.key.l4_dst);
-            // udp_src/udp_dst masks are legacy aliases of the L4 masks.
             assign m_usrc      = ~e.mask.match_udp_src   |
                                   (key_i.udp_src       == e.key.udp_src);
             assign m_udst      = ~e.mask.match_udp_dst   |
                                   (key_i.udp_dst       == e.key.udp_dst);
             assign m_test      = ~e.mask.match_is_test   | key_i.is_test;
             assign m_arp       = ~e.mask.match_is_arp    | key_i.is_arp;
+            assign m_ipv4_class= ~e.mask.match_is_ipv4   | key_i.is_ipv4;
+            assign m_ipv6_class= ~e.mask.match_is_ipv6   | key_i.is_ipv6;
             assign m_tcp       = ~e.mask.match_is_tcp    | key_i.is_tcp;
             assign m_udp_class = ~e.mask.match_is_udp    | key_i.is_udp;
             assign m_icmp      = ~e.mask.match_is_icmp   | key_i.is_icmp;
+            assign m_icmp6     = ~e.mask.match_is_icmp6  | key_i.is_icmp6;
             assign m_ospf      = ~e.mask.match_is_ospf   | key_i.is_ospf;
             assign m_flow      = ~e.mask.match_flow_id   |
                                   (key_i.is_test &&
@@ -78,10 +85,11 @@ module pw_classifier (
 
             assign entry_hit[gi] = e.enable && key_valid_i &&
                                    m_iport & m_etype & m_vlan & m_ivlan & m_l3 &
-                                   m_ipsrc & m_ipdst & m_l4src & m_l4dst &
-                                   m_usrc & m_udst &
-                                   m_test  & m_arp & m_tcp & m_udp_class &
-                                   m_icmp  & m_ospf & m_flow;
+                                   m_ipsrc & m_ipdst & m_v6src & m_v6dst &
+                                   m_l4src & m_l4dst & m_usrc & m_udst &
+                                   m_test  & m_arp & m_ipv4_class & m_ipv6_class &
+                                   m_tcp & m_udp_class & m_icmp & m_icmp6 & m_ospf &
+                                   m_flow;
         end
     endgenerate
 
