@@ -145,6 +145,10 @@ container.
 
 Start here:
 
+- `docs/guides/getting-started.md` &mdash; 5-minute walkthrough
+- `docs/design/rpc-protocol.md` &mdash; control-socket RPC
+  reference (JSON wire format + every method)
+- `CHANGELOG.md` &mdash; running list of what's working
 - `docs/design/architecture.md` &mdash; overall architecture
 - `docs/design/id-system.md` &mdash; `card_id` / `global_port_id` /
   `logical_if_id` / flow IDs

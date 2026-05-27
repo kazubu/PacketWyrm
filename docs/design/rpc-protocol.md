@@ -1,0 +1,189 @@
+# JSON-RPC protocol
+
+`packetwyrmd` listens on a Unix domain socket (default
+`/var/run/packetwyrm/packetwyrmd.sock`, override via
+`system.control_socket` in YAML). `pktwyrm` and any other client
+speak a tiny request/response protocol over it.
+
+## Wire format
+
+Every message is a 4-byte big-endian length prefix followed by a
+UTF-8 JSON body. One request per connection; the daemon sends one
+response frame then closes. Max frame size is `PW_IPC_FRAME_MAX`
+(64 KB today).
+
+```
++---------+---------+---------+---------+--- ... ---+
+|  len[31:24] | len[23:16] | len[15:8] | len[7:0] | JSON body |
++---------+---------+---------+---------+--- ... ---+
+```
+
+## Request envelope
+
+```json
+{ "rpc": "<method>", ...method-specific fields... }
+```
+
+## Methods
+
+### `version`
+
+```json
+{ "rpc": "version" }
+```
+&rarr;
+```json
+{ "version": "0.1.0" }
+```
+
+### `cards`
+
+```json
+{ "rpc": "cards" }
+```
+&rarr;
+```json
+{ "cards": [ { "id": 0, "name": "card0", "pci": "0000:03:00.0",
+              "backend": "fake" | "bar" | "absent",
+              "open": true } ] }
+```
+
+### `ports`
+
+```json
+{ "rpc": "ports" }
+```
+&rarr; `{ "ports": [ { "name": "p0", "card_id": 0, "local_port": 0,
+                       "global_port": 0 } ] }`
+
+### `flows`
+
+`{ "rpc": "flows" }` &rarr; `{ "flows": [ { "id", "name",
+"tx_global_port", "rx_global_port", "tx_card_id", "rx_card_id",
+"latency_valid" } ] }`
+
+### `stats`
+
+Card-level counters from the host packet plane.
+
+```json
+{ "rpc": "stats" }                  // all cards
+{ "rpc": "stats", "card": 0 }       // one card
+```
+&rarr;
+```json
+{
+  "stats": [
+    {
+      "card_id": 0, "open": true, "backend": "fake",
+      "punt_to_tap_ok": 0, "punt_to_tap_dropped": 0,
+      "tap_to_fpga_ok": 0, "tap_to_fpga_dropped": 0,
+      "punt_unknown_lif": 0
+    }
+  ]
+}
+```
+
+### `flow.stats`
+
+Per-flow counters from the FPGA test-RX checker. Triggers a
+fresh snapshot on each open card before reading.
+
+```json
+{ "rpc": "flow.stats" }                  // all flows
+{ "rpc": "flow.stats", "id": 1 }         // one flow
+```
+&rarr;
+```json
+{
+  "flows": [
+    {
+      "id": 1,
+      "tx_card_id": 0, "rx_card_id": 0,
+      "tx_frames": 0, "tx_bytes": 0,
+      "rx_frames": 0, "rx_bytes": 0,
+      "lost": 0, "duplicate": 0, "out_of_order": 0,
+      "seq_gap": 0, "expected_seq": 0,
+      "latency_valid": true,
+      "min_latency": 0, "max_latency": 0,
+      "avg_latency": 0, "sample_count": 0,
+      "jitter_min": 0, "jitter_max": 0, "jitter_avg": 0
+    }
+  ]
+}
+```
+
+Cross-card flows return `latency_valid: false` and omit
+`min_latency` etc. The aggregator never invents cross-card
+latency numbers.
+
+### `flow.hist`
+
+Per-flow power-of-two latency histogram.
+
+```json
+{ "rpc": "flow.hist", "id": 1 }
+```
+&rarr;
+```json
+{
+  "id": 1,
+  "n_buckets": 64,
+  "buckets": [ 0, 0, 12, 105, ... ]
+}
+```
+
+For cross-card flows the daemon returns
+`{ "id": <n>, "latency_valid": false, "reason": "..." }` &mdash;
+no bucket array.
+
+### `flow.start` / `flow.stop`
+
+Toggle the TX-side enable bit of a flow.
+
+```json
+{ "rpc": "flow.start", "id": 1 }
+{ "rpc": "flow.stop",  "id": 1 }
+```
+&rarr;
+```json
+{ "id": 1, "enable": true, "status": "ok" }
+{ "id": 1, "enable": false, "status": "ok" }
+```
+
+`status` is the human-readable form of the underlying
+`pw_status` (e.g. `"ok"`, `"invalid argument"`,
+`"not implemented"`).
+
+### `test.arm` / `test.start` / `test.stop`
+
+Whole-tester orchestration. `arm` re-pushes the compiled
+program to every open backend (idempotent resync). `start` and
+`stop` toggle the enable bit of every flow.
+
+```json
+{ "rpc": "test.start" }
+```
+&rarr;
+```json
+{ "action": "test.start", "changed": 2, "failed": 0 }
+```
+
+## Errors
+
+Any unhandled situation responds with:
+
+```json
+{ "error": "<short message>" }
+```
+
+`pktwyrm rpc <method>` prints the raw JSON. The pretty-printing
+subcommands (`pktwyrm stats`, `pktwyrm hist latency`) parse it
+and surface the error in a human-friendly form.
+
+## Prometheus exposition
+
+Independent of the JSON RPC, `packetwyrmd -p PORT` exposes a
+plain HTTP `/metrics` endpoint serving the standard Prometheus
+text format. The metrics map 1:1 onto the host packet plane
+counters; see `packetwyrmd --help` for the latest list.
