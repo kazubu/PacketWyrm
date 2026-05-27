@@ -4,7 +4,11 @@ A working software-loopback proof of the Phase 3 data plane. Run:
 
 ```sh
 cd sim
-make sim       # build + run the data-plane testbench
+make sim       # build + run the data-plane testbench (38 assertions)
+make sim_axis  # round-trip a frame through the wide<->64-bit AXIS
+               # serializer/deserializer pair (Phase-2 step toward
+               # the production MAC interface). 16 assertions.
+make sim_all   # both
 make wave      # rebuild with FST tracing, leave sim_build/data_plane.fst
 make clean
 ```

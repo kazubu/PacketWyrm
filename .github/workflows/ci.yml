@@ -42,9 +42,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y verilator
-      - name: build + run sim
+      - name: build + run sim (data plane + axis serial)
         working-directory: sim
-        run: make sim
+        run: make sim_all
       - name: lint AS02MC04 RTL
         working-directory: fpga/as02mc04
         run: make lint

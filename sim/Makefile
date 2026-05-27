@@ -18,20 +18,29 @@ PHASE3_RTL := \
     $(REPO)/rtl/phase3/pw_flow_gen.sv \
     $(REPO)/rtl/phase3/pw_data_plane.sv
 
-TB := data_plane_tb/tb_data_plane.sv
+AXIS_RTL := \
+    $(REPO)/rtl/phase3/pw_axis_pkg.sv \
+    $(REPO)/rtl/phase3/pw_axis_serial.sv
+
+TB     := data_plane_tb/tb_data_plane.sv
+TB_AXIS := axis_serial_tb/tb_axis_serial.sv
 
 VFLAGS := --binary -j 0 \
-          --top-module tb_data_plane \
           -Wall \
           -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
           -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNDRIVEN \
           -Wno-IMPORTSTAR -Wno-WIDTHCONCAT -Wno-BLKSEQ -Wno-GENUNNAMED \
           --timing
 
-.PHONY: sim wave clean
+.PHONY: sim sim_axis sim_all wave clean
 
 sim: sim_build/data_plane
 	./sim_build/data_plane
+
+sim_axis: sim_build/axis_serial
+	./sim_build/axis_serial
+
+sim_all: sim sim_axis
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
@@ -41,8 +50,16 @@ wave: clean sim_build/data_plane
 sim_build/data_plane: $(PHASE3_RTL) $(TB)
 	$(VERILATOR) $(VFLAGS) \
 	    -Mdir sim_build \
+	    --top-module tb_data_plane \
 	    -o data_plane \
 	    $(PHASE3_RTL) $(TB)
+
+sim_build/axis_serial: $(AXIS_RTL) $(TB_AXIS)
+	$(VERILATOR) $(VFLAGS) \
+	    -Mdir sim_build \
+	    --top-module tb_axis_serial \
+	    -o axis_serial \
+	    $(AXIS_RTL) $(TB_AXIS)
 
 clean:
 	rm -rf sim_build
