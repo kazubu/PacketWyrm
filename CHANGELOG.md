@@ -77,6 +77,17 @@ push and is the source of truth for "what's working today".
   - `make -C sim sim`: Verilator-driven `tb_data_plane.sv`, 38 / 38
     assertions across scenarios: drop, punt, loopback, loss, dup,
     vlan, forward, ooo, rate, qinq, bgp, ospf, ipv6
+- **Kernel driver (Phase 11 starting point)**
+  - `kernel/packetwyrm.c` &mdash; out-of-tree PCI skeleton:
+    `pci_driver` match on `10ee:a502`, BAR0 ioremap, identity-
+    register read, dev_info dump.
+  - `kernel/Kbuild` + `kernel/Makefile` for building against
+    `linux-headers-$(uname -r)`.
+  - `docs/design/kernel-driver.md` scoping doc: when the kernel
+    driver becomes desirable vs. sticking with the userspace TAP
+    plane, target architecture (NAPI / DMA / ethtool / devlink),
+    coexistence rules, risks.
+
 - **Tests**
   - `make -C sw test`: 154 / 154 unit-test assertions across
     YAML / validator / flow compiler / backend (fake + BAR

@@ -110,7 +110,11 @@ sw/libpacketwyrm/       C library: data model, YAML, flow compiler,
                         JSON RPC.
 sw/packetwyrmd/         Long-running daemon.
 sw/pktwyrm/             Command-line client.
-sw/tests/unit/          Unit + integration tests (run as `make test`).
+sw/tests/unit/          Unit tests (`make -C sw test`).
+sw/tests/integration/   e2e_smoke.sh - daemon + CLI shell smoke
+                        (`make -C sw e2e`).
+kernel/                 Phase 11 out-of-tree PCI skeleton driver
+                        (`make -C kernel`).
 sim/                    Verilator testbench(s) and Makefile.
 configs/examples/       single-card.yaml, multi-card.yaml
 scripts/                udev rule, future packaging.
@@ -160,6 +164,8 @@ Start here:
 - `docs/design/stats.md` &mdash; statistics aggregation
 - `docs/design/yaml-schema.md` &mdash; configuration schema
 - `docs/design/pci-ids.md` &mdash; PCI vendor / device IDs
+- `docs/design/kernel-driver.md` &mdash; Phase 11 kernel netdev
+  driver scoping + skeleton
 - `docs/phases/plan.md` &mdash; phase-by-phase implementation plan
 - `docs/phases/poc-phase-1-3.md` &mdash; single-card PoC plan
 - `docs/phases/multi-card-phase-6-7.md` &mdash; multi-card extension plan
