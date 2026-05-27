@@ -78,9 +78,13 @@ push and is the source of truth for "what's working today".
     assertions across scenarios: drop, punt, loopback, loss, dup,
     vlan, forward, ooo, rate, qinq, bgp, ospf, ipv6
 - **Tests**
-  - `make -C sw test`: 116 / 116 unit-test assertions across
-    YAML / validator / flow compiler / backend (fake + BAR) /
-    PCI discovery / host_plane / TAP / IPC
+  - `make -C sw test`: 154 / 154 unit-test assertions across
+    YAML / validator / flow compiler / backend (fake + BAR
+    window writes / stats reads) / PCI discovery / host_plane /
+    TAP / IPC
+  - `make -C sw e2e`: shell-based daemon ↔ CLI smoke - launches
+    packetwyrmd against an example config and walks the full
+    JSON-RPC surface from pktwyrm. 15 / 15 checks.
 
 ### Documentation
 

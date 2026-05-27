@@ -25,6 +25,9 @@ jobs:
       - name: unit tests
         working-directory: sw
         run: make test
+      - name: e2e smoke (daemon + CLI)
+        working-directory: sw
+        run: make e2e
       - name: staged install
         working-directory: sw
         run: |

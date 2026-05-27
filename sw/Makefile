@@ -81,6 +81,10 @@ test: $(TEST_BIN)
 $(TEST_BIN): $(TEST_SRC) $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(TEST_SRC) $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
+.PHONY: e2e
+e2e: $(DAEMON_BIN) $(CLI_BIN)
+	tests/integration/e2e_smoke.sh
+
 clean:
 	rm -f $(LIB_OBJ)
 	rm -rf $(BUILD_DIR)
