@@ -18,3 +18,20 @@ populates this directory with:
 
 Board-specific wrappers (GTY, PCIe IP, clocking) live under
 `fpga/<board>/`. The shared RTL must not depend on any board pinout.
+
+## Phase 1 (current)
+
+The minimum board-agnostic RTL needed for AS02MC04 PCIe bring-up
+lives under `shared/`:
+
+- `pw_pkg.sv` &mdash; shared constants (device id, CSR offsets,
+  capability bits).
+- `pw_version_pkg.sv.in` &mdash; build-time generated `version /
+  build_id / git_hash` package.
+- `pw_csr_min.sv` &mdash; AXI4-Lite slave with the Phase 1 identity
+  registers, timestamp pair read-latch, and W1C error register.
+- `pw_heartbeat.sv` &mdash; LED heartbeat at a configurable rate.
+- `pw_timestamp.sv` &mdash; free-running 64-bit timestamp counter.
+- `xilinx_prims_blackbox.sv` &mdash; black-box stubs of the
+  UltraScale+ primitives used by board-side RTL (IBUFDS, BUFG).
+  Used only by Verilator lint; Vivado picks up `unisims`.

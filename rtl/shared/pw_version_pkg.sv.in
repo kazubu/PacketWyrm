@@ -1,0 +1,14 @@
+// Template for the build-generated version package.
+// build.tcl substitutes @PW_VERSION@, @PW_BUILD_ID@, @PW_GIT_HASH@
+// at synthesis time. The output is dropped under build/<run>/gen/.
+
+`ifndef PW_VERSION_PKG_SV
+`define PW_VERSION_PKG_SV
+
+package pw_version_pkg;
+    localparam logic [31:0] PW_VERSION  = 32'h@PW_VERSION@;
+    localparam logic [31:0] PW_BUILD_ID = 32'h@PW_BUILD_ID@;
+    localparam logic [31:0] PW_GIT_HASH = 32'h@PW_GIT_HASH@;
+endpackage : pw_version_pkg
+
+`endif
