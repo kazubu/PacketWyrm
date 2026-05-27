@@ -185,6 +185,19 @@ static pw_status fake_flow_stats_read(void *vctx, uint32_t lfid,
     return PW_OK;
 }
 
+static pw_status fake_flow_hist_read(void *vctx, uint32_t lfid,
+                                     uint64_t *buckets, size_t n_buckets,
+                                     size_t *n_buckets_out) {
+    (void)vctx; (void)lfid;
+    /* Fake backend has no histogram data; return zeroed buckets so
+     * callers see a stable, well-formed response. */
+    if (!buckets || !n_buckets_out) return PW_E_INVAL;
+    size_t n = n_buckets < FAKE_NUM_HIST_BINS ? n_buckets : FAKE_NUM_HIST_BINS;
+    for (size_t i = 0; i < n; i++) buckets[i] = 0;
+    *n_buckets_out = n;
+    return PW_OK;
+}
+
 static int fake_slow_path_rx(void *vctx, void *buf, size_t buflen,
                              uint32_t *out_lif) {
     struct fake_ctx *c = vctx;
@@ -213,6 +226,7 @@ static const struct pw_card_backend_ops fake_ops = {
     .stats_snapshot      = fake_stats_snapshot,
     .port_stats_read     = fake_port_stats_read,
     .flow_stats_read     = fake_flow_stats_read,
+    .flow_hist_read      = fake_flow_hist_read,
     .slow_path_rx        = fake_slow_path_rx,
     .slow_path_tx        = fake_slow_path_tx,
     .close               = fake_close,

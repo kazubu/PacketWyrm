@@ -351,6 +351,56 @@ static struct json_object *build_stats(const struct pw_config *cfg,
     return r;
 }
 
+/* Per-flow latency histogram. */
+static struct json_object *build_flow_hist(const struct pw_config *cfg,
+                                           const struct pw_program *prog,
+                                           struct card_runtime cards[],
+                                           int flow_id) {
+    struct json_object *r = json_object_new_object();
+    const struct pw_flow_meta *m = NULL;
+    for (size_t i = 0; i < prog->n_flow_meta; i++)
+        if ((int)prog->flow_meta[i].global_flow_id == flow_id) {
+            m = &prog->flow_meta[i];
+            break;
+        }
+    if (!m) {
+        json_object_object_add(r, "error", json_object_new_string("unknown flow"));
+        return r;
+    }
+    if (!m->latency_valid) {
+        json_object_object_add(r, "id", json_object_new_int(flow_id));
+        json_object_object_add(r, "latency_valid", json_object_new_boolean(false));
+        json_object_object_add(r, "reason",
+            json_object_new_string("cross-card flow; latency not supported"));
+        return r;
+    }
+    size_t rx_ci = (size_t)-1;
+    for (size_t ci = 0; ci < cfg->n_cards; ci++)
+        if (cfg->cards[ci].id == m->rx_card_id) { rx_ci = ci; break; }
+    if (rx_ci == (size_t)-1 || !cards[rx_ci].open ||
+        !cards[rx_ci].backend.ops->flow_hist_read) {
+        json_object_object_add(r, "error", json_object_new_string("backend not ready"));
+        return r;
+    }
+    uint64_t buckets[64];
+    size_t   n_buckets = 0;
+    (void)cards[rx_ci].backend.ops->stats_snapshot(cards[rx_ci].backend.ctx);
+    pw_status s = cards[rx_ci].backend.ops->flow_hist_read(
+        cards[rx_ci].backend.ctx, m->rx_local_flow_id,
+        buckets, sizeof(buckets) / sizeof(buckets[0]), &n_buckets);
+    if (s != PW_OK) {
+        json_object_object_add(r, "error", json_object_new_string(pw_strerror(s)));
+        return r;
+    }
+    json_object_object_add(r, "id",        json_object_new_int(flow_id));
+    json_object_object_add(r, "n_buckets", json_object_new_int((int)n_buckets));
+    struct json_object *arr = json_object_new_array();
+    for (size_t i = 0; i < n_buckets; i++)
+        json_object_array_add(arr, json_object_new_int64((int64_t)buckets[i]));
+    json_object_object_add(r, "buckets", arr);
+    return r;
+}
+
 /* Per-flow stats: looks up each flow's RX card, asks for a
  * snapshot, and packs the resulting counters into JSON. */
 static struct json_object *build_flow_stats(const struct pw_config *cfg,
@@ -471,6 +521,14 @@ static void handle_client(int cfd,
                 card_filter = json_object_get_int(jc);
             }
             resp = build_stats(cfg, cards, hps, card_filter);
+        } else if (!strcmp(name, "flow.hist")) {
+            struct json_object *jid;
+            if (!json_object_object_get_ex(req, "id", &jid)) {
+                resp = build_error("missing id");
+            } else {
+                resp = build_flow_hist(cfg, prog, cards,
+                                       json_object_get_int(jid));
+            }
         } else if (!strcmp(name, "flow.stats")) {
             struct json_object *jc;
             int filter = -1;

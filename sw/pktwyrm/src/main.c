@@ -347,6 +347,7 @@ static int cmd_help(void) {
     puts("  pktwyrm flow start|stop <id> [--socket PATH]");
     puts("  pktwyrm flow stats [--flow N] [--socket PATH]");
     puts("  pktwyrm test arm|start|stop [--socket PATH]");
+    puts("  pktwyrm hist latency --flow N [--socket PATH]");
     return 0;
 }
 
@@ -363,6 +364,72 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "load"))   return cmd_load(argc - 2, argv + 2);
     if (!strcmp(sub, "rpc"))    return cmd_rpc(argc - 2, argv + 2);
     if (!strcmp(sub, "stats"))  return cmd_stats(argc - 2, argv + 2);
+    if (!strcmp(sub, "hist")) {
+        if (argc < 4 || strcmp(argv[2], "latency")) {
+            fprintf(stderr,
+                "usage: pktwyrm hist latency --flow N [--socket PATH]\n");
+            return 2;
+        }
+        const char *sock = PW_IPC_DEFAULT_PATH;
+        int flow_id = -1;
+        for (int i = 3; i < argc; i++) {
+            if (!strcmp(argv[i], "--flow") && i + 1 < argc) flow_id = atoi(argv[++i]);
+            else if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
+        }
+        if (flow_id < 0) { fprintf(stderr, "--flow required\n"); return 2; }
+        char req[128];
+        snprintf(req, sizeof(req), "{\"rpc\":\"flow.hist\",\"id\":%d}", flow_id);
+        char  resp[PW_IPC_FRAME_MAX]; size_t got = 0;
+        if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
+            fprintf(stderr, "rpc call failed\n"); return 1;
+        }
+        /* Pretty-print: parse the bucket array and draw a small
+         * text bar chart. */
+        struct json_tokener *tok = json_tokener_new();
+        struct json_object  *root = json_tokener_parse_ex(tok, resp, (int)got);
+        json_tokener_free(tok);
+        if (!root) { fwrite(resp, 1, got, stdout); fputc('\n', stdout); return 0; }
+        struct json_object *err;
+        if (json_object_object_get_ex(root, "error", &err)) {
+            printf("error: %s\n", json_object_get_string(err));
+            json_object_put(root); return 1;
+        }
+        struct json_object *lv;
+        if (json_object_object_get_ex(root, "latency_valid", &lv) &&
+            !json_object_get_boolean(lv)) {
+            struct json_object *reason;
+            json_object_object_get_ex(root, "reason", &reason);
+            printf("flow %d: latency not valid (%s)\n", flow_id,
+                   reason ? json_object_get_string(reason) : "");
+            json_object_put(root); return 0;
+        }
+        struct json_object *arr;
+        if (!json_object_object_get_ex(root, "buckets", &arr) ||
+            json_object_get_type(arr) != json_type_array) {
+            fwrite(resp, 1, got, stdout); fputc('\n', stdout);
+            json_object_put(root); return 0;
+        }
+        size_t n = json_object_array_length(arr);
+        uint64_t maxv = 0;
+        for (size_t i = 0; i < n; i++) {
+            int64_t v = json_object_get_int64(json_object_array_get_idx(arr, i));
+            if ((uint64_t)v > maxv) maxv = (uint64_t)v;
+        }
+        printf("flow %d latency histogram (log2 buckets, %zu bins)\n",
+               flow_id, n);
+        for (size_t i = 0; i < n; i++) {
+            int64_t v = json_object_get_int64(json_object_array_get_idx(arr, i));
+            int     bar = (maxv > 0) ? (int)((uint64_t)v * 40 / maxv) : 0;
+            char    line[64];
+            int j;
+            for (j = 0; j < bar && j < 40; j++) line[j] = '#';
+            line[j] = '\0';
+            printf("  [%2zu] (>= %lu ns) %10ld  %s\n",
+                   i, (unsigned long)(1ULL << i), (long)v, line);
+        }
+        json_object_put(root);
+        return 0;
+    }
     if (!strcmp(sub, "test")) {
         if (argc < 3) {
             fprintf(stderr,

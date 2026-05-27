@@ -81,6 +81,14 @@ struct pw_card_backend_ops {
     pw_status (*flow_stats_read)(void *ctx, uint32_t local_flow_id,
                                  struct pw_flow_stats *out);
 
+    /* Read up to `n_buckets` per-flow latency histogram buckets.
+     * On success, *n_buckets_out is set to the actual number of
+     * buckets the FPGA reports. May be NULL on backends without a
+     * histogram window. */
+    pw_status (*flow_hist_read)(void *ctx, uint32_t local_flow_id,
+                                uint64_t *buckets, size_t n_buckets,
+                                size_t *n_buckets_out);
+
     /* Slow-path RX (FPGA -> host). Pops one frame if available.
      * Returns: > 0  = bytes copied into buf (and *out_lif_id set);
      *         == 0  = no frame waiting;

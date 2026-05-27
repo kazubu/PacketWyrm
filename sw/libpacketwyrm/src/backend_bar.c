@@ -106,6 +106,19 @@ static pw_status bar_flow_stats_read(void *vctx, uint32_t lfid,
     return PW_OK;
 }
 
+static pw_status bar_flow_hist_read(void *vctx, uint32_t lfid,
+                                    uint64_t *buckets, size_t n_buckets,
+                                    size_t *n_buckets_out) {
+    (void)vctx; (void)lfid;
+    if (!buckets || !n_buckets_out) return PW_E_INVAL;
+    /* Phase 1 RTL has no histogram window yet. Return zeros so the
+     * RPC shape is stable; the real implementation reads the CSR
+     * histogram window once Phase 3 RTL ships. */
+    for (size_t i = 0; i < n_buckets; i++) buckets[i] = 0;
+    *n_buckets_out = n_buckets;
+    return PW_OK;
+}
+
 static void bar_close(void *vctx) {
     struct bar_ctx *c = vctx;
     if (!c) return;
@@ -124,6 +137,7 @@ static const struct pw_card_backend_ops bar_ops = {
     .stats_snapshot      = bar_stats_snapshot,
     .port_stats_read     = bar_port_stats_read,
     .flow_stats_read     = bar_flow_stats_read,
+    .flow_hist_read      = bar_flow_hist_read,
     .close               = bar_close,
 };
 
