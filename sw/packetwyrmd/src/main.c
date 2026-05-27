@@ -15,6 +15,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <json-c/json.h>
 
@@ -33,11 +35,13 @@ struct card_runtime {
 
 static void usage(const char *prog) {
     fprintf(stderr,
-        "usage: %s [-c CONFIG] [-n] [-v] [-s INTERVAL_MS]\n"
+        "usage: %s [-c CONFIG] [-n] [-v] [-s INTERVAL_MS] [-p PROMETHEUS_PORT]\n"
         "  -c CONFIG         path to packetwyrm.yaml\n"
         "  -n                dry run: parse + validate + compile, exit\n"
         "  -v                verbose\n"
-        "  -s INTERVAL_MS    stats print interval (default 5000, 0 = off)\n",
+        "  -s INTERVAL_MS    stats print interval (default 5000, 0 = off)\n"
+        "  -p PORT           bind a Prometheus /metrics exporter on this TCP\n"
+        "                    port; 0 (default) leaves it disabled\n",
         prog);
 }
 
@@ -314,6 +318,99 @@ static void handle_client(int cfd,
     json_object_put(resp);
 }
 
+/* ---- Prometheus exporter --------------------------------------------- */
+
+static int promex_listen(int port, int *out_fd) {
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct sockaddr_in sa = {
+        .sin_family = AF_INET,
+        .sin_addr.s_addr = htonl(INADDR_ANY),
+        .sin_port = htons((uint16_t)port),
+    };
+    if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) { close(fd); return -1; }
+    if (listen(fd, 4) < 0) { close(fd); return -1; }
+    *out_fd = fd;
+    return 0;
+}
+
+static size_t promex_build_body(char *out, size_t cap,
+                                const struct pw_config *cfg,
+                                struct card_runtime cards[],
+                                struct pw_host_plane *hps[MAX_CARDS]) {
+    size_t n = 0;
+    #define APPENDF(...) do { \
+        int _w = snprintf(out + n, cap - n, __VA_ARGS__); \
+        if (_w > 0 && (size_t)_w < cap - n) n += (size_t)_w; \
+    } while (0)
+    APPENDF("# HELP packetwyrm_build_info Build info\n");
+    APPENDF("# TYPE packetwyrm_build_info gauge\n");
+    APPENDF("packetwyrm_build_info{version=\"%s\"} 1\n", pw_version_string());
+    APPENDF("# HELP packetwyrm_card_open Whether the card backend is open\n");
+    APPENDF("# TYPE packetwyrm_card_open gauge\n");
+    APPENDF("# HELP packetwyrm_punt_to_tap_ok Total punt frames forwarded to TAPs\n");
+    APPENDF("# TYPE packetwyrm_punt_to_tap_ok counter\n");
+    APPENDF("# HELP packetwyrm_punt_to_tap_dropped Total punt frames dropped on TAP write\n");
+    APPENDF("# TYPE packetwyrm_punt_to_tap_dropped counter\n");
+    APPENDF("# HELP packetwyrm_tap_to_fpga_ok Total TAP-read frames forwarded to slow-path TX\n");
+    APPENDF("# TYPE packetwyrm_tap_to_fpga_ok counter\n");
+    APPENDF("# HELP packetwyrm_tap_to_fpga_dropped Total TAP-read frames dropped\n");
+    APPENDF("# TYPE packetwyrm_tap_to_fpga_dropped counter\n");
+    APPENDF("# HELP packetwyrm_punt_unknown_lif Total punts with an unbound logical_if_id\n");
+    APPENDF("# TYPE packetwyrm_punt_unknown_lif counter\n");
+
+    for (size_t i = 0; i < cfg->n_cards; i++) {
+        uint64_t pok=0, pdrop=0, tok2=0, tdrop=0, unk=0;
+        if (hps[i]) {
+            for (size_t j = 0; j < hps[i]->n_bindings; j++) {
+                pok   += hps[i]->punt_to_tap_ok[j];
+                pdrop += hps[i]->punt_to_tap_dropped[j];
+                tok2  += hps[i]->tap_to_fpga_ok[j];
+                tdrop += hps[i]->tap_to_fpga_dropped[j];
+            }
+            unk = hps[i]->punt_unknown_lif;
+        }
+        unsigned id = cfg->cards[i].id;
+        APPENDF("packetwyrm_card_open{card=\"%u\"} %d\n", id, cards[i].open ? 1 : 0);
+        APPENDF("packetwyrm_punt_to_tap_ok{card=\"%u\"} %lu\n",       id, (unsigned long)pok);
+        APPENDF("packetwyrm_punt_to_tap_dropped{card=\"%u\"} %lu\n",  id, (unsigned long)pdrop);
+        APPENDF("packetwyrm_tap_to_fpga_ok{card=\"%u\"} %lu\n",       id, (unsigned long)tok2);
+        APPENDF("packetwyrm_tap_to_fpga_dropped{card=\"%u\"} %lu\n",  id, (unsigned long)tdrop);
+        APPENDF("packetwyrm_punt_unknown_lif{card=\"%u\"} %lu\n",     id, (unsigned long)unk);
+    }
+    #undef APPENDF
+    return n;
+}
+
+static void promex_handle(int cfd,
+                          const struct pw_config *cfg,
+                          struct card_runtime cards[],
+                          struct pw_host_plane *hps[MAX_CARDS]) {
+    /* Read until \r\n\r\n or some limit; we don't actually parse the
+     * request, just acknowledge any GET and respond. */
+    char req[1024];
+    ssize_t n = read(cfd, req, sizeof(req) - 1);
+    if (n <= 0) return;
+    req[n] = 0;
+
+    char body[16384];
+    size_t bn = promex_build_body(body, sizeof(body), cfg, cards, hps);
+
+    char hdr[256];
+    int hn = snprintf(hdr, sizeof(hdr),
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/plain; version=0.0.4\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n\r\n", bn);
+    if (hn > 0 && write(cfd, hdr, (size_t)hn) < 0) return;
+    ssize_t w = write(cfd, body, bn);
+    (void)w;
+}
+
+/* ---- end Prometheus exporter ----------------------------------------- */
+
 /* ---- end JSON RPC ----------------------------------------------------- */
 
 static void print_stats(const struct pw_config *cfg,
@@ -346,14 +443,16 @@ int main(int argc, char **argv) {
     bool dry_run        = false;
     bool verbose        = false;
     int  stats_interval = 5000;
+    int  prom_port      = 0;
 
     int opt;
-    while ((opt = getopt(argc, argv, "c:nvs:h")) != -1) {
+    while ((opt = getopt(argc, argv, "c:nvs:p:h")) != -1) {
         switch (opt) {
         case 'c': cfg_path = optarg; break;
         case 'n': dry_run = true; break;
         case 'v': verbose = true; break;
         case 's': stats_interval = atoi(optarg); break;
+        case 'p': prom_port = atoi(optarg); break;
         case 'h': default: usage(argv[0]); return opt == 'h' ? 0 : 2;
         }
     }
@@ -404,6 +503,16 @@ int main(int argc, char **argv) {
         printf("  control socket listening on %s\n", sock_path);
     }
 
+    int prom_fd = -1;
+    if (prom_port > 0) {
+        if (promex_listen(prom_port, &prom_fd) < 0) {
+            fprintf(stderr, "warning: Prometheus listener on :%d failed\n", prom_port);
+            prom_fd = -1;
+        } else if (verbose) {
+            printf("  Prometheus exporter on :%d/metrics\n", prom_port);
+        }
+    }
+
     struct sigaction sa = { .sa_handler = on_signal };
     sigemptyset(&sa.sa_mask);
     sigaction(SIGINT,  &sa, NULL);
@@ -417,10 +526,14 @@ int main(int argc, char **argv) {
         size_t np = 0;
         for (int i = 0; i < n_taps; i++)
             pfds[np++] = (struct pollfd){ .fd = taps[i].fd, .events = POLLIN };
-        size_t listen_idx = (size_t)-1;
+        size_t listen_idx = (size_t)-1, prom_idx = (size_t)-1;
         if (ipc_listen_fd >= 0) {
             listen_idx = np;
             pfds[np++] = (struct pollfd){ .fd = ipc_listen_fd, .events = POLLIN };
+        }
+        if (prom_fd >= 0) {
+            prom_idx = np;
+            pfds[np++] = (struct pollfd){ .fd = prom_fd, .events = POLLIN };
         }
         (void)poll(np ? pfds : NULL, np, 100);
 
@@ -428,6 +541,13 @@ int main(int argc, char **argv) {
             int cfd = accept(ipc_listen_fd, NULL, NULL);
             if (cfd >= 0) {
                 handle_client(cfd, cfg, prog, cards, hps);
+                close(cfd);
+            }
+        }
+        if (prom_idx != (size_t)-1 && (pfds[prom_idx].revents & POLLIN)) {
+            int cfd = accept(prom_fd, NULL, NULL);
+            if (cfd >= 0) {
+                promex_handle(cfd, cfg, cards, hps);
                 close(cfd);
             }
         }
@@ -443,6 +563,7 @@ int main(int argc, char **argv) {
     }
 
     fprintf(stderr, "shutting down ...\n");
+    if (prom_fd >= 0) close(prom_fd);
     if (ipc_listen_fd >= 0) {
         close(ipc_listen_fd);
         unlink(sock_path);
