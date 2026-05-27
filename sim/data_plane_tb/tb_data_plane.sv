@@ -20,8 +20,9 @@ import pw_classifier_pkg::*;
 
 module tb_data_plane;
 
-    localparam int PORTS = 2;
-    localparam int FLOWS = 8;
+    localparam int PORTS   = 2;
+    localparam int FLOWS   = 8;
+    localparam int BUCKETS = 16;
 
     logic clk = 1'b0;
     always #5 clk = ~clk;
@@ -58,9 +59,18 @@ module tb_data_plane;
     logic [63:0] flow_dup       [FLOWS];
     logic [63:0] flow_ooo       [FLOWS];
     logic [63:0] flow_last_seq  [FLOWS];
+    logic [63:0] flow_min_lat   [FLOWS];
+    logic [63:0] flow_max_lat   [FLOWS];
+    logic [63:0] flow_sum_lat   [FLOWS];
+    logic [63:0] flow_samples   [FLOWS];
+    logic [63:0] flow_hist      [FLOWS * BUCKETS];
     logic [31:0] port_drops     [PORTS];
 
-    pw_data_plane #(.PW_PORTS(PORTS), .PW_NUM_FLOWS(FLOWS)) dut (
+    pw_data_plane #(
+        .PW_PORTS      (PORTS),
+        .PW_NUM_FLOWS  (FLOWS),
+        .PW_NUM_BUCKETS(BUCKETS)
+    ) dut (
         .clk            (clk),
         .rst_n          (rst_n),
         .timestamp_i    (ts),
@@ -87,6 +97,11 @@ module tb_data_plane;
         .flow_dup       (flow_dup),
         .flow_ooo       (flow_ooo),
         .flow_last_seq  (flow_last_seq),
+        .flow_min_lat   (flow_min_lat),
+        .flow_max_lat   (flow_max_lat),
+        .flow_sum_lat   (flow_sum_lat),
+        .flow_samples   (flow_samples),
+        .flow_hist      (flow_hist),
         .port_drops_o   (port_drops)
     );
 
@@ -319,6 +334,18 @@ module tb_data_plane;
         check_eq("loopback rx > 0", (flow_rx[0] > 0) ? 1 : 0, 1);
         check_eq("loopback lost ", flow_lost[0], 0);
         check_eq("loopback ooo  ", flow_ooo[0], 0);
+        check_eq("loopback samples == rx", flow_samples[0], flow_rx[0]);
+        check_eq("loopback min <= max",
+                 (flow_min_lat[0] <= flow_max_lat[0]) ? 1 : 0, 1);
+        // At least one histogram bucket must be non-zero now.
+        begin
+            int nonzero;
+            nonzero = 0;
+            for (int j = 0; j < BUCKETS; j++)
+                if (flow_hist[j] > 0) nonzero++;
+            check_eq("loopback histogram has buckets",
+                     (nonzero > 0) ? 1 : 0, 1);
+        end
 
         // ---------------- scenario 4: intentional loss ----------------
         scenario = "loss";

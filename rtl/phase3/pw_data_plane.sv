@@ -18,8 +18,9 @@ import pw_axis_pkg::*;
 import pw_classifier_pkg::*;
 
 module pw_data_plane #(
-    parameter int PW_PORTS     = 2,
-    parameter int PW_NUM_FLOWS = 16
+    parameter int PW_PORTS       = 2,
+    parameter int PW_NUM_FLOWS   = 16,
+    parameter int PW_NUM_BUCKETS = 16
 ) (
     input  wire                       clk,
     input  wire                       rst_n,
@@ -59,6 +60,11 @@ module pw_data_plane #(
     output logic [63:0]               flow_dup       [PW_NUM_FLOWS],
     output logic [63:0]               flow_ooo       [PW_NUM_FLOWS],
     output logic [63:0]               flow_last_seq  [PW_NUM_FLOWS],
+    output logic [63:0]               flow_min_lat   [PW_NUM_FLOWS],
+    output logic [63:0]               flow_max_lat   [PW_NUM_FLOWS],
+    output logic [63:0]               flow_sum_lat   [PW_NUM_FLOWS],
+    output logic [63:0]               flow_samples   [PW_NUM_FLOWS],
+    output logic [63:0]               flow_hist      [PW_NUM_FLOWS * PW_NUM_BUCKETS],
 
     // Per-port simple drop counters
     output logic [31:0]               port_drops_o   [PW_PORTS]
@@ -125,9 +131,13 @@ module pw_data_plane #(
         end
     end
 
-    pw_test_rx_checker #(.NUM_FLOWS(PW_NUM_FLOWS)) u_checker (
+    pw_test_rx_checker #(
+        .NUM_FLOWS  (PW_NUM_FLOWS),
+        .NUM_BUCKETS(PW_NUM_BUCKETS)
+    ) u_checker (
         .clk             (clk),
         .rst_n           (rst_n),
+        .timestamp_i     (timestamp_i),
         .key_i           (chk_key),
         .result_i        (chk_res),
         .event_valid_i   (chk_ev),
@@ -135,7 +145,12 @@ module pw_data_plane #(
         .lost_o          (flow_lost),
         .duplicate_o     (flow_dup),
         .out_of_order_o  (flow_ooo),
-        .last_seq_o      (flow_last_seq)
+        .last_seq_o      (flow_last_seq),
+        .min_latency_o   (flow_min_lat),
+        .max_latency_o   (flow_max_lat),
+        .sum_latency_o   (flow_sum_lat),
+        .sample_count_o  (flow_samples),
+        .hist_o          (flow_hist)
     );
 
     // ------------------------------------------------------------
