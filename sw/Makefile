@@ -22,6 +22,11 @@ LDFLAGS ?=
 
 YAML_CFLAGS := $(shell $(PKG_CONFIG) --cflags yaml-0.1)
 YAML_LIBS   := $(shell $(PKG_CONFIG) --libs yaml-0.1)
+JSON_CFLAGS := $(shell $(PKG_CONFIG) --cflags json-c)
+JSON_LIBS   := $(shell $(PKG_CONFIG) --libs json-c)
+
+EXTRA_CFLAGS := $(YAML_CFLAGS) $(JSON_CFLAGS)
+EXTRA_LIBS   := $(YAML_LIBS) $(JSON_LIBS)
 
 LIB_DIR     := libpacketwyrm
 LIB_INC     := $(LIB_DIR)/include
@@ -43,7 +48,7 @@ CLI_BIN := $(BUILD_DIR)/pktwyrm
 TEST_SRC := tests/unit/test_main.c
 TEST_BIN := $(BUILD_DIR)/test_unit
 
-INCLUDES := -I$(LIB_INC) $(YAML_CFLAGS)
+INCLUDES := -I$(LIB_INC) $(EXTRA_CFLAGS)
 
 .PHONY: all clean test daemon cli lib
 all: lib daemon cli
@@ -60,21 +65,21 @@ $(LIBA): $(LIB_OBJ) | $(BUILD_DIR)
 	ar rcs $@ $(LIB_OBJ)
 
 $(LIBSO): $(LIB_OBJ) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -shared -o $@ $(LIB_OBJ) $(YAML_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -shared -o $@ $(LIB_OBJ) $(EXTRA_LIBS) $(LDFLAGS)
 
 daemon: $(DAEMON_BIN)
 $(DAEMON_BIN): $(DAEMON_SRC) $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(DAEMON_SRC) $(LIBA) $(YAML_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(DAEMON_SRC) $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 cli: $(CLI_BIN)
 $(CLI_BIN): $(CLI_SRC) $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(CLI_SRC) $(LIBA) $(YAML_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(CLI_SRC) $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 test: $(TEST_BIN)
 	$(TEST_BIN)
 
 $(TEST_BIN): $(TEST_SRC) $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(TEST_SRC) $(LIBA) $(YAML_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(TEST_SRC) $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 clean:
 	rm -f $(LIB_OBJ)

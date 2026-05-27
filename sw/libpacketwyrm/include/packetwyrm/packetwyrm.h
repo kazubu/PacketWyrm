@@ -12,6 +12,7 @@
 #include "packetwyrm/stats.h"
 #include "packetwyrm/tap.h"
 #include "packetwyrm/host_plane.h"
+#include "packetwyrm/ipc.h"
 
 #define PACKETWYRM_VERSION_MAJOR 0
 #define PACKETWYRM_VERSION_MINOR 1

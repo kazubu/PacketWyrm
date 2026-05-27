@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "packetwyrm/packetwyrm.h"
 
@@ -171,10 +172,65 @@ static int cmd_flow_show(int argc, char **argv) {
     return 0;
 }
 
+static int cmd_rpc(int argc, char **argv) {
+    /* pktwyrm rpc <method> [--socket PATH] [--card N] */
+    const char *method = NULL;
+    const char *sock   = PW_IPC_DEFAULT_PATH;
+    int card_id        = -1;
+
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--socket") && i + 1 < argc) {
+            sock = argv[++i];
+        } else if (!strcmp(argv[i], "--card") && i + 1 < argc) {
+            card_id = atoi(argv[++i]);
+        } else if (!method) {
+            method = argv[i];
+        }
+    }
+    if (!method) {
+        fprintf(stderr,
+            "usage: pktwyrm rpc <version|cards|ports|flows|stats> "
+            "[--socket PATH] [--card N]\n");
+        return 2;
+    }
+
+    int fd = -1;
+    pw_status r = pw_ipc_connect(sock, &fd);
+    if (r != PW_OK) {
+        fprintf(stderr, "cannot connect to %s: %s\n", sock, pw_strerror(r));
+        return 1;
+    }
+    char req[256];
+    int rlen;
+    if (card_id >= 0) {
+        rlen = snprintf(req, sizeof(req),
+                        "{\"rpc\":\"%s\",\"card\":%d}", method, card_id);
+    } else {
+        rlen = snprintf(req, sizeof(req), "{\"rpc\":\"%s\"}", method);
+    }
+    if (rlen < 0 || (size_t)rlen >= sizeof(req)) { close(fd); return 1; }
+    if (pw_ipc_write_frame(fd, req, (size_t)rlen) != PW_OK) {
+        fprintf(stderr, "write failed\n");
+        close(fd);
+        return 1;
+    }
+    char  resp[PW_IPC_FRAME_MAX];
+    size_t got = 0;
+    r = pw_ipc_read_frame(fd, resp, sizeof(resp), &got);
+    close(fd);
+    if (r != PW_OK) {
+        fprintf(stderr, "read failed: %s\n", pw_strerror(r));
+        return 1;
+    }
+    fwrite(resp, 1, got, stdout);
+    fputc('\n', stdout);
+    return 0;
+}
+
 static int cmd_help(void) {
     puts("pktwyrm - PacketWyrm CLI");
     puts("");
-    puts("Commands:");
+    puts("Offline commands (operate on a YAML file):");
     puts("  pktwyrm cards                        discover real PacketWyrm PCI cards");
     puts("  pktwyrm cards <config.yaml>          list configured cards from YAML");
     puts("  pktwyrm ports <config.yaml>          list configured ports");
@@ -183,7 +239,9 @@ static int cmd_help(void) {
     puts("  pktwyrm flow show <config.yaml>      list flows");
     puts("  pktwyrm version");
     puts("");
-    puts("Online stats / flow start / test orchestration ship in Phase 5+.");
+    puts("Online (talks to a running packetwyrmd over a Unix socket):");
+    puts("  pktwyrm rpc version");
+    puts("  pktwyrm rpc cards|ports|flows|stats [--socket PATH] [--card N]");
     return 0;
 }
 
@@ -198,6 +256,7 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "ports"))  return cmd_ports(argc - 2, argv + 2);
     if (!strcmp(sub, "map"))    return cmd_map(argc - 2, argv + 2);
     if (!strcmp(sub, "load"))   return cmd_load(argc - 2, argv + 2);
+    if (!strcmp(sub, "rpc"))    return cmd_rpc(argc - 2, argv + 2);
     if (!strcmp(sub, "flow")) {
         if (argc < 3 || strcmp(argv[2], "show")) {
             fprintf(stderr, "usage: pktwyrm flow show <config.yaml>\n"); return 2;

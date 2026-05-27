@@ -484,6 +484,52 @@ static void test_host_plane_with_real_tap(void) {
     pw_card_backend_close(&b);
 }
 
+static void test_ipc_framing(void) {
+    /* Round-trip a length-prefixed frame through a socketpair. */
+    int sp[2];
+    PW_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0);
+
+    const char *msg = "{\"rpc\":\"version\"}";
+    PW_ASSERT_EQ(pw_ipc_write_frame(sp[0], msg, strlen(msg)), PW_OK);
+
+    char   rx[256] = {0};
+    size_t got = 0;
+    PW_ASSERT_EQ(pw_ipc_read_frame(sp[1], rx, sizeof(rx), &got), PW_OK);
+    PW_ASSERT_EQ(got, strlen(msg));
+    PW_ASSERT(memcmp(msg, rx, got) == 0);
+
+    close(sp[0]); close(sp[1]);
+}
+
+static void test_ipc_listen_connect(void) {
+    /* Bind a socket via pw_ipc_listen, connect to it with
+     * pw_ipc_connect, round-trip a frame. */
+    char path[64];
+    snprintf(path, sizeof(path), "/tmp/pw-ipc-test-%d.sock", (int)getpid());
+
+    int srv = -1;
+    PW_ASSERT_EQ(pw_ipc_listen(path, 0600, &srv), PW_OK);
+    PW_ASSERT(srv >= 0);
+
+    int cli = -1;
+    PW_ASSERT_EQ(pw_ipc_connect(path, &cli), PW_OK);
+
+    int conn = accept(srv, NULL, NULL);
+    PW_ASSERT(conn >= 0);
+
+    const char *msg = "hello";
+    PW_ASSERT_EQ(pw_ipc_write_frame(cli, msg, strlen(msg)), PW_OK);
+
+    char  rx[64] = {0};
+    size_t got = 0;
+    PW_ASSERT_EQ(pw_ipc_read_frame(conn, rx, sizeof(rx), &got), PW_OK);
+    PW_ASSERT_EQ(got, strlen(msg));
+    PW_ASSERT(memcmp(msg, rx, got) == 0);
+
+    close(conn); close(cli); close(srv);
+    unlink(path);
+}
+
 static void test_tap_basic(void) {
     /* Tries to create a real TAP device; requires CAP_NET_ADMIN.
      * If permission is denied, the test logs and passes (so the
@@ -537,6 +583,8 @@ int main(void) {
         { "host_plane_socketpair", test_host_plane_socketpair },
         { "tap_basic", test_tap_basic },
         { "host_plane_with_real_tap", test_host_plane_with_real_tap },
+        { "ipc_framing", test_ipc_framing },
+        { "ipc_listen_connect", test_ipc_listen_connect },
     };
     for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
         int before = g_fail;

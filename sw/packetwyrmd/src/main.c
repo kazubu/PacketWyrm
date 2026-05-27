@@ -15,6 +15,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <sys/socket.h>
+#include <json-c/json.h>
+
 #include "packetwyrm/packetwyrm.h"
 
 static volatile sig_atomic_t g_stop = 0;
@@ -159,6 +162,160 @@ static uint64_t now_ms(void) {
     return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
 }
 
+/* ---- JSON RPC ----------------------------------------------------- */
+
+static struct json_object *build_version(void) {
+    struct json_object *r = json_object_new_object();
+    json_object_object_add(r, "version", json_object_new_string(pw_version_string()));
+    return r;
+}
+
+static struct json_object *build_cards(const struct pw_config *cfg,
+                                       struct card_runtime cards[]) {
+    struct json_object *r = json_object_new_object();
+    struct json_object *arr = json_object_new_array();
+    for (size_t i = 0; i < cfg->n_cards; i++) {
+        struct json_object *c = json_object_new_object();
+        json_object_object_add(c, "id",       json_object_new_int(cfg->cards[i].id));
+        json_object_object_add(c, "name",     json_object_new_string(cfg->cards[i].name));
+        json_object_object_add(c, "pci",      json_object_new_string(cfg->cards[i].pci));
+        json_object_object_add(c, "backend",  json_object_new_string(
+            cards[i].open ? cards[i].which : "absent"));
+        json_object_object_add(c, "open",     json_object_new_boolean(cards[i].open));
+        json_object_array_add(arr, c);
+    }
+    json_object_object_add(r, "cards", arr);
+    return r;
+}
+
+static struct json_object *build_ports(const struct pw_config *cfg) {
+    struct json_object *r = json_object_new_object();
+    struct json_object *arr = json_object_new_array();
+    for (size_t i = 0; i < cfg->n_cards; i++) {
+        const struct pw_card *c = &cfg->cards[i];
+        for (size_t p = 0; p < c->n_ports; p++) {
+            struct json_object *po = json_object_new_object();
+            json_object_object_add(po, "name",        json_object_new_string(c->ports[p].name));
+            json_object_object_add(po, "card_id",     json_object_new_int(c->id));
+            json_object_object_add(po, "local_port",  json_object_new_int(c->ports[p].local_port));
+            json_object_object_add(po, "global_port", json_object_new_int(c->ports[p].global_port));
+            json_object_array_add(arr, po);
+        }
+    }
+    json_object_object_add(r, "ports", arr);
+    return r;
+}
+
+static struct json_object *build_flows(const struct pw_config *cfg,
+                                       const struct pw_program *prog) {
+    struct json_object *r = json_object_new_object();
+    struct json_object *arr = json_object_new_array();
+    for (size_t i = 0; i < cfg->n_flows; i++) {
+        const struct pw_flow *f = &cfg->flows[i];
+        const struct pw_flow_meta *m = &prog->flow_meta[i];
+        struct json_object *fl = json_object_new_object();
+        json_object_object_add(fl, "id",            json_object_new_int64(f->id));
+        json_object_object_add(fl, "name",          json_object_new_string(f->name));
+        json_object_object_add(fl, "tx_global_port",json_object_new_int(f->tx_global_port));
+        json_object_object_add(fl, "rx_global_port",json_object_new_int(f->rx_global_port));
+        json_object_object_add(fl, "tx_card_id",    json_object_new_int(m->tx_card_id));
+        json_object_object_add(fl, "rx_card_id",    json_object_new_int(m->rx_card_id));
+        json_object_object_add(fl, "latency_valid", json_object_new_boolean(m->latency_valid));
+        json_object_array_add(arr, fl);
+    }
+    json_object_object_add(r, "flows", arr);
+    return r;
+}
+
+static struct json_object *build_stats(const struct pw_config *cfg,
+                                       struct card_runtime cards[],
+                                       struct pw_host_plane *hps[MAX_CARDS],
+                                       int filter_card_id) {
+    struct json_object *r = json_object_new_object();
+    struct json_object *arr = json_object_new_array();
+    for (size_t i = 0; i < cfg->n_cards; i++) {
+        if (filter_card_id >= 0 && (int)cfg->cards[i].id != filter_card_id) continue;
+        struct json_object *c = json_object_new_object();
+        json_object_object_add(c, "card_id", json_object_new_int(cfg->cards[i].id));
+        json_object_object_add(c, "open",    json_object_new_boolean(cards[i].open));
+        json_object_object_add(c, "backend", json_object_new_string(
+            cards[i].open ? cards[i].which : "absent"));
+        uint64_t pok = 0, pdrop = 0, tok = 0, tdrop = 0;
+        if (hps[i]) {
+            for (size_t j = 0; j < hps[i]->n_bindings; j++) {
+                pok   += hps[i]->punt_to_tap_ok[j];
+                pdrop += hps[i]->punt_to_tap_dropped[j];
+                tok   += hps[i]->tap_to_fpga_ok[j];
+                tdrop += hps[i]->tap_to_fpga_dropped[j];
+            }
+        }
+        json_object_object_add(c, "punt_to_tap_ok",      json_object_new_int64((int64_t)pok));
+        json_object_object_add(c, "punt_to_tap_dropped", json_object_new_int64((int64_t)pdrop));
+        json_object_object_add(c, "tap_to_fpga_ok",      json_object_new_int64((int64_t)tok));
+        json_object_object_add(c, "tap_to_fpga_dropped", json_object_new_int64((int64_t)tdrop));
+        json_object_object_add(c, "punt_unknown_lif",
+            json_object_new_int64(hps[i] ? (int64_t)hps[i]->punt_unknown_lif : 0));
+        json_object_array_add(arr, c);
+    }
+    json_object_object_add(r, "stats", arr);
+    return r;
+}
+
+static struct json_object *build_error(const char *msg) {
+    struct json_object *r = json_object_new_object();
+    json_object_object_add(r, "error", json_object_new_string(msg));
+    return r;
+}
+
+/* Handle one connection: read one request frame, dispatch, write
+ * one response frame. */
+static void handle_client(int cfd,
+                          const struct pw_config *cfg,
+                          const struct pw_program *prog,
+                          struct card_runtime cards[],
+                          struct pw_host_plane *hps[MAX_CARDS]) {
+    uint8_t buf[PW_IPC_FRAME_MAX];
+    size_t  got = 0;
+    if (pw_ipc_read_frame(cfd, buf, sizeof(buf), &got) != PW_OK) return;
+
+    struct json_tokener *tok = json_tokener_new();
+    struct json_object  *req = json_tokener_parse_ex(tok, (char *)buf, (int)got);
+    json_tokener_free(tok);
+
+    struct json_object *resp = NULL;
+    if (!req) {
+        resp = build_error("invalid JSON");
+    } else {
+        struct json_object *rpc;
+        const char *name = NULL;
+        if (json_object_object_get_ex(req, "rpc", &rpc)) {
+            name = json_object_get_string(rpc);
+        }
+        if      (!name)                     resp = build_error("missing rpc");
+        else if (!strcmp(name, "version"))  resp = build_version();
+        else if (!strcmp(name, "cards"))    resp = build_cards(cfg, cards);
+        else if (!strcmp(name, "ports"))    resp = build_ports(cfg);
+        else if (!strcmp(name, "flows"))    resp = build_flows(cfg, prog);
+        else if (!strcmp(name, "stats")) {
+            struct json_object *jc;
+            int card_filter = -1;
+            if (json_object_object_get_ex(req, "card", &jc)) {
+                card_filter = json_object_get_int(jc);
+            }
+            resp = build_stats(cfg, cards, hps, card_filter);
+        } else {
+            resp = build_error("unknown rpc");
+        }
+        json_object_put(req);
+    }
+
+    const char *out = json_object_to_json_string_ext(resp, JSON_C_TO_STRING_PLAIN);
+    pw_ipc_write_frame(cfd, out, strlen(out));
+    json_object_put(resp);
+}
+
+/* ---- end JSON RPC ----------------------------------------------------- */
+
 static void print_stats(const struct pw_config *cfg,
                         struct card_runtime cards[],
                         struct pw_host_plane *hps[MAX_CARDS]) {
@@ -231,23 +388,49 @@ int main(int argc, char **argv) {
         fprintf(stderr, "warning: no TAPs were created\n");
     }
 
+    /* Control socket. Path comes from config; fall back to the
+     * library default. Permissions 0666 in the dev container so
+     * tests run without group setup. Production deployments will
+     * tighten this via udev / the daemon's own user/group. */
+    int ipc_listen_fd = -1;
+    const char *sock_path = cfg->system.control_socket[0]
+        ? cfg->system.control_socket
+        : PW_IPC_DEFAULT_PATH;
+    pw_status sr = pw_ipc_listen(sock_path, 0666, &ipc_listen_fd);
+    if (sr != PW_OK) {
+        fprintf(stderr, "warning: control socket on %s unavailable: %s\n",
+                sock_path, pw_strerror(sr));
+    } else if (verbose) {
+        printf("  control socket listening on %s\n", sock_path);
+    }
+
     struct sigaction sa = { .sa_handler = on_signal };
     sigemptyset(&sa.sa_mask);
     sigaction(SIGINT,  &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
+    signal(SIGPIPE, SIG_IGN);
 
     uint64_t last_stats = now_ms();
     while (!g_stop) {
-        /* Build a poll set from all bound TAP fds so we wake on
-         * any TAP read activity. The 100 ms timeout doubles as the
-         * pacing for slow-path RX draining. */
-        struct pollfd pfds[PW_HOST_PLANE_MAX_BINDINGS];
+        /* Poll TAP fds + the control-socket listen fd. */
+        struct pollfd pfds[PW_HOST_PLANE_MAX_BINDINGS + 1];
         size_t np = 0;
-        for (int i = 0; i < n_taps; i++) {
+        for (int i = 0; i < n_taps; i++)
             pfds[np++] = (struct pollfd){ .fd = taps[i].fd, .events = POLLIN };
+        size_t listen_idx = (size_t)-1;
+        if (ipc_listen_fd >= 0) {
+            listen_idx = np;
+            pfds[np++] = (struct pollfd){ .fd = ipc_listen_fd, .events = POLLIN };
         }
-        int pr = poll(np ? pfds : NULL, np, 100);
-        (void)pr;
+        (void)poll(np ? pfds : NULL, np, 100);
+
+        if (listen_idx != (size_t)-1 && (pfds[listen_idx].revents & POLLIN)) {
+            int cfd = accept(ipc_listen_fd, NULL, NULL);
+            if (cfd >= 0) {
+                handle_client(cfd, cfg, prog, cards, hps);
+                close(cfd);
+            }
+        }
 
         for (size_t i = 0; i < cfg->n_cards; i++)
             if (hps[i]) pw_host_plane_step(hps[i], 16);
@@ -260,6 +443,10 @@ int main(int argc, char **argv) {
     }
 
     fprintf(stderr, "shutting down ...\n");
+    if (ipc_listen_fd >= 0) {
+        close(ipc_listen_fd);
+        unlink(sock_path);
+    }
     for (int i = 0; i < n_taps; i++) pw_tap_close(taps[i].fd);
     for (size_t i = 0; i < MAX_CARDS; i++) free(hps[i]);
     close_all_backends(cfg, cards);
