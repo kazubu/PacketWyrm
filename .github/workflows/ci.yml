@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main, claude/**]
+  pull_request:
+    branches: [main]
+
+jobs:
+  host:
+    name: host stack (sw/)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config \
+            libyaml-dev libjson-c-dev \
+            iproute2
+      - name: build
+        working-directory: sw
+        run: make -j
+      - name: unit tests
+        working-directory: sw
+        run: make test
+      - name: staged install
+        working-directory: sw
+        run: |
+          make install DESTDIR=/tmp/pw-staging
+          test -x /tmp/pw-staging/usr/local/sbin/packetwyrmd
+          test -x /tmp/pw-staging/usr/local/bin/pktwyrm
+          test -f /tmp/pw-staging/lib/systemd/system/packetwyrmd.service
+
+  rtl-sim:
+    name: RTL data-plane sim (Verilator)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: install verilator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y verilator
+      - name: build + run sim
+        working-directory: sim
+        run: make sim
+      - name: lint AS02MC04 RTL
+        working-directory: fpga/as02mc04
+        run: make lint
