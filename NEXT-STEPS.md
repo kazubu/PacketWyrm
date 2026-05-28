@@ -51,7 +51,7 @@ feec1e2 fpga/as02mc04: Phase 1 Vivado project skeleton + bring-up checklist
 |-------------------------------|---------------------------------------|
 | `make -C sw test`             | **154 / 154** unit assertions         |
 | `make -C sw e2e`              | **15 / 15** daemon ↔ CLI checks       |
-| `make -C sim sim_all`         | **38** data plane + **16** AXIS serial + **24** CSR + **16** flow + **16** stats |
+| `make -C sim sim_all`         | **38** data plane + **16** AXIS + **24** CSR + **16** flow + **16** stats + **21** hist |
 | `make -C fpga/as02mc04 lint`  | clean (Verilator + Xilinx blackbox)   |
 | `make -C kernel`              | builds with `linux-headers-$(uname -r)` |
 | `make -C sw install DESTDIR=…`| stages binaries + service + udev      |
@@ -106,24 +106,22 @@ can begin without re-reading the whole conversation.
 
 ### 1. Phase 3 RTL: integrate the CSR window into `pw_csr_*`
 
-**Status (partial).** Classifier, flow, and stats-snapshot windows
-are all done in isolation. Host BAR writes through
-`PWFPGA_WIN_CLASSIFIER` / `PWFPGA_WIN_FLOW_TABLE` flow into
-`pw_csr_window` shadows, get decoded by `pw_classifier_window` /
-`pw_flow_window`, and reach `pw_data_plane`. A
-`PWFPGA_REG_STATS_SNAPSHOT_TRIGGER` write latches the data plane's
-live counters into a `pw_stats_snapshot` shadow region whose
-wire-format byte offsets match `struct pw_port_stats` /
-`struct pw_flow_stats`. Covered by `sim/csr_window_tb` (24),
-`sim/flow_window_tb` (16), and `sim/stats_snapshot_tb` (16).
+**Status (partial).** All four windows now exist as isolated RTL
+modules with their own TBs (totalling **93** assertions over the
+new CSR / flow / stats / histogram TBs):
+
+- `rtl/shared/pw_csr_window.sv` &mdash; generic shadow + commit.
+- `rtl/phase3/pw_classifier_window.sv` &mdash; wire-format
+  `pwfpga_classifier_entry` rows → typed `pw_classifier_table_t`.
+- `rtl/phase3/pw_flow_window.sv` &mdash; wire-format
+  `pwfpga_flow_config` rows → per-port flow_gen inputs.
+- `rtl/phase3/pw_stats_snapshot.sv` &mdash; trigger latches
+  per-flow counters into `pw_flow_stats` / `pw_port_stats`
+  byte layout.
+- `rtl/phase3/pw_histogram_snapshot.sv` &mdash; trigger latches
+  per-flow histogram buckets.
 
 **Still pending.**
-
-- **Histogram window** — copy the per-flow histogram bucket array
-  into `PWFPGA_WIN_HISTOGRAM + lfid * PWFPGA_FLOW_HIST_STRIDE`
-  on snapshot trigger. The per-flow `flow_hist` output already
-  exists in `pw_test_rx_checker`; same shape as stats snapshot,
-  just a different stride.
 - **Wire it into a real top.** None of this is glued into a
   `pw_csr_full.sv` AXI-Lite slave yet. The current testbench drives
   the `wr_en / wr_addr / wr_data` strobe directly. The next step

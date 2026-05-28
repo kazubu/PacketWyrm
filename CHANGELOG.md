@@ -90,6 +90,9 @@ For where work is going next, see `NEXT-STEPS.md`.
     snapshot window (per-port + per-flow counters latched on
     trigger, wire-format byte offsets match `pw_port_stats` /
     `pw_flow_stats`, re-trigger replaces the shadow).
+  - `make -C sim sim_hist`: 21 / 21 assertions for the per-flow
+    latency histogram snapshot (`PWFPGA_WIN_HISTOGRAM` window;
+    NUM_BUCKETS u64s per flow at `lfid * PWFPGA_FLOW_HIST_STRIDE`).
 - **CSR window RTL (Phase 3 ↔ BAR backend hookup)**
   - `rtl/shared/pw_csr_window.sv` &mdash; generic windowed-row CSR
     table with shadow + write-1-to-commit semantics. Parameters:
@@ -117,6 +120,10 @@ For where work is going next, see `NEXT-STEPS.md`.
   - Wire fix: `PWFPGA_FLOW_STATS_BASE` moved from `0x80` to
     `0x100` to keep the per-port stats area (2 × 128 B) from
     overlapping per-flow stats inside the snapshot window.
+  - `rtl/phase3/pw_histogram_snapshot.sv` &mdash; same trigger
+    semantics, separate window. Stores `NUM_BUCKETS` u64s per
+    flow starting at `lfid * PWFPGA_FLOW_HIST_STRIDE`. Reads
+    served via `rd_addr/rd_data`.
   - Wire change: `PWFPGA_CLS_FLAG_ENABLE` (bit 0 of
     `pwfpga_classifier_entry.flags`); the RTL ignores any row
     whose ENABLE bit is clear, and the host flow compiler sets
