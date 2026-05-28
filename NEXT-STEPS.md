@@ -51,7 +51,7 @@ feec1e2 fpga/as02mc04: Phase 1 Vivado project skeleton + bring-up checklist
 |-------------------------------|---------------------------------------|
 | `make -C sw test`             | **154 / 154** unit assertions         |
 | `make -C sw e2e`              | **15 / 15** daemon ↔ CLI checks       |
-| `make -C sim sim_all`         | **38** data plane + **16** AXIS + **24** CSR + **16** flow + **16** stats + **21** hist |
+| `make -C sim sim_all`         | **38** dp + **16** axis + **24** cw + **16** fw + **16** ss + **21** hg + **12** csr_full |
 | `make -C fpga/as02mc04 lint`  | clean (Verilator + Xilinx blackbox)   |
 | `make -C kernel`              | builds with `linux-headers-$(uname -r)` |
 | `make -C sw install DESTDIR=…`| stages binaries + service + udev      |
@@ -106,9 +106,10 @@ can begin without re-reading the whole conversation.
 
 ### 1. Phase 3 RTL: integrate the CSR window into `pw_csr_*`
 
-**Status (partial).** All four windows now exist as isolated RTL
-modules with their own TBs (totalling **93** assertions over the
-new CSR / flow / stats / histogram TBs):
+**Status (done in isolation, integrated under one AXI-Lite slave).**
+All four windows exist as RTL modules with per-window TBs, plus
+`rtl/phase3/pw_csr_full.sv` integrates them under a single
+AXI4-Lite slave (16-bit address space):
 
 - `rtl/shared/pw_csr_window.sv` &mdash; generic shadow + commit.
 - `rtl/phase3/pw_classifier_window.sv` &mdash; wire-format
@@ -120,8 +121,25 @@ new CSR / flow / stats / histogram TBs):
   byte layout.
 - `rtl/phase3/pw_histogram_snapshot.sv` &mdash; trigger latches
   per-flow histogram buckets.
+- `rtl/phase3/pw_csr_full.sv` &mdash; AXI4-Lite slave that
+  wraps the identity registers and all four windows. Exercised
+  end-to-end by `sim/csr_full_tb` (12 assertions over identity
+  reads, classifier write+commit via `axi_write`, snapshot
+  trigger, histogram readback).
 
 **Still pending.**
+
+- **`pwfpga_top_phase3.sv`** &mdash; a top that instantiates
+  `pw_csr_full` next to `pw_data_plane` (and the AXIS serializer
+  per port from commit `6bb84d7`), bridges the PCIe Gen3 IP's
+  AXI-Lite master into the new slave, and exposes the punt and
+  MAC TX/RX. The Phase 1 top (`pwfpga_top_phase1`) keeps the
+  identity-only `pw_csr_min` for bring-up.
+- **Host integration test against the real backend** &mdash; spin
+  up a tmpfs-backed BAR, point a TB at the same address layout
+  `pw_bar_backend_open_path` uses, and exercise the full backend
+  ops surface against `pw_csr_full`. Closes the loop with the
+  host-side unit tests in `test_bar_backend_window_writes`.
 - **Wire it into a real top.** None of this is glued into a
   `pw_csr_full.sv` AXI-Lite slave yet. The current testbench drives
   the `wr_en / wr_addr / wr_data` strobe directly. The next step

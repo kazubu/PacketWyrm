@@ -51,21 +51,35 @@ STATS_RTL := \
 HIST_RTL := \
     $(REPO)/rtl/phase3/pw_histogram_snapshot.sv
 
+FULL_RTL := \
+    $(REPO)/rtl/shared/pw_pkg.sv \
+    $(REPO)/sim/sim_version_pkg.sv \
+    $(REPO)/rtl/shared/pw_csr_window.sv \
+    $(REPO)/rtl/phase3/pw_axis_pkg.sv \
+    $(REPO)/rtl/phase3/pw_classifier_pkg.sv \
+    $(REPO)/rtl/phase3/pw_classifier_window.sv \
+    $(REPO)/rtl/phase3/pw_flow_window.sv \
+    $(REPO)/rtl/phase3/pw_stats_snapshot.sv \
+    $(REPO)/rtl/phase3/pw_histogram_snapshot.sv \
+    $(REPO)/rtl/phase3/pw_csr_full.sv
+
 TB       := data_plane_tb/tb_data_plane.sv
 TB_AXIS  := axis_serial_tb/tb_axis_serial.sv
 TB_CSR   := csr_window_tb/tb_csr_window.sv
 TB_FLOW  := flow_window_tb/tb_flow_window.sv
 TB_STATS := stats_snapshot_tb/tb_stats_snapshot.sv
 TB_HIST  := histogram_tb/tb_histogram.sv
+TB_FULL  := csr_full_tb/tb_csr_full.sv
 
 VFLAGS := --binary -j 0 \
           -Wall \
           -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
           -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNDRIVEN \
           -Wno-IMPORTSTAR -Wno-WIDTHCONCAT -Wno-BLKSEQ -Wno-GENUNNAMED \
+          -Wno-PINCONNECTEMPTY \
           --timing
 
-.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_all wave clean
+.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_all wave clean
 
 sim: sim_build/data_plane
 	./sim_build/data_plane
@@ -85,7 +99,10 @@ sim_stats: sim_build/stats_snapshot
 sim_hist: sim_build/histogram
 	./sim_build/histogram
 
-sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_hist
+sim_full: sim_build/csr_full
+	./sim_build/csr_full
+
+sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
@@ -133,6 +150,13 @@ sim_build/histogram: $(HIST_RTL) $(TB_HIST)
 	    --top-module tb_histogram \
 	    -o histogram \
 	    $(HIST_RTL) $(TB_HIST)
+
+sim_build/csr_full: $(FULL_RTL) $(TB_FULL)
+	$(VERILATOR) $(VFLAGS) \
+	    -Mdir sim_build \
+	    --top-module tb_csr_full \
+	    -o csr_full \
+	    $(FULL_RTL) $(TB_FULL)
 
 clean:
 	rm -rf sim_build

@@ -93,6 +93,11 @@ For where work is going next, see `NEXT-STEPS.md`.
   - `make -C sim sim_hist`: 21 / 21 assertions for the per-flow
     latency histogram snapshot (`PWFPGA_WIN_HISTOGRAM` window;
     NUM_BUCKETS u64s per flow at `lfid * PWFPGA_FLOW_HIST_STRIDE`).
+  - `make -C sim sim_full`: 12 / 12 assertions exercising the
+    full `pw_csr_full` AXI4-Lite slave end-to-end: identity
+    reads, classifier write+commit through `axi_write`, stats
+    snapshot trigger latches counters readable via the
+    snapshot window, histogram trigger latches readable buckets.
 - **CSR window RTL (Phase 3 ↔ BAR backend hookup)**
   - `rtl/shared/pw_csr_window.sv` &mdash; generic windowed-row CSR
     table with shadow + write-1-to-commit semantics. Parameters:
@@ -124,6 +129,12 @@ For where work is going next, see `NEXT-STEPS.md`.
     semantics, separate window. Stores `NUM_BUCKETS` u64s per
     flow starting at `lfid * PWFPGA_FLOW_HIST_STRIDE`. Reads
     served via `rd_addr/rd_data`.
+  - `rtl/phase3/pw_csr_full.sv` &mdash; AXI4-Lite slave (16-bit
+    address) that wraps the identity registers and the four
+    windows under one decode. Single write-strobe drives all
+    four windows; a write to `PWFPGA_REG_STATS_SNAPSHOT_TRIGGER`
+    latches the stats and histogram shadows in lockstep. This
+    is what `pwfpga_top_phase3.sv` will instantiate next.
   - Wire change: `PWFPGA_CLS_FLAG_ENABLE` (bit 0 of
     `pwfpga_classifier_entry.flags`); the RTL ignores any row
     whose ENABLE bit is clear, and the host flow compiler sets
