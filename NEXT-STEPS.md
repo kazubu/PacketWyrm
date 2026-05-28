@@ -51,7 +51,7 @@ feec1e2 fpga/as02mc04: Phase 1 Vivado project skeleton + bring-up checklist
 |-------------------------------|---------------------------------------|
 | `make -C sw test`             | **154 / 154** unit assertions         |
 | `make -C sw e2e`              | **15 / 15** daemon ↔ CLI checks       |
-| `make -C sim sim_all`         | **38** data plane + **16** AXIS serial + **24** CSR window |
+| `make -C sim sim_all`         | **38** data plane + **16** AXIS serial + **24** CSR + **16** flow |
 | `make -C fpga/as02mc04 lint`  | clean (Verilator + Xilinx blackbox)   |
 | `make -C kernel`              | builds with `linux-headers-$(uname -r)` |
 | `make -C sw install DESTDIR=…`| stages binaries + service + udev      |
@@ -106,23 +106,16 @@ can begin without re-reading the whole conversation.
 
 ### 1. Phase 3 RTL: integrate the CSR window into `pw_csr_*`
 
-**Status (partial).** The classifier window is done end-to-end:
-host BAR writes (`PWFPGA_WIN_CLASSIFIER` rows + commit at
-`PWFPGA_REG_CLASSIFIER_COMMIT`) → `pw_csr_window` shadow → typed
-`pw_classifier_table_t` via `pw_classifier_window` → `pw_data_plane`.
-Covered by `sim/csr_window_tb` (24 assertions, including atomic
-commit + ENABLE-bit row disable).
+**Status (partial).** The classifier and flow windows are done
+end-to-end. Host BAR writes through `PWFPGA_WIN_CLASSIFIER` /
+`PWFPGA_WIN_FLOW_TABLE` (with their respective commits) flow into
+`pw_csr_window` shadows, get decoded by `pw_classifier_window` /
+`pw_flow_window`, and reach `pw_data_plane`. Covered by
+`sim/csr_window_tb` (24 assertions) and `sim/flow_window_tb`
+(16 assertions), including atomic commit + ENABLE-bit row disable.
 
 **Still pending.**
 
-- **Flow table window** — same pattern for the per-card flow table.
-  Wire format: `struct pwfpga_flow_config` at
-  `PWFPGA_WIN_FLOW_TABLE + lfid * PWFPGA_FLOW_STRIDE`, commit at
-  `PWFPGA_REG_FLOW_COMMIT`. Write `pw_flow_window.sv` that maps the
-  wire bytes to the `pw_flow_gen.sv` parameter inputs. Today the
-  flow generator's per-port inputs are still wired straight from
-  the testbench; the host's compiled `pwfpga_flow_config` rows
-  have no RTL listener.
 - **Stats snapshot window** — `PWFPGA_REG_STATS_SNAPSHOT_TRIGGER`
   should latch the live `pw_test_rx_checker` outputs (rx / lost /
   dup / ooo / lat min/max/sum/samples) into a shadow `0x3000`

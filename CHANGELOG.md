@@ -82,6 +82,10 @@ For where work is going next, see `NEXT-STEPS.md`.
   - `make -C sim sim_csr`: 24 / 24 assertions exercising the CSR
     window pipeline (AXI-Lite-style writes → shadow → commit →
     typed classifier table → data plane).
+  - `make -C sim sim_flow`: 16 / 16 assertions for the flow-table
+    window (per-port flow-gen inputs decoded from
+    `pwfpga_flow_config` rows, lowest-indexed enabled row wins
+    per egress port, atomic commit, disable via re-commit).
 - **CSR window RTL (Phase 3 ↔ BAR backend hookup)**
   - `rtl/shared/pw_csr_window.sv` &mdash; generic windowed-row CSR
     table with shadow + write-1-to-commit semantics. Parameters:
@@ -91,6 +95,15 @@ For where work is going next, see `NEXT-STEPS.md`.
   - `rtl/phase3/pw_classifier_window.sv` &mdash; adapts the wire-
     format `pwfpga_classifier_entry` rows into the typed
     `pw_classifier_table_t` that `pw_data_plane` consumes.
+  - `rtl/phase3/pw_flow_window.sv` &mdash; adapts the wire-format
+    `pwfpga_flow_config` rows into per-egress-port flow-generator
+    inputs (token bucket Q16.16 tokens/cycle, burst bytes, MAC /
+    IP / UDP / VLAN). The lowest-indexed enabled row binds to each
+    `egress_local_port`.
+  - Wire additions to `pwfpga_flow_config`:
+    `tokens_per_tick_fp` (Q16.16 bytes/cycle, host-precomputed
+    from `rate_bps` and `PWFPGA_DATA_PLANE_CLOCK_HZ`) and
+    `burst_bytes`. The host flow compiler now populates both.
   - Wire change: `PWFPGA_CLS_FLAG_ENABLE` (bit 0 of
     `pwfpga_classifier_entry.flags`); the RTL ignores any row
     whose ENABLE bit is clear, and the host flow compiler sets

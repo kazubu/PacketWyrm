@@ -100,6 +100,20 @@ static pw_status compile_one_flow(struct pw_program *out,
     tx_row.rate_pps = f->traffic.rate_pps;
     tx_row.burst_size = f->traffic.burst_size;
     tx_row.burst_gap_ticks = f->traffic.burst_gap_ticks;
+    /* Pre-compute the RTL's token bucket Q16.16 bytes/cycle so the
+     * FPGA does not need a divider. tokens_per_tick = rate_Bps *
+     * 65536 / clock_hz = rate_bps * 65536 / (8 * clock_hz). The
+     * intermediate fits in 128 bits worst case; we clamp at the
+     * 32-bit Q16.16 maximum (= 65535.99 bytes/cycle, well beyond
+     * any line rate we target). */
+    {
+        unsigned __int128 num = (unsigned __int128)f->traffic.rate_bps * 65536u;
+        unsigned __int128 den = (unsigned __int128)PWFPGA_DATA_PLANE_CLOCK_HZ * 8u;
+        unsigned __int128 q   = den ? (num / den) : 0;
+        tx_row.tokens_per_tick_fp = (q > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)q;
+    }
+    tx_row.burst_bytes = (f->traffic.burst_size > 0xFFFFu)
+                            ? 0xFFFFu : (uint16_t)f->traffic.burst_size;
     tx_row.payload_mode = f->traffic.payload_mode;
     tx_row.payload_seed = f->traffic.payload_seed;
     tx_row.insert_sequence = f->traffic.insert_sequence ? 1 : 0;

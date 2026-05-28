@@ -118,6 +118,13 @@ enum pwfpga_payload_mode {
     PWFPGA_PAYLOAD_RANDOM    = 3,
 };
 
+/* Default FPGA data-plane clock used for host-side tokens/cycle
+ * computation. Phase 3 sim and the AS02MC04 Phase 1 project both
+ * clock the data plane at 100 MHz. Phase 2 (10G MAC) raises this
+ * to 156.25 MHz; when that lands, the host compiler picks the
+ * right constant per `pw_card_info.capabilities`. */
+#define PWFPGA_DATA_PLANE_CLOCK_HZ  100000000u
+
 struct pwfpga_flow_config {
     uint8_t  enable;
     uint8_t  egress_local_port;
@@ -150,6 +157,13 @@ struct pwfpga_flow_config {
     uint64_t rate_pps;
     uint32_t burst_size;
     uint32_t burst_gap_ticks;
+
+    /* Host-computed for the RTL token bucket; derived from rate_bps,
+     * burst_size, and PWFPGA_DATA_PLANE_CLOCK_HZ. Saves a divider
+     * in the FPGA. tokens_per_tick_fp is Q16.16 bytes/cycle. */
+    uint32_t tokens_per_tick_fp;
+    uint16_t burst_bytes;
+    uint16_t reserved0;
 
     uint8_t  payload_mode;       /* enum pwfpga_payload_mode */
     uint32_t payload_seed;
