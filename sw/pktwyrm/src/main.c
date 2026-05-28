@@ -143,10 +143,44 @@ static int cmd_map(int argc, char **argv) {
     return 0;
 }
 
+static int rpc_call(const char *sock, const char *json_req,
+                    char *resp, size_t resp_cap, size_t *out_len);
+
+/* Read an entire file into a newly allocated buffer. Caller frees. */
+static char *slurp_file(const char *path, size_t *out_len) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return NULL;
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return NULL; }
+    long sz = ftell(fp);
+    if (sz < 0) { fclose(fp); return NULL; }
+    rewind(fp);
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) { fclose(fp); return NULL; }
+    size_t got = fread(buf, 1, (size_t)sz, fp);
+    fclose(fp);
+    buf[got] = '\0';
+    if (out_len) *out_len = got;
+    return buf;
+}
+
 static int cmd_load(int argc, char **argv) {
-    if (argc < 1) { fprintf(stderr, "usage: pktwyrm load <config.yaml>\n"); return 2; }
+    const char *path = NULL;
+    const char *sock = NULL;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
+        else if (!path) path = argv[i];
+    }
+    if (!path) {
+        fprintf(stderr,
+                "usage: pktwyrm load <config.yaml> [--socket PATH]\n");
+        return 2;
+    }
+
+    /* Always compile offline first: catches malformed YAML before we
+     * even open the socket, and lets the user see the program
+     * summary regardless of socket mode. */
     struct pw_config *cfg; struct pw_program *prog;
-    if (load_config(argv[0], &cfg, &prog) < 0) return 1;
+    if (load_config(path, &cfg, &prog) < 0) return 1;
     printf("Configuration OK: %zu cards, %zu logical interfaces, %zu flows.\n",
            cfg->n_cards, cfg->n_logical_if, cfg->n_flows);
     for (size_t i = 0; i < prog->n_cards; i++)
@@ -155,6 +189,47 @@ static int cmd_load(int argc, char **argv) {
                prog->per_card[i].n_classifier_rows,
                prog->per_card[i].n_flow_rows);
     pw_program_free(prog); pw_config_free(cfg);
+
+    if (!sock) return 0;
+
+    /* Live deploy: ship the YAML body to the running daemon. */
+    size_t yaml_len = 0;
+    char  *yaml = slurp_file(path, &yaml_len);
+    if (!yaml) { fprintf(stderr, "cannot read %s\n", path); return 1; }
+
+    struct json_object *req = json_object_new_object();
+    json_object_object_add(req, "rpc",  json_object_new_string("config.load"));
+    json_object_object_add(req, "yaml", json_object_new_string_len(yaml, (int)yaml_len));
+    const char *req_str = json_object_to_json_string_ext(req, JSON_C_TO_STRING_PLAIN);
+
+    char resp_buf[PW_IPC_FRAME_MAX];
+    size_t resp_len = 0;
+    int rc = rpc_call(sock, req_str, resp_buf, sizeof(resp_buf), &resp_len);
+    json_object_put(req);
+    free(yaml);
+    if (rc != 0) {
+        fprintf(stderr, "RPC to %s failed\n", sock);
+        return 1;
+    }
+    struct json_tokener *tok = json_tokener_new();
+    struct json_object  *resp = json_tokener_parse_ex(tok, resp_buf, (int)resp_len);
+    json_tokener_free(tok);
+    if (!resp) { fprintf(stderr, "invalid daemon response\n"); return 1; }
+
+    struct json_object *jerr;
+    if (json_object_object_get_ex(resp, "error", &jerr)) {
+        fprintf(stderr, "daemon rejected reload: %s\n",
+                json_object_get_string(jerr));
+        json_object_put(resp);
+        return 1;
+    }
+    struct json_object *jflows, *jcls;
+    int nflows = 0, ncls = 0;
+    if (json_object_object_get_ex(resp, "n_flows",          &jflows)) nflows = json_object_get_int(jflows);
+    if (json_object_object_get_ex(resp, "n_classifier_rows",&jcls))   ncls   = json_object_get_int(jcls);
+    printf("Deployed to %s: %d flows, %d classifier rows.\n",
+           sock, nflows, ncls);
+    json_object_put(resp);
     return 0;
 }
 
@@ -348,6 +423,7 @@ static int cmd_help(void) {
     puts("  pktwyrm flow stats [--flow N] [--socket PATH] [--watch MS] [--json]");
     puts("  pktwyrm test arm|start|stop [--socket PATH]");
     puts("  pktwyrm hist latency --flow N [--socket PATH]");
+    puts("  pktwyrm load <config.yaml> [--socket PATH]");
     return 0;
 }
 

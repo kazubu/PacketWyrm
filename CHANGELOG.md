@@ -56,12 +56,19 @@ For where work is going next, see `NEXT-STEPS.md`.
   - JSON-RPC server on a Unix socket:
     `version`, `cards`, `ports`, `flows`, `stats`,
     `flow.start`, `flow.stop`, `flow.stats`, `flow.hist`,
-    `test.arm`, `test.start`, `test.stop`
+    `test.arm`, `test.start`, `test.stop`, `config.load`
+  - **Live config reload** (`config.load`): the daemon accepts
+    a fresh YAML body over RPC, parses / validates / compiles
+    it, stops old flows, pushes the new program to every open
+    backend, and swaps the cfg+prog atomically. Topology
+    changes (cards / logical_ifs) are explicitly rejected
+    because live TAP/backend swap isn't safe yet.
   - Prometheus `/metrics` exporter on `-p PORT`
 - **`pktwyrm`**
   - Offline: `cards`, `ports`, `map`, `load`, `flow show`, `version`
   - Online: `rpc <method>`, `stats [--watch]`, `flow start|stop`,
-    `flow stats`, `test arm|start|stop`, `hist latency --flow N`
+    `flow stats`, `test arm|start|stop`, `hist latency --flow N`,
+    `load <config.yaml> --socket PATH` (live deploy)
 - **Packaging**
   - `make install` target with `DESTDIR` / `PREFIX` / split dirs
   - systemd unit (`packetwyrmd.service`), sysusers entry,
@@ -157,7 +164,9 @@ For where work is going next, see `NEXT-STEPS.md`.
     TAP / IPC
   - `make -C sw e2e`: shell-based daemon ↔ CLI smoke - launches
     packetwyrmd against an example config and walks the full
-    JSON-RPC surface from pktwyrm. 15 / 15 checks.
+    JSON-RPC surface from pktwyrm, including `config.load`
+    (same-topology accepted, different-topology rejected).
+    18 / 18 checks.
 
 ### Documentation
 

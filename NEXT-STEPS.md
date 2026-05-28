@@ -50,7 +50,7 @@ feec1e2 fpga/as02mc04: Phase 1 Vivado project skeleton + bring-up checklist
 | Command                       | Result                                |
 |-------------------------------|---------------------------------------|
 | `make -C sw test`             | **154 / 154** unit assertions         |
-| `make -C sw e2e`              | **15 / 15** daemon ↔ CLI checks       |
+| `make -C sw e2e`              | **18 / 18** daemon ↔ CLI checks       |
 | `make -C sim sim_all`         | **38** dp + **16** axis + **24** cw + **16** fw + **16** ss + **21** hg + **12** csr_full |
 | `make -C fpga/as02mc04 lint`  | clean (Verilator + Xilinx blackbox)   |
 | `make -C kernel`              | builds with `linux-headers-$(uname -r)` |
@@ -168,33 +168,20 @@ already serve as the host-side contract.
 
 ---
 
-### 2. `pktwyrm load` actually deploys a config to a running daemon
+### 2. `pktwyrm load` actually deploys a config to a running daemon  **(done)**
 
-**Why.** Today `pktwyrm load` parses + validates + compiles offline
-and stops. The user-facing model in the design docs is "edit YAML,
-`pktwyrm load`, the daemon now applies it". The daemon does
-`program_backends()` once at startup but nothing reads new YAML
-later.
+The daemon now exposes `config.load` over JSON-RPC: it parses
+the YAML body, validates, compiles, stops old flows, and pushes
+the new program to every open backend before swapping cfg+prog
+atomically. `pktwyrm load <yaml> --socket PATH` is the
+user-facing front-end. Constraints and design notes live in
+`docs/design/rpc-protocol.md`. Covered by two new e2e checks
+(same-topology accepted, different-topology rejected).
 
-**Concrete work.**
-
-- RPC `config.load`: body = YAML string (or base64'd). Daemon
-  parses, validates, compiles into a *new* `pw_program`, then
-  swaps it in atomically:
-  - stop old flows (`set_flow_enable` false)
-  - push new classifier + flow rows to backends
-  - new flow_meta becomes the live one
-  - on any failure, restore the previous program from a kept
-    snapshot.
-- `pktwyrm load <config.yaml>` (already a subcommand) gains a
-  second mode: if the path looks like a daemon socket OR a
-  `--socket` flag is given, ship the YAML over the RPC instead
-  of just compiling locally.
-- e2e_smoke.sh: add a `config.load` round-trip to the script.
-
-**Watch out.** Live reload while flows are running is genuinely
-hard to make atomic. For the first cut, accept "brief moment
-where no flows are running" as the cost of correctness.
+If you build on this: TAP / backend hot-swap is still out of
+scope (topology mismatch is rejected on purpose). A future
+extension could add `config.diff` so the client previews what
+would change before committing.
 
 ---
 

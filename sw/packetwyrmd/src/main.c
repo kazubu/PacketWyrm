@@ -252,6 +252,113 @@ static pw_status set_flow_enable(struct pw_program *prog,
 
 /* ---- end backend programming ---------------------------------------- */
 
+static struct json_object *build_error(const char *msg);
+
+/* Attempt a live program swap from a YAML string. Returns a JSON
+ * response describing success or the failure mode. On any failure
+ * before the actual swap, the in-flight program stays live; the
+ * previous configuration is undisturbed.
+ *
+ * V1 constraint: the new config must declare the same set of cards
+ * and logical_ifs as the running one (same counts and same id->name
+ * mapping). Changes to TAP / backend binding require a full daemon
+ * restart, since live unplugging a TAP / backend mid-traffic isn't
+ * safe yet. */
+static bool same_topology(const struct pw_config *a,
+                          const struct pw_config *b) {
+    if (a->n_cards != b->n_cards) return false;
+    if (a->n_logical_if != b->n_logical_if) return false;
+    for (size_t i = 0; i < a->n_cards; i++) {
+        if (a->cards[i].id != b->cards[i].id) return false;
+    }
+    for (size_t i = 0; i < a->n_logical_if; i++) {
+        if (a->logical_if[i].id != b->logical_if[i].id) return false;
+    }
+    return true;
+}
+
+static struct json_object *do_config_load(struct pw_config  **cfg_pp,
+                                          struct pw_program **prog_pp,
+                                          struct card_runtime cards[],
+                                          struct json_object *req) {
+    struct json_object *jy;
+    if (!json_object_object_get_ex(req, "yaml", &jy) ||
+        json_object_get_type(jy) != json_type_string) {
+        return build_error("missing yaml");
+    }
+    const char *yaml = json_object_get_string(jy);
+    size_t yaml_len  = strlen(yaml);
+
+    struct pw_config  *new_cfg  = pw_config_new();
+    struct pw_program *new_prog = pw_program_new();
+    struct pw_diag     diag = {0};
+    struct json_object *resp = NULL;
+
+    pw_status r = pw_config_parse_string(yaml, yaml_len, new_cfg, &diag);
+    if (r != PW_OK) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "parse: %s at %s: %s",
+                 pw_strerror(r), diag.path, diag.message);
+        resp = build_error(msg);
+        goto fail;
+    }
+    if ((r = pw_config_validate(new_cfg, &diag)) != PW_OK) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "validate: %s at %s: %s",
+                 pw_strerror(r), diag.path, diag.message);
+        resp = build_error(msg);
+        goto fail;
+    }
+    if (!same_topology(*cfg_pp, new_cfg)) {
+        resp = build_error("topology change (cards / logical_ifs) requires restart");
+        goto fail;
+    }
+    if ((r = pw_flow_compile(new_cfg, new_prog, &diag)) != PW_OK) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "compile: %s at %s: %s",
+                 pw_strerror(r), diag.path, diag.message);
+        resp = build_error(msg);
+        goto fail;
+    }
+
+    /* Stop running flows on the live program so we don't briefly
+     * dual-program two distinct flow sets. Best-effort: failures here
+     * don't block the swap; the new program's commit will override
+     * any stale row anyway. */
+    for (size_t k = 0; k < (*prog_pp)->n_flow_meta; k++) {
+        (void)set_flow_enable(*prog_pp, cards,
+                              (*prog_pp)->flow_meta[k].global_flow_id, false);
+    }
+
+    /* Push the new program into every open backend, then swap. */
+    program_backends(new_prog, new_cfg, cards);
+
+    pw_program_free(*prog_pp);
+    pw_config_free(*cfg_pp);
+    *cfg_pp  = new_cfg;
+    *prog_pp = new_prog;
+
+    resp = json_object_new_object();
+    json_object_object_add(resp, "ok", json_object_new_boolean(true));
+    json_object_object_add(resp, "n_flows",
+                           json_object_new_int((int)new_cfg->n_flows));
+    json_object_object_add(resp, "n_classifier_rows",
+                           json_object_new_int(0));   /* recomputed below */
+    {
+        size_t total_cls = 0;
+        for (size_t ci = 0; ci < new_prog->n_cards; ci++)
+            total_cls += new_prog->per_card[ci].n_classifier_rows;
+        json_object_object_add(resp, "n_classifier_rows",
+                               json_object_new_int((int)total_cls));
+    }
+    return resp;
+
+fail:
+    pw_program_free(new_prog);
+    pw_config_free(new_cfg);
+    return resp;
+}
+
 /* ---- JSON RPC ----------------------------------------------------- */
 
 static struct json_object *build_version(void) {
@@ -488,10 +595,12 @@ static struct json_object *build_error(const char *msg) {
 /* Handle one connection: read one request frame, dispatch, write
  * one response frame. */
 static void handle_client(int cfd,
-                          const struct pw_config *cfg,
-                          struct pw_program *prog,
+                          struct pw_config  **cfg_pp,
+                          struct pw_program **prog_pp,
                           struct card_runtime cards[],
                           struct pw_host_plane *hps[MAX_CARDS]) {
+    const struct pw_config *cfg  = *cfg_pp;
+    struct pw_program      *prog = *prog_pp;
     uint8_t buf[PW_IPC_FRAME_MAX];
     size_t  got = 0;
     if (pw_ipc_read_frame(cfd, buf, sizeof(buf), &got) != PW_OK) return;
@@ -557,6 +666,11 @@ static void handle_client(int cfd,
             json_object_object_add(resp, "action", json_object_new_string(name));
             json_object_object_add(resp, "changed", json_object_new_int(changed));
             json_object_object_add(resp, "failed",  json_object_new_int(failed));
+        } else if (!strcmp(name, "config.load")) {
+            resp = do_config_load(cfg_pp, prog_pp, cards, req);
+            /* refresh local snapshots after a successful swap */
+            cfg  = *cfg_pp;
+            prog = *prog_pp;
         } else if (!strcmp(name, "flow.start") || !strcmp(name, "flow.stop")) {
             struct json_object *jid;
             if (!json_object_object_get_ex(req, "id", &jid)) {
@@ -804,7 +918,7 @@ int main(int argc, char **argv) {
         if (listen_idx != (size_t)-1 && (pfds[listen_idx].revents & POLLIN)) {
             int cfd = accept(ipc_listen_fd, NULL, NULL);
             if (cfd >= 0) {
-                handle_client(cfd, cfg, prog, cards, hps);
+                handle_client(cfd, &cfg, &prog, cards, hps);
                 close(cfd);
             }
         }

@@ -76,6 +76,24 @@ check "test stop"     '"changed":1'           "$CLI" test stop  --socket "$SOCK"
 check "stats table"   '^card[[:space:]]+open' "$CLI" stats --socket "$SOCK"
 check "flow stats tbl" '^id[[:space:]]+tx_c'   "$CLI" flow stats --socket "$SOCK"
 
+# Live config reload: ship the same YAML over the socket and verify
+# the daemon accepts it and re-publishes the program.
+check "config.load same"   'Deployed to .* flows' "$CLI" load "$CFG" --socket "$SOCK"
+check "rpc flows after"    '"flows"'              "$CLI" rpc flows --socket "$SOCK"
+
+# A topology-different config (different card count) must be refused.
+CFG2=$WORK/pw2.yaml
+sed -e '/^system:/a\  control_socket: "'"$SOCK"'"' \
+    "$ROOT/configs/examples/multi-card.yaml" > "$CFG2"
+out2=$("$CLI" load "$CFG2" --socket "$SOCK" 2>&1 || true)
+if echo "$out2" | grep -q 'topology change'; then
+    echo "[ ok ] config.load topology rejected"
+else
+    echo "[FAIL config.load topology rejected] expected 'topology change' in:"
+    echo "$out2"
+    exit 1
+fi
+
 cleanup
 trap 'rm -rf "$WORK"' EXIT
 

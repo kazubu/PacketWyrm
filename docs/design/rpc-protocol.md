@@ -169,6 +169,38 @@ program to every open backend (idempotent resync). `start` and
 { "action": "test.start", "changed": 2, "failed": 0 }
 ```
 
+### `config.load`
+
+Live reload: parse, validate, and compile a YAML body, then swap
+it into the running daemon. The request must carry the full YAML
+configuration as a string (UTF-8).
+
+```json
+{ "rpc": "config.load", "yaml": "system:\n  name: pw\n..." }
+```
+&rarr; on success:
+```json
+{ "ok": true, "n_flows": 1, "n_classifier_rows": 4 }
+```
+
+Constraints:
+
+- The new config **must** have the same cards and logical
+  interfaces (by id) as the running config. Topology changes
+  require a full daemon restart, because live unplugging a
+  TAP / backend mid-traffic isn't safe. Topology mismatch is
+  rejected with `{"error": "topology change ..."}`.
+- Old flows are stopped (enable bit cleared) before the new
+  program is pushed. There is a brief window with no flows
+  enabled; accept it as the cost of correctness for V1.
+- Any failure before the swap (parse / validate / compile)
+  leaves the previous program live; only the error response
+  is returned.
+
+`pktwyrm load <config.yaml> --socket PATH` is the user-facing
+front-end: it compiles offline first (for clean syntax errors),
+then ships the YAML body to the daemon.
+
 ## Errors
 
 Any unhandled situation responds with:
