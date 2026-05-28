@@ -81,7 +81,11 @@ test: $(TEST_BIN)
 $(TEST_BIN): $(TEST_SRC) $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(TEST_SRC) $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
-.PHONY: e2e
+gen_bar_vectors: $(BUILD_DIR)/gen_bar_vectors
+$(BUILD_DIR)/gen_bar_vectors: tests/gen_bar_vectors.c $(LIBA) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/gen_bar_vectors.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+
+.PHONY: e2e gen_bar_vectors
 e2e: $(DAEMON_BIN) $(CLI_BIN)
 	tests/integration/e2e_smoke.sh
 

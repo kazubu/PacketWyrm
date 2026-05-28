@@ -118,6 +118,17 @@ For where work is going next, see `NEXT-STEPS.md`.
     through the deserializer, classifier hits TEST_RX, and the
     snapshot RPC reports rx_frames > 0. ARP on RX[0] raises
     the punt AXIS path.
+  - `make -C sim sim_vec`: 25 / 25 assertions for the C ↔ SV
+    wire-format byte-vector regression. A C-side generator
+    (`sw/build/gen_bar_vectors`) drives the real
+    `pw_bar_backend` ops against a tmpfs BAR, dumps the post-
+    write image as a `$readmemh` hex file, and the RTL TB
+    replays those dwords through `pw_csr_full` and verifies the
+    decoded `pw_classifier_table_t` and per-port flow_gen
+    inputs match what the host wrote. Drift in either side
+    (csr.h struct layout, classifier_window byte offsets,
+    flow_window byte offsets) fails this test before silicon
+    ever boots.
 - **CSR window RTL (Phase 3 ↔ BAR backend hookup)**
   - `rtl/shared/pw_csr_window.sv` &mdash; generic windowed-row CSR
     table with shadow + write-1-to-commit semantics. Parameters:

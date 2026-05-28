@@ -9,3 +9,7 @@ fpga/as02mc04/build/
 sim/sim_build/
 sim/work/
 *.log
+
+# Regenerated each `make -C sim sim_vec` from the C-side
+# pw_bar_backend output. Not source.
+sim/vectors/

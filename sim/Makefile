@@ -90,6 +90,9 @@ TB_STATS := stats_snapshot_tb/tb_stats_snapshot.sv
 TB_HIST  := histogram_tb/tb_histogram.sv
 TB_FULL  := csr_full_tb/tb_csr_full.sv
 TB_TOP   := phase3_top_tb/tb_phase3_top.sv
+TB_VEC   := wire_vectors_tb/tb_wire_vectors.sv
+
+VECTORS := vectors/bar_image.hex
 
 VFLAGS := --binary -j 0 \
           -Wall \
@@ -99,7 +102,7 @@ VFLAGS := --binary -j 0 \
           -Wno-PINCONNECTEMPTY \
           --timing
 
-.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_top sim_all wave clean
+.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_top sim_vec sim_all wave clean vectors
 
 sim: sim_build/data_plane
 	./sim_build/data_plane
@@ -125,7 +128,23 @@ sim_full: sim_build/csr_full
 sim_top: sim_build/phase3_top
 	./sim_build/phase3_top
 
-sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_top
+# Regenerate the C-side BAR-image vector file the wire-vector TB
+# consumes. Depends on the host stack being built; we depend on
+# the generator binary by path so re-running this also captures
+# any change to csr.h that lands in the host stack.
+$(VECTORS): $(REPO)/sw/build/gen_bar_vectors | vectors
+	$(REPO)/sw/build/gen_bar_vectors $(VECTORS)
+
+vectors:
+	mkdir -p $@
+
+vectors_clean:
+	rm -f $(VECTORS)
+
+sim_vec: sim_build/wire_vectors $(VECTORS)
+	./sim_build/wire_vectors
+
+sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_top sim_vec
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
@@ -187,6 +206,17 @@ sim_build/phase3_top: $(TOP_RTL) $(TB_TOP)
 	    --top-module tb_phase3_top \
 	    -o phase3_top \
 	    $(TOP_RTL) $(TB_TOP)
+
+sim_build/wire_vectors: $(FULL_RTL) $(TB_VEC)
+	$(VERILATOR) $(VFLAGS) \
+	    -Mdir sim_build \
+	    --top-module tb_wire_vectors \
+	    -o wire_vectors \
+	    $(FULL_RTL) $(TB_VEC)
+
+# Tell the C generator to live under sw/.
+$(REPO)/sw/build/gen_bar_vectors:
+	$(MAKE) -C $(REPO)/sw gen_bar_vectors
 
 clean:
 	rm -rf sim_build

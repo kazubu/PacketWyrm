@@ -51,7 +51,7 @@ feec1e2 fpga/as02mc04: Phase 1 Vivado project skeleton + bring-up checklist
 |-------------------------------|---------------------------------------|
 | `make -C sw test`             | **164 / 164** unit assertions         |
 | `make -C sw e2e`              | **18 / 18** daemon ↔ CLI checks       |
-| `make -C sim sim_all`         | **38** dp + **16** axis + **24** cw + **16** fw + **16** ss + **21** hg + **12** csr_full + **4** top |
+| `make -C sim sim_all`         | **38** dp + **16** axis + **24** cw + **16** fw + **16** ss + **21** hg + **12** csr_full + **4** top + **25** vec |
 | `make -C fpga/as02mc04 lint`  | clean (Verilator + Xilinx blackbox)   |
 | `make -C kernel`              | builds with `linux-headers-$(uname -r)` |
 | `make -C sw install DESTDIR=…`| stages binaries + service + udev      |
@@ -137,11 +137,15 @@ AXI4-Lite slave (16-bit address space):
   TX/RX AXIS to the Phase 2 10G MAC IP, and exposing the punt
   AXIS as a DMA ring. The existing `pwfpga_top_phase1.sv` keeps
   the identity-only `pw_csr_min` for bring-up.
-- **Host integration test against the real backend** &mdash; spin
-  up a tmpfs-backed BAR, point a TB at the same address layout
-  `pw_bar_backend_open_path` uses, and exercise the full backend
-  ops surface against `pw_csr_full`. Closes the loop with the
-  host-side unit tests in `test_bar_backend_window_writes`.
+- **Host integration test against the real backend** &mdash;
+  **done.** `sw/build/gen_bar_vectors` runs the real
+  `pw_bar_backend` ops against a tmpfs BAR and dumps the
+  post-write image; `sim/wire_vectors_tb` replays those dwords
+  through `pw_csr_full` and checks the decoded classifier table
+  and flow-gen inputs match what the host wrote. The vector
+  file under `sim/vectors/` is regenerated each `make -C sim
+  sim_vec`, so any drift in the C wire layout (csr.h) or the
+  SV byte offsets fails the test immediately.
 - **Wire it into a real top.** None of this is glued into a
   `pw_csr_full.sv` AXI-Lite slave yet. The current testbench drives
   the `wr_en / wr_addr / wr_data` strobe directly. The next step
