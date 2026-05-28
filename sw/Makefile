@@ -26,7 +26,7 @@ JSON_CFLAGS := $(shell $(PKG_CONFIG) --cflags json-c)
 JSON_LIBS   := $(shell $(PKG_CONFIG) --libs json-c)
 
 EXTRA_CFLAGS := $(YAML_CFLAGS) $(JSON_CFLAGS)
-EXTRA_LIBS   := $(YAML_LIBS) $(JSON_LIBS)
+EXTRA_LIBS   := $(YAML_LIBS) $(JSON_LIBS) -lpthread
 
 LIB_DIR     := libpacketwyrm
 LIB_INC     := $(LIB_DIR)/include

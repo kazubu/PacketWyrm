@@ -52,6 +52,12 @@ For where work is going next, see `NEXT-STEPS.md`.
 - **`packetwyrmd`**
   - Long-running event loop with TAP creation, host_plane stepping,
     SIGINT / SIGTERM clean shutdown
+  - **Per-card worker threads**: one pthread per opened card runs
+    its own `poll()` over its TAP fds + `pw_host_plane_step()`.
+    The main thread keeps the control socket and Prometheus
+    listener, so slow-path latency on one card cannot be starved
+    by a busy control socket or by another card. Workers exit on
+    a `stdatomic` stop flag set by the signal handler.
   - Initial program push to backends at startup
   - JSON-RPC server on a Unix socket:
     `version`, `cards`, `ports`, `flows`, `stats`,

@@ -7,7 +7,9 @@
 #include <errno.h>
 #include <getopt.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +34,41 @@ struct card_runtime {
     const char            *which;
     bool                   open;
 };
+
+/* One worker per opened card: drains its TAP fds and runs the
+ * host_plane bridge. The control socket and Prometheus listener
+ * stay on the main thread, so the slow path latency on one card
+ * cannot be starved by a busy control socket or by another card.
+ *
+ * The per-card host_plane has no shared mutable state with the
+ * other workers; the slow_path_rx / slow_path_tx ops it calls
+ * touch disjoint regions of the backend (and disjoint files for
+ * the fake backend). The stats counters inside pw_host_plane are
+ * read from the main thread for print_stats / build_stats; that's
+ * a benign race (best-effort snapshot for a human-facing table),
+ * documented in pw_host_plane.h. */
+struct card_worker_ctx {
+    struct pw_host_plane *hp;
+    int                   fds[PW_HOST_PLANE_MAX_BINDINGS];
+    int                   n_fds;
+    atomic_bool           stop;
+    pthread_t             tid;
+    bool                  running;
+};
+
+static void *card_worker_main(void *arg) {
+    struct card_worker_ctx *w = arg;
+    struct pollfd pfds[PW_HOST_PLANE_MAX_BINDINGS];
+    while (!atomic_load_explicit(&w->stop, memory_order_relaxed)) {
+        for (int i = 0; i < w->n_fds; i++)
+            pfds[i] = (struct pollfd){ .fd = w->fds[i], .events = POLLIN };
+        /* 100 ms cap so the stop flag is observed promptly even
+         * when no traffic flows. */
+        (void)poll(w->n_fds ? pfds : NULL, w->n_fds, 100);
+        pw_host_plane_step(w->hp, 16);
+    }
+    return NULL;
+}
 
 static void usage(const char *prog) {
     fprintf(stderr,
@@ -897,13 +934,36 @@ int main(int argc, char **argv) {
     sigaction(SIGTERM, &sa, NULL);
     signal(SIGPIPE, SIG_IGN);
 
+    /* Spin up one worker per card that has a host_plane. The main
+     * thread keeps the control socket and Prometheus listener.
+     * Each worker owns the TAP fds of its card's bindings. */
+    struct card_worker_ctx workers[MAX_CARDS] = {0};
+    for (size_t i = 0; i < cfg->n_cards; i++) {
+        if (!hps[i]) continue;
+        workers[i].hp = hps[i];
+        workers[i].n_fds = 0;
+        for (size_t k = 0; k < hps[i]->n_bindings; k++) {
+            if (workers[i].n_fds < PW_HOST_PLANE_MAX_BINDINGS) {
+                workers[i].fds[workers[i].n_fds++] = hps[i]->bindings[k].fd;
+            }
+        }
+        atomic_init(&workers[i].stop, false);
+        if (pthread_create(&workers[i].tid, NULL,
+                           card_worker_main, &workers[i]) == 0) {
+            workers[i].running = true;
+            if (verbose)
+                printf("  card%u worker started (%d tap fds)\n",
+                       (unsigned)cfg->cards[i].id, workers[i].n_fds);
+        } else {
+            fprintf(stderr, "card%u: pthread_create failed\n",
+                    (unsigned)cfg->cards[i].id);
+        }
+    }
+
     uint64_t last_stats = now_ms();
     while (!g_stop) {
-        /* Poll TAP fds + the control-socket listen fd. */
-        struct pollfd pfds[PW_HOST_PLANE_MAX_BINDINGS + 1];
+        struct pollfd pfds[2];
         size_t np = 0;
-        for (int i = 0; i < n_taps; i++)
-            pfds[np++] = (struct pollfd){ .fd = taps[i].fd, .events = POLLIN };
         size_t listen_idx = (size_t)-1, prom_idx = (size_t)-1;
         if (ipc_listen_fd >= 0) {
             listen_idx = np;
@@ -930,9 +990,6 @@ int main(int argc, char **argv) {
             }
         }
 
-        for (size_t i = 0; i < cfg->n_cards; i++)
-            if (hps[i]) pw_host_plane_step(hps[i], 16);
-
         if (stats_interval > 0 &&
             (int)(now_ms() - last_stats) >= stats_interval) {
             print_stats(cfg, cards, hps);
@@ -941,6 +998,16 @@ int main(int argc, char **argv) {
     }
 
     fprintf(stderr, "shutting down ...\n");
+    for (size_t i = 0; i < MAX_CARDS; i++) {
+        if (workers[i].running) {
+            atomic_store_explicit(&workers[i].stop, true, memory_order_relaxed);
+        }
+    }
+    for (size_t i = 0; i < MAX_CARDS; i++) {
+        if (workers[i].running) {
+            pthread_join(workers[i].tid, NULL);
+        }
+    }
     if (prom_fd >= 0) close(prom_fd);
     if (ipc_listen_fd >= 0) {
         close(ipc_listen_fd);

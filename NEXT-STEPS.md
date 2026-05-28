@@ -185,23 +185,21 @@ would change before committing.
 
 ---
 
-### 3. Per-card worker threads
+### 3. Per-card worker threads  **(done)**
 
-**Why.** Right now `packetwyrmd` is single-threaded: one poll loop
-drains all TAPs and all card host_planes. For more than a couple of
-cards, a per-card thread keeps slow-path RX latency stable and
-isolates a stuck card.
+`packetwyrmd` now spawns one pthread per opened card. Each
+worker owns its card's TAP fds, runs its own `poll()`, and
+calls `pw_host_plane_step()`. The main thread keeps the
+control socket and Prometheus listener, so slow-path latency
+on one card cannot be starved by another. Workers exit on a
+`stdatomic` stop flag set in the SIGINT/SIGTERM handler.
 
-**Concrete work.**
-
-- One `pthread_create()` per opened card. The thread runs its
-  own `poll()` over that card's TAP fds and calls
-  `pw_host_plane_step(hp[i], 16)`.
-- Main thread keeps the control socket + Prometheus listener.
-- Shared state (`prog`, `cards[]`, `hps[i]`) is read-only after
-  startup; reload (Step 2) needs an RCU-style swap.
-- Stats aggregation reads atomic counters (currently uint64;
-  add `_Atomic` or `__atomic_*` if compile lint complains).
+config.load (TODO #2) and the worker threads are decoupled by
+design: the topology-change ban means `hps[i]` and the TAP fds
+never change across a reload, so workers never need to
+re-synchronise. The host_plane counters are still read from
+the main thread for `print_stats` and the Prometheus exporter;
+that's a benign best-effort race for stats display.
 
 ---
 
