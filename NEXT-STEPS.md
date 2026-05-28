@@ -53,6 +53,7 @@ feec1e2 fpga/as02mc04: Phase 1 Vivado project skeleton + bring-up checklist
 | `make -C sw e2e`              | **18 / 18** daemon ↔ CLI checks       |
 | `make -C sim sim_all`         | **38** dp + **16** axis + **24** cw + **16** fw + **16** ss + **21** hg + **12** csr_full + **4** top + **25** vec |
 | `make -C fpga/as02mc04 lint`  | clean (Verilator + Xilinx blackbox)   |
+| `make -C sim/cocotb all`      | **17 / 17** parser + classifier + flow_gen unit checks |
 | `make -C kernel`              | builds with `linux-headers-$(uname -r)` |
 | `make -C sw install DESTDIR=…`| stages binaries + service + udev      |
 
@@ -225,23 +226,32 @@ output as an alternative diagnostic format for `pw_config_validate`.
 
 ---
 
-### 5. cocotb / Python testbench
+### 5. cocotb / Python testbench  **(done)**
 
-**Why.** The current Verilator SV testbench works but writing more
-scenarios is tedious. cocotb lets us reuse Scapy frames as input
-and Python asserts, dropping the bespoke `make_frame` /
-`make_qinq` / `make_v6_test` helpers.
+`sim/cocotb/` ships a Scapy + cocotb suite covering the parser,
+classifier, and flow generator at the unit level (17 Python
+assertions, 3 modules). Driven by `make -C sim/cocotb all`.
 
-**Concrete work.**
+Implementation notes:
 
-- Add `sim/cocotb/` with cocotb tests for `pw_parser`,
-  `pw_classifier`, `pw_test_rx_checker`, `pw_flow_gen`.
-- One Python helper builds a frame with Scapy, drives it into
-  the DUT, asserts on the output.
-- New `make -C sim cocotb` target.
+- cocotb 2.x's VPI shim requires Verilator >= 5.036; this
+  environment ships 5.020, so the suite runs under **Icarus
+  Verilog** instead.
+- Icarus rejects a few constructs the production RTL leans on
+  (`automatic` inside `always_ff`, packed-struct ports,
+  function-call bit-slicing). Rather than rewrite the production
+  RTL for two simulators, `sim/cocotb/rtl/` ships small
+  behavioural mirrors (`pw_parser_beh.sv`, `pw_classifier_beh.sv`,
+  `pw_flow_gen_beh.sv`) that implement the same spec on flat
+  ports.
+- The Verilator SV suite (`make -C sim sim_all`) is still the
+  gate against the production RTL. cocotb is the spec-level unit
+  suite.
 
-The existing SV testbench stays as the integration test; cocotb
-covers the unit level.
+If you build on this: extend to `pw_test_rx_checker` (latency
+histogram), and once Verilator >= 5.036 is available, retarget
+`run_tests.py` at the production RTL directly and drop the
+behavioural mirrors.
 
 ---
 

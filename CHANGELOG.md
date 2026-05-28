@@ -205,6 +205,15 @@ For where work is going next, see `NEXT-STEPS.md`.
     JSON-RPC surface from pktwyrm, including `config.load`
     (same-topology accepted, different-topology rejected).
     18 / 18 checks.
+  - `make -C sim/cocotb all`: Scapy + cocotb unit suite for the
+    Phase 3 sub-modules. 17 / 17 Python assertions across
+    `pw_parser`, `pw_classifier`, and `pw_flow_gen` behavioural
+    mirrors. Runs under Icarus Verilog (the system Verilator
+    5.020 predates cocotb 2.x's 5.036 minimum); the small
+    behavioural RTL under `sim/cocotb/rtl/` mirrors the spec
+    of the production modules on Icarus-friendly flat ports.
+    The Verilator SV suite remains the integration gate against
+    the production RTL.
 
 ### Documentation
 
