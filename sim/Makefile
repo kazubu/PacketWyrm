@@ -45,10 +45,14 @@ FLOW_RTL := \
     $(REPO)/rtl/phase3/pw_flow_gen.sv \
     $(REPO)/rtl/phase3/pw_data_plane.sv
 
-TB      := data_plane_tb/tb_data_plane.sv
-TB_AXIS := axis_serial_tb/tb_axis_serial.sv
-TB_CSR  := csr_window_tb/tb_csr_window.sv
-TB_FLOW := flow_window_tb/tb_flow_window.sv
+STATS_RTL := \
+    $(REPO)/rtl/phase3/pw_stats_snapshot.sv
+
+TB       := data_plane_tb/tb_data_plane.sv
+TB_AXIS  := axis_serial_tb/tb_axis_serial.sv
+TB_CSR   := csr_window_tb/tb_csr_window.sv
+TB_FLOW  := flow_window_tb/tb_flow_window.sv
+TB_STATS := stats_snapshot_tb/tb_stats_snapshot.sv
 
 VFLAGS := --binary -j 0 \
           -Wall \
@@ -57,7 +61,7 @@ VFLAGS := --binary -j 0 \
           -Wno-IMPORTSTAR -Wno-WIDTHCONCAT -Wno-BLKSEQ -Wno-GENUNNAMED \
           --timing
 
-.PHONY: sim sim_axis sim_csr sim_flow sim_all wave clean
+.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_all wave clean
 
 sim: sim_build/data_plane
 	./sim_build/data_plane
@@ -71,7 +75,10 @@ sim_csr: sim_build/csr_window
 sim_flow: sim_build/flow_window
 	./sim_build/flow_window
 
-sim_all: sim sim_axis sim_csr sim_flow
+sim_stats: sim_build/stats_snapshot
+	./sim_build/stats_snapshot
+
+sim_all: sim sim_axis sim_csr sim_flow sim_stats
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
@@ -105,6 +112,13 @@ sim_build/flow_window: $(FLOW_RTL) $(TB_FLOW)
 	    --top-module tb_flow_window \
 	    -o flow_window \
 	    $(FLOW_RTL) $(TB_FLOW)
+
+sim_build/stats_snapshot: $(STATS_RTL) $(TB_STATS)
+	$(VERILATOR) $(VFLAGS) \
+	    -Mdir sim_build \
+	    --top-module tb_stats_snapshot \
+	    -o stats_snapshot \
+	    $(STATS_RTL) $(TB_STATS)
 
 clean:
 	rm -rf sim_build

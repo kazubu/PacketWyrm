@@ -234,7 +234,9 @@ struct pwfpga_dma_cpl {
 #define PWFPGA_PORT_STATS_STRIDE       128u
 #define PWFPGA_FLOW_STATS_STRIDE       128u
 #define PWFPGA_FLOW_HIST_STRIDE        512u   /* 64 * 8 bytes = 64 buckets */
-#define PWFPGA_FLOW_STATS_BASE         0x80u
+/* Per-flow stats sit above the per-port stats area inside the
+ * snapshot window. Two 128-byte port blocks = 0x100 bytes. */
+#define PWFPGA_FLOW_STATS_BASE         0x100u
 
 #define PWFPGA_REG_CLASSIFIER_COMMIT       (PWFPGA_WIN_CLASSIFIER + 0xFFCu)
 #define PWFPGA_REG_FLOW_COMMIT             (PWFPGA_WIN_FLOW_TABLE + 0xFFCu)

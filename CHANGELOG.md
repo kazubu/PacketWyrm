@@ -86,6 +86,10 @@ For where work is going next, see `NEXT-STEPS.md`.
     window (per-port flow-gen inputs decoded from
     `pwfpga_flow_config` rows, lowest-indexed enabled row wins
     per egress port, atomic commit, disable via re-commit).
+  - `make -C sim sim_stats`: 16 / 16 assertions for the stats
+    snapshot window (per-port + per-flow counters latched on
+    trigger, wire-format byte offsets match `pw_port_stats` /
+    `pw_flow_stats`, re-trigger replaces the shadow).
 - **CSR window RTL (Phase 3 ↔ BAR backend hookup)**
   - `rtl/shared/pw_csr_window.sv` &mdash; generic windowed-row CSR
     table with shadow + write-1-to-commit semantics. Parameters:
@@ -104,6 +108,15 @@ For where work is going next, see `NEXT-STEPS.md`.
     `tokens_per_tick_fp` (Q16.16 bytes/cycle, host-precomputed
     from `rate_bps` and `PWFPGA_DATA_PLANE_CLOCK_HZ`) and
     `burst_bytes`. The host flow compiler now populates both.
+  - `rtl/phase3/pw_stats_snapshot.sv` &mdash; on
+    `PWFPGA_REG_STATS_SNAPSHOT_TRIGGER` write, latches the live
+    per-flow counters from `pw_test_rx_checker` and the per-port
+    drop counters from the data plane into a shadow byte region
+    whose layout matches `struct pw_port_stats` /
+    `struct pw_flow_stats`. Reads served via `rd_addr/rd_data`.
+  - Wire fix: `PWFPGA_FLOW_STATS_BASE` moved from `0x80` to
+    `0x100` to keep the per-port stats area (2 × 128 B) from
+    overlapping per-flow stats inside the snapshot window.
   - Wire change: `PWFPGA_CLS_FLAG_ENABLE` (bit 0 of
     `pwfpga_classifier_entry.flags`); the RTL ignores any row
     whose ENABLE bit is clear, and the host flow compiler sets
