@@ -49,7 +49,7 @@ feec1e2 fpga/as02mc04: Phase 1 Vivado project skeleton + bring-up checklist
 
 | Command                       | Result                                |
 |-------------------------------|---------------------------------------|
-| `make -C sw test`             | **154 / 154** unit assertions         |
+| `make -C sw test`             | **164 / 164** unit assertions         |
 | `make -C sw e2e`              | **18 / 18** daemon ↔ CLI checks       |
 | `make -C sim sim_all`         | **38** dp + **16** axis + **24** cw + **16** fw + **16** ss + **21** hg + **12** csr_full |
 | `make -C fpga/as02mc04 lint`  | clean (Verilator + Xilinx blackbox)   |
@@ -203,24 +203,19 @@ that's a benign best-effort race for stats display.
 
 ---
 
-### 4. JSON Schema for the YAML config
+### 4. JSON Schema for the YAML config  **(done)**
 
-**Why.** The C validator (`pw_config_validate`) returns precise
-errors but is hard to extend safely. A JSON Schema mirror gives
-editors (vscode-yaml, etc.) inline validation and is a forcing
-function for keeping the C validator and the docs in sync.
+`sw/libpacketwyrm/schema/packetwyrm.schema.json` mirrors
+`docs/design/yaml-schema.md`. The unit-test suite checks that
+the file parses as well-formed JSON and contains the expected
+top-level keys (so editor plugins keep working).
+`scripts/check-schema.sh` is an optional dev tool that
+validates the example configs when `python3 + jsonschema` are
+available; CI can opt into it.
 
-**Concrete work.**
-
-- Write `sw/libpacketwyrm/schema/packetwyrm.schema.json` based on
-  `docs/design/yaml-schema.md`.
-- A new unit test runs the example configs against the schema
-  (use a small embedded JSON-schema validator, or fall back to
-  shelling out to `python3 -c "import jsonschema; ..."` if
-  Python is allowed in CI).
-- Document in `docs/design/yaml-schema.md` that the schema is
-  informative (the C validator is authoritative) but kept in
-  sync.
+If you build on this: register the schema with `schemaStore`
+so vscode-yaml picks it up automatically, and add JSON-schema
+output as an alternative diagnostic format for `pw_config_validate`.
 
 ---
 

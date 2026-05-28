@@ -164,7 +164,17 @@ For where work is going next, see `NEXT-STEPS.md`.
     coexistence rules, risks.
 
 - **Tests**
-  - `make -C sw test`: 154 / 154 unit-test assertions across
+  - `sw/libpacketwyrm/schema/packetwyrm.schema.json` &mdash;
+    JSON Schema (Draft 2020-12) mirror of
+    `docs/design/yaml-schema.md`. Informative only (the C
+    validator is authoritative); useful for editor plugins
+    (vscode-yaml, etc.) and a forcing function to keep the
+    schema and the docs in sync.
+  - `scripts/check-schema.sh` &mdash; optional dev tool that
+    validates the example configs against the schema when
+    `python3 + jsonschema + PyYAML` are installed (skips
+    cleanly otherwise).
+  - `make -C sw test`: 164 / 164 unit-test assertions across
     YAML / validator / flow compiler / backend (fake + BAR
     window writes / stats reads) / PCI discovery / host_plane /
     TAP / IPC

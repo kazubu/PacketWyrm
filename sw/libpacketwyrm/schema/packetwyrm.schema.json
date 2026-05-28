@@ -1,0 +1,211 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://kazubu.github.io/packetwyrm/packetwyrm.schema.json",
+    "title": "PacketWyrm configuration",
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["system", "cards", "logical_interfaces", "flows"],
+    "properties": {
+        "system": { "$ref": "#/$defs/system" },
+        "cards": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/card" }
+        },
+        "logical_interfaces": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/logical_interface" }
+        },
+        "flows": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/flow" }
+        }
+    },
+
+    "$defs": {
+        "mac": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$"
+        },
+        "ipv4": {
+            "type": "string",
+            "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$"
+        },
+        "ipv6": {
+            "type": "string"
+        },
+        "pci_bdf": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\\.[0-7]$"
+        },
+
+        "system": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "mode", "default_speed"],
+            "properties": {
+                "name":                   { "type": "string", "minLength": 1 },
+                "mode":                   { "type": "string", "enum": ["multi-card"] },
+                "default_speed":          { "type": "string", "enum": ["10g"] },
+                "stats_poll_interval_ms": { "type": "integer", "minimum": 1 },
+                "control_socket":         { "type": "string", "minLength": 1 }
+            }
+        },
+
+        "card": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "name", "pci", "ports"],
+            "properties": {
+                "id":   { "type": "integer", "minimum": 0, "maximum": 255 },
+                "name": { "type": "string", "minLength": 1 },
+                "pci":  { "$ref": "#/$defs/pci_bdf" },
+                "ports": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 2,
+                    "items": { "$ref": "#/$defs/port" }
+                }
+            }
+        },
+
+        "port": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["local_port", "global_port"],
+            "properties": {
+                "local_port":  { "type": "integer", "minimum": 0, "maximum": 1 },
+                "global_port": { "type": "integer", "minimum": 0 },
+                "name":        { "type": "string", "minLength": 1 }
+            }
+        },
+
+        "logical_interface": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "global_port", "mac"],
+            "properties": {
+                "id":          { "type": "integer", "minimum": 1 },
+                "name":        { "type": "string", "minLength": 1 },
+                "global_port": { "type": "integer", "minimum": 0 },
+                "vlan":        { "type": "integer", "minimum": 0, "maximum": 4094 },
+                "mac":         { "$ref": "#/$defs/mac" },
+                "mtu":         { "type": "integer", "minimum": 64, "maximum": 65535 },
+                "netns":       { "type": "string", "minLength": 1 },
+                "punt": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "arp":     { "type": "boolean" },
+                        "ipv6_nd": { "type": "boolean" },
+                        "lldp":    { "type": "boolean" },
+                        "icmp":    { "type": "boolean" },
+                        "bgp":     { "type": "boolean" },
+                        "ospf":    { "type": "boolean" },
+                        "is_is":   { "type": "boolean" }
+                    }
+                }
+            }
+        },
+
+        "flow": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "tx_global_port", "rx_global_port", "l2", "udp", "traffic"],
+            "properties": {
+                "id":             { "type": "integer", "minimum": 1 },
+                "name":           { "type": "string" },
+                "tx_global_port": { "type": "integer", "minimum": 0 },
+                "rx_global_port": { "type": "integer", "minimum": 0 },
+                "logical_if_id":  { "type": "integer", "minimum": 1 },
+
+                "l2": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["src_mac", "dst_mac"],
+                    "properties": {
+                        "src_mac": { "$ref": "#/$defs/mac" },
+                        "dst_mac": { "$ref": "#/$defs/mac" },
+                        "vlan":    { "type": "integer", "minimum": 0, "maximum": 4094 },
+                        "pcp":     { "type": "integer", "minimum": 0, "maximum": 7  }
+                    }
+                },
+
+                "ipv4": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["src", "dst"],
+                    "properties": {
+                        "src":  { "$ref": "#/$defs/ipv4" },
+                        "dst":  { "$ref": "#/$defs/ipv4" },
+                        "ttl":  { "type": "integer", "minimum": 1, "maximum": 255 },
+                        "dscp": { "type": "integer", "minimum": 0, "maximum": 63  }
+                    }
+                },
+
+                "ipv6": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["src", "dst"],
+                    "properties": {
+                        "src":  { "$ref": "#/$defs/ipv6" },
+                        "dst":  { "$ref": "#/$defs/ipv6" },
+                        "hop_limit": { "type": "integer", "minimum": 1, "maximum": 255 },
+                        "dscp": { "type": "integer", "minimum": 0, "maximum": 63  }
+                    }
+                },
+
+                "udp": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["src_port", "dst_port"],
+                    "properties": {
+                        "src_port": { "type": "integer", "minimum": 0, "maximum": 65535 },
+                        "dst_port": { "type": "integer", "minimum": 0, "maximum": 65535 }
+                    }
+                },
+
+                "traffic": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "frame_len":       { "type": "integer", "minimum": 64, "maximum": 9216 },
+                        "frame_len_min":   { "type": "integer", "minimum": 64, "maximum": 9216 },
+                        "frame_len_max":   { "type": "integer", "minimum": 64, "maximum": 9216 },
+                        "frame_len_step":  { "type": "integer", "minimum": 1 },
+                        "rate_bps":        { "type": "integer", "minimum": 0 },
+                        "rate_pps":        { "type": "integer", "minimum": 0 },
+                        "burst_size":      { "type": "integer", "minimum": 1 },
+                        "burst_gap_ticks": { "type": "integer", "minimum": 0 },
+                        "payload":         {
+                            "type": "string",
+                            "enum": ["zero", "increment", "prbs", "random"]
+                        },
+                        "payload_seed":    { "type": "integer", "minimum": 0 },
+                        "insert_sequence": { "type": "boolean" },
+                        "insert_timestamp":{ "type": "boolean" }
+                    },
+                    "oneOf": [
+                        { "required": ["rate_bps"], "not": { "required": ["rate_pps"] } },
+                        { "required": ["rate_pps"], "not": { "required": ["rate_bps"] } }
+                    ]
+                },
+
+                "measurements": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "loss":    { "type": "boolean" },
+                        "latency": { "type": "boolean" },
+                        "jitter":  { "type": "boolean" }
+                    }
+                }
+            },
+
+            "oneOf": [
+                { "required": ["ipv4"], "not": { "required": ["ipv6"] } },
+                { "required": ["ipv6"], "not": { "required": ["ipv4"] } }
+            ]
+        }
+    }
+}

@@ -14,6 +14,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <json-c/json.h>
+
 #include "packetwyrm/packetwyrm.h"
 
 static int g_fail = 0;
@@ -705,6 +707,52 @@ static void test_tap_basic(void) {
 typedef void (*test_fn)(void);
 struct test_case { const char *name; test_fn fn; };
 
+/* The JSON schema for the YAML config is informative (the C
+ * validator is authoritative), but it must at least be well-formed
+ * JSON with the structural keys the docs reference. This catches
+ * accidental edits that break the schema file for editor plugins
+ * that consume it (vscode-yaml, etc.). */
+static void test_yaml_schema_well_formed(void) {
+    static const char *paths[] = {
+        "libpacketwyrm/schema/packetwyrm.schema.json",
+        "../libpacketwyrm/schema/packetwyrm.schema.json",
+        "../../sw/libpacketwyrm/schema/packetwyrm.schema.json",
+        "sw/libpacketwyrm/schema/packetwyrm.schema.json",
+    };
+    char buf[65536];
+    size_t n = 0;
+    for (size_t k = 0; k < sizeof(paths)/sizeof(*paths); k++) {
+        FILE *fp = fopen(paths[k], "rb");
+        if (!fp) continue;
+        n = fread(buf, 1, sizeof(buf), fp);
+        fclose(fp);
+        if (n > 0) break;
+    }
+    PW_ASSERT(n > 0);
+    if (n == 0) return;
+
+    struct json_tokener *tok  = json_tokener_new();
+    struct json_object  *root = json_tokener_parse_ex(tok, buf, (int)n);
+    json_tokener_free(tok);
+    PW_ASSERT(root != NULL);
+    if (!root) return;
+
+    struct json_object *jx;
+    PW_ASSERT(json_object_object_get_ex(root, "$schema", &jx));
+    PW_ASSERT(json_object_object_get_ex(root, "title",   &jx));
+    PW_ASSERT(json_object_object_get_ex(root, "$defs",   &jx));
+    PW_ASSERT(json_object_object_get_ex(root, "properties", &jx));
+    /* spot-check that the expected top-level config keys are
+     * declared so editors that consume the schema can complete on
+     * them. */
+    struct json_object *props = jx;
+    PW_ASSERT(json_object_object_get_ex(props, "system",             &jx));
+    PW_ASSERT(json_object_object_get_ex(props, "cards",              &jx));
+    PW_ASSERT(json_object_object_get_ex(props, "logical_interfaces", &jx));
+    PW_ASSERT(json_object_object_get_ex(props, "flows",              &jx));
+    json_object_put(root);
+}
+
 int main(void) {
     struct test_case cases[] = {
         { "tap_name", test_tap_name },
@@ -726,6 +774,7 @@ int main(void) {
         { "host_plane_with_real_tap", test_host_plane_with_real_tap },
         { "ipc_framing", test_ipc_framing },
         { "ipc_listen_connect", test_ipc_listen_connect },
+        { "yaml_schema_well_formed", test_yaml_schema_well_formed },
     };
     for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
         int before = g_fail;
