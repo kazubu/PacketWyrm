@@ -51,7 +51,7 @@ feec1e2 fpga/as02mc04: Phase 1 Vivado project skeleton + bring-up checklist
 |-------------------------------|---------------------------------------|
 | `make -C sw test`             | **164 / 164** unit assertions         |
 | `make -C sw e2e`              | **18 / 18** daemon ↔ CLI checks       |
-| `make -C sim sim_all`         | **38** dp + **16** axis + **24** cw + **16** fw + **16** ss + **21** hg + **12** csr_full |
+| `make -C sim sim_all`         | **38** dp + **16** axis + **24** cw + **16** fw + **16** ss + **21** hg + **12** csr_full + **4** top |
 | `make -C fpga/as02mc04 lint`  | clean (Verilator + Xilinx blackbox)   |
 | `make -C kernel`              | builds with `linux-headers-$(uname -r)` |
 | `make -C sw install DESTDIR=…`| stages binaries + service + udev      |
@@ -129,12 +129,14 @@ AXI4-Lite slave (16-bit address space):
 
 **Still pending.**
 
-- **`pwfpga_top_phase3.sv`** &mdash; a top that instantiates
-  `pw_csr_full` next to `pw_data_plane` (and the AXIS serializer
-  per port from commit `6bb84d7`), bridges the PCIe Gen3 IP's
-  AXI-Lite master into the new slave, and exposes the punt and
-  MAC TX/RX. The Phase 1 top (`pwfpga_top_phase1`) keeps the
-  identity-only `pw_csr_min` for bring-up.
+- **Board-level integration of `pwfpga_top_phase3.sv` into the
+  AS02MC04 Phase 1 top.** The Phase 3 core itself exists and
+  passes an end-to-end loop test (see `sim/phase3_top_tb`).
+  What's missing is the board-specific glue: bridging the PCIe
+  Gen3 IP's AXI-Lite master into the new slave, wiring the MAC
+  TX/RX AXIS to the Phase 2 10G MAC IP, and exposing the punt
+  AXIS as a DMA ring. The existing `pwfpga_top_phase1.sv` keeps
+  the identity-only `pw_csr_min` for bring-up.
 - **Host integration test against the real backend** &mdash; spin
   up a tmpfs-backed BAR, point a TB at the same address layout
   `pw_bar_backend_open_path` uses, and exercise the full backend
@@ -239,23 +241,19 @@ covers the unit level.
 
 ---
 
-### 6. TX path RTL to the MAC
+### 6. TX path RTL to the MAC  **(done)**
 
-**Why.** Phase 3 currently produces `tx_frame[gp]` (wide single
-beat). The MAC TX path uses the AXIS serializer from commit
-`6bb84d7`, but there is no wiring from `pw_data_plane` → MAC.
+`rtl/phase3/pwfpga_top_phase3.sv` wires the data plane, an
+AXIS serializer/deserializer per port, and a punt-AXIS path
+under a single AXI4-Lite slave (`pw_csr_full`). The TB at
+`sim/phase3_top_tb/tb_phase3_top.sv` runs the full loop:
+AXI-Lite host writes → CSR windows → flow_gen frame emitted
+on TX serializer → testbench loops it into RX deserializer →
+data plane classifies TEST_RX → stats snapshot reports
+rx_frames > 0; an ARP frame on RX raises the punt AXIS.
 
-**Concrete work.**
-
-- Top-level `pwfpga_top_phase3.sv` (separate from the Phase 1
-  bring-up top): instantiates the data plane, the AXIS serializer
-  per port, and a MAC TX stub (eventually the real 10G MAC).
-- Reverse direction: MAC RX → AXIS deserializer → `rx_frame[gp]`
-  feeding the data plane.
-- New sim that drives the AXIS RX side with raw frame bytes and
-  watches the AXIS TX side, exercising the whole loop.
-
-This is the natural prerequisite for Phase 2 silicon work.
+The remaining work is board-level (PCIe + 10G MAC integration);
+covered under "Still pending" above.
 
 ---
 

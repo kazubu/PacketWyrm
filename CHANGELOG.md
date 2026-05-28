@@ -111,6 +111,13 @@ For where work is going next, see `NEXT-STEPS.md`.
     reads, classifier write+commit through `axi_write`, stats
     snapshot trigger latches counters readable via the
     snapshot window, histogram trigger latches readable buckets.
+  - `make -C sim sim_top`: 4 / 4 assertions exercising the
+    `pwfpga_top_phase3` end-to-end loop: AXI-Lite host writes
+    program both windows, the data plane emits frames via the
+    AXIS serializer, the TB loops port-0 TX into port-1 RX
+    through the deserializer, classifier hits TEST_RX, and the
+    snapshot RPC reports rx_frames > 0. ARP on RX[0] raises
+    the punt AXIS path.
 - **CSR window RTL (Phase 3 ↔ BAR backend hookup)**
   - `rtl/shared/pw_csr_window.sv` &mdash; generic windowed-row CSR
     table with shadow + write-1-to-commit semantics. Parameters:
@@ -146,8 +153,12 @@ For where work is going next, see `NEXT-STEPS.md`.
     address) that wraps the identity registers and the four
     windows under one decode. Single write-strobe drives all
     four windows; a write to `PWFPGA_REG_STATS_SNAPSHOT_TRIGGER`
-    latches the stats and histogram shadows in lockstep. This
-    is what `pwfpga_top_phase3.sv` will instantiate next.
+    latches the stats and histogram shadows in lockstep.
+  - `rtl/phase3/pwfpga_top_phase3.sv` &mdash; board-agnostic
+    integration top wiring `pw_csr_full` + `pw_data_plane`
+    + per-port AXIS serializer / deserializer pair + a punt
+    AXIS master. Per-board tops (e.g. AS02MC04) bring their
+    PCIe → AXI-Lite bridge and 10G MAC IP around this core.
   - Wire change: `PWFPGA_CLS_FLAG_ENABLE` (bit 0 of
     `pwfpga_classifier_entry.flags`); the RTL ignores any row
     whose ENABLE bit is clear, and the host flow compiler sets
