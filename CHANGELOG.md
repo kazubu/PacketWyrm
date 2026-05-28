@@ -79,6 +79,22 @@ For where work is going next, see `NEXT-STEPS.md`.
   - `make -C sim sim`: Verilator-driven `tb_data_plane.sv`, 38 / 38
     assertions across scenarios: drop, punt, loopback, loss, dup,
     vlan, forward, ooo, rate, qinq, bgp, ospf, ipv6
+  - `make -C sim sim_csr`: 24 / 24 assertions exercising the CSR
+    window pipeline (AXI-Lite-style writes → shadow → commit →
+    typed classifier table → data plane).
+- **CSR window RTL (Phase 3 ↔ BAR backend hookup)**
+  - `rtl/shared/pw_csr_window.sv` &mdash; generic windowed-row CSR
+    table with shadow + write-1-to-commit semantics. Parameters:
+    `DEPTH`, `ROW_BYTES`, `WIN_BASE`, `COMMIT_OFFSET`. Live rows
+    are exposed as packed byte arrays with byte 0 in the low bits,
+    matching the AXI-Lite little-endian wire format.
+  - `rtl/phase3/pw_classifier_window.sv` &mdash; adapts the wire-
+    format `pwfpga_classifier_entry` rows into the typed
+    `pw_classifier_table_t` that `pw_data_plane` consumes.
+  - Wire change: `PWFPGA_CLS_FLAG_ENABLE` (bit 0 of
+    `pwfpga_classifier_entry.flags`); the RTL ignores any row
+    whose ENABLE bit is clear, and the host flow compiler sets
+    it for every TEST_RX and PUNT_TO_HOST row.
 - **Kernel driver (Phase 11 starting point)**
   - `kernel/packetwyrm.c` &mdash; out-of-tree PCI skeleton:
     `pci_driver` match on `10ee:a502`, BAR0 ioremap, identity-

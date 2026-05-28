@@ -116,6 +116,24 @@ The shadow table holds the staged entry; writing 1 to
 live row. Mid-update classifier lookups always see either the
 previous or the new entry, never a torn one.
 
+Each row carries a 16-bit `flags` field. Currently defined:
+
+| Bit | Name                    | Meaning                          |
+|----:|-------------------------|----------------------------------|
+|   0 | `PWFPGA_CLS_FLAG_ENABLE`| row is live; the RTL ignores any row with this bit clear |
+
+The host must set `PWFPGA_CLS_FLAG_ENABLE` for every active row.
+Clearing the bit on a re-commit takes the row out of the lookup
+without disturbing any other entry.
+
+The RTL side of the window is implemented by
+`rtl/shared/pw_csr_window.sv` (generic shadow + commit) and
+`rtl/phase3/pw_classifier_window.sv` (wire-format ↔
+`pw_classifier_table_t` adapter). See
+`sim/csr_window_tb/tb_csr_window.sv` for the end-to-end test that
+drives AXI-Lite writes into the window and verifies the data
+plane classifies according to the committed table.
+
 ## Flow table window
 
 Each row is a packed `struct pwfpga_flow_config` at:

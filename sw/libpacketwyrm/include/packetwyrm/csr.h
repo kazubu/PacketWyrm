@@ -94,6 +94,13 @@ struct pwfpga_match_key {
     uint32_t global_flow_id; /* matched against decoded test header */
 } __attribute__((packed));
 
+/* `flags` bits in pwfpga_classifier_entry. Bit 0 (ENABLE) gates the
+ * row entirely; the RTL ignores any row whose ENABLE bit is clear,
+ * regardless of action / key / mask. */
+enum {
+    PWFPGA_CLS_FLAG_ENABLE = 1u << 0,
+};
+
 struct pwfpga_classifier_entry {
     struct pwfpga_match_key key;
     struct pwfpga_match_key mask;
@@ -101,7 +108,7 @@ struct pwfpga_classifier_entry {
     uint32_t local_flow_id;
     uint8_t  action;     /* enum pwfpga_action */
     uint8_t  priority;   /* lower numbers win */
-    uint16_t flags;
+    uint16_t flags;      /* PWFPGA_CLS_FLAG_* */
 } __attribute__((packed));
 
 enum pwfpga_payload_mode {

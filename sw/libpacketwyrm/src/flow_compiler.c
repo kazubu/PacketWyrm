@@ -121,6 +121,7 @@ static pw_status compile_one_flow(struct pw_program *out,
     /* RX classifier row */
     struct pwfpga_classifier_entry ce = {0};
     ce.action = PWFPGA_ACT_TEST_RX;
+    ce.flags = PWFPGA_CLS_FLAG_ENABLE;
     ce.priority = 10;
     ce.local_flow_id = rx_lfid;
     ce.logical_if_id = f->logical_if_id;
@@ -168,6 +169,7 @@ static pw_status compile_punt_rules(struct pw_program *out, const struct pw_conf
         #define EMIT(eth, l3p, prio_) do { \
             struct pwfpga_classifier_entry e = {0}; \
             e.action = PWFPGA_ACT_PUNT_TO_HOST; \
+            e.flags  = PWFPGA_CLS_FLAG_ENABLE; \
             e.priority = (prio_); \
             e.logical_if_id = l->id; \
             e.key.ingress_local_port = ref.local_port_id; \

@@ -51,7 +51,7 @@ feec1e2 fpga/as02mc04: Phase 1 Vivado project skeleton + bring-up checklist
 |-------------------------------|---------------------------------------|
 | `make -C sw test`             | **154 / 154** unit assertions         |
 | `make -C sw e2e`              | **15 / 15** daemon ↔ CLI checks       |
-| `make -C sim sim_all`         | **38 / 38** data plane + **16 / 16** AXIS serial |
+| `make -C sim sim_all`         | **38** data plane + **16** AXIS serial + **24** CSR window |
 | `make -C fpga/as02mc04 lint`  | clean (Verilator + Xilinx blackbox)   |
 | `make -C kernel`              | builds with `linux-headers-$(uname -r)` |
 | `make -C sw install DESTDIR=…`| stages binaries + service + udev      |
@@ -106,45 +106,56 @@ can begin without re-reading the whole conversation.
 
 ### 1. Phase 3 RTL: integrate the CSR window into `pw_csr_*`
 
-**Why.** Today `pw_csr_min` exposes only identity / global control /
-timestamp. The host BAR backend (commit `b22d017`) writes the
-documented `PWFPGA_WIN_CLASSIFIER` / `PWFPGA_WIN_FLOW_TABLE` /
-`PWFPGA_WIN_STATS_SNAPSHOT` / `PWFPGA_WIN_HISTOGRAM` windows but
-*nothing in the RTL listens*. The data plane in `pw_data_plane.sv`
-still takes `cls_table_i` as a top-level parameter port and the
-test_rx_checker counters never leave the module.
+**Status (partial).** The classifier window is done end-to-end:
+host BAR writes (`PWFPGA_WIN_CLASSIFIER` rows + commit at
+`PWFPGA_REG_CLASSIFIER_COMMIT`) → `pw_csr_window` shadow → typed
+`pw_classifier_table_t` via `pw_classifier_window` → `pw_data_plane`.
+Covered by `sim/csr_window_tb` (24 assertions, including atomic
+commit + ENABLE-bit row disable).
 
-**Concrete work.**
+**Still pending.**
 
-- New RTL: `rtl/shared/pw_csr_window.sv`. Implements a windowed
-  table-slot interface: address register, data registers, commit bit.
-  Internally it stores a double-buffered shadow row (write-1-to-
-  commit). Parameters: `WIN_BASE`, `WIN_STRIDE`, `WIN_DEPTH`,
-  `ROW_BYTES`, `COMMIT_OFFSET`.
-- Instantiate it three times inside `pw_csr_min` (or a new
-  `pw_csr_full.sv`): classifier (8 rows × 128 B), flow (8 rows ×
-  128 B), stats snapshot (read-only, populated by the data
-  plane on `STATS_SNAPSHOT_TRIGGER`).
-- Wire `cls_table_i` of `pw_data_plane` to the classifier window's
-  committed view.
-- Add the test_rx_checker outputs (`flow_rx`, `flow_lost`, …,
-  `flow_hist`) to the snapshot window. On trigger, copy the
-  current per-flow counters into the shadow region.
-- Histogram: write the per-flow bucket array into
-  `PWFPGA_WIN_HISTOGRAM + lfid * PWFPGA_FLOW_HIST_STRIDE`.
+- **Flow table window** — same pattern for the per-card flow table.
+  Wire format: `struct pwfpga_flow_config` at
+  `PWFPGA_WIN_FLOW_TABLE + lfid * PWFPGA_FLOW_STRIDE`, commit at
+  `PWFPGA_REG_FLOW_COMMIT`. Write `pw_flow_window.sv` that maps the
+  wire bytes to the `pw_flow_gen.sv` parameter inputs. Today the
+  flow generator's per-port inputs are still wired straight from
+  the testbench; the host's compiled `pwfpga_flow_config` rows
+  have no RTL listener.
+- **Stats snapshot window** — `PWFPGA_REG_STATS_SNAPSHOT_TRIGGER`
+  should latch the live `pw_test_rx_checker` outputs (rx / lost /
+  dup / ooo / lat min/max/sum/samples) into a shadow `0x3000`
+  region whose layout matches `struct pw_flow_stats` in `stats.h`.
+  Port-stats block too (today the BAR backend reads it from a
+  blank window).
+- **Histogram window** — copy the per-flow histogram bucket array
+  into `PWFPGA_WIN_HISTOGRAM + lfid * PWFPGA_FLOW_HIST_STRIDE`
+  on snapshot trigger.
+- **Wire it into a real top.** None of this is glued into a
+  `pw_csr_full.sv` AXI-Lite slave yet. The current testbench drives
+  the `wr_en / wr_addr / wr_data` strobe directly. The next step
+  is to write `pw_csr_full.sv` that wraps `pw_csr_min` + the
+  windows + a single AXI-Lite slave, instantiate it in a new
+  `pwfpga_top_phase3.sv`, and prove it round-trips against the
+  host BAR backend (set up a tmpfs-backed BAR like the unit tests
+  do, and add an integration test that uses the actual backend
+  ops, not raw strobes).
 
-**Test plan.** Extend `sim/data_plane_tb` to drive AXI-Lite
-writes through the new CSR fabric, then watch the data plane
-actually classify accordingly. The wire format is fixed (see
-`csr.h`), so the existing host BAR backend round-trips (commit
-`b22d017` test cases) already serve as the host-side contract.
+**Test plan.** Add `sim/flow_window_tb` and `sim/stats_window_tb`
+following the same shape as `csr_window_tb`. The wire format is
+fixed by `csr.h`; the existing host BAR backend round-trips
+(`test_bar_backend_window_writes` / `test_bar_backend_stats_reads`)
+already serve as the host-side contract.
 
 **Files of interest.**
 
-- `rtl/shared/pw_pkg.sv` — CSR offsets already there.
-- `rtl/shared/pw_csr_min.sv` — current minimal CSR.
-- `sw/libpacketwyrm/include/packetwyrm/csr.h` — stride / commit
-  register macros.
+- `rtl/shared/pw_csr_window.sv` — generic shadow + commit.
+- `rtl/phase3/pw_classifier_window.sv` — pattern to mirror for
+  flow / stats / histogram.
+- `sim/csr_window_tb/tb_csr_window.sv` — reference TB.
+- `sw/libpacketwyrm/include/packetwyrm/csr.h` — stride / commit /
+  flag register macros.
 - `docs/design/csr-map.md` — register / window layout reference.
 
 ---
