@@ -54,6 +54,7 @@ feec1e2 fpga/as02mc04: Phase 1 Vivado project skeleton + bring-up checklist
 | `make -C sim sim_all`         | **38** dp + **16** axis + **24** cw + **16** fw + **16** ss + **21** hg + **12** csr_full + **4** top + **25** vec |
 | `make -C fpga/as02mc04 lint`  | clean (Verilator + Xilinx blackbox)   |
 | `make -C sim/cocotb all`      | **17 / 17** parser + classifier + flow_gen unit checks |
+| `make -C tools/pktwyrm-tinet test` | **13 / 13** lab-spec -> tinet/FRR golden + schema |
 | `make -C kernel`              | builds with `linux-headers-$(uname -r)` |
 | `make -C sw install DESTDIR=…`| stages binaries + service + udev      |
 
@@ -268,6 +269,46 @@ rx_frames > 0; an ARP frame on RX raises the punt AXIS.
 
 The remaining work is board-level (PCIe + 10G MAC integration);
 covered under "Still pending" above.
+
+---
+
+### 7. Container / tinet integration  **(Phase A done)**
+
+`tools/pktwyrm-tinet/` turns a tiny lab spec (a YAML referencing an
+existing PacketWyrm config plus a `routers:` block) into a tinet
+topology + per-router FRR config files. Operators run
+`tinet up | sudo sh` to spin up containers and `tinet conf | sudo sh`
+to apply routing config.
+
+Design choices:
+
+  - **Lab spec lives outside the PacketWyrm config**, in its own
+    YAML that references the PacketWyrm config by path. The core
+    daemon and its JSON Schema (`additionalProperties: false` at root)
+    are untouched — `routers:` is a lab concern, not a data-plane
+    concern.
+  - **TAP attach via `ip link set <tap> netns <ctr>`** under tinet's
+    `postinit_cmds`. The TAP fd stays in `packetwyrmd`'s process;
+    only the netdev moves. One hop fewer than a veth bridge and
+    matches the existing `start-r1.sh` recipe.
+  - **FRR per-router config files** are written next to the
+    tinet.yaml and bind-mounted into each container. v1 supports
+    BGP (asn / router_id / neighbors / advertised networks); OSPF
+    fits under the same `routing:` shape when needed.
+
+Tests: `make -C tools/pktwyrm-tinet test` -> 13 / 13 golden + schema
+checks in pure Python. Worked example at
+`configs/examples/lab-frr-2node/` (two FRR containers peering eBGP
+across a DUT).
+
+**Phase B (not done):** `pktwyrm-lab up/down/conf` wrapper that
+orchestrates `packetwyrmd` + `tinet` + the netns moves so the
+operator runs one command instead of three. Currently a
+README-level handoff.
+
+**Phase C (later):** non-FRR templates (BIRD, GoBGP); L2 lab
+topologies that bridge multiple LIFs; opt-in CI smoke that runs
+the full bring-up in a docker-in-docker runner.
 
 ---
 

@@ -1,0 +1,28 @@
+packetwyrm_config: ./two-router-bgp.packetwyrm.yaml
+
+routers:
+  - name: r1
+    image: quay.io/frrouting/frr:latest
+    logical_if_id: 1000
+    addr: "192.0.2.1/30"
+    routing:
+      bgp:
+        asn: 65001
+        router_id: "192.0.2.1"
+        neighbors:
+          - { peer: "192.0.2.2", remote_as: 65002 }
+        networks:
+          - "10.0.1.0/24"
+
+  - name: r2
+    image: quay.io/frrouting/frr:latest
+    logical_if_id: 1001
+    addr: "192.0.2.2/30"
+    routing:
+      bgp:
+        asn: 65002
+        router_id: "192.0.2.2"
+        neighbors:
+          - { peer: "192.0.2.1", remote_as: 65001 }
+        networks:
+          - "10.0.2.0/24"

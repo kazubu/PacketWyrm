@@ -1,0 +1,43 @@
+# Two-router FRR lab spec.
+#
+# Each FRR container takes one PacketWyrm TAP and peers eBGP with the
+# other across the DUT in the middle.  Bring up with:
+#
+#   sudo packetwyrmd -c packetwyrm.yaml &              # creates TAPs
+#   python3 tools/pktwyrm-tinet/generate.py generate \
+#       configs/examples/lab-frr-2node/lab.yaml \
+#       -o /tmp/lab-frr/
+#   sudo sh -c "cd /tmp/lab-frr && tinet up    -c tinet.yaml | sh"
+#   sudo sh -c "cd /tmp/lab-frr && tinet conf  -c tinet.yaml | sh"
+#   sudo docker exec r1 vtysh -c 'show bgp summary'
+#
+# `tinet down -c tinet.yaml | sudo sh` reverses the lot.
+
+packetwyrm_config: ./packetwyrm.yaml
+
+routers:
+  - name: r1
+    image: quay.io/frrouting/frr:latest
+    logical_if_id: 1000
+    addr: "192.0.2.1/30"
+    routing:
+      bgp:
+        asn: 65001
+        router_id: "192.0.2.1"
+        neighbors:
+          - { peer: "192.0.2.2", remote_as: 65002 }
+        networks:
+          - "10.0.1.0/24"
+
+  - name: r2
+    image: quay.io/frrouting/frr:latest
+    logical_if_id: 1001
+    addr: "192.0.2.2/30"
+    routing:
+      bgp:
+        asn: 65002
+        router_id: "192.0.2.2"
+        neighbors:
+          - { peer: "192.0.2.1", remote_as: 65001 }
+        networks:
+          - "10.0.2.0/24"

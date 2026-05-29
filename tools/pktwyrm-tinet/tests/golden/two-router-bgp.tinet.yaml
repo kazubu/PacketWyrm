@@ -1,0 +1,42 @@
+nodes:
+- name: r1
+  image: quay.io/frrouting/frr:latest
+  interfaces: []
+  mounts:
+  - /tmp/PW_OUT/frr-r1/frr.conf:/etc/frr/frr.conf:ro
+  - /tmp/PW_OUT/frr-r1/daemons:/etc/frr/daemons:ro
+  sysctls:
+  - sysctl: net.ipv4.ip_forward=1
+  - sysctl: net.ipv6.conf.all.forwarding=1
+- name: r2
+  image: quay.io/frrouting/frr:latest
+  interfaces: []
+  mounts:
+  - /tmp/PW_OUT/frr-r2/frr.conf:/etc/frr/frr.conf:ro
+  - /tmp/PW_OUT/frr-r2/daemons:/etc/frr/daemons:ro
+  sysctls:
+  - sysctl: net.ipv4.ip_forward=1
+  - sysctl: net.ipv6.conf.all.forwarding=1
+switches: []
+node_configs:
+- name: r1
+  cmds:
+  - cmd: ip link set lo up
+  - cmd: ip link set tap-pw-p0-v100 up
+  - cmd: ip link set tap-pw-p0-v100 mtu 9000
+  - cmd: ip addr add 192.0.2.1/30 dev tap-pw-p0-v100
+  - cmd: /usr/lib/frr/frrinit.sh start
+- name: r2
+  cmds:
+  - cmd: ip link set lo up
+  - cmd: ip link set tap-pw-p1-v100 up
+  - cmd: ip link set tap-pw-p1-v100 mtu 9000
+  - cmd: ip addr add 192.0.2.2/30 dev tap-pw-p1-v100
+  - cmd: /usr/lib/frr/frrinit.sh start
+postinit_cmds:
+- cmd: ip link show tap-pw-p0-v100 >/dev/null 2>&1 || { echo "TAP tap-pw-p0-v100 not
+    present; is packetwyrmd up?" >&2; exit 1; }
+- cmd: ip link set tap-pw-p0-v100 netns r1
+- cmd: ip link show tap-pw-p1-v100 >/dev/null 2>&1 || { echo "TAP tap-pw-p1-v100 not
+    present; is packetwyrmd up?" >&2; exit 1; }
+- cmd: ip link set tap-pw-p1-v100 netns r2

@@ -1,0 +1,29 @@
+# Fixture: minimal PacketWyrm config for the two-router BGP golden.
+system:
+  name: "test-2node"
+  mode: "multi-card"
+  default_speed: "10g"
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:03:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+logical_interfaces:
+  - id: 1000
+    global_port: 0
+    vlan: 100
+    mac: "02:a5:02:00:00:64"
+    mtu: 9000
+    punt: { arp: true, bgp: true }
+  - id: 1001
+    global_port: 1
+    vlan: 100
+    mac: "02:a5:02:00:01:64"
+    mtu: 9000
+    punt: { arp: true, bgp: true }
+
+flows: []

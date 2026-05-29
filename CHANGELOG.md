@@ -10,6 +10,23 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ### Added
 
+- **Lab integration: pktwyrm-tinet**
+  - `tools/pktwyrm-tinet/` generates a [tinet](https://github.com/tinynetwork/tinet)
+    topology + per-router FRR configs from a small lab spec that
+    references an existing PacketWyrm config. Each router runs in a
+    container; its assigned PacketWyrm TAP is moved into the
+    container's network namespace via tinet `postinit_cmds`, so
+    PacketWyrm stays the data-plane truth and tinet handles the
+    container lifecycle.
+  - v1 supports BGP (asn / router_id / neighbors / advertised
+    networks). OSPF / IS-IS can be added under the same `routing:`
+    shape when needed.
+  - `make -C tools/pktwyrm-tinet test`: 13 / 13 golden + schema tests
+    in pure Python (PyYAML only). No docker / tinet / FPGA required.
+  - Worked example at `configs/examples/lab-frr-2node/` with two FRR
+    routers peering eBGP across a DUT.
+  - Lab spec lives in its own file (referencing the PacketWyrm config
+    by path); the core daemon and its JSON Schema are untouched.
 - **Parser & classifier**
   - QinQ (802.1ad outer + 802.1Q inner) tag decoding
   - IPv6 (40-byte fixed header, source/dest extraction, next-header
