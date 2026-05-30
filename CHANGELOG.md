@@ -21,8 +21,18 @@ For where work is going next, see `NEXT-STEPS.md`.
   - v1 supports BGP (asn / router_id / neighbors / advertised
     networks). OSPF / IS-IS can be added under the same `routing:`
     shape when needed.
-  - `make -C tools/pktwyrm-tinet test`: 13 / 13 golden + schema tests
-    in pure Python (PyYAML only). No docker / tinet / FPGA required.
+  - Lifecycle CLI: `pktwyrm-tinet up LAB.YAML` starts `packetwyrmd`,
+    waits for TAPs to appear, runs `tinet up` + `tinet conf`, and
+    persists state (pid, tinet.yaml, TAP list) under
+    `<out_dir>/.pktwyrm-lab.json`. `conf`, `down`, and `status`
+    operate against that state file. `down` is idempotent and falls
+    back to a best-effort `tinet down` when the state file is gone
+    but a tinet.yaml is still present.
+  - `make -C tools/pktwyrm-tinet test`: 35 / 35 tests in pure Python
+    (PyYAML + `unittest.mock` only). No docker / tinet / FPGA
+    required. Covers golden YAML/FRR rendering, lab-spec schema
+    validation, state-file round-trip, shell command construction,
+    and the up/down/conf orchestrator (with mocked subprocess).
   - Worked example at `configs/examples/lab-frr-2node/` with two FRR
     routers peering eBGP across a DUT.
   - Lab spec lives in its own file (referencing the PacketWyrm config

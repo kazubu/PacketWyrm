@@ -1,23 +1,38 @@
 # pktwyrm-tinet
 
-PacketWyrm lab-spec -> [tinet](https://github.com/tinynetwork/tinet)
-topology generator. Turns a small YAML that says *"router r1 runs FRR
-on logical_if 1000, router r2 runs FRR on logical_if 1001, they peer
-eBGP"* into a tinet YAML plus per-router FRR config files that
-`tinet up | sudo sh` can launch.
+PacketWyrm lab orchestrator: turns a small lab spec into a running
+container topology backed by [tinet](https://github.com/tinynetwork/tinet),
+with each container's primary interface being a PacketWyrm TAP.
 
-The generator is read-only against PacketWyrm. It loads an existing
-PacketWyrm config to resolve `logical_if_id` -> kernel TAP name
-(`tap-pw-p<gport>-v<vlan>`) and emits everything else.
+## Sub-commands
 
-## Why this lives outside `sw/`
+```
+pktwyrm-tinet generate  LAB.YAML [-o OUT/]   emit tinet.yaml + per-router FRR configs
+pktwyrm-tinet up        LAB.YAML [-o OUT/]   generate + packetwyrmd + tinet up + tinet conf
+pktwyrm-tinet conf               [-o OUT/]   re-apply tinet conf to a running lab
+pktwyrm-tinet down               [-o OUT/]   tinet down + stop packetwyrmd
+pktwyrm-tinet status             [-o OUT/]   print JSON state
+```
 
-The core PacketWyrm daemon and its JSON Schema know nothing about
-containers, tinet, or FRR. Adding `routers:` to the daemon's config
-schema would push container concerns into the data-plane core. Keeping
-the lab spec in a separate file (referencing the PacketWyrm config by
-path) leaves the core untouched and lets the lab tool evolve
-independently.
+`generate` and `status` are read-only. `up`, `conf`, and `down` need
+root (packetwyrmd + `ip link set` + docker).
+
+## Quick start
+
+```sh
+# Bring up: one command, all the moving parts.
+sudo python3 tools/pktwyrm-tinet/pktwyrm-tinet up \
+    configs/examples/lab-frr-2node/lab.yaml \
+    -o /tmp/lab-frr/
+
+sudo docker exec r1 vtysh -c 'show bgp summary'
+
+# Re-apply node config (after editing the lab.yaml + re-generating):
+sudo python3 tools/pktwyrm-tinet/pktwyrm-tinet conf -o /tmp/lab-frr/
+
+# Tear down.
+sudo python3 tools/pktwyrm-tinet/pktwyrm-tinet down -o /tmp/lab-frr/
+```
 
 ## Lab spec format
 
@@ -40,44 +55,40 @@ routers:
           - "10.0.1.0/24"                  # advertised prefixes
 ```
 
-OSPF / IS-IS are intentionally not in v1 — add them when you need
+OSPF / IS-IS are intentionally not in v1 -- add them when you need
 them, following the same shape under `routing:`.
 
-## Usage
+## Why this lives outside `sw/`
 
-```sh
-# 1. Render the lab.
-python3 tools/pktwyrm-tinet/generate.py generate \
-    configs/examples/lab-frr-2node/lab.yaml \
-    -o /tmp/lab-frr/
-
-# 2. Start the PacketWyrm daemon (creates TAPs).
-sudo packetwyrmd -c configs/examples/lab-frr-2node/packetwyrm.yaml &
-
-# 3. Bring the containers up.
-sudo sh -c "cd /tmp/lab-frr && tinet up   -c tinet.yaml | sh"
-sudo sh -c "cd /tmp/lab-frr && tinet conf -c tinet.yaml | sh"
-
-# 4. Verify.
-sudo docker exec r1 vtysh -c 'show bgp summary'
-
-# 5. Tear down.
-sudo sh -c "cd /tmp/lab-frr && tinet down -c tinet.yaml | sh"
-```
+The core PacketWyrm daemon and its JSON Schema know nothing about
+containers, tinet, or FRR. Adding `routers:` to the daemon's config
+schema would push container concerns into the data-plane core. Keeping
+the lab spec in a separate file (referencing the PacketWyrm config by
+path) leaves the core untouched and lets the lab tool evolve
+independently.
 
 ## How TAPs attach
 
-Two ways exist; we pick the simpler one:
+  - `pktwyrm-tinet up` starts `packetwyrmd`, then polls for the TAP
+    netdevs to appear in the root netns (max 10 s).
+  - `tinet up` creates the containers with `--network none`.
+  - The generated tinet spec's `postinit_cmds` runs
+    `ip link set <tap> netns <container>` once per router. The TAP fd
+    stays in `packetwyrmd`'s process (file descriptors aren't bound to
+    net namespaces); only the netdev moves.
+  - `tinet conf` then runs `ip addr add ... && /usr/lib/frr/frrinit.sh
+    start` inside each container.
 
-  - **Move the TAP netdev into the container netns.** The TAP fd
-    stays in `packetwyrmd`'s process (because file descriptors aren't
-    bound to net namespaces), while the netdev moves into the
-    container netns via `ip link set <tap> netns <ctr>`. One data-path
-    hop fewer than a veth bridge.
+One data-path hop fewer than a veth bridge, and the same approach as
+`configs/examples/container-frr/start-r1.sh` -- just scaled to N
+routers and idempotent.
 
-The generator emits these `ip link set` calls under tinet's
-`postinit_cmds`, which run as root after containers exist but before
-`tinet conf` runs the in-container setup.
+## State
+
+`up` writes `<out_dir>/.pktwyrm-lab.json` with the `packetwyrmd` pid,
+the tinet.yaml path, and the TAP list. `down`, `conf`, and `status`
+read that file. If you blow away the out_dir, `down` becomes a no-op
+(or a best-effort `tinet down` if a stray `tinet.yaml` is still there).
 
 ## Testing
 
@@ -85,17 +96,20 @@ The generator emits these `ip link set` calls under tinet's
 make -C tools/pktwyrm-tinet test
 ```
 
-13 golden + schema-validation tests. Pure Python; no docker, no
-tinet binary, no FPGA required.
+35 tests in pure Python (PyYAML + `unittest.mock` only) -- no docker,
+no tinet binary, no FPGA. Covers:
 
-```sh
-make -C tools/pktwyrm-tinet example
-```
+  - the generator's tinet.yaml + FRR.conf goldens
+  - lab-spec schema validation (positive + negative)
+  - state-file round-trip + pid liveness
+  - shell-command construction
+  - `up`/`down`/`conf` orchestration with mocked subprocess
 
-Renders the in-tree example to `/tmp/lab-frr/` without running it.
+The full subprocess path (real `packetwyrmd`, real `tinet up`) is
+covered by `make example` and by running the worked example by hand.
 
 ## Dependencies
 
 Generator: `python3`, `PyYAML`.
-Run-time: `docker` (or compatible), `tinet`, `iproute2`, the
-`packetwyrmd` binary.
+Run-time (for `up`/`conf`/`down`): `packetwyrmd`, `docker` (or
+compatible), `tinet`, `iproute2`.

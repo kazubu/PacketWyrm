@@ -54,7 +54,7 @@ feec1e2 fpga/as02mc04: Phase 1 Vivado project skeleton + bring-up checklist
 | `make -C sim sim_all`         | **38** dp + **16** axis + **24** cw + **16** fw + **16** ss + **21** hg + **12** csr_full + **4** top + **25** vec |
 | `make -C fpga/as02mc04 lint`  | clean (Verilator + Xilinx blackbox)   |
 | `make -C sim/cocotb all`      | **17 / 17** parser + classifier + flow_gen unit checks |
-| `make -C tools/pktwyrm-tinet test` | **13 / 13** lab-spec -> tinet/FRR golden + schema |
+| `make -C tools/pktwyrm-tinet test` | **35 / 35** lab generator + lifecycle orchestrator |
 | `make -C kernel`              | builds with `linux-headers-$(uname -r)` |
 | `make -C sw install DESTDIR=…`| stages binaries + service + udev      |
 
@@ -272,20 +272,18 @@ covered under "Still pending" above.
 
 ---
 
-### 7. Container / tinet integration  **(Phase A done)**
+### 7. Container / tinet integration  **(Phases A + B done)**
 
-`tools/pktwyrm-tinet/` turns a tiny lab spec (a YAML referencing an
-existing PacketWyrm config plus a `routers:` block) into a tinet
-topology + per-router FRR config files. Operators run
-`tinet up | sudo sh` to spin up containers and `tinet conf | sudo sh`
-to apply routing config.
+`tools/pktwyrm-tinet/pktwyrm-tinet` is a multi-command CLI that
+both *renders* a tinet topology from a lab spec and *orchestrates*
+the full lifecycle (`up` / `conf` / `down` / `status`).
 
 Design choices:
 
   - **Lab spec lives outside the PacketWyrm config**, in its own
     YAML that references the PacketWyrm config by path. The core
     daemon and its JSON Schema (`additionalProperties: false` at root)
-    are untouched — `routers:` is a lab concern, not a data-plane
+    are untouched -- `routers:` is a lab concern, not a data-plane
     concern.
   - **TAP attach via `ip link set <tap> netns <ctr>`** under tinet's
     `postinit_cmds`. The TAP fd stays in `packetwyrmd`'s process;
@@ -295,16 +293,24 @@ Design choices:
     tinet.yaml and bind-mounted into each container. v1 supports
     BGP (asn / router_id / neighbors / advertised networks); OSPF
     fits under the same `routing:` shape when needed.
+  - **Single state file** `<out_dir>/.pktwyrm-lab.json` records the
+    `packetwyrmd` pid, tinet.yaml path, and TAP list. `down` and
+    `status` need nothing else; `down` is idempotent and degrades to
+    a best-effort `tinet down` when state is missing but `tinet.yaml`
+    is still present.
 
-Tests: `make -C tools/pktwyrm-tinet test` -> 13 / 13 golden + schema
-checks in pure Python. Worked example at
-`configs/examples/lab-frr-2node/` (two FRR containers peering eBGP
-across a DUT).
+Tests: `make -C tools/pktwyrm-tinet test` -> 35 / 35 in pure Python
+(PyYAML + `unittest.mock`). Golden YAML/FRR rendering, schema
+validation, state-file IO, command construction, and the up/down/conf
+orchestrator with mocked subprocess.
 
-**Phase B (not done):** `pktwyrm-lab up/down/conf` wrapper that
-orchestrates `packetwyrmd` + `tinet` + the netns moves so the
-operator runs one command instead of three. Currently a
-README-level handoff.
+Worked example: `configs/examples/lab-frr-2node/` -- two FRR
+containers peering eBGP across a DUT, brought up with one command:
+
+```sh
+sudo python3 tools/pktwyrm-tinet/pktwyrm-tinet up \
+    configs/examples/lab-frr-2node/lab.yaml -o /tmp/lab-frr/
+```
 
 **Phase C (later):** non-FRR templates (BIRD, GoBGP); L2 lab
 topologies that bridge multiple LIFs; opt-in CI smoke that runs

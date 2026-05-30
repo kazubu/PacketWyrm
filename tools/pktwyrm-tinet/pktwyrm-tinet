@@ -3,7 +3,10 @@
 
 Use:
 
-    python3 tools/pktwyrm-tinet/generate.py generate lab.yaml -o out/
+    python3 tools/pktwyrm-tinet/pktwyrm-tinet generate lab.yaml -o out/
+    sudo python3 tools/pktwyrm-tinet/pktwyrm-tinet up lab.yaml
+    sudo python3 tools/pktwyrm-tinet/pktwyrm-tinet down
+    sudo python3 tools/pktwyrm-tinet/pktwyrm-tinet status
 """
 from __future__ import annotations
 

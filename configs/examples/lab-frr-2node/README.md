@@ -25,20 +25,17 @@ eBGP across a DUT under test.
 ## Bring up
 
 ```sh
-# Render lab into tinet + FRR configs under /tmp/lab-frr/
-python3 tools/pktwyrm-tinet/generate.py generate \
+# One command: generate, start packetwyrmd, wait for TAPs,
+# tinet up, tinet conf.
+sudo python3 tools/pktwyrm-tinet/pktwyrm-tinet up \
     configs/examples/lab-frr-2node/lab.yaml \
     -o /tmp/lab-frr/
 
-# Start daemon (creates TAPs in root netns).
-sudo packetwyrmd -c configs/examples/lab-frr-2node/packetwyrm.yaml -v &
-
-# tinet up creates containers and moves TAPs into each netns.
-sudo sh -c "cd /tmp/lab-frr && tinet up   -c tinet.yaml | sh"
-sudo sh -c "cd /tmp/lab-frr && tinet conf -c tinet.yaml | sh"
-
 # Watch the session establish.
 sudo docker exec r1 vtysh -c 'show bgp summary'
+
+# Check status any time:
+python3 tools/pktwyrm-tinet/pktwyrm-tinet status -o /tmp/lab-frr/
 ```
 
 Without a real FPGA the TAPs still appear but no traffic flows; this
@@ -48,8 +45,7 @@ to end before plugging the SFP+ cables in.
 ## Tear down
 
 ```sh
-sudo sh -c "cd /tmp/lab-frr && tinet down -c tinet.yaml | sh"
-sudo pkill packetwyrmd
+sudo python3 tools/pktwyrm-tinet/pktwyrm-tinet down -o /tmp/lab-frr/
 ```
 
 ## See also

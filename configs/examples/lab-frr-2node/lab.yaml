@@ -3,15 +3,10 @@
 # Each FRR container takes one PacketWyrm TAP and peers eBGP with the
 # other across the DUT in the middle.  Bring up with:
 #
-#   sudo packetwyrmd -c packetwyrm.yaml &              # creates TAPs
-#   python3 tools/pktwyrm-tinet/generate.py generate \
-#       configs/examples/lab-frr-2node/lab.yaml \
-#       -o /tmp/lab-frr/
-#   sudo sh -c "cd /tmp/lab-frr && tinet up    -c tinet.yaml | sh"
-#   sudo sh -c "cd /tmp/lab-frr && tinet conf  -c tinet.yaml | sh"
+#   sudo python3 tools/pktwyrm-tinet/pktwyrm-tinet up \
+#       configs/examples/lab-frr-2node/lab.yaml -o /tmp/lab-frr/
 #   sudo docker exec r1 vtysh -c 'show bgp summary'
-#
-# `tinet down -c tinet.yaml | sudo sh` reverses the lot.
+#   sudo python3 tools/pktwyrm-tinet/pktwyrm-tinet down -o /tmp/lab-frr/
 
 packetwyrm_config: ./packetwyrm.yaml
 

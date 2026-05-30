@@ -13,7 +13,7 @@ test:
 # Render the in-tree worked example into /tmp/lab-frr/ without actually
 # running tinet. Useful as a smoke check before committing changes.
 example:
-	$(PYTHON) generate.py generate \
+	$(PYTHON) ./pktwyrm-tinet generate \
 	    ../../configs/examples/lab-frr-2node/lab.yaml \
 	    -o /tmp/lab-frr/
 
