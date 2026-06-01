@@ -6,8 +6,22 @@ catches a different class of bug; none of them subsumes the others.
 
 ## RTL simulation
 
-Test bench location: `sim/`. Recommended: cocotb + Verilator, with
-optional Xilinx Vivado simulation for IP-heavy modules.
+Two complementary stacks live under `sim/`:
+
+- **SystemVerilog testbenches under Verilator** (`make sim_all`,
+  172 assertions across 9 testbenches). This is the integration
+  gate against the production RTL. See `sim/README.md` for the
+  per-target catalogue.
+- **Scapy + cocotb unit suite under Icarus Verilog**
+  (`make -C sim/cocotb all`, 17 assertions). Spec-level checks on
+  small behavioural mirrors of `pw_parser`, `pw_classifier`, and
+  `pw_flow_gen`. Runs because cocotb 2.x's VPI shim needs
+  Verilator >= 5.036 and the system Verilator here is 5.020; when a
+  newer Verilator lands we can retarget cocotb at the production
+  RTL and drop the mirrors.
+
+Optional Xilinx Vivado simulation remains the fall-back for
+IP-heavy modules (PCIe hard-IP, transceiver IBERT) once they land.
 
 ### Targets
 
@@ -16,11 +30,19 @@ optional Xilinx Vivado simulation for IP-heavy modules.
 - `flow_gen` &mdash; template assembly, sequence / timestamp insertion,
   token bucket behaviour.
 - `test_rx_checker` &mdash; sequence tracking, duplicate, reorder,
-  late, latency.
+  late, latency (per-flow min/max/sum/count + histogram).
 - `timestamp_unit` &mdash; monotonicity, wrap behaviour.
-- `csr_fabric` &mdash; register decode, W1C semantics, table commit.
+- `csr_full` &mdash; AXI-Lite slave fabric: register decode, W1C
+  semantics, table commit, snapshot triggers across all four windows
+  (classifier / flow / stats / histogram).
+- `axis_serial` &mdash; wide<->64-bit AXIS serializer/deserializer
+  (MAC interface staging).
+- `wire_vectors` &mdash; C `pw_bar_backend` byte image vs SV
+  `pw_csr_full` decoder agreement.
+- `phase3_top` &mdash; `pwfpga_top_phase3`: AXI-Lite host writes
+  end-to-end through to a frame on the AXIS pipe and back.
 - `slow_path_rx/tx_dma` &mdash; descriptor fetch, completion ordering
-  (Phase 2+).
+  (still pending).
 
 ### Required cases
 
@@ -134,12 +156,21 @@ Tests:
 
 ## Test infrastructure
 
-- `Makefile` target `make test` runs the unit tests against the fake
-  card.
-- `make sim` runs the RTL simulation suite (cocotb / Verilator).
+- `make -C sw test` runs the host unit tests against the fake card
+  backend (164 / 164 assertions).
+- `make -C sw e2e` runs `e2e_smoke.sh` -- daemon + CLI smoke
+  exercising the JSON-RPC surface, including `config.load`
+  (18 / 18 checks).
+- `make -C sim sim_all` runs the SV testbench sweep under Verilator
+  (172 assertions).
+- `make -C sim/cocotb all` runs the Scapy / Python unit suite under
+  Icarus (17 assertions).
+- `make -C tools/pktwyrm-tinet test` runs the lab generator +
+  orchestrator unit suite (35 assertions, pure Python +
+  `unittest.mock`; no docker / tinet / FPGA required).
 - `make hwtest` is gated on an environment variable
   (`PW_HW_DEV=card0`) and runs the integration tests against real
-  hardware. CI runs only `make test` and `make sim`; `make hwtest`
+  hardware. CI runs the host job + RTL job above; `make hwtest`
   runs on a lab box on a separate cadence.
 
 ## Coverage gates
@@ -147,14 +178,14 @@ Tests:
 For each phase, the corresponding test slice **must** be green
 before merging to the main branch:
 
-| Phase | Required green tests                          |
-|-------|-----------------------------------------------|
-| 0     | unit tests                                    |
-| 1     | unit + smoke `pktwyrm cards/ports`            |
-| 2     | unit + sim parser/flow_gen + frame loopback   |
-| 3     | unit + sim full + single-card integration     |
-| 4     | + CSR programming integration                 |
-| 5     | + TAP integration (ARP, ping)                 |
-| 6     | + dual-card integration                       |
-| 7     | + cross-card flow integration                 |
-| 8     | + container FRR integration                   |
+| Phase | Required green tests                                              |
+|-------|-------------------------------------------------------------------|
+| 0     | sw test                                                           |
+| 1     | sw test + smoke `pktwyrm cards/ports`                             |
+| 2     | sw test + sim parser/flow_gen + frame loopback                    |
+| 3     | sw test + sim_all + single-card integration                       |
+| 4     | + CSR programming integration                                     |
+| 5     | + TAP integration (ARP, ping)                                     |
+| 6     | + dual-card integration                                           |
+| 7     | + cross-card flow integration                                     |
+| 8     | + pktwyrm-tinet test + lab-frr-2node manual bring-up              |

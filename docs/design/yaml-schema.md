@@ -60,7 +60,9 @@ logical_interfaces:
     vlan: 100                  # 0 means untagged
     mac: "02:a5:02:00:00:64"
     mtu: 9000                  # optional, default 1500
-    netns: "r1"                # optional; daemon moves the TAP here
+    netns: "r1"                # optional, reserved; daemon currently
+                               # ignores this. Move TAPs into a netns
+                               # via `ip link set` or pktwyrm-tinet.
     punt:
       arp: true
       ipv6_nd: true

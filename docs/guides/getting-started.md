@@ -20,14 +20,24 @@ Host stack:
 
 ```sh
 make -C sw test
-# expected: 116/116 assertions pass
+# expected: 164/164 assertions pass
+
+make -C sw e2e
+# expected: 18/18 daemon <-> CLI smoke checks pass
 ```
 
 RTL data plane (needs Verilator >= 5.0):
 
 ```sh
-make -C sim sim
-# expected: ALL DATA PLANE SCENARIOS PASS
+make -C sim sim_all
+# expected: 172 assertions across 9 testbenches (all PASS)
+```
+
+Optional Python unit suite (needs Icarus Verilog + cocotb 2 + Scapy):
+
+```sh
+make -C sim/cocotb all
+# expected: 17/17 parser + classifier + flow_gen unit checks
 ```
 
 ## 3. Run the daemon (fake backend, real TAPs)
@@ -86,6 +96,8 @@ curl -s http://localhost:9100/metrics | head -20
 
 ## 5. Attach a routing daemon
 
+### Option A: bare `ip netns` (one router)
+
 A second terminal moves the TAP into a fresh netns and (optionally)
 starts FRR:
 
@@ -100,6 +112,30 @@ sudo ip netns exec r1 ip -br addr show
 If `frr` is on the host's PATH, the script also launches it with
 `configs/examples/container-frr/frr-r1.conf` (a minimal BGP
 `AS 65001` peering with `192.0.2.2 AS 65002`).
+
+### Option B: `pktwyrm-tinet` (N containers)
+
+For two-or-more routers, the lab generator + orchestrator is much
+less work. Stop the daemon you started in step 3, then run:
+
+```sh
+sudo python3 tools/pktwyrm-tinet/pktwyrm-tinet up \
+    configs/examples/lab-frr-2node/lab.yaml \
+    -o /tmp/lab-frr/
+
+# Wait a few seconds for FRR to boot, then:
+sudo docker exec r1 vtysh -c 'show bgp summary'
+
+# Status / re-apply / tear down:
+python3 tools/pktwyrm-tinet/pktwyrm-tinet status -o /tmp/lab-frr/
+sudo python3 tools/pktwyrm-tinet/pktwyrm-tinet conf -o /tmp/lab-frr/
+sudo python3 tools/pktwyrm-tinet/pktwyrm-tinet down -o /tmp/lab-frr/
+```
+
+`up` starts `packetwyrmd`, polls for the TAPs to appear, runs
+`tinet up` + `tinet conf`, and persists state under
+`/tmp/lab-frr/.pktwyrm-lab.json`. See `tools/pktwyrm-tinet/README.md`
+for the lab-spec format.
 
 ## 6. Install (production)
 

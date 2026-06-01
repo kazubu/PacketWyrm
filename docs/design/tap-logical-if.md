@@ -47,7 +47,8 @@ Names are deterministic so containers can pin them by name.
    `is_is`, ...) using the entry's `logical_if_id`.
 4. The TAP fd is kept by the daemon; reads see Linux-injected
    packets, writes deliver FPGA punted packets to Linux.
-5. Operators move TAPs into containers / namespaces:
+5. Operators move TAPs into containers / namespaces. For one
+   router, the bare recipe is:
 
 ```sh
 ip netns add r1
@@ -56,6 +57,13 @@ ip netns exec r1 ip link set tap-pw-p0-v100 up
 ip netns exec r1 ip addr add 192.0.2.1/30 dev tap-pw-p0-v100
 ip netns exec r1 frr -d
 ```
+
+For two or more routers, `tools/pktwyrm-tinet/` automates the same
+moves via a tinet topology + bind-mounted FRR configs. Operators
+run `pktwyrm-tinet up lab.yaml`; the generated tinet spec emits the
+`ip link set <tap> netns <ctr>` calls under `postinit_cmds`, after
+which `tinet conf` runs the in-container address + FRR setup. See
+`tools/pktwyrm-tinet/README.md`.
 
 ## Punt flow
 

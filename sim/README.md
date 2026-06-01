@@ -1,119 +1,98 @@
 # PacketWyrm RTL simulation
 
-A working software-loopback proof of the Phase 3 data plane. Run:
+SystemVerilog testbenches driven by Verilator. The full sweep:
 
 ```sh
 cd sim
-make sim       # build + run the data-plane testbench (38 assertions)
-make sim_axis  # round-trip a frame through the wide<->64-bit AXIS
-               # serializer/deserializer pair (Phase-2 step toward
-               # the production MAC interface). 16 assertions.
-make sim_all   # both
-make wave      # rebuild with FST tracing, leave sim_build/data_plane.fst
+make sim_all       # all 9 testbenches; 172 assertions total
+make wave          # rebuild sim with FST tracing -> sim_build/data_plane.fst
 make clean
 ```
 
-## What the data-plane testbench proves
+For a Scapy + Python-asserted unit sweep at the spec level, see
+`sim/cocotb/` (Icarus-driven, 17 assertions across parser /
+classifier / flow_gen behavioural mirrors).
+
+## Individual targets
+
+| Target        | Testbench                       | Assertions | What it proves                                                          |
+|---------------|---------------------------------|-----------:|-------------------------------------------------------------------------|
+| `make sim`    | `data_plane_tb/`                | 38         | parser + classifier + flow_gen + test_rx_checker end-to-end             |
+| `make sim_axis` | `axis_serial_tb/`             | 16         | wide<->64-bit AXIS serializer / deserializer round-trip (MAC interface) |
+| `make sim_csr`  | `csr_tb/`                     | 24         | AXI-Lite CSR window (classifier table) decode + W1C + commit            |
+| `make sim_flow` | `flow_window_tb/`             | 16         | flow-template CSR window                                                |
+| `make sim_stats`| `stats_snapshot_tb/`          | 16         | per-flow stats counters + snapshot trigger semantics                    |
+| `make sim_hist` | `histogram_tb/`               | 21         | power-of-two latency histogram + snapshot latch                         |
+| `make sim_full` | `csr_full_tb/`                | 12         | `pw_csr_full` AXI-Lite slave integrating all four windows               |
+| `make sim_top`  | `phase3_top_tb/`              |  4         | `pwfpga_top_phase3`: AXI-Lite -> CSR -> flow_gen -> AXIS loop -> RX     |
+| `make sim_vec`  | `wire_vectors_tb/`            | 25         | C `pw_bar_backend` byte image vs SV `pw_csr_full` decoder agree         |
+
+## Quick tour of the data plane scenarios (`make sim`)
 
 `data_plane_tb/tb_data_plane.sv` exercises
 `rtl/phase3/pw_data_plane.sv` (with `pw_parser`, `pw_classifier`,
-`pw_test_rx_checker`, `pw_flow_gen` underneath) through five
-scenarios, in order:
+`pw_test_rx_checker`, `pw_flow_gen` underneath):
 
-1. **drop** &mdash; a UDP/IPv4 frame on port 0 with no matching
-   classifier rule hits the default DROP action; the per-port drop
+1. **drop** &mdash; UDP/IPv4 on port 0 with no rule -> default DROP;
+   per-port drop counter ticks.
+2. **punt** &mdash; classifier rule on `ethertype == 0x0806` punts an
+   ARP frame to the `punt` channel.
+3. **loopback** &mdash; TEST_RX rule + enabled flow_gen on port 0;
+   `tx[0]` is wired back into `rx[1]`; checker reports `rx > 0,
+   lost == 0`.
+4. **loss** &mdash; explicit injection with a 5-packet sequence gap;
+   `lost == 5`.
+5. **dup** &mdash; replay the previous sequence number; duplicate
    counter ticks.
-2. **punt** &mdash; a classifier rule matching `ethertype == 0x0806`
-   is installed; an ARP frame on port 0 emerges on the `punt`
-   channel with the right ethertype.
-3. **loopback** &mdash; a TEST_RX rule on `udp_dst == 50001 + magic`
-   is installed and a flow generator on port 0 is enabled. The
-   testbench wires `tx[0]` back into `rx[1]`. After 200 cycles the
-   test_rx_checker reports `rx > 0` and `lost == 0`.
-4. **loss** &mdash; explicit injection on port 1 with a 5-packet
-   gap in the sequence number. `lost == 5` as expected.
-5. **dup** &mdash; re-inject the previous sequence number; the
-   duplicate counter increments by one.
 
-Sample passing output:
+Plus QinQ, IPv6, TCP, ICMP/ICMPv6, OSPF, FORWARD_PORT, out-of-order,
+rate, mask-based matching, and latency-histogram scenarios layered in
+on top of the original five.
 
-```
-[ ok drop] port0 drop: 1
-[ ok drop] punt none : 0
-[ ok punt] punt valid: 1
-[ ok punt] punt ethertype: 2054
-[ ok loopback] loopback rx > 0: 1
-[ ok loopback] loopback lost : 0
-[ ok loopback] loopback ooo  : 0
-[ ok loss] pre-gap rx: 5
-[ ok loss] pre-gap lost: 0
-[ ok loss] post-gap rx: 8
-[ ok loss] post-gap lost: 5
-[ ok dup] dup count: 1
-ALL DATA PLANE SCENARIOS PASS
-```
+## Wire-vector regression (`make sim_vec`)
 
-The pipeline this proves end-to-end:
-
-```
-rx_frame (1 beat, up to 1536 B)
-   |
-   v
-pw_parser  -- registered key + key_valid (1 cycle latency)
-   |
-   v
-pw_classifier  -- combinational priority match, 8-entry table
-   |
-   +-> DROP            -> per-port drop counter
-   +-> PUNT_TO_HOST    -> punt_frame channel
-   +-> MIRROR_TO_HOST  -> (same as PUNT in skeleton)
-   +-> FORWARD_PORT    -> tx_frame[egress_port]
-   +-> TEST_RX         -> pw_test_rx_checker per-flow counters
-                          (rx, lost, dup, out_of_order, last_seq)
-```
-
-`pw_flow_gen` emits IPv4/UDP test frames with the PacketWyrm test
-header (magic `0xA5027E57`, flow id, sequence, timestamp) at a
-configurable rate.
+`make sim_vec` is the C&harr;SV agreement test: a Python harness
+calls into the real `libpacketwyrm` BAR backend, captures the
+post-write 128 KiB BAR image as hex, and replays it into the
+SystemVerilog `pw_csr_full` decoder. If the C struct layout, the
+backend's byte ordering, or the SV CSR window field encoding ever
+drift, this fails. 25 scenarios.
 
 ## Lessons learned (Verilator quirks)
 
-Two real Verilator behaviors caught us during this work; we kept
-the workarounds and the comments where they bit, so future Phase
-3 RTL doesn't relearn them:
+Two real Verilator behaviours caught us during early Phase 3 work;
+the workarounds are still in tree and called out where they bit, so
+future RTL doesn't relearn them:
 
 1. **Continuous assigns to unpacked-array elements may not
    propagate.** `logic [7:0] hdr [0:99]; assign hdr[12] = ...;`
    silently produced 0. Same code with a packed array
-   (`logic [99:0][7:0] hdr;`) works. The fix is to keep all
-   internal byte-array intermediates packed; unpacked is only for
-   the testbench-visible `pw_frame_t` array of ports.
+   (`logic [99:0][7:0] hdr;`) works. Keep all internal byte-array
+   intermediates packed; unpacked is only for the testbench-visible
+   `pw_frame_t` array of ports.
 2. **`always_comb` / `always @*` did not auto-sense packed-array
    element changes driven by a chain of continuous assigns from a
-   packed-byte-array port.** The combinational parser produced
-   zero output. The fix is to do the parsing inside an
-   `always_ff @(posedge clk)` (which gives the parser an explicit
-   1-cycle latency). This also requires:
-   - the parser registers its outputs into a *local* `logic` and
-     `assign`s them out (procedural assignment to a typedef'd-
-     struct output port silently fails to update the port);
-   - the downstream dispatcher uses the parser's registered
-     `key_valid_o` rather than the raw `rx_valid_i` so a 1-cycle
-     ingress pulse is captured through the pipeline.
+   packed-byte-array port.** The combinational parser produced zero
+   output. Fix: do the parsing inside `always_ff @(posedge clk)`
+   (1-cycle latency) and:
+   - register outputs into a *local* `logic` then `assign` them out
+     (procedural assignment to a typedef'd struct output port
+     silently fails to update the port);
+   - downstream uses the parser's registered `key_valid_o`, not the
+     raw `rx_valid_i`.
 
-Both behaviors appear in Verilator 5.020 (Debian 5.020-1) and may
-not reproduce in other simulators. The RTL we ship works on Verilator
-*and* should synthesise cleanly on Vivado (the patterns we adopted
-are conservative SystemVerilog).
+Both reproduce on Verilator 5.020 (Debian 5.020-1) and may not
+appear on other simulators. The RTL we ship works on Verilator and
+should synthesise cleanly on Vivado.
 
 ## Future testbenches
 
-When extending this directory:
-
-- Place packet builders / scenario tasks in shared SV files so
-  they can be reused.
+- Use the existing shared SV packet builders (Eth/VLAN/QinQ/IPv4/
+  IPv6/TCP/UDP/test-header) instead of writing new ones.
 - Avoid functions that return wide packed structs; tasks with
   `output` arguments or direct member access work better under
   Verilator.
-- For QinQ / IPv6 / TCP, extend `pw_parser` first (add fields to
-  `pw_match_key_t`), then add scenarios here.
+- For new protocol coverage, extend `pw_parser` first (add fields to
+  `pw_match_key_t`), then add scenarios.
+- For Python-level unit tests with Scapy frame builders, target
+  `sim/cocotb/` instead of inventing another SV harness.
