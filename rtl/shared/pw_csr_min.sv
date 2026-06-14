@@ -130,20 +130,38 @@ module pw_csr_min #(
     end
 
     // --- read-side ----------------------------------------------------------
+    // Canonical AXI4-Lite slave read: ARREADY pulses for one cycle to
+    // accept and latch the address, then RVALID/RDATA are presented on
+    // the *following* cycle. ARREADY and RVALID are never asserted in
+    // the same cycle. The previous version raised both together, which
+    // the xdma M_AXI_LITE master mishandled (only the first read on a
+    // freshly mapped BAR completed; subsequent reads timed out and the
+    // host saw 0xffffffff). See README "AXI-Lite read stability".
+    reg [11:0] araddr_q;
+
     always @(posedge s_axi_aclk or negedge s_axi_aresetn) begin
         if (!s_axi_aresetn) begin
             s_axi_arready          <= 1'b0;
             s_axi_rvalid           <= 1'b0;
             s_axi_rdata            <= '0;
             s_axi_rresp            <= 2'b00;
+            araddr_q               <= '0;
             timestamp_high_latched <= '0;
         end else begin
-            // 1-cycle handshake
-            if (!s_axi_rvalid && s_axi_arvalid) begin
+            s_axi_arready <= 1'b0;
+
+            // Accept a read address only when idle (no response in flight).
+            if (!s_axi_arready && s_axi_arvalid && !s_axi_rvalid) begin
                 s_axi_arready <= 1'b1;
-                s_axi_rvalid  <= 1'b1;
-                s_axi_rresp   <= 2'b00;
-                case (s_axi_araddr)
+                araddr_q      <= s_axi_araddr;
+            end
+
+            // One cycle after acceptance (ARREADY was high last cycle),
+            // present the data.
+            if (s_axi_arready) begin
+                s_axi_rvalid <= 1'b1;
+                s_axi_rresp  <= 2'b00;
+                case (araddr_q)
                     PW_REG_DEVICE_ID:      s_axi_rdata <= PW_DEVICE_ID;
                     PW_REG_VERSION:        s_axi_rdata <= PW_VERSION;
                     PW_REG_BUILD_ID:       s_axi_rdata <= PW_BUILD_ID;
@@ -167,10 +185,9 @@ module pw_csr_min #(
                         s_axi_rresp <= 2'b10; // SLVERR on unmapped
                     end
                 endcase
-            end else begin
-                s_axi_arready <= 1'b0;
+            end else if (s_axi_rvalid && s_axi_rready) begin
+                s_axi_rvalid <= 1'b0;
             end
-            if (s_axi_rvalid && s_axi_rready) s_axi_rvalid <= 1'b0;
         end
     end
 
