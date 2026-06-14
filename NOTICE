@@ -1,0 +1,28 @@
+PacketWyrm
+==========
+
+The PacketWyrm hardware design is licensed under the CERN Open Hardware
+Licence Version 2 - Strongly Reciprocal (CERN-OHL-S-2.0); see LICENSE.
+
+Why CERN-OHL-S: the Phase 2 SFP+ 10G data path reuses the Taxi
+transceiver/Ethernet library (MAC, 10GBASE-R PCS, GTYE4), which is
+CERN-OHL-S-2.0. That licence is strongly reciprocal, so the combined
+design is distributed under the same terms.
+
+Third-party components
+----------------------
+
+- Taxi (10G/25G Ethernet MAC, PCS, GTY; AS02MC04 board support)
+  https://github.com/fpganinja/taxi  -- CERN-OHL-S-2.0,
+  Copyright (c) FPGA Ninja, LLC. Included as a git submodule at
+  rtl/phase2/vendor/taxi (see rtl/phase2/README.md). SPDX headers are
+  retained in every Taxi source file.
+
+- AS02MC04 pin assignments and SPI-flash boot configuration in
+  fpga/as02mc04/xdc/ are derived from the Taxi AS02MC04 board support
+  (CERN-OHL-S-2.0) and from Julia Desmazes' reverse-engineering work
+  (https://essenceia.github.io/projects/alibaba_cloud_fpga/).
+
+The host-side software under sw/ (libpacketwyrm, packetwyrmd, pktwyrm)
+is a separate work; if you intend to distribute it under different
+terms, keep it at arm's length from the CERN-OHL-S hardware sources.

@@ -7,8 +7,8 @@
 #     (Julia Desmazes, 2025) - confirmed 100 MHz LVDS clock,
 #     156.25 MHz MGT refclk, and four user LEDs.
 #   - https://github.com/fpganinja/taxi/blob/<sha>/src/cndm/board/
-#     AS02MC04/fpga/fpga.xdc  (Alex Forencich, FPGA Ninja, LLC,
-#     MIT licensed) - full PCIe / SFP+ / control-pin pinout.
+#     AS02MC04/fpga/fpga.xdc  (FPGA Ninja, LLC, CERN-OHL-S-2.0) -
+#     full PCIe / SFP+ / control-pin pinout. See top-level LICENSE.
 #
 # Phase 1 only uses the PCIe and LED / reset pins. SFP+ entries are
 # included (commented out) so Phase 2 just needs to uncomment.
