@@ -85,6 +85,12 @@ module pwfpga_top_phase2 (
     wire [63:0] timestamp;
     pw_timestamp u_ts (.clk (axi_aclk), .rst_n (axi_aresetn), .ts_o (timestamp));
 
+    // Cross-module SFP wires (declared here for default_nettype none).
+    wire [31:0] sfp_rx_frames [2];
+    wire [31:0] sfp_tx_frames [2];
+    wire [31:0] sfp_control;            // CSR -> traffic: bit0=tx_en0, bit1=tx_en1
+    wire [31:0] sfp_status_w;           // synced status bits -> CSR
+
     pw_csr_min #(
         .CAPABILITIES    (PW_PHASE1_CAPABILITIES),
         .NUM_PORTS       (PW_NUM_LOCAL_PORTS),
@@ -97,7 +103,11 @@ module pwfpga_top_phase2 (
         .s_axi_bresp (m_axi_bresp), .s_axi_bvalid (m_axi_bvalid), .s_axi_bready (m_axi_bready),
         .s_axi_araddr (m_axi_araddr), .s_axi_arvalid (m_axi_arvalid), .s_axi_arready (m_axi_arready),
         .s_axi_rdata (m_axi_rdata), .s_axi_rresp (m_axi_rresp), .s_axi_rvalid (m_axi_rvalid), .s_axi_rready (m_axi_rready),
-        .global_control_o (), .error_status_set_i (32'h0), .timestamp_i (timestamp)
+        .global_control_o (), .error_status_set_i (32'h0), .timestamp_i (timestamp),
+        .sfp_status_i (sfp_status_w),
+        .sfp_rx0_i (sfp_rx_frames[0]), .sfp_rx1_i (sfp_rx_frames[1]),
+        .sfp_tx0_i (sfp_tx_frames[0]), .sfp_tx1_i (sfp_tx_frames[1]),
+        .sfp_control_o (sfp_control)
     );
 
     // --- 125 MHz GT free-running / control clock ----------------------------
@@ -150,13 +160,28 @@ module pwfpga_top_phase2 (
     wire        sfp_rx_tlast [2];
     wire        sfp_rx_tuser [2];
 
-    for (genvar p = 0; p < 2; p++) begin : g_sfp_tx_idle
-        assign sfp_tx_tdata[p]  = '0;
-        assign sfp_tx_tkeep[p]  = '0;
-        assign sfp_tx_tvalid[p] = 1'b0;
-        assign sfp_tx_tlast[p]  = 1'b0;
-        assign sfp_tx_tuser[p]  = 1'b0;
+    // Traffic engine: CSR-enabled TX template + RX/TX frame counters.
+    pw_sfp_traffic #(.PORTS(2), .DATA_W(64), .BEATS(8)) u_traffic (
+        .axi_clk   (axi_aclk),
+        .axi_rst   (!axi_aresetn),
+        .tx_enable (sfp_control[1:0]),
+        .rx_frames (sfp_rx_frames),
+        .tx_frames (sfp_tx_frames),
+        .tx_clk (sfp_tx_clk), .tx_rst (sfp_tx_rst),
+        .rx_clk (sfp_rx_clk), .rx_rst (sfp_rx_rst),
+        .tx_tdata (sfp_tx_tdata), .tx_tkeep (sfp_tx_tkeep), .tx_tvalid (sfp_tx_tvalid),
+        .tx_tready (sfp_tx_tready), .tx_tlast (sfp_tx_tlast), .tx_tuser (sfp_tx_tuser),
+        .rx_tvalid (sfp_rx_tvalid), .rx_tlast (sfp_rx_tlast), .rx_tuser (sfp_rx_tuser)
+    );
+
+    // Status bits synced into the AXI clock domain for CSR read.
+    (* ASYNC_REG = "TRUE" *) reg [3:0] sfp_stat_s1, sfp_stat_s2;
+    always @(posedge axi_aclk) begin
+        sfp_stat_s1 <= {sfp_rx_status[1], sfp_block_lock[1],
+                        sfp_rx_status[0], sfp_block_lock[0]};
+        sfp_stat_s2 <= sfp_stat_s1;
     end
+    assign sfp_status_w = {28'b0, sfp_stat_s2};
 
     pw_sfp_10g #(.FAMILY("kintexuplus"), .PORTS(2), .DATA_W(64)) u_sfp (
         .ctrl_clk (clk_125mhz),

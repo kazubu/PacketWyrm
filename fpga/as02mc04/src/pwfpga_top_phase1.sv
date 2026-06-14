@@ -146,7 +146,10 @@ module pwfpga_top_phase1 (
         .s_axi_rready       (m_axi_rready),
         .global_control_o   (),
         .error_status_set_i (32'h0),
-        .timestamp_i        (timestamp)
+        .timestamp_i        (timestamp),
+        // Phase 2 SFP CSR ports unused in Phase 1.
+        .sfp_status_i (32'h0), .sfp_rx0_i (32'h0), .sfp_rx1_i (32'h0),
+        .sfp_tx0_i (32'h0), .sfp_tx1_i (32'h0), .sfp_control_o ()
     );
 
     // --- LEDs ----------------------------------------------------------------

@@ -70,6 +70,7 @@ set pw_srcs [list \
     "$script_dir/src/pcie_axi_lite_bridge.sv" \
     "$script_dir/src/clock_reset.sv" \
     "$repo_root/rtl/phase2/pw_sfp_10g.sv" \
+    "$repo_root/rtl/phase2/pw_sfp_traffic.sv" \
     "$script_dir/src/pwfpga_top_phase2.sv" \
 ]
 

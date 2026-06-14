@@ -1,6 +1,13 @@
 set d [file dirname [file normalize [info script]]]
 set pd "$d/../build/pwfpga_as02mc04_phase2"
 open_project "$pd/pwfpga_as02mc04_phase2.xpr"
+set repo [file normalize "$d/../../.."]
+# ensure the traffic-engine source is in the project (idempotent)
+if {[llength [get_files -quiet pw_sfp_traffic.sv]] == 0} {
+    add_files -fileset sources_1 "$repo/rtl/phase2/pw_sfp_traffic.sv"
+    set_property file_type SystemVerilog [get_files pw_sfp_traffic.sv]
+    update_compile_order -fileset sources_1
+}
 # ensure CDC constraints present (idempotent)
 set taxi [file normalize "$d/../../../rtl/phase2/vendor/taxi"]
 foreach f {taxi_axis_async_fifo.tcl taxi_sync_reset.tcl taxi_sync_signal.tcl} {

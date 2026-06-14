@@ -66,7 +66,16 @@ module pw_csr_min #(
     // FPGA-side observable signals (ignored if you don't need them)
     output wire [31:0] global_control_o,
     input  wire [31:0] error_status_set_i,   // set bits W1S into sticky register
-    input  wire [63:0] timestamp_i
+    input  wire [63:0] timestamp_i,
+
+    // Phase 2 SFP+ status / counters (read-only) + control (RW). The
+    // Phase 1 top ties the inputs to 0 and leaves sfp_control_o open.
+    input  wire [31:0] sfp_status_i,  // {.., p1_rx_status,p1_lock, p0_rx_status,p0_lock}
+    input  wire [31:0] sfp_rx0_i,     // port 0 RX frame count
+    input  wire [31:0] sfp_rx1_i,     // port 1 RX frame count
+    input  wire [31:0] sfp_tx0_i,     // port 0 TX frame count
+    input  wire [31:0] sfp_tx1_i,     // port 1 TX frame count
+    output wire [31:0] sfp_control_o   // bit0=tx_en0, bit1=tx_en1
 );
 
     import pw_pkg::*;
@@ -78,6 +87,17 @@ module pw_csr_min #(
 
     reg [31:0] global_control_q;
     reg [31:0] error_status_q;
+    reg [31:0] sfp_control_q;
+
+    // Phase 2 SFP+ register offsets (read window above the identity regs).
+    localparam [11:0] PW_REG_SFP_STATUS  = 12'h200;
+    localparam [11:0] PW_REG_SFP_RX0     = 12'h204;
+    localparam [11:0] PW_REG_SFP_RX1     = 12'h208;
+    localparam [11:0] PW_REG_SFP_TX0     = 12'h20c;
+    localparam [11:0] PW_REG_SFP_TX1     = 12'h210;
+    localparam [11:0] PW_REG_SFP_CONTROL = 12'h214;
+
+    assign sfp_control_o = sfp_control_q;
 
     // 64-bit counter read-latch: reading _low latches _high.
     reg [31:0] timestamp_high_latched;
@@ -97,6 +117,7 @@ module pw_csr_min #(
             awaddr_q         <= '0;
             global_control_q <= '0;
             error_status_q   <= '0;
+            sfp_control_q    <= '0;
         end else begin
             // accept address
             if (!aw_captured && s_axi_awvalid) begin
@@ -115,6 +136,7 @@ module pw_csr_min #(
                 case (awaddr_q)
                     PW_REG_GLOBAL_CONTROL: global_control_q <= s_axi_wdata;
                     PW_REG_ERROR_STATUS:   error_status_q   <= error_status_q & ~s_axi_wdata; // W1C
+                    PW_REG_SFP_CONTROL:    sfp_control_q    <= s_axi_wdata;
                     default:               s_axi_bresp <= 2'b10; // SLVERR on unknown / RO reg
                 endcase
                 aw_captured  <= 1'b0;
@@ -180,6 +202,12 @@ module pw_csr_min #(
                     end
                     PW_REG_TIMESTAMP_HIGH: s_axi_rdata <= timestamp_high_latched;
                     PW_REG_ERROR_STATUS:   s_axi_rdata <= error_status_q;
+                    PW_REG_SFP_STATUS:     s_axi_rdata <= sfp_status_i;
+                    PW_REG_SFP_RX0:        s_axi_rdata <= sfp_rx0_i;
+                    PW_REG_SFP_RX1:        s_axi_rdata <= sfp_rx1_i;
+                    PW_REG_SFP_TX0:        s_axi_rdata <= sfp_tx0_i;
+                    PW_REG_SFP_TX1:        s_axi_rdata <= sfp_tx1_i;
+                    PW_REG_SFP_CONTROL:    s_axi_rdata <= sfp_control_q;
                     default: begin
                         s_axi_rdata <= 32'h0;
                         s_axi_rresp <= 2'b10; // SLVERR on unmapped
