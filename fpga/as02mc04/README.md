@@ -186,13 +186,25 @@ that the BAR is reachable and the FPGA presents the right identity.
 | Check                                                       | Status |
 |-------------------------------------------------------------|--------|
 | JTAG IDCODE reads as `0x04a63093` (KU3P)                    | ✅ (HS3) |
-| Bitstream loads without errors                              |        |
-| `led_hb` blinks at ~1 Hz                                    |        |
-| `led[1]` is high (PCIe link up)                             |        |
-| `lspci -d 1af4:a502` returns the card                       |        |
-| `bringup-check.sh` prints `device_id=0xa502beef`            |        |
-| BAR0 size in sysfs matches the IP configuration (64K)       |        |
+| Bitstream loads without errors                              | ✅ (startup status HIGH via HS3) |
+| `led_hb` blinks at ~1 Hz                                    | ✅ (observed on DS5) |
+| `led[1]` is high (PCIe link up)                             | pending enumeration |
+| `lspci -d 10ee:a502` returns the card                       | pending enumeration |
+| `bringup-check.sh` prints `device_id=0xa502beef`            | pending (see BAR note) |
+| BAR0 size in sysfs matches the IP configuration (64K)       | pending |
 | Timing report closes (no negative WNS / WHS)                | ✅ (WNS +0.570 / WHS +0.010, Vivado 2025.2) |
+
+> **Enumeration needs the FPGA configured before the host trains the
+> link.** Programming volatile config over JTAG *after* the host has
+> booted leaves the slot un-enumerated (a `/sys/bus/pci/rescan` does
+> not retrain a link that was empty at PERST# deassertion). Either warm
+> reboot with config retained, or — the robust path — program the
+> bitstream into the board SPI flash so the FPGA configures at power-on.
+>
+> **CSR BAR is not BAR0 with the xdma core.** BAR0 is the XDMA control
+> BAR; the PacketWyrm CSR window (`device_id=0xa502beef`) is on the
+> AXI-Lite-master BAR. `bringup-check.sh` must read that BAR's offset 0
+> once `lspci -vv` shows the layout.
 
 When every row is checked, Phase 2 (10G MAC / PCS frame loopback)
 starts.
