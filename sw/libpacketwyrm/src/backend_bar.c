@@ -14,6 +14,7 @@
 #include "packetwyrm/backend.h"
 #include "packetwyrm/csr.h"
 #include "packetwyrm/pci.h"
+#include "packetwyrm/vfio.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -24,6 +25,10 @@ struct bar_ctx {
     void          *base;
     size_t         size;
     volatile uint32_t *reg;
+    /* When use_vfio is set, the mapping is owned by `vfio` and torn
+     * down with pw_vfio_close(); otherwise it came from sysfs mmap. */
+    int                   use_vfio;
+    struct pw_vfio_handle vfio;
 };
 
 static volatile uint32_t *reg_at(struct bar_ctx *c, uint32_t off) {
@@ -186,7 +191,8 @@ static pw_status bar_flow_hist_read(void *vctx, uint32_t lfid,
 static void bar_close(void *vctx) {
     struct bar_ctx *c = vctx;
     if (!c) return;
-    pw_pci_close_bar0(c->base, c->size);
+    if (c->use_vfio) pw_vfio_close(&c->vfio);
+    else             pw_pci_close_bar0(c->base, c->size);
     free(c);
 }
 
@@ -205,14 +211,23 @@ static const struct pw_card_backend_ops bar_ops = {
     .close               = bar_close,
 };
 
+/* Attach the backend ops to a freshly mapped BAR. If `vfio` is
+ * non-NULL the mapping is owned by VFIO (and closed via pw_vfio_close);
+ * otherwise it is a sysfs mmap closed via pw_pci_close_bar0. */
 static pw_status bar_backend_attach(void *base, size_t sz,
                                     const char *bdf,
+                                    struct pw_vfio_handle *vfio,
                                     struct pw_card_backend *out) {
     struct bar_ctx *c = calloc(1, sizeof(*c));
-    if (!c) { pw_pci_close_bar0(base, sz); return PW_E_NO_RESOURCES; }
+    if (!c) {
+        if (vfio) pw_vfio_close(vfio);
+        else      pw_pci_close_bar0(base, sz);
+        return PW_E_NO_RESOURCES;
+    }
     c->base = base;
     c->size = sz;
     c->reg  = (volatile uint32_t *)base;
+    if (vfio) { c->use_vfio = 1; c->vfio = *vfio; }
     out->ops = &bar_ops;
     out->ctx = c;
     if (bdf) snprintf(out->pci_bdf, sizeof(out->pci_bdf), "%s", bdf);
@@ -220,13 +235,50 @@ static pw_status bar_backend_attach(void *base, size_t sz,
     return PW_OK;
 }
 
+/* CSR BAR index for the xdma DMA-mode build: BAR0 carries the AXI-Lite
+ * master CSR window. Override with PW_CSR_BAR if a build maps it
+ * elsewhere. */
+static int csr_bar_index(void) {
+    const char *e = getenv("PW_CSR_BAR");
+    if (e && *e) {
+        int v = atoi(e);
+        if (v >= 0 && v <= 5) return v;
+    }
+    return 0;
+}
+
+pw_status pw_bar_backend_open_vfio(const char *pci_bdf,
+                                   struct pw_card_backend *out) {
+    if (!pci_bdf || !out) return PW_E_INVAL;
+    struct pw_vfio_handle vh;
+    pw_status r = pw_vfio_open_bar(pci_bdf, csr_bar_index(), &vh);
+    if (r != PW_OK) return r;
+    return bar_backend_attach(vh.base, vh.size, pci_bdf, &vh, out);
+}
+
 pw_status pw_bar_backend_open(const char *pci_bdf, struct pw_card_backend *out) {
     if (!pci_bdf || !out) return PW_E_INVAL;
+
+    /* PW_BACKEND=vfio|sysfs forces a path; default auto-selects sysfs
+     * and falls back to VFIO when the sysfs resource mmap is denied
+     * (e.g. kernel lockdown under Secure Boot). */
+    const char *force = getenv("PW_BACKEND");
+    if (force && strcmp(force, "vfio") == 0)
+        return pw_bar_backend_open_vfio(pci_bdf, out);
+
     void  *base = NULL;
     size_t sz   = 0;
     pw_status r = pw_pci_open_bar0(pci_bdf, &base, &sz);
-    if (r != PW_OK) return r;
-    return bar_backend_attach(base, sz, pci_bdf, out);
+    if (r == PW_OK)
+        return bar_backend_attach(base, sz, pci_bdf, NULL, out);
+
+    if (force && strcmp(force, "sysfs") == 0)
+        return r;  /* caller pinned sysfs; report its error */
+
+    /* Auto fallback: sysfs mmap failed (often EPERM under lockdown) --
+     * try VFIO before giving up. */
+    pw_status rv = pw_bar_backend_open_vfio(pci_bdf, out);
+    return (rv == PW_OK) ? PW_OK : r;  /* prefer the original error */
 }
 
 pw_status pw_bar_backend_open_path(const char *path, struct pw_card_backend *out) {
@@ -235,5 +287,5 @@ pw_status pw_bar_backend_open_path(const char *path, struct pw_card_backend *out
     size_t sz   = 0;
     pw_status r = pw_pci_open_bar0_path(path, &base, &sz);
     if (r != PW_OK) return r;
-    return bar_backend_attach(base, sz, NULL, out);
+    return bar_backend_attach(base, sz, NULL, NULL, out);
 }

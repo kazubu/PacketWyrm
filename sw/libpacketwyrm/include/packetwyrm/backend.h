@@ -147,6 +147,13 @@ pw_status pw_bar_backend_open(const char *pci_bdf, struct pw_card_backend *out);
  * backend at a captured / synthesised BAR image. */
 pw_status pw_bar_backend_open_path(const char *path, struct pw_card_backend *out);
 
+/* VFIO variant: maps the CSR BAR through vfio-pci (IOMMU-mediated),
+ * the access path that works under Secure Boot / kernel lockdown where
+ * sysfs resource mmap is denied. The device must be bound to vfio-pci
+ * (see pw_vfio_bind). pw_bar_backend_open() falls back to this
+ * automatically when the sysfs mmap is refused. */
+pw_status pw_bar_backend_open_vfio(const char *pci_bdf, struct pw_card_backend *out);
+
 static inline void pw_card_backend_close(struct pw_card_backend *b) {
     if (b && b->ops && b->ops->close) b->ops->close(b->ctx);
     if (b) { b->ops = NULL; b->ctx = NULL; }

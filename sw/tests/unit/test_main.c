@@ -17,6 +17,7 @@
 #include <json-c/json.h>
 
 #include "packetwyrm/packetwyrm.h"
+#include "packetwyrm/vfio.h"
 
 static int g_fail = 0;
 static int g_total = 0;
@@ -338,6 +339,21 @@ static void test_pci_discover_no_match(void) {
     int n = pw_pci_discover(0xBAD1, 0xBAD2, NULL, 0);
     PW_ASSERT(n >= 0);  /* 0 on no match, or PW_E_IO on hosts without sysfs */
     PW_ASSERT(n == 0);
+}
+
+static void test_vfio_open_bogus(void) {
+    /* No hardware / no vfio binding in CI: a bogus BDF must fail
+     * cleanly (no crash) and leave a handle that is safe to close. */
+    struct pw_vfio_handle h;
+    PW_ASSERT(pw_vfio_open_bar("0000:ff:1f.7", 0, &h) != PW_OK);
+    pw_vfio_close(&h);  /* safe after a failed open */
+
+    PW_ASSERT(pw_vfio_open_bar(NULL, 0, &h) == PW_E_INVAL);
+    PW_ASSERT(pw_vfio_open_bar("0000:ff:1f.7", 9, &h) == PW_E_INVAL);
+
+    /* The backend's vfio entry point fails cleanly too. */
+    struct pw_card_backend b;
+    PW_ASSERT(pw_bar_backend_open_vfio("0000:ff:1f.7", &b) != PW_OK);
 }
 
 static void test_fake_backend_slow_path(void) {
@@ -768,6 +784,7 @@ int main(void) {
         { "bar_backend_window_writes", test_bar_backend_window_writes },
         { "bar_backend_stats_reads", test_bar_backend_stats_reads },
         { "pci_discover_no_match", test_pci_discover_no_match },
+        { "vfio_open_bogus", test_vfio_open_bogus },
         { "fake_backend_slow_path", test_fake_backend_slow_path },
         { "host_plane_socketpair", test_host_plane_socketpair },
         { "tap_basic", test_tap_basic },

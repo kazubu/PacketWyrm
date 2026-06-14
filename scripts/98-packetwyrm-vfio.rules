@@ -1,0 +1,19 @@
+# OPTIONAL udev rule: bind the PacketWyrm card to vfio-pci at boot.
+#
+# Needed on hosts with Secure Boot / kernel lockdown enabled, where the
+# plain sysfs resourceN mmap used by 99-packetwyrm.rules is blocked.
+# VFIO is the IOMMU-mediated access path libpacketwyrm falls back to
+# (pw_bar_backend_open -> vfio). With the card bound to vfio-pci,
+# packetwyrmd opens it via VFIO automatically.
+#
+# Install only if you run under lockdown:
+#   sudo modprobe vfio-pci
+#   sudo install -m 644 scripts/98-packetwyrm-vfio.rules /etc/udev/rules.d/
+#   sudo usermod -aG vfio $USER            # for non-root /dev/vfio access
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=pci
+#
+# The card must sit alone in its IOMMU group (it does on the AS02MC04).
+# PCI IDs match docs/design/pci-ids.md (Vendor=0x10ee Device=0xa502).
+
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10ee", ATTR{device}=="0xa502", \
+    RUN+="/bin/sh -c 'echo vfio-pci > /sys/bus/pci/devices/%k/driver_override; echo %k > /sys/bus/pci/drivers_probe'"
