@@ -188,10 +188,10 @@ that the BAR is reachable and the FPGA presents the right identity.
 | JTAG IDCODE reads as `0x04a63093` (KU3P)                    | ✅ (HS3) |
 | Bitstream loads without errors                              | ✅ (startup status HIGH via HS3) |
 | `led_hb` blinks at ~1 Hz                                    | ✅ (observed on DS5) |
-| `led[1]` is high (PCIe link up)                             | pending enumeration |
-| `lspci -d 10ee:a502` returns the card                       | pending enumeration |
-| `bringup-check.sh` prints `device_id=0xa502beef`            | pending (see BAR note) |
-| BAR0 size in sysfs matches the IP configuration (64K)       | pending |
+| `led[1]` is high (PCIe link up)                             | ✅ (enumerates after warm reboot) |
+| `lspci -d 10ee:a502` returns the card                       | ✅ (07:00.0, subsys 10ee:7e57) |
+| `bringup-check.sh` prints `device_id=0xa502beef`            | ✅ first read (see read-stability issue) |
+| BAR size in sysfs matches the IP configuration (64K)        | ✅ (two 64K BARs; CSR on BAR0) |
 | Timing report closes (no negative WNS / WHS)                | ✅ (WNS +0.570 / WHS +0.010, Vivado 2025.2) |
 
 > **Enumeration needs the FPGA configured before the host trains the
@@ -205,6 +205,22 @@ that the BAR is reachable and the FPGA presents the right identity.
 > BAR; the PacketWyrm CSR window (`device_id=0xa502beef`) is on the
 > AXI-Lite-master BAR. `bringup-check.sh` must read that BAR's offset 0
 > once `lspci -vv` shows the layout.
+
+### Known issue: AXI-Lite read stability
+
+On real hardware the **first** AXI-Lite read after the BAR is mapped
+returns the correct value (`device_id` = `0xa502beef`); every read after
+that returns `0xffffffff` (PCIe completion timeout) until the function
+is reset. So the CSR path works for exactly one transaction and then the
+read channel wedges. `pw_csr_min`'s read FSM handles back-to-back reads
+in the Verilator/`csr_full_tb` simulations, so this is an interaction
+with the xdma M_AXI_LITE master's timing, not a logic bug the unit tests
+catch. Next step is an ILA on the `s_axi_*` read channel
+(arvalid/arready/rvalid/rready/araddr) to capture the second read.
+
+> Do **not** debug this with `VFIO_DEVICE_RESET` / FLR from userspace:
+> on this board the function reset cascades to the PCIe link and reboots
+> the host. (The FPGA keeps its volatile config across a warm reboot.)
 
 When every row is checked, Phase 2 (10G MAC / PCS frame loopback)
 starts.
