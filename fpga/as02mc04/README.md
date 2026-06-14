@@ -76,7 +76,7 @@ project script.
 
 | Item                                  | Where to get it                       |
 |---------------------------------------|---------------------------------------|
-| Vivado 2023.2+ (UltraScale+ licence)  | AMD/Xilinx                            |
+| Vivado ML Standard 2023.2+ (free)     | AMD/Xilinx — the free WebPACK/Standard edition covers xcku3p / xcku5p; no Enterprise licence needed |
 | AS02MC04 board                        | eBay / second-hand                    |
 | JTAG cable (J-Link / USB Blaster /    | Any 4-GPIO TAP-driving probe;         |
 | FT232H)                               | see `docs/jtag-bringup.md`            |
