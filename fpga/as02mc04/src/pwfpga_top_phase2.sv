@@ -180,8 +180,10 @@ module pwfpga_top_phase2 (
         .clk (clk_100mhz), .rst_n (rst_n_100), .led_o (led_hb)
     );
 
-    // led[0] = SFP0 link, led[1] = PCIe link, led[2] = SFP1 link, led[3] spare
-    assign led = {1'b0, sfp_rx_status[1], pcie_link_up, sfp_rx_status[0]};
+    // led[0] = SFP0 link, led[1] = PCIe link, led[2] = SFP1 link, led[3] spare.
+    // The AS02MC04 user LEDs are active-low (lit = pin driven 0), so invert:
+    // a lit LED now means "up / locked".
+    assign led = ~{1'b0, sfp_rx_status[1], pcie_link_up, sfp_rx_status[0]};
 
 endmodule
 
