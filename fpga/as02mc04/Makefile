@@ -4,7 +4,7 @@
 #   make project   create the Vivado project (no synth)
 #   make synth     run synthesis
 #   make impl      run implementation + write_bitstream
-#   make ip        regenerate Xilinx IP (PCIe Gen3, MMCM)
+#   make ip        create the project WITH the PCIe IP generated (use_ip=1)
 #   make program   load the latest bitstream over JTAG (HW_TARGET required)
 #   make clean     remove build artefacts
 #
@@ -31,8 +31,11 @@ impl: $(BITFILE)
 $(BITFILE):
 	$(VIVADO) -mode batch -source project.tcl -tclargs impl
 
+# IP generation must happen inside the project (the IP scripts call
+# current_project), so this drives project.tcl with use_ip=1 rather
+# than sourcing the IP scripts standalone. synth/impl auto-set use_ip=1.
 ip:
-	$(VIVADO) -mode batch -source ip/pcie_gen3.tcl -source ip/clk_wiz.tcl
+	$(VIVADO) -mode batch -source project.tcl -tclargs use_ip=1
 
 # Program the FPGA over JTAG. Set HW_TARGET=ftdi_xil_hs2 or similar
 # according to `hw_targets` in Vivado tcl.

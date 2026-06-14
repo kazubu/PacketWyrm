@@ -6,6 +6,15 @@ sw/**/*.so
 .DS_Store
 fpga/as02mc04/builds/
 fpga/as02mc04/build/
+# Vivado droppings written into the board dir when running in batch.
+fpga/as02mc04/.Xil/
+fpga/as02mc04/.gen/
+fpga/as02mc04/.srcs/
+fpga/as02mc04/.cache/
+fpga/as02mc04/*.jou
+fpga/as02mc04/*.backup.jou
+fpga/as02mc04/vivado_*.out
+fpga/as02mc04/*.str
 sim/sim_build/
 sim/work/
 *.log
