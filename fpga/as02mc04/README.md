@@ -210,6 +210,12 @@ All Definition-of-done rows pass on real hardware (Vivado 2025.2 +
 Digilent HS3, host with Secure Boot / kernel lockdown read via VFIO).
 **Phase 1 PCIe bring-up is complete.**
 
+The image is also written to the onboard SPI flash (`make flash`, Micron
+MT25QU256). `boot_hw_device` reconfigured the KU3P from flash with DONE =
+HIGH, so after a **cold** power-cycle the card configures at power-on and
+enumerates with no JTAG load or warm reboot. (A warm reboot does not
+reconfigure the FPGA; only power-on / `boot_hw_device` reloads from flash.)
+
 ### Resolved: AXI-Lite read stability
 
 Initially only the *first* AXI-Lite read after the BAR was mapped
