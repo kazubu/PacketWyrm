@@ -98,13 +98,12 @@ add_files -fileset constrs_1 [list \
     "$taxi/src/axis/syn/vivado/taxi_axis_async_fifo.tcl" \
     "$taxi/src/sync/syn/vivado/taxi_sync_reset.tcl" \
     "$taxi/src/sync/syn/vivado/taxi_sync_signal.tcl" \
+    "$script_dir/xdc/phase2_cdc.xdc" \
 ]
-set_property USED_IN_SYNTHESIS false [get_files taxi_axis_async_fifo.tcl]
-set_property USED_IN_SYNTHESIS false [get_files taxi_sync_reset.tcl]
-set_property USED_IN_SYNTHESIS false [get_files taxi_sync_signal.tcl]
-set_property PROCESSING_ORDER LATE   [get_files taxi_axis_async_fifo.tcl]
-set_property PROCESSING_ORDER LATE   [get_files taxi_sync_reset.tcl]
-set_property PROCESSING_ORDER LATE   [get_files taxi_sync_signal.tcl]
+foreach cf {taxi_axis_async_fifo.tcl taxi_sync_reset.tcl taxi_sync_signal.tcl phase2_cdc.xdc} {
+    set_property USED_IN_SYNTHESIS false [get_files $cf]
+    set_property PROCESSING_ORDER LATE   [get_files $cf]
+}
 
 # --- IP: PCIe XDMA (Phase 1) + GTY 10G (Taxi) -------------------------------
 source "$script_dir/ip/pcie_gen3.tcl"
