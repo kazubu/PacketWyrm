@@ -190,7 +190,7 @@ that the BAR is reachable and the FPGA presents the right identity.
 | `led_hb` blinks at ~1 Hz                                    | ✅ (observed on DS5) |
 | `led[1]` is high (PCIe link up)                             | ✅ (enumerates after warm reboot) |
 | `lspci -d 10ee:a502` returns the card                       | ✅ (07:00.0, subsys 10ee:7e57) |
-| `bringup-check.sh` prints `device_id=0xa502beef`            | ✅ first read (see read-stability issue) |
+| `bringup-check.sh` prints `device_id=0xa502beef`            | ✅ stable (VFIO; full identity block reads back) |
 | BAR size in sysfs matches the IP configuration (64K)        | ✅ (two 64K BARs; CSR on BAR0) |
 | Timing report closes (no negative WNS / WHS)                | ✅ (WNS +0.570 / WHS +0.010, Vivado 2025.2) |
 
@@ -206,24 +206,26 @@ that the BAR is reachable and the FPGA presents the right identity.
 > AXI-Lite-master BAR. `bringup-check.sh` must read that BAR's offset 0
 > once `lspci -vv` shows the layout.
 
-### Known issue: AXI-Lite read stability
+All Definition-of-done rows pass on real hardware (Vivado 2025.2 +
+Digilent HS3, host with Secure Boot / kernel lockdown read via VFIO).
+**Phase 1 PCIe bring-up is complete.**
 
-On real hardware the **first** AXI-Lite read after the BAR is mapped
-returns the correct value (`device_id` = `0xa502beef`); every read after
-that returns `0xffffffff` (PCIe completion timeout) until the function
-is reset. So the CSR path works for exactly one transaction and then the
-read channel wedges. `pw_csr_min`'s read FSM handles back-to-back reads
-in the Verilator/`csr_full_tb` simulations, so this is an interaction
-with the xdma M_AXI_LITE master's timing, not a logic bug the unit tests
-catch. Next step is an ILA on the `s_axi_*` read channel
-(arvalid/arready/rvalid/rready/araddr) to capture the second read.
+### Resolved: AXI-Lite read stability
 
-> Do **not** debug this with `VFIO_DEVICE_RESET` / FLR from userspace:
-> on this board the function reset cascades to the PCIe link and reboots
-> the host. (The FPGA keeps its volatile config across a warm reboot.)
+Initially only the *first* AXI-Lite read after the BAR was mapped
+returned the right value; every later read returned `0xffffffff` (PCIe
+completion timeout). Root cause: `pw_csr_min`'s read FSM raised ARREADY
+and RVALID in the same cycle, which the xdma M_AXI_LITE master
+mishandled. Fixed by the canonical AXI4-Lite handshake (ARREADY pulses
+to latch the address, RVALID/RDATA follow the next cycle). Reads are now
+stable across repeats and the full identity block reads back correctly.
 
-When every row is checked, Phase 2 (10G MAC / PCS frame loopback)
-starts.
+> Do **not** probe AXI issues with `VFIO_DEVICE_RESET` / FLR from
+> userspace on this board: the function reset cascades to the PCIe link
+> and reboots the host. The FPGA keeps its volatile config across a warm
+> reboot (cold power-off loses it -- a flash boot image fixes that).
+
+Phase 2 (10G MAC / PCS frame loopback) starts next.
 
 ## Why we are not just using Taxi / Corundum
 
