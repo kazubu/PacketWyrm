@@ -88,13 +88,15 @@ project script.
 ```sh
 cd fpga/as02mc04
 
-# 1. Create the Vivado project (no synth)
+# 1. Create the Vivado project (no synth, stub PCIe)
 make project
 
-# 2. Generate the Xilinx PCIe Gen3 + MMCM IP
+# 2. Generate the PCIe AXI-Bridge IP (xdma, AXI Bridge mode).
+#    FIRST TIME ONLY: reconcile CONFIG keys + reconcile the bridge
+#    against the generated .veo -- see "PCIe IP" note below.
 make ip
 
-# 3. Synthesise
+# 3. Synthesise (synth/impl auto-set use_ip=1: real IP, stub dropped)
 make synth
 
 # 4. Implement + write bitstream
@@ -103,6 +105,21 @@ make impl
 # 5. Program over JTAG (set HW_TARGET to the JTAG cable serial / glob)
 make program HW_TARGET=*jlink*
 ```
+
+> **PCIe IP (read before the first `make ip`).** Phase 1 needs BAR0 as
+> a memory-mapped AXI4-Lite master, so `ip/pcie_gen3.tcl` generates the
+> **DMA/Bridge Subsystem for PCIe** (`xdma`) in **AXI Bridge** mode --
+> *not* the bare `pcie4_uscale_plus` integrated block, which only
+> exposes the AXI-Stream transaction layer. Two version-specific steps
+> on first build: (1) if Vivado rejects an `xdma` `CONFIG.*` key,
+> set the same intent in the IP GUI and copy its `set_property -dict`
+> back into `ip/pcie_gen3.tcl`; (2) reconcile `src/pcie_axi_lite_bridge.sv`
+> against the generated `pcie_gen3_wrapper.veo` instantiation template
+> (port names drift -- see the comment block in that file).
+> `project.tcl` auto-sets `use_ip=1` for `synth`/`impl` and then drops
+> `src/pcie_gen3_stub.sv` (both define `pcie_gen3_wrapper`). Force the
+> stub build with `make synth` `... -tclargs use_ip=0` only for a
+> LED/timing smoke test -- PCIe will not enumerate.
 
 If you prefer OpenOCD (no licensed Vivado on the lab box), generate
 the SVF from Vivado and follow `docs/jtag-bringup.md` &mdash; that

@@ -1,13 +1,26 @@
-// PCIe Gen3 endpoint -> AXI4-Lite slave bridge.
+// PCIe Gen3 endpoint -> AXI4-Lite master bridge.
 //
-// Thin shim around the Xilinx PCIe Gen3 hard IP (xdma / pcie4 /
-// pcie_ultrascale_plus, configured by ip/pcie_gen3.tcl). The hard IP
-// already implements config space, MSI(/-X), and a BAR-attached
-// AXI4-Lite master; this wrapper just renames signals so the top-
-// level wiring stays readable.
+// Thin shim around the Xilinx DMA/Bridge Subsystem for PCIe (module
+// `xdma`) configured in AXI Bridge mode by ip/pcie_gen3.tcl. That IP
+// implements config space and presents BAR0 as a memory-mapped
+// AXI4-Lite *master* driven by host MMIO; this wrapper just renames
+// signals so the top-level wiring stays readable.
 //
 // Phase 1 only exposes BAR0 as AXI-Lite. Phase 2 adds BAR0 windows
 // for DMA descriptor rings on a separate AXI-Full master.
+//
+// PORT RECONCILIATION (do this once, after `make ip`):
+//   The instantiation below mirrors src/pcie_gen3_stub.sv so off-Vivado
+//   lint passes. The *real* generated wrapper's port list is Vivado-
+//   version-specific. After `make ip`, open
+//     build/<proj>.gen/sources_1/ip/pcie_gen3_wrapper/pcie_gen3_wrapper.veo
+//   and reconcile the instance below against it. Known likely deltas:
+//     - link-up port may be named `user_lnk_up` (not `user_link_up`);
+//     - the AXI-Lite master adds `m_axil_awprot`/`m_axil_arprot`
+//       outputs (leave unconnected -- pw_csr_min ignores PROT);
+//     - the differential refclk may arrive as `sys_clk`/`sys_clk_gt`
+//       with an external IBUFDS_GTE4 instead of sys_clk_p/sys_clk_n
+//       (ip/pcie_gen3.tcl requests shared-logic-in-core to avoid this).
 
 `default_nettype none
 
