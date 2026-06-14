@@ -100,7 +100,9 @@ module pw_sfp_10g #(
     );
 
     // --- transceiver control APB (no master: fixed 10G config) --------------
-    taxi_apb_if #(.DATA_W(32), .ADDR_W(24)) gt_apb_ctrl ();
+    // Width must match the MAC's internal APB (16-bit data, 18-bit addr),
+    // as in the Taxi AS02MC04 example.
+    taxi_apb_if #(.ADDR_W(18), .DATA_W(16)) gt_apb_ctrl ();
     assign gt_apb_ctrl.psel    = 1'b0;
     assign gt_apb_ctrl.penable = 1'b0;
     assign gt_apb_ctrl.pwrite  = 1'b0;
