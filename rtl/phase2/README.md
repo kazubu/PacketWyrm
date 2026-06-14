@@ -31,8 +31,12 @@ paths inside the `.f` files work in place). The AS02MC04 10G data path is:
 
 GTY IP + Vivado timing constraints used by the example build:
 
-- `src/eth/rtl/us/taxi_eth_phy_10g_us_gty_156.tcl` — GTY IP, 156.25 MHz
-  reference clock, 10.3125 Gbps line rate.
+- `src/eth/rtl/us/taxi_eth_phy_25g_us_gty_10g_156.tcl` — GTY IP for the
+  DATA_W=64 + low-latency path (`taxi_eth_phy_25g_us_gty`, the 25G GT
+  core clocked at the 10.3125 Gbps / 156.25 MHz 10G operating point).
+  PacketWyrm runs the MAC AXIS at 64 bit, so this is the IP variant the
+  MAC instantiates -- NOT `taxi_eth_phy_10g_us_gty_156.tcl`, which is the
+  DATA_W=32 (`taxi_eth_phy_10g_us_gty`) path.
 - `src/eth/syn/vivado/taxi_eth_mac_fifo.tcl`,
   `src/axis/syn/vivado/taxi_axis_async_fifo.tcl`,
   `src/sync/syn/vivado/taxi_sync_reset.tcl`, `taxi_sync_signal.tcl`.
