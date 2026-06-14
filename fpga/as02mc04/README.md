@@ -192,7 +192,7 @@ that the BAR is reachable and the FPGA presents the right identity.
 | `lspci -d 1af4:a502` returns the card                       |        |
 | `bringup-check.sh` prints `device_id=0xa502beef`            |        |
 | BAR0 size in sysfs matches the IP configuration (64K)       |        |
-| Timing report closes (no negative WNS / WHS)                |        |
+| Timing report closes (no negative WNS / WHS)                | ✅ (WNS +0.570 / WHS +0.010, Vivado 2025.2) |
 
 When every row is checked, Phase 2 (10G MAC / PCS frame loopback)
 starts.
