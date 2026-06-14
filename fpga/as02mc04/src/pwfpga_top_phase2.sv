@@ -39,7 +39,8 @@ module pwfpga_top_phase2 (
 
     // Status LEDs
     output wire        led_hb,           // B9 - 1 Hz heartbeat
-    output wire [3:0]  led               // B11 / C11 / A10 / B10
+    output wire [3:0]  led,              // B11 / C11 / A10 / B10
+    output wire        sfp_led [2]       // SFP cage link LEDs (DS3 B12 / DS2 C12)
 );
 
     import pw_pkg::*;
@@ -180,10 +181,12 @@ module pwfpga_top_phase2 (
         .clk (clk_100mhz), .rst_n (rst_n_100), .led_o (led_hb)
     );
 
-    // led[0] = SFP0 link, led[1] = PCIe link, led[2] = SFP1 link, led[3] spare.
-    // The AS02MC04 user LEDs are active-low (lit = pin driven 0), so invert:
-    // a lit LED now means "up / locked".
-    assign led = ~{1'b0, sfp_rx_status[1], pcie_link_up, sfp_rx_status[0]};
+    // SFP cage link LEDs (DS3 / DS2), active-low: lit = 10GBASE-R link up.
+    assign sfp_led[0] = !sfp_rx_status[0];
+    assign sfp_led[1] = !sfp_rx_status[1];
+
+    // User LED bank (active-low). led[1] = PCIe link up; others off.
+    assign led = {1'b1, 1'b1, ~pcie_link_up, 1'b1};
 
 endmodule
 

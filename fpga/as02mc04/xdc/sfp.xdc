@@ -22,3 +22,8 @@ set_property -dict {LOC B2 } [get_ports {sfp_rx_p[1]}]
 set_property -dict {LOC B1 } [get_ports {sfp_rx_n[1]}]
 set_property -dict {LOC D7 } [get_ports {sfp_tx_p[1]}]
 set_property -dict {LOC D6 } [get_ports {sfp_tx_n[1]}]
+
+# SFP+ cage link-status LEDs (active-low): DS3 / DS2 next to the cages.
+set_property -dict {LOC B12 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 12} [get_ports {sfp_led[0]}]
+set_property -dict {LOC C12 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 12} [get_ports {sfp_led[1]}]
+set_false_path -to [get_ports {sfp_led[*]}]
