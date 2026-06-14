@@ -85,12 +85,25 @@ add_files -fileset sources_1 [concat $pw_srcs $taxi_srcs]
 set_property file_type SystemVerilog [get_files *.sv]
 
 # --- constraints ------------------------------------------------------------
+# Board/IO XDC first, then Taxi's scoped CDC timing tcls (they self-scope
+# via get_cells -hier REF_NAME filters, so they relax the async-FIFO /
+# reset-synchroniser crossings inside the MAC). Marked late-processing so
+# they run after the netlist exists in implementation.
 add_files -fileset constrs_1 [list \
     "$script_dir/xdc/pinout.xdc" \
     "$script_dir/xdc/timing.xdc" \
     "$script_dir/xdc/physical.xdc" \
     "$script_dir/xdc/sfp.xdc" \
+    "$taxi/src/axis/syn/vivado/taxi_axis_async_fifo.tcl" \
+    "$taxi/src/sync/syn/vivado/taxi_sync_reset.tcl" \
+    "$taxi/src/sync/syn/vivado/taxi_sync_signal.tcl" \
 ]
+set_property USED_IN_SYNTHESIS false [get_files taxi_axis_async_fifo.tcl]
+set_property USED_IN_SYNTHESIS false [get_files taxi_sync_reset.tcl]
+set_property USED_IN_SYNTHESIS false [get_files taxi_sync_signal.tcl]
+set_property PROCESSING_ORDER LATE   [get_files taxi_axis_async_fifo.tcl]
+set_property PROCESSING_ORDER LATE   [get_files taxi_sync_reset.tcl]
+set_property PROCESSING_ORDER LATE   [get_files taxi_sync_signal.tcl]
 
 # --- IP: PCIe XDMA (Phase 1) + GTY 10G (Taxi) -------------------------------
 source "$script_dir/ip/pcie_gen3.tcl"
