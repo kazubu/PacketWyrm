@@ -63,8 +63,8 @@ The project currently ships:
 |--------------------------------------|---------------------------------|
 | Phase 0  &mdash; data model + YAML   | done                            |
 | Phase 0.5 &mdash; PCI vendor/device  | `10ee:a502` (private dev IDs)   |
-| Phase 1  &mdash; KU3P PCIe bring-up  | RTL + XDC + project, awaits card|
-| Phase 2  &mdash; SFP+ MAC / PCS      | not yet started                 |
+| Phase 1  &mdash; KU3P PCIe bring-up  | done on HW (`10ee:a502` enumerates, identity reads back) |
+| Phase 2  &mdash; SFP+ MAC / PCS      | 10GBASE-R link up on HW (Taxi MAC/PCS/GTY over DAC); line-rate RX/TX next |
 | Phase 3  &mdash; data-plane RTL      | data plane + CSR + AXIS integrated; sim green |
 | Phase 4  &mdash; BAR-mmap backend    | done                            |
 | Phase 5  &mdash; TAP + host plane    | done                            |
