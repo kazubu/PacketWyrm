@@ -109,6 +109,22 @@ the SVF from Vivado and follow `docs/jtag-bringup.md` &mdash; that
 recipe is verified working on AS02MC04 via Segger J-Link and Altera
 USB Blaster.
 
+A ready-to-use OpenOCD config for the **Digilent JTAG-HS3** cable
+ships in `openocd/as02mc04-hs3.cfg`. The IDCODE read has been
+verified against a real board:
+
+```sh
+openocd -f openocd/as02mc04-hs3.cfg -c "init; scan_chain; exit"
+# Info : JTAG tap: xcku3p.tap tap/device found: 0x04a63093
+#        (mfg: 0x049 (Xilinx), part: 0x4a63, ver: 0x0)
+```
+
+The HS3 (and HS2) probe is an FT232H reporting USB `0403:6014`. The
+OpenOCD `60-openocd.rules` udev rule grants the `plugdev` group
+access; if the rule was installed while the probe was already
+plugged in, replug it (or `sudo udevadm control --reload &&
+sudo udevadm trigger`) so the rule applies.
+
 Outputs: `build/pwfpga_as02mc04_phase1/.../pwfpga_top_phase1.bit`.
 
 ## Host-side bring-up checklist
@@ -152,7 +168,7 @@ that the BAR is reachable and the FPGA presents the right identity.
 
 | Check                                                       | Status |
 |-------------------------------------------------------------|--------|
-| JTAG IDCODE reads as `0x04a63093` (KU3P)                    |        |
+| JTAG IDCODE reads as `0x04a63093` (KU3P)                    | ✅ (HS3) |
 | Bitstream loads without errors                              |        |
 | `led_hb` blinks at ~1 Hz                                    |        |
 | `led[1]` is high (PCIe link up)                             |        |
