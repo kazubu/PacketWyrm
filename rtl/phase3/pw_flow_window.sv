@@ -113,8 +113,8 @@ module pw_flow_window #(
             logic [ROW_BYTES*8-1:0] row;
             row = live_rows[r];
 
-            row_enable[r]    = row[0*8 +: 8] [0];
-            row_tx_enable[r] = row[90*8 +: 8] [0];
+            row_enable[r]    = row[0*8 +: 8];   // truncates to bit 0
+            row_tx_enable[r] = row[90*8 +: 8];  // truncates to bit 0
             row_egress[r]    = row[1*8 +: 8];
 
             row_dst_mac[r]   = {row[14*8 +: 8], row[15*8 +: 8], row[16*8 +: 8],
@@ -122,8 +122,8 @@ module pw_flow_window #(
             row_src_mac[r]   = {row[20*8 +: 8], row[21*8 +: 8], row[22*8 +: 8],
                                 row[23*8 +: 8], row[24*8 +: 8], row[25*8 +: 8]};
 
-            row_vlan_en[r]   = row[26*8 +: 8] [0];
-            row_vlan_id[r]   = {row[28*8 +: 8], row[27*8 +: 8]} [11:0];
+            row_vlan_en[r]   = row[26*8 +: 8];  // truncates to bit 0
+            row_vlan_id[r]   = {row[28*8 +: 8], row[27*8 +: 8]};  // truncates to 12b
 
             row_src_ip[r]    = {row[34*8 +: 8], row[33*8 +: 8],
                                 row[32*8 +: 8], row[31*8 +: 8]};

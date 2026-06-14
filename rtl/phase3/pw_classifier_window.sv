@@ -85,9 +85,9 @@ module pw_classifier_window #(
 
             // Key fields the wire struct carries.
             cls_table_o[r].key.ethertype = {row[(ko+1)*8 +: 8], row[(ko+0)*8 +: 8]};
-            cls_table_o[r].key.vlan_id   = {row[(ko+3)*8 +: 8], row[(ko+2)*8 +: 8]} [11:0];
+            cls_table_o[r].key.vlan_id   = {row[(ko+3)*8 +: 8], row[(ko+2)*8 +: 8]};  // truncates to 12b
             cls_table_o[r].key.l3_proto  = row[(ko+5)*8 +: 8];
-            cls_table_o[r].key.ingress_port = row[(ko+6)*8 +: 8] [3:0];
+            cls_table_o[r].key.ingress_port = row[(ko+6)*8 +: 8];  // truncates to 4b
             cls_table_o[r].key.l4_src    = {row[(ko+9)*8 +: 8], row[(ko+8)*8 +: 8]};
             cls_table_o[r].key.l4_dst    = {row[(ko+11)*8 +: 8], row[(ko+10)*8 +: 8]};
             cls_table_o[r].key.udp_src   = cls_table_o[r].key.l4_src;

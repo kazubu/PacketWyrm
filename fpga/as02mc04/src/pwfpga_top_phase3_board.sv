@@ -115,9 +115,13 @@ module pwfpga_top_phase3_board (
 
     wire [63:0] punt_d;  wire [7:0] punt_k;  wire punt_v, punt_l;
 
+    // Modest table sizes for the first hardware bring-up: the pw_csr_window
+    // shadow/live register arrays for classifier/flow/stats/histogram are
+    // FF-heavy and congest the KU3P at 8 flows. 2 flows / 2 rules / 8 bins
+    // is enough for a single-flow DAC loopback; scale up once routable.
     pwfpga_top_phase3 #(
         .ADDR_W(ADDR_W), .CAPABILITIES(PW_PHASE1_CAPABILITIES),
-        .NUM_PORTS(2), .NUM_FLOWS(8), .NUM_CLASSIFIER(8), .NUM_HIST_BINS(16)
+        .NUM_PORTS(2), .NUM_FLOWS(2), .NUM_CLASSIFIER(2), .NUM_HIST_BINS(8)
     ) u_dp (
         .clk(axi_aclk), .rst_n(axi_aresetn),
         .s_axi_awaddr(aw), .s_axi_awvalid(awv), .s_axi_awready(awr),
