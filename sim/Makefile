@@ -78,18 +78,18 @@ TOP_RTL := \
     $(REPO)/sim/sim_version_pkg.sv \
     $(REPO)/rtl/shared/pw_csr_window.sv \
     $(REPO)/rtl/phase3/pw_axis_pkg.sv \
-    $(REPO)/rtl/phase3/pw_axis_serial.sv \
     $(REPO)/rtl/phase3/pw_classifier_pkg.sv \
     $(REPO)/rtl/phase3/pw_classifier_window.sv \
     $(REPO)/rtl/phase3/pw_flow_window.sv \
     $(REPO)/rtl/phase3/pw_stats_snapshot.sv \
     $(REPO)/rtl/phase3/pw_histogram_snapshot.sv \
     $(REPO)/rtl/phase3/pw_csr_full.sv \
-    $(REPO)/rtl/phase3/pw_parser.sv \
+    $(REPO)/rtl/phase3/pw_parser_axis.sv \
     $(REPO)/rtl/phase3/pw_classifier.sv \
     $(REPO)/rtl/phase3/pw_test_rx_checker.sv \
-    $(REPO)/rtl/phase3/pw_flow_gen.sv \
-    $(REPO)/rtl/phase3/pw_data_plane.sv \
+    $(REPO)/rtl/phase3/pw_flow_gen_axis.sv \
+    $(REPO)/rtl/phase3/pw_frame_saf.sv \
+    $(REPO)/rtl/phase3/pw_data_plane_axis.sv \
     $(REPO)/rtl/phase3/pwfpga_top_phase3.sv
 
 TB       := data_plane_tb/tb_data_plane.sv
@@ -245,7 +245,7 @@ sim_build/data_plane_axis: $(DPA_RTL) $(TB_DPA)
 	    $(DPA_RTL) $(TB_DPA)
 
 sim_build/phase3_top: $(TOP_RTL) $(TB_TOP)
-	$(VERILATOR) $(VFLAGS) \
+	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET \
 	    -Mdir sim_build \
 	    --top-module tb_phase3_top \
 	    -o phase3_top \

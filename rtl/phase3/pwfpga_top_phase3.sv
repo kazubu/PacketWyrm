@@ -9,13 +9,13 @@
 //   * 64-bit AXIS for the punt path (PUNT_TO_HOST / MIRROR_TO_HOST)
 //
 // Inside it instantiates pw_csr_full (identity + classifier / flow
-// / stats / histogram windows), pw_data_plane, and a pair of
-// AXIS serializer / deserializer per port (Phase 2 stepping stone
-// to 64-bit MAC bus).
+// / stats / histogram windows) and pw_data_plane_axis, the 64-bit
+// AXIS streaming data plane. The MAC's 64-bit AXIS RX/TX wire
+// straight into the data plane -- no wide-frame serializer /
+// deserializer (the wide pw_frame_t bus did not route on silicon).
 
 `default_nettype none
 
-import pw_axis_pkg::*;
 import pw_classifier_pkg::*;
 
 module pwfpga_top_phase3 #(
@@ -161,34 +161,7 @@ module pwfpga_top_phase3 #(
         .gen_udp_dp_o        (gen_udp_dp)
     );
 
-    // --- Per-port AXIS deserializer (MAC RX -> wide rx_frame) ---
-    pw_frame_t rx_frame_w [NUM_PORTS];
-    logic      rx_valid_w [NUM_PORTS];
-
-    generate
-        for (genvar gp = 0; gp < NUM_PORTS; gp++) begin : g_deser
-            pw_axis_deserializer u_des (
-                .clk            (clk),
-                .rst_n          (rst_n),
-                .s_tdata        (s_axis_rx_tdata[gp]),
-                .s_tkeep        (s_axis_rx_tkeep[gp]),
-                .s_tvalid       (s_axis_rx_tvalid[gp]),
-                .s_tready       (s_axis_rx_tready[gp]),
-                .s_tlast        (s_axis_rx_tlast[gp]),
-                .frame_o        (rx_frame_w[gp]),
-                .frame_valid_o  (rx_valid_w[gp]),
-                .ingress_port_i (4'(gp))
-            );
-        end
-    endgenerate
-
-    // --- Data plane --------------------------------------------
-    pw_frame_t      tx_frame_w [NUM_PORTS];
-    logic           tx_valid_w [NUM_PORTS];
-    logic           tx_ready_w [NUM_PORTS];
-    pw_frame_t      punt_frame_w;
-    logic           punt_valid_w;
-
+    // --- Streaming data plane (MAC AXIS straight through) -------
     // Unpack the CSR's per-port packed inputs into the data plane's
     // unpacked-array port shape.
     logic        gen_enable_u   [NUM_PORTS];
@@ -219,77 +192,52 @@ module pwfpga_top_phase3 #(
         end
     end
 
-    pw_data_plane #(
+    pw_data_plane_axis #(
         .PW_PORTS      (NUM_PORTS),
         .PW_NUM_FLOWS  (NUM_FLOWS),
         .PW_NUM_BUCKETS(NUM_HIST_BINS)
     ) u_dp (
-        .clk            (clk),
-        .rst_n          (rst_n),
-        .timestamp_i    (timestamp_i),
-        .cls_table_i    (cls_table),
-        .rx_frame_i     (rx_frame_w),
-        .rx_valid_i     (rx_valid_w),
-        .tx_frame_o     (tx_frame_w),
-        .tx_valid_o     (tx_valid_w),
-        .tx_ready_i     (tx_ready_w),
-        .punt_frame_o   (punt_frame_w),
-        .punt_valid_o   (punt_valid_w),
-        .gen_enable_i   (gen_enable_u),
-        .gen_tokens_fp_i(gen_tokens_u),
-        .gen_burst_i    (gen_burst_u),
-        .gen_src_mac_i  (gen_src_mac_u),
-        .gen_dst_mac_i  (gen_dst_mac_u),
-        .gen_vlan_en_i  (gen_vlan_en_u),
-        .gen_vlan_id_i  (gen_vlan_id_u),
-        .gen_src_ip_i   (gen_src_ip_u),
-        .gen_dst_ip_i   (gen_dst_ip_u),
-        .gen_udp_sp_i   (gen_udp_sp_u),
-        .gen_udp_dp_i   (gen_udp_dp_u),
-        .flow_rx        (flow_rx_w),
-        .flow_lost      (flow_lost_w),
-        .flow_dup       (flow_dup_w),
-        .flow_ooo       (flow_ooo_w),
-        .flow_last_seq  (flow_last_seq_w),
-        .flow_min_lat   (flow_min_lat_w),
-        .flow_max_lat   (flow_max_lat_w),
-        .flow_sum_lat   (flow_sum_lat_w),
-        .flow_samples   (flow_samples_w),
-        .flow_hist      (flow_hist_w),
-        .port_drops_o   (port_drops_w)
-    );
-
-    // --- Per-port AXIS serializer (wide tx_frame -> MAC TX) ----
-    generate
-        for (genvar gp2 = 0; gp2 < NUM_PORTS; gp2++) begin : g_ser
-            pw_axis_serializer u_ser (
-                .clk            (clk),
-                .rst_n          (rst_n),
-                .frame_i        (tx_frame_w[gp2]),
-                .frame_valid_i  (tx_valid_w[gp2]),
-                .frame_ready_o  (tx_ready_w[gp2]),
-                .m_tdata        (m_axis_tx_tdata[gp2]),
-                .m_tkeep        (m_axis_tx_tkeep[gp2]),
-                .m_tvalid       (m_axis_tx_tvalid[gp2]),
-                .m_tready       (m_axis_tx_tready[gp2]),
-                .m_tlast        (m_axis_tx_tlast[gp2])
-            );
-        end
-    endgenerate
-
-    // --- Punt path: serialize the wide punt frame -------------
-    logic punt_ready_w;
-    pw_axis_serializer u_ser_punt (
-        .clk            (clk),
-        .rst_n          (rst_n),
-        .frame_i        (punt_frame_w),
-        .frame_valid_i  (punt_valid_w),
-        .frame_ready_o  (punt_ready_w),
-        .m_tdata        (m_axis_punt_tdata),
-        .m_tkeep        (m_axis_punt_tkeep),
-        .m_tvalid       (m_axis_punt_tvalid),
-        .m_tready       (m_axis_punt_tready),
-        .m_tlast        (m_axis_punt_tlast)
+        .clk               (clk),
+        .rst_n             (rst_n),
+        .timestamp_i       (timestamp_i),
+        .cls_table_i       (cls_table),
+        .s_axis_rx_tdata   (s_axis_rx_tdata),
+        .s_axis_rx_tkeep   (s_axis_rx_tkeep),
+        .s_axis_rx_tvalid  (s_axis_rx_tvalid),
+        .s_axis_rx_tready  (s_axis_rx_tready),
+        .s_axis_rx_tlast   (s_axis_rx_tlast),
+        .m_axis_tx_tdata   (m_axis_tx_tdata),
+        .m_axis_tx_tkeep   (m_axis_tx_tkeep),
+        .m_axis_tx_tvalid  (m_axis_tx_tvalid),
+        .m_axis_tx_tready  (m_axis_tx_tready),
+        .m_axis_tx_tlast   (m_axis_tx_tlast),
+        .m_axis_punt_tdata (m_axis_punt_tdata),
+        .m_axis_punt_tkeep (m_axis_punt_tkeep),
+        .m_axis_punt_tvalid(m_axis_punt_tvalid),
+        .m_axis_punt_tready(m_axis_punt_tready),
+        .m_axis_punt_tlast (m_axis_punt_tlast),
+        .gen_enable_i      (gen_enable_u),
+        .gen_tokens_fp_i   (gen_tokens_u),
+        .gen_burst_i       (gen_burst_u),
+        .gen_src_mac_i     (gen_src_mac_u),
+        .gen_dst_mac_i     (gen_dst_mac_u),
+        .gen_vlan_en_i     (gen_vlan_en_u),
+        .gen_vlan_id_i     (gen_vlan_id_u),
+        .gen_src_ip_i      (gen_src_ip_u),
+        .gen_dst_ip_i      (gen_dst_ip_u),
+        .gen_udp_sp_i      (gen_udp_sp_u),
+        .gen_udp_dp_i      (gen_udp_dp_u),
+        .flow_rx           (flow_rx_w),
+        .flow_lost         (flow_lost_w),
+        .flow_dup          (flow_dup_w),
+        .flow_ooo          (flow_ooo_w),
+        .flow_last_seq     (flow_last_seq_w),
+        .flow_min_lat      (flow_min_lat_w),
+        .flow_max_lat      (flow_max_lat_w),
+        .flow_sum_lat      (flow_sum_lat_w),
+        .flow_samples      (flow_samples_w),
+        .flow_hist         (flow_hist_w),
+        .port_drops_o      (port_drops_w)
     );
 
 endmodule

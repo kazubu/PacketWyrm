@@ -1,12 +1,12 @@
-// End-to-end loop test for pwfpga_top_phase3:
+// End-to-end loop test for pwfpga_top_phase3 (streaming data plane):
 //   AXI-Lite host writes -> pw_csr_full -> program both windows
-//                                       -> data plane emits frames
-//                                       -> AXIS serializer on port 0
+//                                       -> flow_gen_axis emits 64b AXIS
+//                                          frames on m_axis_tx[0]
 //                                       -> testbench loops 64b AXIS
 //                                          from m_axis_tx[0] back into
 //                                          s_axis_rx[1]
-//                                       -> AXIS deserializer on port 1
-//                                       -> data plane classifies TEST_RX
+//                                       -> parser_axis + classifier =>
+//                                          TEST_RX checker
 //                                       -> snapshot reads back rx>0
 //
 // Also exercises:
@@ -209,18 +209,20 @@ module tb_phase3_top;
             punt_frames_seen <= punt_frames_seen + 1;
     end
 
-    // Send one ARP-like frame (14 bytes, no payload) on port 0
-    // through the RX side of the DUT (via the deserializer).
+    // Send one ARP-like frame (14 bytes, no payload) on port 0 into the
+    // DUT's 64-bit AXIS RX. Bytes are packed little-endian (byte k in
+    // tdata[8k +: 8]), matching pw_parser_axis / the real MAC.
+    //   dst MAC ff:ff:ff:ff:ff:ff, src 02:a5:02:00:00:01, ethertype 0806
     task automatic send_arp_on_rx(input int p);
-        // Beat 0: bytes 0..7 -> dst MAC ff ff ff ff ff ff + src 02 a5
+        // Beat 0: bytes 0..7 = ff ff ff ff ff ff 02 a5
         @(posedge clk);
-        rx_tdata[p]  = {8'hff,8'hff,8'hff,8'hff,8'hff,8'hff,8'h02,8'ha5};
+        rx_tdata[p]  = {8'ha5,8'h02,8'hff,8'hff,8'hff,8'hff,8'hff,8'hff};
         rx_tkeep[p]  = 8'hFF;
         rx_tvalid[p] = 1'b1;
         rx_tlast[p]  = 1'b0;
         do @(posedge clk); while (!rx_tready[p]);
-        // Beat 1: bytes 8..13 -> remaining src + ethertype 0x0806
-        rx_tdata[p]  = {8'h02,8'h00,8'h00,8'h01,8'h08,8'h06,8'h00,8'h00};
+        // Beat 1: bytes 8..13 = 02 00 00 01 08 06  (src tail + ethertype)
+        rx_tdata[p]  = {8'h00,8'h00,8'h06,8'h08,8'h01,8'h00,8'h00,8'h02};
         rx_tkeep[p]  = 8'b0011_1111;   // 6 valid bytes -> 14-byte total
         rx_tvalid[p] = 1'b1;
         rx_tlast[p]  = 1'b1;
@@ -308,8 +310,8 @@ module tb_phase3_top;
         // ---- AXIS loopback: port-0 TX out -> port-1 RX in ----
         scenario = "loopback";
         // Run the loop for many cycles so the token bucket emits
-        // some frames; each frame propagates through serializer ->
-        // (loopback) -> deserializer -> data plane.
+        // some frames; each 64b AXIS frame loops m_axis_tx[0] ->
+        // s_axis_rx[1] straight into the streaming data plane.
         for (int n = 0; n < 1500; n++) begin
             @(posedge clk);
             rx_tdata[1]  = tx_tdata[0];
