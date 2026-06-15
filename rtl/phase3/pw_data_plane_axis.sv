@@ -115,6 +115,23 @@ module pw_data_plane_axis #(
     logic             [PW_PORTS-1:0] rx_kv;
     pw_class_result_t [PW_PORTS-1:0] rx_res;
 
+    // The classifier registers its result (REG_RESULT) to break the long
+    // cls_table -> match -> ... -> checker/histogram timing path, so rx_res
+    // lands one cycle after rx_kv/rx_key. Delay the key + key_valid that
+    // feed the checker arbiter, the SAF decision, and the drop counter by
+    // one cycle to realign them with the registered result.
+    logic             [PW_PORTS-1:0] rx_kv_d;
+    pw_match_key_t    [PW_PORTS-1:0] rx_key_d;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            rx_kv_d  <= '0;
+            rx_key_d <= '0;
+        end else begin
+            rx_kv_d  <= rx_kv;
+            rx_key_d <= rx_key;
+        end
+    end
+
     // SAF drain side (one per ingress port).
     logic [63:0]      saf_td [PW_PORTS];
     logic [7:0]       saf_tk [PW_PORTS];
@@ -142,7 +159,7 @@ module pw_data_plane_axis #(
                 .key_valid_o    (rx_kv[gp])
             );
 
-            pw_classifier u_cls (
+            pw_classifier #(.REG_RESULT(1'b1)) u_cls (
                 .clk         (clk),
                 .rst_n       (rst_n),
                 .table_i     (cls_table_i),
@@ -172,8 +189,8 @@ module pw_data_plane_axis #(
                 .s_tkeep         (s_axis_rx_tkeep[gp]),
                 .s_tvalid        (s_axis_rx_tvalid[gp]),
                 .s_tlast         (s_axis_rx_tlast[gp]),
-                .dec_valid_i     (rx_kv[gp]),
-                .dec_keep_i      (rx_kv[gp] && rx_res[gp].hit && (act_fwd || act_punt)),
+                .dec_valid_i     (rx_kv_d[gp]),
+                .dec_keep_i      (rx_kv_d[gp] && rx_res[gp].hit && (act_fwd || act_punt)),
                 .dec_route_i     (act_punt ? {1'b1, 4'd0}
                                            : {1'b0, rx_res[gp].egress_port}),
                 .overflow_drop_o (),                 // future: per-port telemetry tap
@@ -199,9 +216,9 @@ module pw_data_plane_axis #(
         chk_res = '0;
         chk_ev  = 1'b0;
         for (int p = 0; p < PW_PORTS; p++) begin
-            if (rx_kv[p] && rx_res[p].hit &&
+            if (rx_kv_d[p] && rx_res[p].hit &&
                 rx_res[p].action == PW_ACT_TEST_RX) begin
-                chk_key = rx_key[p];
+                chk_key = rx_key_d[p];
                 chk_res = rx_res[p];
                 chk_ev  = 1'b1;
             end
@@ -210,7 +227,8 @@ module pw_data_plane_axis #(
 
     pw_test_rx_checker #(
         .NUM_FLOWS  (PW_NUM_FLOWS),
-        .NUM_BUCKETS(PW_NUM_BUCKETS)
+        .NUM_BUCKETS(PW_NUM_BUCKETS),
+        .PIPELINE   (1)
     ) u_checker (
         .clk             (clk),
         .rst_n           (rst_n),
@@ -243,7 +261,7 @@ module pw_data_plane_axis #(
             for (int p = 0; p < PW_PORTS; p++) port_drops[p] <= '0;
         end else begin
             for (int p = 0; p < PW_PORTS; p++) begin
-                if (rx_kv[p] && rx_res[p].action == PW_ACT_DROP)
+                if (rx_kv_d[p] && rx_res[p].action == PW_ACT_DROP)
                     port_drops[p] <= port_drops[p] + 32'd1;
             end
         end

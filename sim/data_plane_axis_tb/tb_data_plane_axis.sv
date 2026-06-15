@@ -356,20 +356,20 @@ module tb_data_plane_axis;
         @(posedge clk);
 
         for (int s = 0; s < 5; s++) inject_test(1, 32'd9, 64'(s));
-        repeat (3) @(posedge clk);
+        repeat (8) @(posedge clk);
         check_eq("pre-gap rx",   flow_rx[1],   5);
         check_eq("pre-gap lost", flow_lost[1], 0);
 
         // jump 4 -> 10: 5 missing
         for (int s = 10; s < 13; s++) inject_test(1, 32'd9, 64'(s));
-        repeat (3) @(posedge clk);
+        repeat (8) @(posedge clk);
         check_eq("post-gap rx",   flow_rx[1],   8);
         check_eq("post-gap lost", flow_lost[1], 5);
 
         // ---------------- scenario 3: dup ----------------
         scenario = "dup";
         inject_test(1, 32'd9, 64'd12);
-        repeat (3) @(posedge clk);
+        repeat (8) @(posedge clk);
         check_eq("dup count", flow_dup[1], 1);
 
         // ---------------- scenario 4: out-of-order ----------------
@@ -388,7 +388,7 @@ module tb_data_plane_axis;
         for (int s = 0; s < 4; s++) inject_test(1, 32'd30, 64'(s));
         inject_test(1, 32'd30, 64'd5);  // jump ahead
         inject_test(1, 32'd30, 64'd4);  // come back
-        repeat (3) @(posedge clk);
+        repeat (8) @(posedge clk);
         check_eq("ooo rx ",  flow_rx[3],   6);
         check_eq("ooo lost", flow_lost[3], 1);
         check_eq("ooo ooo ", flow_ooo[3],  1);
@@ -428,7 +428,7 @@ module tb_data_plane_axis;
             pre_drops = port_drops[0];
             build_plain_udp(16'd80);   // matches no rule -> default DROP
             inject(0);
-            repeat (3) @(posedge clk);
+            repeat (8) @(posedge clk);
             check_eq("port0 drop ticked", port_drops[0], pre_drops + 1);
         end
 

@@ -15,8 +15,16 @@
 
 import pw_classifier_pkg::*;
 
-module pw_classifier (
-    input  wire                       clk,        // combinational lookup; clock kept for future pipelining
+module pw_classifier #(
+    // 0: combinational result (default; wide-bus plane + its sims rely on
+    //    same-cycle result alongside key_valid_i).
+    // 1: register result_o by one cycle to break the long
+    //    cls_table -> match -> result -> downstream timing path. The
+    //    streaming data plane sets this and realigns the key feeding the
+    //    checker by the matching one cycle.
+    parameter bit REG_RESULT = 1'b0
+) (
+    input  wire                       clk,
     input  wire                       rst_n,
     input  pw_classifier_table_t      table_i,
     input  pw_match_key_t             key_i,
@@ -97,27 +105,43 @@ module pw_classifier (
     // priority_. Ties resolved by lowest entry index. Implemented as
     // a small selection loop; PW_CLASSIFIER_ENTRIES is tiny so this
     // synthesises into a flat mux.
+    pw_class_result_t result_c;
+
     always_comb begin
-        result_o = '0;
+        result_c = '0;
         for (int i = 0; i < PW_CLASSIFIER_ENTRIES; i++) begin
             if (entry_hit[i]) begin
-                if (!result_o.hit ||
-                    table_i[i].priority_ < table_i[result_o.entry_index].priority_) begin
-                    result_o.hit          = 1'b1;
-                    result_o.action       = table_i[i].action;
-                    result_o.egress_port  = table_i[i].egress_port;
-                    result_o.local_flow_id = table_i[i].local_flow_id;
-                    result_o.logical_if_id = table_i[i].logical_if_id;
-                    result_o.entry_index   = PW_ENTRY_IDX_W'(i);
+                if (!result_c.hit ||
+                    table_i[i].priority_ < table_i[result_c.entry_index].priority_) begin
+                    result_c.hit          = 1'b1;
+                    result_c.action       = table_i[i].action;
+                    result_c.egress_port  = table_i[i].egress_port;
+                    result_c.local_flow_id = table_i[i].local_flow_id;
+                    result_c.logical_if_id = table_i[i].logical_if_id;
+                    result_c.entry_index   = PW_ENTRY_IDX_W'(i);
                 end
             end
         end
 
         // Default if nothing matched (or key invalid): drop.
-        if (!result_o.hit) begin
-            result_o.action = PW_ACT_DROP;
+        if (!result_c.hit) begin
+            result_c.action = PW_ACT_DROP;
         end
     end
+
+    // Output stage: combinational (default) or one-cycle registered.
+    generate
+        if (REG_RESULT) begin : g_reg
+            pw_class_result_t result_q;
+            always_ff @(posedge clk or negedge rst_n) begin
+                if (!rst_n) result_q <= '0;
+                else        result_q <= result_c;
+            end
+            assign result_o = result_q;
+        end else begin : g_comb
+            assign result_o = result_c;
+        end
+    endgenerate
 
     wire _u2 = &{1'b0, entry_enable, 1'b0};
 
