@@ -159,6 +159,30 @@ module tb_data_plane_axis;
         .port_drops_o     (port_drops)
     );
 
+    // --- egress / punt collectors (reassemble forwarded & punted frames)
+    logic [63:0] tx1_data [$]; logic [7:0] tx1_keep [$]; logic tx1_last [$];
+    logic [63:0] pn_data  [$]; logic [7:0] pn_keep  [$]; logic pn_last  [$];
+
+    always_ff @(posedge clk) begin
+        if (rst_n && tx_tvalid[1] && tx_tready[1]) begin
+            tx1_data.push_back(tx_tdata[1]);
+            tx1_keep.push_back(tx_tkeep[1]);
+            tx1_last.push_back(tx_tlast[1]);
+        end
+        if (rst_n && punt_tvalid && punt_tready) begin
+            pn_data.push_back(punt_tdata);
+            pn_keep.push_back(punt_tkeep);
+            pn_last.push_back(punt_tlast);
+        end
+    end
+
+    // Count bytes accumulated in a keep queue (popcount of tkeep beats).
+    function automatic int qbytes(input logic [7:0] kq []);
+        int n; n = 0;
+        foreach (kq[i]) for (int k = 0; k < 8; k++) if (kq[i][k]) n++;
+        return n;
+    endfunction
+
     int     errors = 0;
     string  scenario = "init";
 
@@ -212,8 +236,8 @@ module tb_data_plane_axis;
         fb_len = off;
     endtask
 
-    // Plain IPv4/UDP frame, no test header (used for the DROP path).
-    task automatic build_plain_udp();
+    // Plain IPv4/UDP frame to `dport`, no test header.
+    task automatic build_plain_udp(input logic [15:0] dport);
         int off;
         for (int i = 0; i < 128; i++) fb[i] = 8'h00;
         fb[0]=8'h02; fb[1]=8'ha5; fb[2]=8'h02; fb[3]=8'h00; fb[4]=8'h00; fb[5]=8'h02;
@@ -223,7 +247,8 @@ module tb_data_plane_axis;
         fb[off+12]=8'hc0; fb[off+13]=8'h00; fb[off+14]=8'h02; fb[off+15]=8'h01;
         fb[off+16]=8'hc0; fb[off+17]=8'h00; fb[off+18]=8'h02; fb[off+19]=8'h02;
         off += 20;
-        fb[off+0]=8'h30; fb[off+1]=8'h39; fb[off+2]=8'h00; fb[off+3]=8'h50; // dst 80
+        fb[off+0]=8'hc0; fb[off+1]=8'h00;                  // udp src 49152
+        fb[off+2]=dport[15:8]; fb[off+3]=dport[7:0];       // udp dst
         off += 8;
         fb_len = off;
     endtask
@@ -401,11 +426,70 @@ module tb_data_plane_axis;
         begin
             logic [31:0] pre_drops;
             pre_drops = port_drops[0];
-            build_plain_udp();   // matches no rule -> default DROP
+            build_plain_udp(16'd80);   // matches no rule -> default DROP
             inject(0);
             repeat (3) @(posedge clk);
             check_eq("port0 drop ticked", port_drops[0], pre_drops + 1);
         end
+
+        // ---------------- scenario 7: FORWARD_PORT (port0 -> egress1) ----
+        scenario = "forward";
+        tx1_data.delete(); tx1_keep.delete(); tx1_last.delete();
+        pn_data.delete();  pn_keep.delete();  pn_last.delete();
+        cls_table[5].enable                  = 1'b1;
+        cls_table[5].action                  = PW_ACT_FORWARD_PORT;
+        cls_table[5].priority_               = 8'd8;
+        cls_table[5].egress_port             = 4'd1;
+        cls_table[5].mask.match_ingress_port = 1'b1;
+        cls_table[5].mask.match_udp_dst      = 1'b1;
+        cls_table[5].key.ingress_port        = 4'd0;
+        cls_table[5].key.udp_dst             = 16'd60000;
+        @(posedge clk);
+
+        build_plain_udp(16'd60000);
+        inject(0);
+        repeat (16) @(posedge clk);
+        check_eq("forward tx1 bytes", qbytes(tx1_keep), 42);
+        check_eq("forward tx1 saw last",
+                 (tx1_last.size() > 0 && tx1_last[tx1_last.size()-1]) ? 1 : 0, 1);
+        if (tx1_data.size() > 0)
+            check_eq("forward dst-mac byte0", tx1_data[0][7:0], 8'h02);
+        check_eq("forward not punted", pn_keep.size(), 0);
+
+        // ---------------- scenario 8: PUNT_TO_HOST -----------------------
+        scenario = "punt";
+        tx1_data.delete(); tx1_keep.delete(); tx1_last.delete();
+        pn_data.delete();  pn_keep.delete();  pn_last.delete();
+        cls_table[6].enable             = 1'b1;
+        cls_table[6].action             = PW_ACT_PUNT_TO_HOST;
+        cls_table[6].priority_          = 8'd8;
+        cls_table[6].mask               = '0;
+        cls_table[6].mask.match_udp_dst = 1'b1;
+        cls_table[6].key.udp_dst        = 16'd179;
+        @(posedge clk);
+
+        build_plain_udp(16'd179);
+        inject(0);
+        repeat (16) @(posedge clk);
+        check_eq("punt bytes", qbytes(pn_keep), 42);
+        check_eq("punt saw last",
+                 (pn_last.size() > 0 && pn_last[pn_last.size()-1]) ? 1 : 0, 1);
+        check_eq("punt not forwarded", qbytes(tx1_keep), 0);
+
+        // ---------------- scenario 9: MIRROR_TO_HOST -> punt -------------
+        scenario = "mirror";
+        tx1_data.delete(); tx1_keep.delete(); tx1_last.delete();
+        pn_data.delete();  pn_keep.delete();  pn_last.delete();
+        cls_table[6].action      = PW_ACT_MIRROR_TO_HOST;
+        cls_table[6].key.udp_dst = 16'd180;
+        @(posedge clk);
+
+        build_plain_udp(16'd180);
+        inject(0);
+        repeat (16) @(posedge clk);
+        check_eq("mirror bytes", qbytes(pn_keep), 42);
+        check_eq("mirror saw last",
+                 (pn_last.size() > 0 && pn_last[pn_last.size()-1]) ? 1 : 0, 1);
 
         if (errors == 0) begin
             $display("ALL DATA PLANE AXIS SCENARIOS PASS");
