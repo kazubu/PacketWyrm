@@ -121,6 +121,8 @@ foreach cf {taxi_axis_async_fifo.tcl taxi_sync_reset.tcl taxi_sync_signal.tcl ph
 
 # --- IP: PCIe XDMA (Phase 1) + GTY 10G (Taxi) -------------------------------
 source "$script_dir/ip/pcie_gen3.tcl"
+# AXI4-Lite clock converter: BAR (axi_aclk 250) -> data-plane dp_clk (156.25).
+source "$script_dir/ip/axi_clk_conv.tcl"
 # Taxi GTY IP for the DATA_W=64 / low-latency path (25G GT core @ 10G).
 source "$taxi/src/eth/rtl/us/taxi_eth_phy_25g_us_gty_10g_156.tcl"
 

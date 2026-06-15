@@ -103,36 +103,87 @@ module pw_classifier #(
         end
     endgenerate
 
-    // Priority winner: among hit rows, pick the one with smallest
-    // priority_. Ties resolved by lowest entry index. Implemented as
-    // a small selection loop; PW_CLASSIFIER_ENTRIES is tiny so this
-    // synthesises into a flat mux.
-    // Stage-A boundary: for RESULT_STAGES==2 the per-entry match (entry_hit)
-    // is registered before the priority select; otherwise the select sees
-    // the combinational match. table_i is quasi-static (host commits before
-    // traffic), so the select may re-read its fields in the later stage.
-    logic [PW_CLASSIFIER_ENTRIES-1:0] entry_hit_q;
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) entry_hit_q <= '0;
-        else        entry_hit_q <= entry_hit;
-    end
+    // Per-entry fields the priority select consumes. For RESULT_STAGES==2
+    // they are REGISTERED in stage A (the match), so the stage-B select never
+    // reads the live cls_table -- the cls_table -> select -> result path was
+    // the residual timing path at 156 MHz. For 0/1 they pass straight from
+    // the (quasi-static) table.
+    logic        s_hit     [PW_CLASSIFIER_ENTRIES];
+    pw_action_e  s_action  [PW_CLASSIFIER_ENTRIES];
+    logic [3:0]  s_egress  [PW_CLASSIFIER_ENTRIES];
+    logic [31:0] s_flow    [PW_CLASSIFIER_ENTRIES];
+    logic [31:0] s_logical [PW_CLASSIFIER_ENTRIES];
+    logic [7:0]  s_prio    [PW_CLASSIFIER_ENTRIES];
 
-    logic [PW_CLASSIFIER_ENTRIES-1:0] entry_hit_sel;
-    assign entry_hit_sel = (RESULT_STAGES == 2) ? entry_hit_q : entry_hit;
+    generate
+        if (RESULT_STAGES == 2) begin : g_cand
+            // Stage A: register the per-entry match + the fields the winner
+            // select needs, so stage B is a pure mux over registered values.
+            logic        cand_hit     [PW_CLASSIFIER_ENTRIES];
+            pw_action_e  cand_action  [PW_CLASSIFIER_ENTRIES];
+            logic [3:0]  cand_egress  [PW_CLASSIFIER_ENTRIES];
+            logic [31:0] cand_flow    [PW_CLASSIFIER_ENTRIES];
+            logic [31:0] cand_logical [PW_CLASSIFIER_ENTRIES];
+            logic [7:0]  cand_prio    [PW_CLASSIFIER_ENTRIES];
+            always_ff @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    for (int i = 0; i < PW_CLASSIFIER_ENTRIES; i++) begin
+                        cand_hit[i]     <= 1'b0;
+                        cand_action[i]  <= PW_ACT_DROP;
+                        cand_egress[i]  <= '0;
+                        cand_flow[i]    <= '0;
+                        cand_logical[i] <= '0;
+                        cand_prio[i]    <= '0;
+                    end
+                end else begin
+                    for (int i = 0; i < PW_CLASSIFIER_ENTRIES; i++) begin
+                        cand_hit[i]     <= entry_hit[i];
+                        cand_action[i]  <= table_i[i].action;
+                        cand_egress[i]  <= table_i[i].egress_port;
+                        cand_flow[i]    <= table_i[i].local_flow_id;
+                        cand_logical[i] <= table_i[i].logical_if_id;
+                        cand_prio[i]    <= table_i[i].priority_;
+                    end
+                end
+            end
+            always_comb begin
+                for (int i = 0; i < PW_CLASSIFIER_ENTRIES; i++) begin
+                    s_hit[i]     = cand_hit[i];
+                    s_action[i]  = cand_action[i];
+                    s_egress[i]  = cand_egress[i];
+                    s_flow[i]    = cand_flow[i];
+                    s_logical[i] = cand_logical[i];
+                    s_prio[i]    = cand_prio[i];
+                end
+            end
+        end else begin : g_live
+            always_comb begin
+                for (int i = 0; i < PW_CLASSIFIER_ENTRIES; i++) begin
+                    s_hit[i]     = entry_hit[i];
+                    s_action[i]  = table_i[i].action;
+                    s_egress[i]  = table_i[i].egress_port;
+                    s_flow[i]    = table_i[i].local_flow_id;
+                    s_logical[i] = table_i[i].logical_if_id;
+                    s_prio[i]    = table_i[i].priority_;
+                end
+            end
+        end
+    endgenerate
 
-    // Priority winner among the selected hit vector.
+    // Priority winner: among hit rows, smallest priority_ wins; ties resolve
+    // on lowest entry index. PW_CLASSIFIER_ENTRIES is tiny -> a flat mux.
     pw_class_result_t result_c;
     always_comb begin
         result_c = '0;
         for (int i = 0; i < PW_CLASSIFIER_ENTRIES; i++) begin
-            if (entry_hit_sel[i]) begin
+            if (s_hit[i]) begin
                 if (!result_c.hit ||
-                    table_i[i].priority_ < table_i[result_c.entry_index].priority_) begin
-                    result_c.hit          = 1'b1;
-                    result_c.action       = table_i[i].action;
-                    result_c.egress_port  = table_i[i].egress_port;
-                    result_c.local_flow_id = table_i[i].local_flow_id;
-                    result_c.logical_if_id = table_i[i].logical_if_id;
+                    s_prio[i] < s_prio[result_c.entry_index]) begin
+                    result_c.hit           = 1'b1;
+                    result_c.action        = s_action[i];
+                    result_c.egress_port   = s_egress[i];
+                    result_c.local_flow_id = s_flow[i];
+                    result_c.logical_if_id = s_logical[i];
                     result_c.entry_index   = PW_ENTRY_IDX_W'(i);
                 end
             end
