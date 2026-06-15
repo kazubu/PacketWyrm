@@ -4,6 +4,7 @@
 // (round-robin scheduling + per-flow sequence counters).
 `default_nettype none
 
+import pw_axis_pkg::*;
 import pw_classifier_pkg::*;
 
 module tb_flow_gen_multi;
@@ -13,26 +14,13 @@ module tb_flow_gen_multi;
     always #5 clk = ~clk;
     logic [63:0] ts = 0;
 
-    logic        f_en   [SLOTS];
-    logic [31:0] f_fid  [SLOTS];
-    logic [31:0] f_tok  [SLOTS];
-    logic [15:0] f_burst[SLOTS];
-    logic [47:0] f_smac [SLOTS];
-    logic [47:0] f_dmac [SLOTS];
-    logic        f_ven  [SLOTS];
-    logic [11:0] f_vid  [SLOTS];
-    logic [31:0] f_sip  [SLOTS];
-    logic [31:0] f_dip  [SLOTS];
-    logic [15:0] f_usp  [SLOTS];
-    logic [15:0] f_udp  [SLOTS];
+    pw_flow_row_t f_rows [SLOTS];
 
     logic [63:0] td; logic [7:0] tk; logic tv, tl;
 
-    pw_flow_gen_multi #(.NUM_SLOTS(SLOTS), .FRAME_LEN_PAYLOAD(32)) gen (
+    pw_flow_gen_multi #(.EGRESS_PORT(0), .NUM_SLOTS(SLOTS), .FRAME_LEN_PAYLOAD(32)) gen (
         .clk(clk), .rst_n(rst_n), .timestamp_i(ts),
-        .f_enable_i(f_en), .f_flow_id_i(f_fid), .f_tokens_fp_i(f_tok), .f_burst_i(f_burst),
-        .f_src_mac_i(f_smac), .f_dst_mac_i(f_dmac), .f_vlan_en_i(f_ven), .f_vlan_id_i(f_vid),
-        .f_src_ipv4_i(f_sip), .f_dst_ipv4_i(f_dip), .f_udp_sp_i(f_usp), .f_udp_dp_i(f_udp),
+        .f_rows_i(f_rows),
         .m_tdata(td), .m_tkeep(tk), .m_tvalid(tv), .m_tready(1'b1), .m_tlast(tl)
     );
 
@@ -69,14 +57,18 @@ module tb_flow_gen_multi;
 
     initial begin
         for (int s = 0; s < SLOTS; s++) begin
-            f_en[s]=0; f_fid[s]=0; f_tok[s]=0; f_burst[s]=16'd128;
-            f_smac[s]=48'h02_00_00_00_00_01; f_dmac[s]=48'hFF_FF_FF_FF_FF_FF;
-            f_ven[s]=0; f_vid[s]=0; f_sip[s]=32'h0A000001; f_dip[s]=32'h0A000002;
-            f_usp[s]=16'd4000; f_udp[s]=16'd4001;
+            f_rows[s] = '0;
+            f_rows[s].burst   = 16'd128;
+            f_rows[s].src_mac = 48'h02_00_00_00_00_01;
+            f_rows[s].dst_mac = 48'hFF_FF_FF_FF_FF_FF;
+            f_rows[s].src_ipv4 = 32'h0A000001; f_rows[s].dst_ipv4 = 32'h0A000002;
+            f_rows[s].udp_sp = 16'd4000; f_rows[s].udp_dp = 16'd4001;
         end
-        // slot 0: flow_id 1, slot 2: flow_id 3 -- both enabled, same rate.
-        f_en[0]=1; f_fid[0]=32'd1; f_tok[0]=32'h00200000; f_sip[0]=32'h0A000001;
-        f_en[2]=1; f_fid[2]=32'd3; f_tok[2]=32'h00200000; f_sip[2]=32'h0A000003;
+        // slot 0: flow_id 1, slot 2: flow_id 3 -- both valid, egress 0, same rate.
+        f_rows[0].valid=1; f_rows[0].egress=0; f_rows[0].flow_id=32'd1;
+        f_rows[0].tokens_fp=32'h00200000; f_rows[0].src_ipv4=32'h0A000001;
+        f_rows[2].valid=1; f_rows[2].egress=0; f_rows[2].flow_id=32'd3;
+        f_rows[2].tokens_fp=32'h00200000; f_rows[2].src_ipv4=32'h0A000003;
 
         repeat (4) @(posedge clk); rst_n = 1;
         repeat (3000) @(posedge clk);

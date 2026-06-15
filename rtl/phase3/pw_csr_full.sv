@@ -20,6 +20,7 @@
 `default_nettype none
 
 import pw_classifier_pkg::*;
+import pw_axis_pkg::*;
 
 module pw_csr_full #(
     parameter int          ADDR_W          = 16,
@@ -85,7 +86,10 @@ module pw_csr_full #(
     output logic [NUM_PORTS-1:0] [31:0]   gen_src_ip_o,
     output logic [NUM_PORTS-1:0] [31:0]   gen_dst_ip_o,
     output logic [NUM_PORTS-1:0] [15:0]   gen_udp_sp_o,
-    output logic [NUM_PORTS-1:0] [15:0]   gen_udp_dp_o
+    output logic [NUM_PORTS-1:0] [15:0]   gen_udp_dp_o,
+
+    // Full decoded flow table for the multi-flow generator.
+    output pw_flow_row_t                  flow_rows_o [NUM_FLOWS]
 );
 
     // Top-level register offsets we still serve here (the rest live
@@ -230,6 +234,7 @@ module pw_csr_full #(
         .gen_dst_ip_o    (gen_dst_ip_o),
         .gen_udp_sp_o    (gen_udp_sp_o),
         .gen_udp_dp_o    (gen_udp_dp_o),
+        .flow_rows_o     (flow_rows_o),
         .commit_pulse_o  ()
     );
 

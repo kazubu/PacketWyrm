@@ -70,6 +70,11 @@ module pw_flow_window #(
     output logic [PORTS-1:0] [31:0]       gen_dst_ip_o,
     output logic [PORTS-1:0] [15:0]       gen_udp_sp_o,
     output logic [PORTS-1:0] [15:0]       gen_udp_dp_o,
+
+    // Full decoded flow table (one entry per row) for the multi-flow
+    // generator, which round-robins all rows whose egress matches its port.
+    output pw_flow_row_t                  flow_rows_o [DEPTH],
+
     output logic                          commit_pulse_o
 );
 
@@ -136,6 +141,23 @@ module pw_flow_window #(
             row_tokens_fp[r] = {row[78*8 +: 8], row[77*8 +: 8],
                                 row[76*8 +: 8], row[75*8 +: 8]};
             row_burst[r]     = {row[80*8 +: 8], row[79*8 +: 8]};
+
+            // Full row descriptor for the multi-flow generator. flow_id is
+            // the wire global_flow_id at byte offset 2 (LE u32).
+            flow_rows_o[r].valid     = row[0*8 +: 8] & row[90*8 +: 8];  // enable && tx_enable (bit 0)
+            flow_rows_o[r].egress    = row_egress[r][3:0];
+            flow_rows_o[r].flow_id   = {row[5*8 +: 8], row[4*8 +: 8],
+                                        row[3*8 +: 8], row[2*8 +: 8]};
+            flow_rows_o[r].tokens_fp = row_tokens_fp[r];
+            flow_rows_o[r].burst     = row_burst[r];
+            flow_rows_o[r].src_mac   = row_src_mac[r];
+            flow_rows_o[r].dst_mac   = row_dst_mac[r];
+            flow_rows_o[r].vlan_en   = row_vlan_en[r];
+            flow_rows_o[r].vlan_id   = row_vlan_id[r];
+            flow_rows_o[r].src_ipv4  = row_src_ip[r];
+            flow_rows_o[r].dst_ipv4  = row_dst_ip[r];
+            flow_rows_o[r].udp_sp    = row_udp_sp[r];
+            flow_rows_o[r].udp_dp    = row_udp_dp[r];
         end
     end
 

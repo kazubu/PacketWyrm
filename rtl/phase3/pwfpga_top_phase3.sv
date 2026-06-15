@@ -17,6 +17,7 @@
 `default_nettype none
 
 import pw_classifier_pkg::*;
+import pw_axis_pkg::*;
 
 module pwfpga_top_phase3 #(
     parameter int          ADDR_W          = 16,
@@ -158,39 +159,14 @@ module pwfpga_top_phase3 #(
         .gen_src_ip_o        (gen_src_ip),
         .gen_dst_ip_o        (gen_dst_ip),
         .gen_udp_sp_o        (gen_udp_sp),
-        .gen_udp_dp_o        (gen_udp_dp)
+        .gen_udp_dp_o        (gen_udp_dp),
+        .flow_rows_o         (flow_rows_w)
     );
 
     // --- Streaming data plane (MAC AXIS straight through) -------
-    // Unpack the CSR's per-port packed inputs into the data plane's
-    // unpacked-array port shape.
-    logic        gen_enable_u   [NUM_PORTS];
-    logic [31:0] gen_tokens_u   [NUM_PORTS];
-    logic [15:0] gen_burst_u    [NUM_PORTS];
-    logic [47:0] gen_src_mac_u  [NUM_PORTS];
-    logic [47:0] gen_dst_mac_u  [NUM_PORTS];
-    logic        gen_vlan_en_u  [NUM_PORTS];
-    logic [11:0] gen_vlan_id_u  [NUM_PORTS];
-    logic [31:0] gen_src_ip_u   [NUM_PORTS];
-    logic [31:0] gen_dst_ip_u   [NUM_PORTS];
-    logic [15:0] gen_udp_sp_u   [NUM_PORTS];
-    logic [15:0] gen_udp_dp_u   [NUM_PORTS];
-
-    always_comb begin
-        for (int p = 0; p < NUM_PORTS; p++) begin
-            gen_enable_u  [p] = gen_enable[p];
-            gen_tokens_u  [p] = gen_tokens_fp[p];
-            gen_burst_u   [p] = gen_burst[p];
-            gen_src_mac_u [p] = gen_src_mac[p];
-            gen_dst_mac_u [p] = gen_dst_mac[p];
-            gen_vlan_en_u [p] = gen_vlan_en[p];
-            gen_vlan_id_u [p] = gen_vlan_id[p];
-            gen_src_ip_u  [p] = gen_src_ip[p];
-            gen_dst_ip_u  [p] = gen_dst_ip[p];
-            gen_udp_sp_u  [p] = gen_udp_sp[p];
-            gen_udp_dp_u  [p] = gen_udp_dp[p];
-        end
-    end
+    // The multi-flow generators take the full decoded flow table from the
+    // CSR; each egress port's generator emits the rows targeting it.
+    pw_flow_row_t flow_rows_w [NUM_FLOWS];
 
     pw_data_plane_axis #(
         .PW_PORTS      (NUM_PORTS),
@@ -216,17 +192,7 @@ module pwfpga_top_phase3 #(
         .m_axis_punt_tvalid(m_axis_punt_tvalid),
         .m_axis_punt_tready(m_axis_punt_tready),
         .m_axis_punt_tlast (m_axis_punt_tlast),
-        .gen_enable_i      (gen_enable_u),
-        .gen_tokens_fp_i   (gen_tokens_u),
-        .gen_burst_i       (gen_burst_u),
-        .gen_src_mac_i     (gen_src_mac_u),
-        .gen_dst_mac_i     (gen_dst_mac_u),
-        .gen_vlan_en_i     (gen_vlan_en_u),
-        .gen_vlan_id_i     (gen_vlan_id_u),
-        .gen_src_ip_i      (gen_src_ip_u),
-        .gen_dst_ip_i      (gen_dst_ip_u),
-        .gen_udp_sp_i      (gen_udp_sp_u),
-        .gen_udp_dp_i      (gen_udp_dp_u),
+        .flow_rows_i       (flow_rows_w),
         .flow_rx           (flow_rx_w),
         .flow_lost         (flow_lost_w),
         .flow_dup          (flow_dup_w),

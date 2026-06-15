@@ -33,6 +33,7 @@ module tb_phase3_top;
     localparam int W_FLAGS      = 90;
     localparam int F_ENABLE             = 0;
     localparam int F_EGRESS_PORT        = 1;
+    localparam int F_GLOBAL_FLOW_ID     = 2;
     localparam int F_DST_MAC            = 14;
     localparam int F_SRC_MAC            = 20;
     localparam int F_SRC_IPV4           = 31;
@@ -294,6 +295,7 @@ module tb_phase3_top;
             fr = row_zero();
             fr = put_u8 (fr, F_ENABLE,             8'd1);
             fr = put_u8 (fr, F_EGRESS_PORT,        8'd0);
+            fr = put_u32(fr, F_GLOBAL_FLOW_ID,     32'd1);  // multi-gen emits this flow_id
             fr = put_mac(fr, F_DST_MAC,            48'h02_a5_02_00_00_02);
             fr = put_mac(fr, F_SRC_MAC,            48'h02_a5_02_00_00_01);
             fr = put_u32(fr, F_SRC_IPV4,           32'hC000_0201);

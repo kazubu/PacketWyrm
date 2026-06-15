@@ -32,6 +32,7 @@
 `default_nettype none
 
 import pw_classifier_pkg::*;
+import pw_axis_pkg::*;
 
 module pw_data_plane_axis #(
     parameter int PW_PORTS          = 2,
@@ -72,17 +73,9 @@ module pw_data_plane_axis #(
     output logic                  m_axis_punt_tlast,
 
     // Flow gen control (one generator per egress port, flow 1+port)
-    input  wire                   gen_enable_i   [PW_PORTS],
-    input  wire [31:0]            gen_tokens_fp_i[PW_PORTS],
-    input  wire [15:0]            gen_burst_i    [PW_PORTS],
-    input  wire [47:0]            gen_src_mac_i  [PW_PORTS],
-    input  wire [47:0]            gen_dst_mac_i  [PW_PORTS],
-    input  wire                   gen_vlan_en_i  [PW_PORTS],
-    input  wire [11:0]            gen_vlan_id_i  [PW_PORTS],
-    input  wire [31:0]            gen_src_ip_i   [PW_PORTS],
-    input  wire [31:0]            gen_dst_ip_i   [PW_PORTS],
-    input  wire [15:0]            gen_udp_sp_i   [PW_PORTS],
-    input  wire [15:0]            gen_udp_dp_i   [PW_PORTS],
+    // Full decoded flow table; each egress port's multi-flow generator
+    // emits the rows whose egress matches it (round-robin).
+    input  pw_flow_row_t          flow_rows_i    [PW_NUM_FLOWS],
 
     // Per-flow checker counters (over all flows on the card)
     output logic [63:0]           flow_rx        [PW_NUM_FLOWS],
@@ -324,30 +317,23 @@ module pw_data_plane_axis #(
 
     generate
         for (gp = 0; gp < PW_PORTS; gp++) begin : g_gen
-            pw_flow_gen_axis #(
-                .GLOBAL_FLOW_ID   (32'd1 + gp),
+            // One multi-flow generator per egress port: it emits every flow
+            // row whose egress == gp, round-robin, each with its own flow_id
+            // / sequence / token bucket.
+            pw_flow_gen_multi #(
+                .EGRESS_PORT      (gp),
+                .NUM_SLOTS        (PW_NUM_FLOWS),
                 .FRAME_LEN_PAYLOAD(FRAME_LEN_PAYLOAD)
             ) u_gen (
-                .clk                  (clk),
-                .rst_n                (rst_n),
-                .enable_i             (gen_enable_i[gp]),
-                .tokens_per_tick_fp_i (gen_tokens_fp_i[gp]),
-                .burst_bytes_i        (gen_burst_i[gp]),
-                .egress_port_i        (4'(gp)),
-                .src_mac_i            (gen_src_mac_i[gp]),
-                .dst_mac_i            (gen_dst_mac_i[gp]),
-                .vlan_enable_i        (gen_vlan_en_i[gp]),
-                .vlan_id_i            (gen_vlan_id_i[gp]),
-                .src_ipv4_i           (gen_src_ip_i[gp]),
-                .dst_ipv4_i           (gen_dst_ip_i[gp]),
-                .udp_src_port_i       (gen_udp_sp_i[gp]),
-                .udp_dst_port_i       (gen_udp_dp_i[gp]),
-                .timestamp_i          (timestamp_i),
-                .m_tdata              (gen_td[gp]),
-                .m_tkeep              (gen_tk[gp]),
-                .m_tvalid             (gen_tv[gp]),
-                .m_tready             (gen_tr[gp]),
-                .m_tlast              (gen_tl[gp])
+                .clk         (clk),
+                .rst_n       (rst_n),
+                .timestamp_i (timestamp_i),
+                .f_rows_i    (flow_rows_i),
+                .m_tdata     (gen_td[gp]),
+                .m_tkeep     (gen_tk[gp]),
+                .m_tvalid    (gen_tv[gp]),
+                .m_tready    (gen_tr[gp]),
+                .m_tlast     (gen_tl[gp])
             );
         end
     endgenerate

@@ -40,6 +40,7 @@ DPA_RTL := \
     $(REPO)/rtl/phase3/pw_classifier.sv \
     $(REPO)/rtl/phase3/pw_test_rx_checker.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_axis.sv \
+    $(REPO)/rtl/phase3/pw_flow_gen_multi.sv \
     $(REPO)/rtl/phase3/pw_frame_saf.sv \
     $(REPO)/rtl/phase3/pw_data_plane_axis.sv
 
@@ -88,6 +89,7 @@ TOP_RTL := \
     $(REPO)/rtl/phase3/pw_classifier.sv \
     $(REPO)/rtl/phase3/pw_test_rx_checker.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_axis.sv \
+    $(REPO)/rtl/phase3/pw_flow_gen_multi.sv \
     $(REPO)/rtl/phase3/pw_frame_saf.sv \
     $(REPO)/rtl/phase3/pw_data_plane_axis.sv \
     $(REPO)/rtl/phase3/pwfpga_top_phase3.sv
@@ -114,7 +116,7 @@ VFLAGS := --binary -j 0 \
           -Wno-PINCONNECTEMPTY \
           --timing
 
-.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_fga sim_pax sim_saf sim_dpa sim_top sim_vec sim_all wave clean vectors
+.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_fga sim_fgm sim_pax sim_saf sim_dpa sim_top sim_vec sim_all wave clean vectors
 
 sim: sim_build/data_plane
 	./sim_build/data_plane
@@ -171,7 +173,7 @@ vectors_clean:
 sim_vec: sim_build/wire_vectors $(VECTORS)
 	./sim_build/wire_vectors
 
-sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_fga sim_pax sim_saf sim_dpa sim_top sim_vec
+sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_fga sim_fgm sim_pax sim_saf sim_dpa sim_top sim_vec
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
@@ -233,8 +235,8 @@ sim_build/parser_axis: $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase
 sim_build/flow_gen_axis: $(REPO)/rtl/phase3/pw_flow_gen_axis.sv flow_gen_axis_tb/tb_flow_gen_axis.sv
 	$(VERILATOR) $(VFLAGS) -Mdir sim_build --top-module tb_flow_gen_axis -o flow_gen_axis $(REPO)/rtl/phase3/pw_flow_gen_axis.sv flow_gen_axis_tb/tb_flow_gen_axis.sv
 
-sim_build/flow_gen_multi: $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_flow_gen_multi.sv $(REPO)/rtl/phase3/pw_parser_axis.sv flow_gen_multi_tb/tb_flow_gen_multi.sv
-	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Mdir sim_build --top-module tb_flow_gen_multi -o flow_gen_multi $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_flow_gen_multi.sv $(REPO)/rtl/phase3/pw_parser_axis.sv flow_gen_multi_tb/tb_flow_gen_multi.sv
+sim_build/flow_gen_multi: $(REPO)/rtl/phase3/pw_axis_pkg.sv $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_flow_gen_multi.sv $(REPO)/rtl/phase3/pw_parser_axis.sv flow_gen_multi_tb/tb_flow_gen_multi.sv
+	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Mdir sim_build --top-module tb_flow_gen_multi -o flow_gen_multi $(REPO)/rtl/phase3/pw_axis_pkg.sv $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_flow_gen_multi.sv $(REPO)/rtl/phase3/pw_parser_axis.sv flow_gen_multi_tb/tb_flow_gen_multi.sv
 
 sim_build/frame_saf: $(REPO)/rtl/phase3/pw_frame_saf.sv $(TB_SAF)
 	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET \

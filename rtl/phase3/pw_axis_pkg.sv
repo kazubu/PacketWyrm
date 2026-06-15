@@ -31,6 +31,25 @@ package pw_axis_pkg;
         return f;
     endfunction
 
+    // One generator flow slot, decoded from a flow-window row. The
+    // multi-flow generator (pw_flow_gen_multi) holds an array of these per
+    // egress port and round-robins the ones whose egress matches.
+    typedef struct packed {
+        logic        valid;       // enable && tx_enable
+        logic [3:0]  egress;      // egress local port this flow drives
+        logic [31:0] flow_id;     // emitted test-header flow_id
+        logic [31:0] tokens_fp;   // Q16.16 bytes/cycle
+        logic [15:0] burst;       // token-bucket cap, bytes
+        logic [47:0] src_mac;
+        logic [47:0] dst_mac;
+        logic        vlan_en;
+        logic [11:0] vlan_id;
+        logic [31:0] src_ipv4;
+        logic [31:0] dst_ipv4;
+        logic [15:0] udp_sp;
+        logic [15:0] udp_dp;
+    } pw_flow_row_t;
+
 endpackage : pw_axis_pkg
 
 `endif

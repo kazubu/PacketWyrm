@@ -109,6 +109,7 @@ module tb_flow_window;
         .gen_dst_ip_o    (gen_dip_w),
         .gen_udp_sp_o    (gen_usp_w),
         .gen_udp_dp_o    (gen_udp_w),
+        .flow_rows_o     (),
         .commit_pulse_o  (flow_commit)
     );
 

@@ -14,6 +14,7 @@
 
 `default_nettype none
 
+import pw_axis_pkg::*;
 import pw_classifier_pkg::*;
 
 module tb_data_plane_axis;
@@ -93,18 +94,9 @@ module tb_data_plane_axis;
         end
     end
 
-    // flow gen control
-    logic        gen_en      [PORTS];
-    logic [31:0] gen_tok_fp  [PORTS];
-    logic [15:0] gen_burst   [PORTS];
-    logic [47:0] gen_smac    [PORTS];
-    logic [47:0] gen_dmac    [PORTS];
-    logic        gen_vlan_en [PORTS];
-    logic [11:0] gen_vlan_id [PORTS];
-    logic [31:0] gen_sip     [PORTS];
-    logic [31:0] gen_dip     [PORTS];
-    logic [15:0] gen_usp     [PORTS];
-    logic [15:0] gen_udp     [PORTS];
+    // flow gen control: full flow table. Slot 0 drives egress 0 (flow_id 1),
+    // slot 1 drives egress 1 (flow_id 2); .valid toggles each generator.
+    pw_flow_row_t flow_rows [FLOWS];
 
     logic [63:0] flow_rx        [FLOWS];
     logic [63:0] flow_lost      [FLOWS];
@@ -144,17 +136,7 @@ module tb_data_plane_axis;
         .m_axis_punt_tvalid(punt_tvalid),
         .m_axis_punt_tready(punt_tready),
         .m_axis_punt_tlast (punt_tlast),
-        .gen_enable_i     (gen_en),
-        .gen_tokens_fp_i  (gen_tok_fp),
-        .gen_burst_i      (gen_burst),
-        .gen_src_mac_i    (gen_smac),
-        .gen_dst_mac_i    (gen_dmac),
-        .gen_vlan_en_i    (gen_vlan_en),
-        .gen_vlan_id_i    (gen_vlan_id),
-        .gen_src_ip_i     (gen_sip),
-        .gen_dst_ip_i     (gen_dip),
-        .gen_udp_sp_i     (gen_usp),
-        .gen_udp_dp_i     (gen_udp),
+        .flow_rows_i      (flow_rows),
         .flow_rx          (flow_rx),
         .flow_lost        (flow_lost),
         .flow_dup         (flow_dup),
@@ -300,17 +282,23 @@ module tb_data_plane_axis;
             inj_tdata[p]  = '0; inj_tkeep[p] = '0;
             inj_tvalid[p] = 1'b0; inj_tlast[p] = 1'b0;
             tx_tready[p]  = 1'b1;
-            gen_en[p]     = 1'b0;
-            gen_tok_fp[p] = 32'h00040000;   // 4.0 bytes/cycle, Q16.16
-            gen_burst[p]  = 16'd256;
-            gen_smac[p]   = 48'h02_a5_02_00_00_01;
-            gen_dmac[p]   = 48'h02_a5_02_00_00_02;
-            gen_vlan_en[p]= 1'b0;
-            gen_vlan_id[p]= 12'd100;
-            gen_sip[p]    = 32'hC000_0201;
-            gen_dip[p]    = 32'hC000_0202;
-            gen_usp[p]    = 16'd49152;
-            gen_udp[p]    = 16'd50001;
+        end
+        // Flow table: slot 0 -> egress 0 (flow_id 1), slot 1 -> egress 1
+        // (flow_id 2). .valid toggles each generator; other slots idle.
+        for (int s = 0; s < FLOWS; s++) flow_rows[s] = '0;
+        for (int s = 0; s < 2; s++) begin
+            flow_rows[s].egress    = 4'(s);
+            flow_rows[s].flow_id   = 32'(s + 1);
+            flow_rows[s].tokens_fp = 32'h00040000;   // 4.0 bytes/cycle, Q16.16
+            flow_rows[s].burst     = 16'd256;
+            flow_rows[s].src_mac   = 48'h02_a5_02_00_00_01;
+            flow_rows[s].dst_mac   = 48'h02_a5_02_00_00_02;
+            flow_rows[s].vlan_en   = 1'b0;
+            flow_rows[s].vlan_id   = 12'd100;
+            flow_rows[s].src_ipv4  = 32'hC000_0201;
+            flow_rows[s].dst_ipv4  = 32'hC000_0202;
+            flow_rows[s].udp_sp    = 16'd49152;
+            flow_rows[s].udp_dp    = 16'd50001;
         end
         cls_table = '0;
 
@@ -332,9 +320,9 @@ module tb_data_plane_axis;
         cls_table[1].key.test_flow_id   = 32'd1;
 
         lb_en     = 1'b1;
-        gen_en[0] = 1'b1;
+        flow_rows[0].valid = 1'b1;
         repeat (400) @(posedge clk);
-        gen_en[0] = 1'b0;
+        flow_rows[0].valid = 1'b0;
         lb_en     = 1'b0;
         repeat (4) @(posedge clk);
 
@@ -416,14 +404,14 @@ module tb_data_plane_axis;
         cls_table[4].mask.match_flow_id = 1'b1;
         cls_table[4].key.udp_dst        = 16'd50001;
         cls_table[4].key.test_flow_id   = 32'd1;   // gen[0]
-        gen_tok_fp[0] = 32'h00040000;              // 4.0 B/cyc
-        gen_burst[0]  = 16'd256;
+        flow_rows[0].tokens_fp = 32'h00040000;  // 4.0 B/cyc
+        flow_rows[0].burst     = 16'd256;
         @(posedge clk);
 
         lb_en     = 1'b1;
-        gen_en[0] = 1'b1;
+        flow_rows[0].valid = 1'b1;
         repeat (200) @(posedge clk);
-        gen_en[0] = 1'b0;
+        flow_rows[0].valid = 1'b0;
         lb_en     = 1'b0;
         repeat (4) @(posedge clk);
         // 74-byte frames, ~4 B/cyc over 200 cyc -> ~10 frames; window [4,16]
@@ -535,7 +523,7 @@ module tb_data_plane_axis;
         // + loopback fill) is expected and excluded by the delta.
         begin
             longint rx0_a, rx1_a, lost0_a, lost1_a;
-            gen_en[0] = 1'b1; gen_en[1] = 1'b1;
+            flow_rows[0].valid = 1'b1; flow_rows[1].valid = 1'b1;
             lb_en = 1'b1; bidir_en = 1'b1;
             repeat (800) @(posedge clk);            // warm up
             rx0_a = flow_rx[0]; rx1_a = flow_rx[1];
@@ -544,7 +532,7 @@ module tb_data_plane_axis;
             $display("[bidir] flow0 rx %0d->%0d lost %0d->%0d | flow1 rx %0d->%0d lost %0d->%0d",
                      rx0_a, flow_rx[0], lost0_a, flow_lost[0],
                      rx1_a, flow_rx[1], lost1_a, flow_lost[1]);
-            gen_en[0] = 1'b0; gen_en[1] = 1'b0;
+            flow_rows[0].valid = 1'b0; flow_rows[1].valid = 1'b0;
             lb_en = 1'b0; bidir_en = 1'b0;
             repeat (8) @(posedge clk);
 
