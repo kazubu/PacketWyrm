@@ -70,7 +70,11 @@ static pw_status compile_one_flow(struct pw_program *out,
 
     /* TX flow row */
     struct pwfpga_flow_config tx_row = {0};
-    tx_row.enable = 0;
+    /* enable = "this row is active" (wire offset 0); the RTL flow window
+     * gates the generator on enable && tx_enable (pw_flow_window.sv), and
+     * the classifier-style row arbiter only considers enabled rows. A
+     * populated row must set enable=1. */
+    tx_row.enable = 1;
     tx_row.egress_local_port = tx.local_port_id;
     tx_row.global_flow_id = f->id;
     tx_row.local_flow_id = tx_lfid;
@@ -112,8 +116,18 @@ static pw_status compile_one_flow(struct pw_program *out,
         unsigned __int128 q   = den ? (num / den) : 0;
         tx_row.tokens_per_tick_fp = (q > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)q;
     }
-    tx_row.burst_bytes = (f->traffic.burst_size > 0xFFFFu)
-                            ? 0xFFFFu : (uint16_t)f->traffic.burst_size;
+    /* burst_bytes is the token-bucket CAP in BYTES (integer part of the
+     * Q16.16 bucket in pw_flow_gen_axis: cap = burst_bytes << 16). The
+     * config's burst_size is a FRAME count, so the cap must be at least
+     * one frame's worth of bytes -- otherwise the bucket can never hold
+     * enough tokens to cover a frame's cost and the generator starves. */
+    {
+        uint32_t flen = tx_row.frame_len_max ? tx_row.frame_len_max : 1518u;
+        uint32_t bsz  = f->traffic.burst_size ? f->traffic.burst_size : 1u;
+        uint64_t cap  = (uint64_t)bsz * flen;
+        if (cap < flen) cap = flen;
+        tx_row.burst_bytes = (cap > 0xFFFFu) ? 0xFFFFu : (uint16_t)cap;
+    }
     tx_row.payload_mode = f->traffic.payload_mode;
     tx_row.payload_seed = f->traffic.payload_seed;
     tx_row.insert_sequence = f->traffic.insert_sequence ? 1 : 0;

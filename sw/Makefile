@@ -93,7 +93,11 @@ pw_card_probe: $(BUILD_DIR)/pw_card_probe
 $(BUILD_DIR)/pw_card_probe: tests/pw_card_probe.c $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_card_probe.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
-.PHONY: e2e gen_bar_vectors pw_card_probe pw_sfp_test
+pw_phase3_loopback: $(BUILD_DIR)/pw_phase3_loopback
+$(BUILD_DIR)/pw_phase3_loopback: tests/pw_phase3_loopback.c $(LIBA) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_phase3_loopback.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+
+.PHONY: e2e gen_bar_vectors pw_card_probe pw_sfp_test pw_phase3_loopback
 e2e: $(DAEMON_BIN) $(CLI_BIN)
 	tests/integration/e2e_smoke.sh
 

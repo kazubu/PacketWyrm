@@ -119,11 +119,12 @@ enum pwfpga_payload_mode {
 };
 
 /* Default FPGA data-plane clock used for host-side tokens/cycle
- * computation. Phase 3 sim and the AS02MC04 Phase 1 project both
- * clock the data plane at 100 MHz. Phase 2 (10G MAC) raises this
- * to 156.25 MHz; when that lands, the host compiler picks the
- * right constant per `pw_card_info.capabilities`. */
-#define PWFPGA_DATA_PLANE_CLOCK_HZ  100000000u
+ * computation. The Phase 3 streaming data plane on the AS02MC04 runs at
+ * 156.25 MHz (= 10G line rate; the BAR crosses in from the 250 MHz PCIe
+ * user clock via an AXI4-Lite clock converter). The token-bucket rate
+ * (tokens_per_tick_fp) is derived from this, so it must match the RTL
+ * dp_clk or the generated line rate will be off by the ratio. */
+#define PWFPGA_DATA_PLANE_CLOCK_HZ  156250000u
 
 struct pwfpga_flow_config {
     uint8_t  enable;

@@ -1,0 +1,70 @@
+# Phase 3 hardware bring-up: single TEST_RX flow over the SFP+ DAC loopback.
+#
+# Minimal on purpose -- the first phase3 bitstream is built at small scale
+# (NUM_FLOWS=2, NUM_CLASSIFIER=2, NUM_HIST_BINS=8), so this uses exactly one
+# generated flow (p0 -> DAC -> p1) and one TEST_RX classifier rule, with all
+# punt protocols disabled (each punt proto would consume another classifier
+# rule). Expect loss=0 at line rate, like the Phase 2 loopback.
+
+system:
+  name: "pw-phase3-loopback"
+  mode: "multi-card"
+  default_speed: "10g"
+  control_socket: "/tmp/pw-phase3.sock"
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+logical_interfaces:
+  - id: 1000
+    global_port: 0
+    vlan: 100
+    mac: "02:a5:02:00:00:64"
+    mtu: 9000
+    punt:
+      arp: false
+      ipv6_nd: false
+      lldp: false
+      icmp: false
+      bgp: false
+      ospf: false
+
+flows:
+  - id: 1
+    name: "loopback-test"
+    tx_global_port: 0
+    rx_global_port: 1
+    logical_if_id: 1000
+
+    l2:
+      src_mac: "02:a5:02:00:00:01"
+      dst_mac: "02:a5:02:00:00:02"
+      vlan: 100
+
+    ipv4:
+      src: "192.0.2.1"
+      dst: "192.0.2.2"
+      ttl: 64
+      dscp: 0
+
+    udp:
+      src_port: 49152
+      dst_port: 50001
+
+    traffic:
+      frame_len: 512
+      rate_bps: 1000000000
+      burst_size: 1
+      payload: "increment"
+      insert_sequence: true
+      insert_timestamp: true
+
+    measurements:
+      loss: true
+      latency: true
+      jitter: true
