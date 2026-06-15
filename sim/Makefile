@@ -140,6 +140,9 @@ sim_full: sim_build/csr_full
 sim_fga: sim_build/flow_gen_axis
 	./sim_build/flow_gen_axis
 
+sim_fgm: sim_build/flow_gen_multi
+	./sim_build/flow_gen_multi
+
 sim_pax: sim_build/parser_axis
 	./sim_build/parser_axis
 
@@ -229,6 +232,9 @@ sim_build/parser_axis: $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase
 
 sim_build/flow_gen_axis: $(REPO)/rtl/phase3/pw_flow_gen_axis.sv flow_gen_axis_tb/tb_flow_gen_axis.sv
 	$(VERILATOR) $(VFLAGS) -Mdir sim_build --top-module tb_flow_gen_axis -o flow_gen_axis $(REPO)/rtl/phase3/pw_flow_gen_axis.sv flow_gen_axis_tb/tb_flow_gen_axis.sv
+
+sim_build/flow_gen_multi: $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_flow_gen_multi.sv $(REPO)/rtl/phase3/pw_parser_axis.sv flow_gen_multi_tb/tb_flow_gen_multi.sv
+	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Mdir sim_build --top-module tb_flow_gen_multi -o flow_gen_multi $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_flow_gen_multi.sv $(REPO)/rtl/phase3/pw_parser_axis.sv flow_gen_multi_tb/tb_flow_gen_multi.sv
 
 sim_build/frame_saf: $(REPO)/rtl/phase3/pw_frame_saf.sv $(TB_SAF)
 	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET \
