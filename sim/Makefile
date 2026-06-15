@@ -33,6 +33,15 @@ CSR_RTL := \
     $(REPO)/rtl/phase3/pw_flow_gen.sv \
     $(REPO)/rtl/phase3/pw_data_plane.sv
 
+DPA_RTL := \
+    $(REPO)/rtl/phase3/pw_axis_pkg.sv \
+    $(REPO)/rtl/phase3/pw_classifier_pkg.sv \
+    $(REPO)/rtl/phase3/pw_parser_axis.sv \
+    $(REPO)/rtl/phase3/pw_classifier.sv \
+    $(REPO)/rtl/phase3/pw_test_rx_checker.sv \
+    $(REPO)/rtl/phase3/pw_flow_gen_axis.sv \
+    $(REPO)/rtl/phase3/pw_data_plane_axis.sv
+
 FLOW_RTL := \
     $(REPO)/rtl/shared/pw_csr_window.sv \
     $(REPO)/rtl/phase3/pw_axis_pkg.sv \
@@ -91,6 +100,7 @@ TB_HIST  := histogram_tb/tb_histogram.sv
 TB_FULL  := csr_full_tb/tb_csr_full.sv
 TB_TOP   := phase3_top_tb/tb_phase3_top.sv
 TB_VEC   := wire_vectors_tb/tb_wire_vectors.sv
+TB_DPA   := data_plane_axis_tb/tb_data_plane_axis.sv
 
 VECTORS := vectors/bar_image.hex
 
@@ -102,7 +112,7 @@ VFLAGS := --binary -j 0 \
           -Wno-PINCONNECTEMPTY \
           --timing
 
-.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_fga sim_pax sim_top sim_vec sim_all wave clean vectors
+.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_fga sim_pax sim_dpa sim_top sim_vec sim_all wave clean vectors
 
 sim: sim_build/data_plane
 	./sim_build/data_plane
@@ -131,6 +141,9 @@ sim_fga: sim_build/flow_gen_axis
 sim_pax: sim_build/parser_axis
 	./sim_build/parser_axis
 
+sim_dpa: sim_build/data_plane_axis
+	./sim_build/data_plane_axis
+
 sim_top: sim_build/phase3_top
 	./sim_build/phase3_top
 
@@ -150,7 +163,7 @@ vectors_clean:
 sim_vec: sim_build/wire_vectors $(VECTORS)
 	./sim_build/wire_vectors
 
-sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_fga sim_pax sim_top sim_vec
+sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_fga sim_pax sim_dpa sim_top sim_vec
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
@@ -211,6 +224,13 @@ sim_build/parser_axis: $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase
 
 sim_build/flow_gen_axis: $(REPO)/rtl/phase3/pw_flow_gen_axis.sv flow_gen_axis_tb/tb_flow_gen_axis.sv
 	$(VERILATOR) $(VFLAGS) -Mdir sim_build --top-module tb_flow_gen_axis -o flow_gen_axis $(REPO)/rtl/phase3/pw_flow_gen_axis.sv flow_gen_axis_tb/tb_flow_gen_axis.sv
+
+sim_build/data_plane_axis: $(DPA_RTL) $(TB_DPA)
+	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET \
+	    -Mdir sim_build \
+	    --top-module tb_data_plane_axis \
+	    -o data_plane_axis \
+	    $(DPA_RTL) $(TB_DPA)
 
 sim_build/phase3_top: $(TOP_RTL) $(TB_TOP)
 	$(VERILATOR) $(VFLAGS) \
