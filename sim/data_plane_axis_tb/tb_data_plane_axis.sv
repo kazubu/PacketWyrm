@@ -64,12 +64,21 @@ module tb_data_plane_axis;
     // loopback: when set, port-1 ingress is fed from port-0 egress.
     logic lb_en;
 
+    logic bidir_en;   // when set, port-0 ingress is fed from port-1 egress
+
     always_comb begin
-        // port 0 always from its injector
-        rx_tdata[0]  = inj_tdata[0];
-        rx_tkeep[0]  = inj_tkeep[0];
-        rx_tvalid[0] = inj_tvalid[0];
-        rx_tlast[0]  = inj_tlast[0];
+        // port 0: bidirectional loopback override (tx[1]) or its injector
+        if (bidir_en) begin
+            rx_tdata[0]  = tx_tdata[1];
+            rx_tkeep[0]  = tx_tkeep[1];
+            rx_tvalid[0] = tx_tvalid[1];
+            rx_tlast[0]  = tx_tlast[1];
+        end else begin
+            rx_tdata[0]  = inj_tdata[0];
+            rx_tkeep[0]  = inj_tkeep[0];
+            rx_tvalid[0] = inj_tvalid[0];
+            rx_tlast[0]  = inj_tlast[0];
+        end
         // port 1: loopback override or injector
         if (lb_en) begin
             rx_tdata[1]  = tx_tdata[0];
@@ -286,6 +295,7 @@ module tb_data_plane_axis;
     // -------------- main --------------
     initial begin
         lb_en = 1'b0;
+        bidir_en = 1'b0;
         for (int p = 0; p < PORTS; p++) begin
             inj_tdata[p]  = '0; inj_tkeep[p] = '0;
             inj_tvalid[p] = 1'b0; inj_tlast[p] = 1'b0;
@@ -490,6 +500,61 @@ module tb_data_plane_axis;
         check_eq("mirror bytes", qbytes(pn_keep), 42);
         check_eq("mirror saw last",
                  (pn_last.size() > 0 && pn_last[pn_last.size()-1]) ? 1 : 0, 1);
+
+        // ---------------- scenario 10: bidirectional dual-flow ----------
+        // gen[0] -> rx[1] (flow_id 1 -> local 0) AND gen[1] -> rx[0]
+        // (flow_id 2 -> local 1) at once. With per-port checkers neither
+        // direction starves: both must count with lost==0. (The old single
+        // arbiter starved the lower-index port here.)
+        scenario = "bidir";
+        cls_table = '0;
+        cls_table[1].enable             = 1'b1;
+        cls_table[1].action             = PW_ACT_TEST_RX;
+        cls_table[1].priority_          = 8'd5;
+        cls_table[1].local_flow_id      = 32'd0;
+        cls_table[1].mask.match_udp_dst = 1'b1;
+        cls_table[1].mask.match_is_test = 1'b1;
+        cls_table[1].mask.match_flow_id = 1'b1;
+        cls_table[1].key.udp_dst        = 16'd50001;
+        cls_table[1].key.test_flow_id   = 32'd1;     // gen[0]
+        cls_table[2].enable             = 1'b1;
+        cls_table[2].action             = PW_ACT_TEST_RX;
+        cls_table[2].priority_          = 8'd5;
+        cls_table[2].local_flow_id      = 32'd1;
+        cls_table[2].mask.match_udp_dst = 1'b1;
+        cls_table[2].mask.match_is_test = 1'b1;
+        cls_table[2].mask.match_flow_id = 1'b1;
+        cls_table[2].key.udp_dst        = 16'd50001;
+        cls_table[2].key.test_flow_id   = 32'd2;     // gen[1]
+        @(posedge clk);
+
+        // Warm up, sample counters, run a measurement window, sample again.
+        // With per-port checkers the steady-state loss is ZERO on BOTH
+        // directions (the old single arbiter starved flow1 to ~2%, with
+        // lost growing every cycle). A small constant startup gap (pipeline
+        // + loopback fill) is expected and excluded by the delta.
+        begin
+            longint rx0_a, rx1_a, lost0_a, lost1_a;
+            gen_en[0] = 1'b1; gen_en[1] = 1'b1;
+            lb_en = 1'b1; bidir_en = 1'b1;
+            repeat (800) @(posedge clk);            // warm up
+            rx0_a = flow_rx[0]; rx1_a = flow_rx[1];
+            lost0_a = flow_lost[0]; lost1_a = flow_lost[1];
+            repeat (2000) @(posedge clk);           // measurement window
+            $display("[bidir] flow0 rx %0d->%0d lost %0d->%0d | flow1 rx %0d->%0d lost %0d->%0d",
+                     rx0_a, flow_rx[0], lost0_a, flow_lost[0],
+                     rx1_a, flow_rx[1], lost1_a, flow_lost[1]);
+            gen_en[0] = 1'b0; gen_en[1] = 1'b0;
+            lb_en = 1'b0; bidir_en = 1'b0;
+            repeat (8) @(posedge clk);
+
+            // Both directions keep receiving through the window...
+            check_eq("bidir flow0 rx grew",  (flow_rx[0] > rx0_a) ? 1 : 0, 1);
+            check_eq("bidir flow1 rx grew",  (flow_rx[1] > rx1_a) ? 1 : 0, 1);
+            // ...with NO ongoing loss on either (steady-state loss == 0).
+            check_eq("bidir flow0 no new loss", flow_lost[0] - lost0_a, 0);
+            check_eq("bidir flow1 no new loss", flow_lost[1] - lost1_a, 0);
+        end
 
         if (errors == 0) begin
             $display("ALL DATA PLANE AXIS SCENARIOS PASS");

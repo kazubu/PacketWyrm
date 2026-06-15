@@ -205,48 +205,89 @@ module pw_data_plane_axis #(
     endgenerate
 
     // ------------------------------------------------------------
-    // RX checker: one logical block, sees TEST_RX events from any port
+    // RX checkers: one per ingress port (no arbiter)
     // ------------------------------------------------------------
-    pw_match_key_t    chk_key;
-    pw_class_result_t chk_res;
-    logic             chk_ev;
+    // Each ingress port has its own checker, fed directly by that port's
+    // TEST_RX events, so simultaneous line-rate TEST_RX on every port is
+    // handled without an arbiter dropping events (the old single checker
+    // starved the lower-priority port). Each flow's RX is on exactly one
+    // port, so the per-flow counters are merged across ports below: sum
+    // for additive counters / last_seq, min/max for latency. Inactive
+    // ports contribute identity values (0, or 0xFFFF.. for min), so the
+    // merge yields the active port's value.
+    logic [63:0] pc_rx   [PW_PORTS][PW_NUM_FLOWS];
+    logic [63:0] pc_lost [PW_PORTS][PW_NUM_FLOWS];
+    logic [63:0] pc_dup  [PW_PORTS][PW_NUM_FLOWS];
+    logic [63:0] pc_ooo  [PW_PORTS][PW_NUM_FLOWS];
+    logic [63:0] pc_lseq [PW_PORTS][PW_NUM_FLOWS];
+    logic [63:0] pc_min  [PW_PORTS][PW_NUM_FLOWS];
+    logic [63:0] pc_max  [PW_PORTS][PW_NUM_FLOWS];
+    logic [63:0] pc_sum  [PW_PORTS][PW_NUM_FLOWS];
+    logic [63:0] pc_samp [PW_PORTS][PW_NUM_FLOWS];
+    logic [63:0] pc_hist [PW_PORTS][PW_NUM_FLOWS * PW_NUM_BUCKETS];
 
+    generate
+        for (gp = 0; gp < PW_PORTS; gp++) begin : g_chk
+            wire chk_ev = rx_kv_d[gp] && rx_res[gp].hit &&
+                          (rx_res[gp].action == PW_ACT_TEST_RX);
+            pw_test_rx_checker #(
+                .NUM_FLOWS  (PW_NUM_FLOWS),
+                .NUM_BUCKETS(PW_NUM_BUCKETS),
+                .PIPELINE   (1)
+            ) u_checker (
+                .clk             (clk),
+                .rst_n           (rst_n),
+                .timestamp_i     (timestamp_i),
+                .key_i           (rx_key_d[gp]),
+                .result_i        (rx_res[gp]),
+                .event_valid_i   (chk_ev),
+                .rx_frames_o     (pc_rx[gp]),
+                .lost_o          (pc_lost[gp]),
+                .duplicate_o     (pc_dup[gp]),
+                .out_of_order_o  (pc_ooo[gp]),
+                .last_seq_o      (pc_lseq[gp]),
+                .min_latency_o   (pc_min[gp]),
+                .max_latency_o   (pc_max[gp]),
+                .sum_latency_o   (pc_sum[gp]),
+                .sample_count_o  (pc_samp[gp]),
+                .hist_o          (pc_hist[gp])
+            );
+        end
+    endgenerate
+
+    // Merge the per-port checkers into the per-flow outputs.
     always_comb begin
-        chk_key = '0;
-        chk_res = '0;
-        chk_ev  = 1'b0;
-        for (int p = 0; p < PW_PORTS; p++) begin
-            if (rx_kv_d[p] && rx_res[p].hit &&
-                rx_res[p].action == PW_ACT_TEST_RX) begin
-                chk_key = rx_key_d[p];
-                chk_res = rx_res[p];
-                chk_ev  = 1'b1;
+        for (int f = 0; f < PW_NUM_FLOWS; f++) begin
+            automatic logic [63:0] rx = '0, lost = '0, dup = '0, ooo = '0;
+            automatic logic [63:0] sum = '0, samp = '0, lseq = '0;
+            automatic logic [63:0] mn = {64{1'b1}}, mx = '0;
+            for (int p = 0; p < PW_PORTS; p++) begin
+                rx   += pc_rx[p][f];
+                lost += pc_lost[p][f];
+                dup  += pc_dup[p][f];
+                ooo  += pc_ooo[p][f];
+                sum  += pc_sum[p][f];
+                samp += pc_samp[p][f];
+                lseq |= pc_lseq[p][f];               // one active port per flow
+                if (pc_min[p][f] < mn) mn = pc_min[p][f];
+                if (pc_max[p][f] > mx) mx = pc_max[p][f];
             end
+            flow_rx[f]       = rx;
+            flow_lost[f]     = lost;
+            flow_dup[f]      = dup;
+            flow_ooo[f]      = ooo;
+            flow_sum_lat[f]  = sum;
+            flow_samples[f]  = samp;
+            flow_last_seq[f] = lseq;
+            flow_min_lat[f]  = mn;
+            flow_max_lat[f]  = mx;
+        end
+        for (int j = 0; j < PW_NUM_FLOWS * PW_NUM_BUCKETS; j++) begin
+            automatic logic [63:0] h = '0;
+            for (int p = 0; p < PW_PORTS; p++) h += pc_hist[p][j];
+            flow_hist[j] = h;
         end
     end
-
-    pw_test_rx_checker #(
-        .NUM_FLOWS  (PW_NUM_FLOWS),
-        .NUM_BUCKETS(PW_NUM_BUCKETS),
-        .PIPELINE   (1)
-    ) u_checker (
-        .clk             (clk),
-        .rst_n           (rst_n),
-        .timestamp_i     (timestamp_i),
-        .key_i           (chk_key),
-        .result_i        (chk_res),
-        .event_valid_i   (chk_ev),
-        .rx_frames_o     (flow_rx),
-        .lost_o          (flow_lost),
-        .duplicate_o     (flow_dup),
-        .out_of_order_o  (flow_ooo),
-        .last_seq_o      (flow_last_seq),
-        .min_latency_o   (flow_min_lat),
-        .max_latency_o   (flow_max_lat),
-        .sum_latency_o   (flow_sum_lat),
-        .sample_count_o  (flow_samples),
-        .hist_o          (flow_hist)
-    );
 
     // ------------------------------------------------------------
     // Per-port DROP counter
