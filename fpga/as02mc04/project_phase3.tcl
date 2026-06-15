@@ -69,16 +69,16 @@ set pw_srcs [list \
     "$repo_root/rtl/shared/pw_heartbeat.sv" \
     "$repo_root/rtl/shared/pw_timestamp.sv" \
     "$repo_root/rtl/shared/pw_csr_window.sv" \
-    "$repo_root/rtl/phase3/pw_parser.sv" \
+    "$repo_root/rtl/phase3/pw_parser_axis.sv" \
     "$repo_root/rtl/phase3/pw_classifier.sv" \
-    "$repo_root/rtl/phase3/pw_flow_gen.sv" \
+    "$repo_root/rtl/phase3/pw_flow_gen_axis.sv" \
     "$repo_root/rtl/phase3/pw_test_rx_checker.sv" \
     "$repo_root/rtl/phase3/pw_stats_snapshot.sv" \
     "$repo_root/rtl/phase3/pw_histogram_snapshot.sv" \
     "$repo_root/rtl/phase3/pw_classifier_window.sv" \
     "$repo_root/rtl/phase3/pw_flow_window.sv" \
-    "$repo_root/rtl/phase3/pw_data_plane.sv" \
-    "$repo_root/rtl/phase3/pw_axis_serial.sv" \
+    "$repo_root/rtl/phase3/pw_frame_saf.sv" \
+    "$repo_root/rtl/phase3/pw_data_plane_axis.sv" \
     "$repo_root/rtl/phase3/pw_csr_full.sv" \
     "$repo_root/rtl/phase3/pwfpga_top_phase3.sv" \
     "$script_dir/src/pcie_axi_lite_bridge.sv" \

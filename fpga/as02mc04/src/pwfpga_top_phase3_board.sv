@@ -1,7 +1,8 @@
 // AS02MC04 Phase 3 board top: full data plane on real 10G SFP+ ports.
 //
 // PCIe Gen3 endpoint + BAR0 -> pw_csr_full (identity + classifier /
-// flow / stats / histogram windows) driving pw_data_plane, with the
+// flow / stats / histogram windows) driving pw_data_plane_axis (64-bit
+// AXIS streaming), with the
 // two SFP+ 10GBASE-R ports (Taxi MAC/PCS/GTY) as the line interface.
 // The data plane runs in the PCIe user-clock domain (axi_aclk); the MAC
 // runs in its per-port GT clocks, bridged by pw_mac_axis_cdc.
