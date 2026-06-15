@@ -112,19 +112,22 @@ int main(int argc, char **argv) {
         if (o->stats_snapshot) o->stats_snapshot(be.ctx);
         struct pw_port_stats p0 = {0}, p1 = {0};
         if (o->port_stats_read) { o->port_stats_read(be.ctx, 0, &p0); o->port_stats_read(be.ctx, 1, &p1); }
-        printf("    port_drops: p0=%llu p1=%llu\n",
+        printf("[%d] port_drops: p0=%llu p1=%llu\n", it,
                (unsigned long long)p0.rx_bad_frame, (unsigned long long)p1.rx_bad_frame);
-        struct pw_flow_stats rs = {0};
-        if (o->flow_stats_read) o->flow_stats_read(be.ctx, rx_lf, &rs);
-        printf("[%d] rx=%llu lost=%llu dup=%llu ooo=%llu last_seq=%llu "
-               "min_lat=%u max_lat=%u samples=%llu\n", it,
-               (unsigned long long)rs.rx_frames,
-               (unsigned long long)rs.lost_packets_estimated,
-               (unsigned long long)rs.duplicate_count,
-               (unsigned long long)rs.out_of_order_count,
-               (unsigned long long)rs.expected_sequence,
-               rs.min_latency, rs.max_latency,
-               (unsigned long long)rs.sample_count);
+        for (size_t m = 0; m < prog->n_flow_meta; m++) {
+            uint32_t lf = prog->flow_meta[m].rx_local_flow_id;
+            struct pw_flow_stats rs = {0};
+            if (o->flow_stats_read) o->flow_stats_read(be.ctx, lf, &rs);
+            printf("    flow %u (lf=%u): rx=%llu lost=%llu dup=%llu ooo=%llu "
+                   "min_lat=%u max_lat=%u samples=%llu\n",
+                   prog->flow_meta[m].global_flow_id, lf,
+                   (unsigned long long)rs.rx_frames,
+                   (unsigned long long)rs.lost_packets_estimated,
+                   (unsigned long long)rs.duplicate_count,
+                   (unsigned long long)rs.out_of_order_count,
+                   rs.min_latency, rs.max_latency,
+                   (unsigned long long)rs.sample_count);
+        }
     }
 
     /* 6. latency histogram */

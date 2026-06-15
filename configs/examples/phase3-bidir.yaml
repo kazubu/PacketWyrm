@@ -1,0 +1,64 @@
+# Phase 3 hardware: bidirectional dual-flow over the SFP+ DAC loopback.
+#
+# Two same-card TEST_RX flows running at once:
+#   flow 1: gen on p0 -> DAC -> checked on p1
+#   flow 2: gen on p1 -> DAC -> checked on p0
+# Fits the small-scale bitstream exactly (2 classifier rows, 2 flow rows).
+#
+# NOTE: pw_flow_gen_axis hardwires the emitted test-header flow_id to
+# (1 + egress_port), so each flow's `id` must equal (1 + tx_port) for the
+# classifier rule (which matches that flow_id) to hit:
+#   flow id=1 on tx p0  -> gen emits flow_id 1  (1 + 0)
+#   flow id=2 on tx p1  -> gen emits flow_id 2  (1 + 1)
+
+system:
+  name: "pw-phase3-bidir"
+  mode: "multi-card"
+  default_speed: "10g"
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+logical_interfaces:
+  - id: 1000
+    global_port: 0
+    vlan: 100
+    mac: "02:a5:02:00:00:64"
+    mtu: 9000
+    punt: { arp: false, ipv6_nd: false, lldp: false, icmp: false, bgp: false, ospf: false }
+  - id: 1001
+    global_port: 1
+    vlan: 101
+    mac: "02:a5:02:00:00:65"
+    mtu: 9000
+    punt: { arp: false, ipv6_nd: false, lldp: false, icmp: false, bgp: false, ospf: false }
+
+flows:
+  - id: 1
+    name: "p0-to-p1"
+    tx_global_port: 0
+    rx_global_port: 1
+    logical_if_id: 1000
+    l2:   { src_mac: "02:a5:02:00:00:01", dst_mac: "02:a5:02:00:00:02", vlan: 100 }
+    ipv4: { src: "192.0.2.1", dst: "192.0.2.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50001 }
+    traffic: { frame_len: 512, rate_bps: 1000000000, burst_size: 4,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 2
+    name: "p1-to-p0"
+    tx_global_port: 1
+    rx_global_port: 0
+    logical_if_id: 1001
+    l2:   { src_mac: "02:a5:02:00:00:03", dst_mac: "02:a5:02:00:00:04", vlan: 101 }
+    ipv4: { src: "198.51.100.1", dst: "198.51.100.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50001 }
+    traffic: { frame_len: 512, rate_bps: 1000000000, burst_size: 4,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
