@@ -323,7 +323,8 @@ module tb_data_plane_axis;
         flow_rows[0].valid = 1'b1;
         repeat (400) @(posedge clk);
         flow_rows[0].valid = 1'b0;
-        lb_en     = 1'b0;
+        repeat (24) @(posedge clk);   // drain the last looped frame (keep lb_en) so
+        lb_en     = 1'b0;             // dropping lb_en never cuts a partial frame
         repeat (4) @(posedge clk);
 
         check_eq("loopback rx > 0", (flow_rx[0] > 0) ? 1 : 0, 1);
@@ -412,7 +413,8 @@ module tb_data_plane_axis;
         flow_rows[0].valid = 1'b1;
         repeat (200) @(posedge clk);
         flow_rows[0].valid = 1'b0;
-        lb_en     = 1'b0;
+        repeat (24) @(posedge clk);   // drain the last looped frame (keep lb_en) so
+        lb_en     = 1'b0;             // dropping lb_en never cuts a partial frame
         repeat (4) @(posedge clk);
         // 74-byte frames, ~4 B/cyc over 200 cyc -> ~10 frames; window [4,16]
         check_eq("rate rx >= 4",  (flow_rx[4] >= 4)  ? 1 : 0, 1);

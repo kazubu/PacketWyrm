@@ -71,7 +71,7 @@ set pw_srcs [list \
     "$repo_root/rtl/shared/pw_csr_window.sv" \
     "$repo_root/rtl/phase3/pw_parser_axis.sv" \
     "$repo_root/rtl/phase3/pw_classifier.sv" \
-    "$repo_root/rtl/phase3/pw_flow_gen_axis.sv" \
+    "$repo_root/rtl/phase3/pw_flow_gen_multi.sv" \
     "$repo_root/rtl/phase3/pw_test_rx_checker.sv" \
     "$repo_root/rtl/phase3/pw_stats_snapshot.sv" \
     "$repo_root/rtl/phase3/pw_histogram_snapshot.sv" \

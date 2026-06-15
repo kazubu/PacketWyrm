@@ -65,13 +65,23 @@ module pw_flow_gen_multi #(
     logic                          active;
     logic [11:0]                   byte_off;
 
-    // Per-slot eligibility.
+    // Per-slot eligibility. Registered before the round-robin pick so the
+    // long tokens_q -> compare -> priority-select -> tokens_q deduction path
+    // is broken (the pick sees last cycle's eligibility). Safe: between
+    // frames a slot's bucket only grows, so a 1-cycle-stale "eligible" is
+    // still eligible, and a just-emptied slot is `active` (not re-picked)
+    // until its frame finishes, by which point eligible_q has caught up.
     logic [NUM_SLOTS-1:0] eligible;
     always_comb begin
         for (int s = 0; s < NUM_SLOTS; s++) begin
             automatic logic [31:0] cost = {16'(frame_bytes(f_rows_i[s].vlan_en)), 16'h0};
             eligible[s] = mine(f_rows_i[s]) && (tokens_q[s] >= cost);
         end
+    end
+    logic [NUM_SLOTS-1:0] eligible_q;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) eligible_q <= '0;
+        else        eligible_q <= eligible;
     end
 
     // Round-robin pick: earliest eligible slot at/after rr_ptr (wrapping).
@@ -83,7 +93,7 @@ module pw_flow_gen_multi #(
         pick_valid = 1'b0;
         for (int i = NUM_SLOTS - 1; i >= 0; i--) begin
             automatic int idx = (int'(rr_ptr) + i) % NUM_SLOTS;
-            if (eligible[idx]) begin
+            if (eligible_q[idx]) begin
                 pick       = SELW'(idx);
                 pick_valid = 1'b1;
             end
