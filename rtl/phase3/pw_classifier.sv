@@ -16,13 +16,15 @@
 import pw_classifier_pkg::*;
 
 module pw_classifier #(
-    // 0: combinational result (default; wide-bus plane + its sims rely on
-    //    same-cycle result alongside key_valid_i).
-    // 1: register result_o by one cycle to break the long
-    //    cls_table -> match -> result -> downstream timing path. The
-    //    streaming data plane sets this and realigns the key feeding the
-    //    checker by the matching one cycle.
-    parameter bit REG_RESULT = 1'b0
+    // Output pipeline depth (cycles of latency from key_valid_i to result_o):
+    //   0: combinational result (default; wide-bus plane + its sims rely on
+    //      same-cycle result alongside key_valid_i).
+    //   1: register result_o (breaks cls_table -> ... -> downstream).
+    //   2: also register the per-entry match before the priority select,
+    //      splitting the field-compare cloud (incl 128-bit IPv6) from the
+    //      winner select -- needed to fit the data-plane clock.
+    // The consumer must delay the key feeding it by the matching latency.
+    parameter int RESULT_STAGES = 0
 ) (
     input  wire                       clk,
     input  wire                       rst_n,
@@ -105,12 +107,25 @@ module pw_classifier #(
     // priority_. Ties resolved by lowest entry index. Implemented as
     // a small selection loop; PW_CLASSIFIER_ENTRIES is tiny so this
     // synthesises into a flat mux.
-    pw_class_result_t result_c;
+    // Stage-A boundary: for RESULT_STAGES==2 the per-entry match (entry_hit)
+    // is registered before the priority select; otherwise the select sees
+    // the combinational match. table_i is quasi-static (host commits before
+    // traffic), so the select may re-read its fields in the later stage.
+    logic [PW_CLASSIFIER_ENTRIES-1:0] entry_hit_q;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) entry_hit_q <= '0;
+        else        entry_hit_q <= entry_hit;
+    end
 
+    logic [PW_CLASSIFIER_ENTRIES-1:0] entry_hit_sel;
+    assign entry_hit_sel = (RESULT_STAGES == 2) ? entry_hit_q : entry_hit;
+
+    // Priority winner among the selected hit vector.
+    pw_class_result_t result_c;
     always_comb begin
         result_c = '0;
         for (int i = 0; i < PW_CLASSIFIER_ENTRIES; i++) begin
-            if (entry_hit[i]) begin
+            if (entry_hit_sel[i]) begin
                 if (!result_c.hit ||
                     table_i[i].priority_ < table_i[result_c.entry_index].priority_) begin
                     result_c.hit          = 1'b1;
@@ -129,17 +144,17 @@ module pw_classifier #(
         end
     end
 
-    // Output stage: combinational (default) or one-cycle registered.
+    // Output stage: combinational (0) or registered (1, 2).
     generate
-        if (REG_RESULT) begin : g_reg
+        if (RESULT_STAGES == 0) begin : g_comb
+            assign result_o = result_c;
+        end else begin : g_reg
             pw_class_result_t result_q;
             always_ff @(posedge clk or negedge rst_n) begin
                 if (!rst_n) result_q <= '0;
                 else        result_q <= result_c;
             end
             assign result_o = result_q;
-        end else begin : g_comb
-            assign result_o = result_c;
         end
     endgenerate
 

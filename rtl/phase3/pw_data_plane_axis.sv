@@ -115,20 +115,20 @@ module pw_data_plane_axis #(
     logic             [PW_PORTS-1:0] rx_kv;
     pw_class_result_t [PW_PORTS-1:0] rx_res;
 
-    // The classifier registers its result (REG_RESULT) to break the long
-    // cls_table -> match -> ... -> checker/histogram timing path, so rx_res
-    // lands one cycle after rx_kv/rx_key. Delay the key + key_valid that
-    // feed the checker arbiter, the SAF decision, and the drop counter by
-    // one cycle to realign them with the registered result.
-    logic             [PW_PORTS-1:0] rx_kv_d;
-    pw_match_key_t    [PW_PORTS-1:0] rx_key_d;
+    // The classifier is pipelined (RESULT_STAGES=2: match register + result
+    // register) to break the long cls_table -> field-compare -> select ->
+    // checker/histogram path, so rx_res lands TWO cycles after rx_kv/rx_key.
+    // Delay the key + key_valid that feed the checker arbiter, the SAF
+    // decision, and the drop counter by two cycles to realign with it.
+    logic             [PW_PORTS-1:0] rx_kv_d1, rx_kv_d;
+    pw_match_key_t    [PW_PORTS-1:0] rx_key_d1, rx_key_d;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            rx_kv_d  <= '0;
-            rx_key_d <= '0;
+            rx_kv_d1  <= '0; rx_kv_d  <= '0;
+            rx_key_d1 <= '0; rx_key_d <= '0;
         end else begin
-            rx_kv_d  <= rx_kv;
-            rx_key_d <= rx_key;
+            rx_kv_d1  <= rx_kv;     rx_kv_d  <= rx_kv_d1;
+            rx_key_d1 <= rx_key;    rx_key_d <= rx_key_d1;
         end
     end
 
@@ -159,7 +159,7 @@ module pw_data_plane_axis #(
                 .key_valid_o    (rx_kv[gp])
             );
 
-            pw_classifier #(.REG_RESULT(1'b1)) u_cls (
+            pw_classifier #(.RESULT_STAGES(2)) u_cls (
                 .clk         (clk),
                 .rst_n       (rst_n),
                 .table_i     (cls_table_i),
