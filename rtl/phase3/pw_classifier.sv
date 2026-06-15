@@ -170,22 +170,37 @@ module pw_classifier #(
         end
     endgenerate
 
-    // Priority winner: among hit rows, smallest priority_ wins; ties resolve
-    // on lowest entry index. PW_CLASSIFIER_ENTRIES is tiny -> a flat mux.
+    // Priority winner: smallest priority_ wins; ties resolve on lowest entry
+    // index. Computed in PARALLEL rather than as a sequential scan -- entry i
+    // wins iff it is hit and no other hit entry j outranks it (lower priority_,
+    // or equal priority_ and lower index). A linear scan over all
+    // PW_CLASSIFIER_ENTRIES is a deep dependent chain; this O(N^2) compare +
+    // one-hot mux is log-depth and was the difference that closed 156.25 MHz.
+    logic [PW_CLASSIFIER_ENTRIES-1:0] win_oh;
+    always_comb begin
+        for (int i = 0; i < PW_CLASSIFIER_ENTRIES; i++) begin
+            automatic logic beaten = 1'b0;
+            for (int j = 0; j < PW_CLASSIFIER_ENTRIES; j++) begin
+                if (j != i && s_hit[j] &&
+                    (s_prio[j] < s_prio[i] ||
+                     (s_prio[j] == s_prio[i] && j < i)))
+                    beaten = 1'b1;
+            end
+            win_oh[i] = s_hit[i] && !beaten;
+        end
+    end
+
     pw_class_result_t result_c;
     always_comb begin
         result_c = '0;
         for (int i = 0; i < PW_CLASSIFIER_ENTRIES; i++) begin
-            if (s_hit[i]) begin
-                if (!result_c.hit ||
-                    s_prio[i] < s_prio[result_c.entry_index]) begin
-                    result_c.hit           = 1'b1;
-                    result_c.action        = s_action[i];
-                    result_c.egress_port   = s_egress[i];
-                    result_c.local_flow_id = s_flow[i];
-                    result_c.logical_if_id = s_logical[i];
-                    result_c.entry_index   = PW_ENTRY_IDX_W'(i);
-                end
+            if (win_oh[i]) begin
+                result_c.hit           = 1'b1;
+                result_c.action        = s_action[i];
+                result_c.egress_port   = s_egress[i];
+                result_c.local_flow_id = s_flow[i];
+                result_c.logical_if_id = s_logical[i];
+                result_c.entry_index   = PW_ENTRY_IDX_W'(i);
             end
         end
 
