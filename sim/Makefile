@@ -102,7 +102,7 @@ VFLAGS := --binary -j 0 \
           -Wno-PINCONNECTEMPTY \
           --timing
 
-.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_fga sim_top sim_vec sim_all wave clean vectors
+.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_fga sim_pax sim_top sim_vec sim_all wave clean vectors
 
 sim: sim_build/data_plane
 	./sim_build/data_plane
@@ -128,6 +128,9 @@ sim_full: sim_build/csr_full
 sim_fga: sim_build/flow_gen_axis
 	./sim_build/flow_gen_axis
 
+sim_pax: sim_build/parser_axis
+	./sim_build/parser_axis
+
 sim_top: sim_build/phase3_top
 	./sim_build/phase3_top
 
@@ -147,7 +150,7 @@ vectors_clean:
 sim_vec: sim_build/wire_vectors $(VECTORS)
 	./sim_build/wire_vectors
 
-sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_fga sim_top sim_vec
+sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_fga sim_pax sim_top sim_vec
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
@@ -202,6 +205,9 @@ sim_build/csr_full: $(FULL_RTL) $(TB_FULL)
 	    --top-module tb_csr_full \
 	    -o csr_full \
 	    $(FULL_RTL) $(TB_FULL)
+
+sim_build/parser_axis: $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_flow_gen_axis.sv $(REPO)/rtl/phase3/pw_parser_axis.sv parser_axis_tb/tb_parser_axis.sv
+	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Mdir sim_build --top-module tb_parser_axis -o parser_axis $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_flow_gen_axis.sv $(REPO)/rtl/phase3/pw_parser_axis.sv parser_axis_tb/tb_parser_axis.sv
 
 sim_build/flow_gen_axis: $(REPO)/rtl/phase3/pw_flow_gen_axis.sv flow_gen_axis_tb/tb_flow_gen_axis.sv
 	$(VERILATOR) $(VFLAGS) -Mdir sim_build --top-module tb_flow_gen_axis -o flow_gen_axis $(REPO)/rtl/phase3/pw_flow_gen_axis.sv flow_gen_axis_tb/tb_flow_gen_axis.sv
