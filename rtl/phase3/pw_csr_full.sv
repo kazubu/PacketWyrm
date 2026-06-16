@@ -105,7 +105,14 @@ module pw_csr_full #(
     // Data-plane soft reset pulse (write to DP_RESET_ADDR): resets the
     // wedge-prone datapath state machines (gen / SAF / arbiters) so a
     // wedged data plane recovers without a JTAG reconfig.
-    output logic                          dp_soft_rst_o
+    output logic                          dp_soft_rst_o,
+
+    // In-system SPI flash master pins (wired to STARTUPE3 in the board
+    // top). Lets the host erase/program/read the config flash live.
+    output logic                          spi_sck_o,
+    output logic                          spi_cs_n_o,
+    output logic                          spi_mosi_o,
+    input  wire                           spi_miso_i
 );
 
     // Top-level register offsets we still serve here (the rest live
@@ -143,6 +150,10 @@ module pw_csr_full #(
     localparam logic [15:0] STATS_TRIGGER_ADDR = WIN_STATS_BASE + COMMIT_OFF;
     localparam logic [15:0] STATS_CLEAR_ADDR   = WIN_STATS_BASE + 16'h3FF8;
     localparam logic [15:0] DP_RESET_ADDR      = WIN_STATS_BASE + 16'h3FF4;
+    // In-system SPI flash window: sits in the free reg region (below the
+    // 0x2000 table windows). Spans CTRL/LEN + 512 B TX + 512 B RX.
+    localparam logic [15:0] SPI_BASE           = 16'h0800;
+    localparam logic [15:0] SPI_SPAN           = 16'h0500;   // 0x0800..0x0CFF
     localparam logic [15:0] HIST_STRIDE        = 16'd128;   // 16 buckets * 8 B per flow
 
     import pw_version_pkg::*;
@@ -231,6 +242,27 @@ module pw_csr_full #(
 
     // --- window read ports ---------------------------------------
     logic [31:0] stats_rdata;
+    logic [31:0] spi_rdata;
+
+    // In-system SPI flash master (live config-flash access over PCIe).
+    pw_spi_flash #(
+        .ADDR_W   (ADDR_W),
+        .WIN_BASE (SPI_BASE),
+        .BUF_BYTES(512),
+        .CLK_DIV  (8)
+    ) u_spi (
+        .clk      (s_axi_aclk),
+        .rst_n    (s_axi_aresetn),
+        .wr_en    (wr_en),
+        .wr_addr  (wr_addr),
+        .wr_data  (wr_data),
+        .rd_addr  (s_axi_araddr[15:0]),
+        .rd_data  (spi_rdata),
+        .sck      (spi_sck_o),
+        .cs_n     (spi_cs_n_o),
+        .mosi     (spi_mosi_o),
+        .miso     (spi_miso_i)
+    );
 
     // Histogram read decode: the host reads the per-flow latency
     // distribution at WIN_HIST_BASE + flow*HIST_STRIDE + bucket*8 (+0/+4
@@ -348,6 +380,9 @@ module pw_csr_full #(
                     // open-ended lower-bound check avoids 16-bit wrap.
                     if (s_axi_araddr >= WIN_STATS_BASE) begin
                         s_axi_rdata <= stats_rdata;
+                    end else if (s_axi_araddr >= SPI_BASE &&
+                                 s_axi_araddr < (SPI_BASE + SPI_SPAN)) begin
+                        s_axi_rdata <= spi_rdata;   // SPI flash status / RX buffer
                     end else begin
                         case (s_axi_araddr)
                             REG_DEVICE_ID:      s_axi_rdata <= PW_DEVICE_ID;

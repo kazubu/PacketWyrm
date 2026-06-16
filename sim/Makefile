@@ -63,6 +63,9 @@ STATS_RTL := \
 LAT_RTL := \
     $(REPO)/rtl/phase3/pw_lat_histogram.sv
 
+SPI_RTL := \
+    $(REPO)/rtl/phase3/pw_spi_flash.sv
+
 FULL_RTL := \
     $(REPO)/rtl/shared/pw_pkg.sv \
     $(REPO)/sim/sim_version_pkg.sv \
@@ -73,6 +76,7 @@ FULL_RTL := \
     $(REPO)/rtl/phase3/pw_flow_window.sv \
     $(REPO)/rtl/phase3/pw_stats_snapshot.sv \
     $(REPO)/rtl/phase3/pw_lat_histogram.sv \
+    $(REPO)/rtl/phase3/pw_spi_flash.sv \
     $(REPO)/rtl/phase3/pw_csr_full.sv
 
 TOP_RTL := \
@@ -85,6 +89,7 @@ TOP_RTL := \
     $(REPO)/rtl/phase3/pw_flow_window.sv \
     $(REPO)/rtl/phase3/pw_stats_snapshot.sv \
     $(REPO)/rtl/phase3/pw_lat_histogram.sv \
+    $(REPO)/rtl/phase3/pw_spi_flash.sv \
     $(REPO)/rtl/phase3/pw_csr_full.sv \
     $(REPO)/rtl/phase3/pw_parser_axis.sv \
     $(REPO)/rtl/phase3/pw_classifier.sv \
@@ -101,6 +106,7 @@ TB_CSR   := csr_window_tb/tb_csr_window.sv
 TB_FLOW  := flow_window_tb/tb_flow_window.sv
 TB_STATS := stats_snapshot_tb/tb_stats_snapshot.sv
 TB_LAT   := lat_histogram_tb/tb_lat_histogram.sv
+TB_SPI   := spi_flash_tb/tb_spi_flash.sv
 TB_FULL  := csr_full_tb/tb_csr_full.sv
 TB_TOP   := phase3_top_tb/tb_phase3_top.sv
 TB_VEC   := wire_vectors_tb/tb_wire_vectors.sv
@@ -117,7 +123,7 @@ VFLAGS := --binary -j 0 \
           -Wno-PINCONNECTEMPTY \
           --timing
 
-.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_full sim_fga sim_fgm sim_pax sim_saf sim_dpa sim_top sim_vec sim_all wave clean vectors
+.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_full sim_fga sim_fgm sim_pax sim_saf sim_dpa sim_top sim_vec sim_all wave clean vectors
 
 sim: sim_build/data_plane
 	./sim_build/data_plane
@@ -136,6 +142,9 @@ sim_stats: sim_build/stats_snapshot
 
 sim_lat: sim_build/lat_histogram
 	./sim_build/lat_histogram
+
+sim_spi: sim_build/spi_flash
+	./sim_build/spi_flash
 
 sim_full: sim_build/csr_full
 	./sim_build/csr_full
@@ -174,7 +183,7 @@ vectors_clean:
 sim_vec: sim_build/wire_vectors $(VECTORS)
 	./sim_build/wire_vectors
 
-sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_full sim_fga sim_fgm sim_pax sim_saf sim_dpa sim_top sim_vec
+sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_full sim_fga sim_fgm sim_pax sim_saf sim_dpa sim_top sim_vec
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
@@ -222,6 +231,13 @@ sim_build/lat_histogram: $(LAT_RTL) $(TB_LAT)
 	    --top-module tb_lat_histogram \
 	    -o lat_histogram \
 	    $(LAT_RTL) $(TB_LAT)
+
+sim_build/spi_flash: $(SPI_RTL) $(TB_SPI)
+	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET \
+	    -Mdir sim_build \
+	    --top-module tb_spi_flash \
+	    -o spi_flash \
+	    $(SPI_RTL) $(TB_SPI)
 
 sim_build/csr_full: $(FULL_RTL) $(TB_FULL)
 	$(VERILATOR) $(VFLAGS) \

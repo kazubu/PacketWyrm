@@ -256,4 +256,18 @@ struct pwfpga_dma_cpl {
  * Configuration (classifier / flow tables) is preserved. */
 #define PWFPGA_REG_DP_RESET                (PWFPGA_WIN_STATS_SNAPSHOT + 0x3FF4u)
 
+/* In-system SPI flash master (pw_spi_flash) -- lives in the free reg
+ * region. Lets the host erase/program/read the config flash live over
+ * PCIe (no JTAG, no reconfiguration). A raw x1 SPI byte engine: software
+ * composes the flash commands and verifies by read-back. */
+#define PWFPGA_WIN_SPI_FLASH               0x0800u
+#define PWFPGA_REG_SPI_CTRL                (PWFPGA_WIN_SPI_FLASH + 0x000u) /* W:[0]go [1]cs_hold  R:[0]busy */
+#define PWFPGA_REG_SPI_LEN                 (PWFPGA_WIN_SPI_FLASH + 0x004u) /* bytes to shift */
+#define PWFPGA_SPI_TXBUF                   (PWFPGA_WIN_SPI_FLASH + 0x100u) /* 512 B */
+#define PWFPGA_SPI_RXBUF                   (PWFPGA_WIN_SPI_FLASH + 0x300u) /* 512 B */
+#define PWFPGA_SPI_BUF_BYTES               512u
+#define PWFPGA_SPI_CTRL_GO                 (1u << 0)
+#define PWFPGA_SPI_CTRL_CS_HOLD            (1u << 1)
+#define PWFPGA_SPI_STATUS_BUSY             (1u << 0)
+
 #endif

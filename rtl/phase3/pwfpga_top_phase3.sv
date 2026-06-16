@@ -75,7 +75,13 @@ module pwfpga_top_phase3 #(
 
     // Free-running 64-bit timestamp (driven by pw_timestamp on the
     // board top; the sim drives this from a tb counter).
-    input  wire [63:0]       timestamp_i
+    input  wire [63:0]       timestamp_i,
+
+    // In-system SPI flash master -- board top wires these to STARTUPE3.
+    output wire              spi_sck_o,
+    output wire              spi_cs_n_o,
+    output wire              spi_mosi_o,
+    input  wire              spi_miso_i
 );
 
     // --- Data-plane <-> CSR_full wiring -------------------------
@@ -166,7 +172,11 @@ module pwfpga_top_phase3 #(
         .gen_udp_dp_o        (gen_udp_dp),
         .flow_rows_o         (flow_rows_w),
         .stats_clear_o       (stats_clear_w),
-        .dp_soft_rst_o       (dp_soft_rst_w)
+        .dp_soft_rst_o       (dp_soft_rst_w),
+        .spi_sck_o           (spi_sck_o),
+        .spi_cs_n_o          (spi_cs_n_o),
+        .spi_mosi_o          (spi_mosi_o),
+        .spi_miso_i          (spi_miso_i)
     );
 
     // --- Streaming data plane (MAC AXIS straight through) -------

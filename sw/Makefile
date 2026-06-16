@@ -101,6 +101,10 @@ pw_phase3_forward: $(BUILD_DIR)/pw_phase3_forward
 $(BUILD_DIR)/pw_phase3_forward: tests/pw_phase3_forward.c $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_phase3_forward.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
+pw_flash: $(BUILD_DIR)/pw_flash
+$(BUILD_DIR)/pw_flash: tests/pw_flash.c $(LIBA) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_flash.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+
 .PHONY: e2e gen_bar_vectors pw_card_probe pw_sfp_test pw_phase3_loopback pw_phase3_forward
 e2e: $(DAEMON_BIN) $(CLI_BIN)
 	tests/integration/e2e_smoke.sh

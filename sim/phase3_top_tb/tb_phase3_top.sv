@@ -118,7 +118,11 @@ module tb_phase3_top;
         .m_axis_punt_tvalid(punt_tvalid),
         .m_axis_punt_tready(punt_tready),
         .m_axis_punt_tlast (punt_tlast),
-        .timestamp_i  (ts)
+        .timestamp_i  (ts),
+        .spi_sck_o    (),
+        .spi_cs_n_o   (),
+        .spi_mosi_o   (),
+        .spi_miso_i   (1'b0)
     );
 
     int    errors = 0;

@@ -179,7 +179,40 @@ module pwfpga_top_phase3_board (
         .m_axis_tx_tready(dptx_r), .m_axis_tx_tlast(dptx_l),
         .m_axis_punt_tdata(punt_d), .m_axis_punt_tkeep(punt_k), .m_axis_punt_tvalid(punt_v),
         .m_axis_punt_tready(1'b1), .m_axis_punt_tlast(punt_l),
-        .timestamp_i(ts)
+        .timestamp_i(ts),
+        .spi_sck_o(spi_sck), .spi_cs_n_o(spi_cs_n), .spi_mosi_o(spi_mosi), .spi_miso_i(spi_miso)
+    );
+
+    // --- in-system SPI flash access via STARTUPE3 -------------------------
+    // The config flash (MT25QU256) hangs off the dedicated config pins;
+    // STARTUPE3 grants user access to them after configuration, so the
+    // CSR SPI master can erase/program/read the boot image live (PCIe and
+    // the data plane stay up). x1 SPI: DQ0=MOSI (drive), DQ1=MISO (input),
+    // DQ2=WP#/DQ3=HOLD# driven high so neither is asserted during access.
+    wire        spi_sck, spi_cs_n, spi_mosi, spi_miso;
+    wire [3:0]  startup_di;
+    assign spi_miso = startup_di[1];
+    STARTUPE3 #(
+        .PROG_USR("FALSE"),
+        .SIM_CCLK_FREQ(0.0)
+    ) u_startup (
+        .CFGCLK    (),
+        .CFGMCLK   (),
+        .DI        (startup_di),                       // [1]=MISO
+        .DO        ({1'b1, 1'b1, 1'b0, spi_mosi}),     // DQ3/2 high, DQ0=MOSI
+        .DTS       (4'b0010),                          // DQ1 input, others drive
+        .EOS       (),
+        .PREQ      (),
+        .FCSBO     (spi_cs_n),                         // chip select
+        .FCSBTS    (1'b0),
+        .GSR       (1'b0),
+        .GTS       (1'b0),
+        .KEYCLEARB (1'b1),
+        .PACK      (1'b0),
+        .USRCCLKO  (spi_sck),                          // SPI clock
+        .USRCCLKTS (1'b0),
+        .USRDONEO  (1'b1),
+        .USRDONETS (1'b1)
     );
 
     // data-plane TX has no error/tuser input on this core; tie off CDC's.
