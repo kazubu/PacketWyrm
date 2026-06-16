@@ -250,5 +250,10 @@ struct pwfpga_dma_cpl {
  * tracking (no rst_n). `test arm` uses this so a measurement run starts
  * from zero. */
 #define PWFPGA_REG_STATS_CLEAR             (PWFPGA_WIN_STATS_SNAPSHOT + 0x3FF8u)
+/* Write 1: data-plane soft reset -- clears the wedge-prone datapath
+ * state machines (generators, store-and-forward FIFOs, egress/punt
+ * arbiters) so a wedged data plane recovers without a JTAG reconfig.
+ * Configuration (classifier / flow tables) is preserved. */
+#define PWFPGA_REG_DP_RESET                (PWFPGA_WIN_STATS_SNAPSHOT + 0x3FF4u)
 
 #endif

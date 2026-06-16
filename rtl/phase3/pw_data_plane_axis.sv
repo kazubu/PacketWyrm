@@ -50,6 +50,17 @@ module pw_data_plane_axis #(
     // Soft clear pulse (from a CSR write): re-baselines all flow checkers.
     input  wire                   stats_clear_i,
 
+    // Data-plane soft reset pulse (from a CSR write): resets the
+    // wedge-prone datapath state -- the per-port store-and-forward FIFOs,
+    // the multi-flow generators, and the egress/punt arbiters -- so
+    // software can recover a wedged data plane (e.g. a flow table
+    // reprogrammed mid-transmission) WITHOUT a JTAG reconfig. The
+    // configuration (classifier table, flow rows) lives in the CSR domain
+    // and is not disturbed, so the data plane restarts from the intact
+    // program. Checker counters / histogram are left alone (use
+    // stats_clear_i for those).
+    input  wire                   dp_soft_rst_i,
+
     input  pw_classifier_table_t  cls_table_i,
 
     // Per-port AXIS RX (MAC -> data plane ingress). The parser snoops
@@ -105,6 +116,19 @@ module pw_data_plane_axis #(
     // ingress SAFs, PW_PORTS selects the local flow generator.
     localparam int SELW  = $clog2(PW_PORTS + 1);
     localparam int RW    = 5;            // route tag: {is_punt, egress[3:0]}
+
+    // ------------------------------------------------------------
+    // Data-plane soft reset: stretch the 1-cycle CSR pulse to a few
+    // cycles and AND it (active-low) into rst_n for the wedge-prone
+    // datapath state. Registered counter -> dp_rst_n is glitch-free.
+    // ------------------------------------------------------------
+    logic [3:0] srst_cnt;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n)             srst_cnt <= 4'd0;
+        else if (dp_soft_rst_i) srst_cnt <= 4'd8;
+        else if (srst_cnt != 0) srst_cnt <= srst_cnt - 4'd1;
+    end
+    wire dp_rst_n = rst_n & (srst_cnt == 4'd0);
 
     // ------------------------------------------------------------
     // Per-port RX: streaming parser -> classifier -> SAF
@@ -185,7 +209,7 @@ module pw_data_plane_axis #(
                 .ROUTE_W    (RW)
             ) u_saf (
                 .clk             (clk),
-                .rst_n           (rst_n),
+                .rst_n           (dp_rst_n),   // soft-reset clears wedged FIFO
                 .s_tdata         (s_axis_rx_tdata[gp]),
                 .s_tkeep         (s_axis_rx_tkeep[gp]),
                 .s_tvalid        (s_axis_rx_tvalid[gp]),
@@ -355,7 +379,7 @@ module pw_data_plane_axis #(
                 .FRAME_LEN_PAYLOAD(FRAME_LEN_PAYLOAD)
             ) u_gen (
                 .clk         (clk),
-                .rst_n       (rst_n),
+                .rst_n       (dp_rst_n),   // soft-reset clears wedged generator
                 .timestamp_i (timestamp_i),
                 .f_rows_i    (flow_rows_i),
                 .m_tdata     (gen_td[gp]),
@@ -420,8 +444,8 @@ module pw_data_plane_axis #(
             assign egr_src[gp]       = sel;
             assign egr_drain_saf[gp] = sel_valid && !sel_gen;
 
-            always_ff @(posedge clk or negedge rst_n) begin
-                if (!rst_n) begin
+            always_ff @(posedge clk or negedge dp_rst_n) begin
+                if (!dp_rst_n) begin
                     busy <= 1'b0;
                     gsel <= '0;
                 end else if (!busy) begin
@@ -468,8 +492,8 @@ module pw_data_plane_axis #(
     wire punt_hs   = m_axis_punt_tvalid && m_axis_punt_tready;
     wire punt_done = punt_hs && m_axis_punt_tlast;
 
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+    always_ff @(posedge clk or negedge dp_rst_n) begin
+        if (!dp_rst_n) begin
             punt_busy <= 1'b0;
             punt_gsel <= '0;
         end else if (!punt_busy) begin

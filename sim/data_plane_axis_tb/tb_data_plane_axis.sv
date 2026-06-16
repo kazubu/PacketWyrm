@@ -63,6 +63,7 @@ module tb_data_plane_axis;
     logic        punt_tlast;
 
     logic stats_clear = 1'b0;   // pulse to soft-reset the checkers
+    logic dp_soft_rst = 1'b0;   // pulse to reset the wedge-prone datapath
     // hist_rd_addr / hist_rd_data declared below near the DUT counters
 
     // loopback: when set, port-1 ingress is fed from port-0 egress.
@@ -125,6 +126,7 @@ module tb_data_plane_axis;
         .rst_n            (rst_n),
         .timestamp_i      (ts),
         .stats_clear_i    (stats_clear),
+        .dp_soft_rst_i    (dp_soft_rst),
         .cls_table_i      (cls_table),
         .s_axis_rx_tdata  (rx_tdata),
         .s_axis_rx_tkeep  (rx_tkeep),
@@ -574,6 +576,37 @@ module tb_data_plane_axis;
         check_eq("clear flow0 lost==0",    flow_lost[0],    0);
         check_eq("clear flow0 samples==0", flow_samples[0], 0);
         check_eq("clear flow1 rx==0",      flow_rx[1],      0);
+
+        // ---------------- scenario 12: data-plane soft reset ----------------
+        // Pulse dp_soft_rst mid-traffic and confirm the datapath recovers:
+        // the generator / SAF / arbiters reset, then traffic resumes from the
+        // intact flow config (no hang). flow0 loopback (cls_table[1]) is still
+        // configured from scenario 1.
+        scenario = "soft_rst";
+        lb_en              = 1'b1;
+        flow_rows[0].valid = 1'b1;
+        repeat (200) @(posedge clk);
+        begin
+            longint rx_before;
+            rx_before = flow_rx[0];
+            check_eq("soft_rst pre rx > 0", (rx_before > 0) ? 1 : 0, 1);
+            // Soft-reset the datapath while traffic is flowing.
+            dp_soft_rst = 1'b1;
+            @(posedge clk);
+            dp_soft_rst = 1'b0;
+            repeat (16) @(posedge clk);   // ride out the 8-cycle internal reset
+            // The gen restarts its sequence at 0; re-baseline the checker so the
+            // sequence discontinuity isn't counted as loss, then measure.
+            stats_clear = 1'b1;
+            @(posedge clk);
+            stats_clear = 1'b0;
+            repeat (300) @(posedge clk);
+            check_eq("soft_rst traffic resumed", (flow_rx[0] > 0) ? 1 : 0, 1);
+            check_eq("soft_rst no loss after",   flow_lost[0], 0);
+        end
+        flow_rows[0].valid = 1'b0;
+        repeat (24) @(posedge clk);
+        lb_en = 1'b0;
 
         if (errors == 0) begin
             $display("ALL DATA PLANE AXIS SCENARIOS PASS");
