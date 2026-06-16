@@ -180,7 +180,27 @@ module pwfpga_top_phase3_board (
         .m_axis_punt_tdata(punt_d), .m_axis_punt_tkeep(punt_k), .m_axis_punt_tvalid(punt_v),
         .m_axis_punt_tready(1'b1), .m_axis_punt_tlast(punt_l),
         .timestamp_i(ts),
-        .spi_sck_o(spi_sck), .spi_cs_n_o(spi_cs_n), .spi_mosi_o(spi_mosi), .spi_miso_i(spi_miso)
+        .spi_sck_o(spi_sck), .spi_cs_n_o(spi_cs_n), .spi_mosi_o(spi_mosi), .spi_miso_i(spi_miso),
+        .icap_csib_o(icap_csib), .icap_rdwrb_o(icap_rdwrb), .icap_i_o(icap_i)
+    );
+
+    // --- in-band reconfiguration via ICAPE3 -------------------------------
+    // pw_icap_reboot streams IPROG here on the host's REBOOT magic write;
+    // the FPGA reloads its bitstream from flash (PCIe drops, host rescans).
+    wire        icap_csib, icap_rdwrb;
+    wire [31:0] icap_i;
+    ICAPE3 #(
+        .ICAP_AUTO_SWITCH("DISABLE"),
+        .SIM_CFG_FILE_NAME("NONE")
+    ) u_icape3 (
+        .AVAIL   (),
+        .O       (),
+        .PRDONE  (),
+        .PRERROR (),
+        .CLK     (dp_clk),
+        .CSIB    (icap_csib),
+        .I       (icap_i),
+        .RDWRB   (icap_rdwrb)
     );
 
     // --- in-system SPI flash access via STARTUPE3 -------------------------

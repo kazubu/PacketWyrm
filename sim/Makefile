@@ -98,6 +98,7 @@ TOP_RTL := \
     $(REPO)/rtl/phase3/pw_flow_gen_multi.sv \
     $(REPO)/rtl/phase3/pw_frame_saf.sv \
     $(REPO)/rtl/phase3/pw_data_plane_axis.sv \
+    $(REPO)/rtl/phase3/pw_icap_reboot.sv \
     $(REPO)/rtl/phase3/pwfpga_top_phase3.sv
 
 TB       := data_plane_tb/tb_data_plane.sv
@@ -289,3 +290,10 @@ $(REPO)/sw/build/gen_bar_vectors:
 
 clean:
 	rm -rf sim_build
+
+ICAP_RTL := $(REPO)/rtl/phase3/pw_icap_reboot.sv
+TB_ICAP  := icap_reboot_tb/tb_icap_reboot.sv
+sim_icap: sim_build/icap_reboot
+	./sim_build/icap_reboot
+sim_build/icap_reboot: $(ICAP_RTL) $(TB_ICAP)
+	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Mdir sim_build --top-module tb_icap_reboot -o icap_reboot $(ICAP_RTL) $(TB_ICAP)

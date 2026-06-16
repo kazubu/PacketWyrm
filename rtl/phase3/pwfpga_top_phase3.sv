@@ -81,7 +81,12 @@ module pwfpga_top_phase3 #(
     output wire              spi_sck_o,
     output wire              spi_cs_n_o,
     output wire              spi_mosi_o,
-    input  wire              spi_miso_i
+    input  wire              spi_miso_i,
+
+    // In-band reconfig -- board top wires these to ICAPE3.
+    output wire              icap_csib_o,
+    output wire              icap_rdwrb_o,
+    output wire [31:0]       icap_i_o
 );
 
     // --- Data-plane <-> CSR_full wiring -------------------------
@@ -176,7 +181,20 @@ module pwfpga_top_phase3 #(
         .spi_sck_o           (spi_sck_o),
         .spi_cs_n_o          (spi_cs_n_o),
         .spi_mosi_o          (spi_mosi_o),
-        .spi_miso_i          (spi_miso_i)
+        .spi_miso_i          (spi_miso_i),
+        .icap_reboot_o       (icap_reboot_w)
+    );
+
+    // In-band reconfiguration: CSR magic -> ICAP IPROG -> reload from flash.
+    logic icap_reboot_w;
+    pw_icap_reboot #(.WBSTAR(32'h0000_0000)) u_icap (
+        .clk        (clk),
+        .rst_n      (rst_n),
+        .reboot_i   (icap_reboot_w),
+        .icap_csib  (icap_csib_o),
+        .icap_rdwrb (icap_rdwrb_o),
+        .icap_i     (icap_i_o),
+        .icap_busy_o()
     );
 
     // --- Streaming data plane (MAC AXIS straight through) -------
