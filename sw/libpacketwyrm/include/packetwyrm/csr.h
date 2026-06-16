@@ -27,6 +27,9 @@ enum {
     PWFPGA_REG_ERROR_STATUS         = 0x0110,
     PWFPGA_REG_IRQ_STATUS           = 0x0114,
     PWFPGA_REG_IRQ_MASK             = 0x0118,
+    /* Write PWFPGA_REBOOT_MAGIC to trigger ICAP IPROG: the FPGA reloads
+     * its bitstream from flash (PCIe drops; host must re-enumerate). */
+    PWFPGA_REG_REBOOT               = 0x0120,
 
     PWFPGA_REG_PORT0_BASE           = 0x0200,
     PWFPGA_REG_PORT1_BASE           = 0x0300,
@@ -269,5 +272,9 @@ struct pwfpga_dma_cpl {
 #define PWFPGA_SPI_CTRL_GO                 (1u << 0)
 #define PWFPGA_SPI_CTRL_CS_HOLD            (1u << 1)
 #define PWFPGA_SPI_STATUS_BUSY             (1u << 0)
+
+/* Magic written to PWFPGA_REG_REBOOT to trigger in-band reconfiguration
+ * (ICAP IPROG -> reload bitstream from flash). "RBOT". */
+#define PWFPGA_REBOOT_MAGIC                0x52424F54u
 
 #endif

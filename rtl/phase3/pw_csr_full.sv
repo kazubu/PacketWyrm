@@ -112,7 +112,12 @@ module pw_csr_full #(
     output logic                          spi_sck_o,
     output logic                          spi_cs_n_o,
     output logic                          spi_mosi_o,
-    input  wire                           spi_miso_i
+    input  wire                           spi_miso_i,
+
+    // In-band reconfiguration trigger: pulses when the host writes the
+    // magic to REG_REBOOT. Drives pw_icap_reboot (ICAP IPROG) -> the FPGA
+    // reloads its bitstream from flash (PCIe drops; host re-enumerates).
+    output logic                          icap_reboot_o
 );
 
     // Top-level register offsets we still serve here (the rest live
@@ -132,6 +137,8 @@ module pw_csr_full #(
     localparam logic [15:0] REG_TIMESTAMP_LOW  = 16'h0108;
     localparam logic [15:0] REG_TIMESTAMP_HIGH = 16'h010C;
     localparam logic [15:0] REG_ERROR_STATUS   = 16'h0110;
+    localparam logic [15:0] REG_REBOOT         = 16'h0120;   // write magic -> ICAP IPROG
+    localparam logic [31:0] REBOOT_MAGIC       = 32'h5242_4F54;  // "RBOT"
 
     // Wide CSR address map (64 flows / 64 classifier rows). Each
     // table window holds 64 rows * 128 B = 8 KB of data; the
@@ -196,11 +203,13 @@ module pw_csr_full #(
             snapshot_trigger <= 1'b0;
             stats_clear_o    <= 1'b0;
             dp_soft_rst_o    <= 1'b0;
+            icap_reboot_o    <= 1'b0;
         end else begin
             wr_en            <= 1'b0;
             snapshot_trigger <= 1'b0;
             stats_clear_o    <= 1'b0;
             dp_soft_rst_o    <= 1'b0;
+            icap_reboot_o    <= 1'b0;
 
             if (!aw_captured && s_axi_awvalid) begin
                 aw_captured   <= 1'b1;
@@ -230,6 +239,8 @@ module pw_csr_full #(
                     stats_clear_o <= 1'b1;
                 if (awaddr_q == DP_RESET_ADDR && s_axi_wdata[0])
                     dp_soft_rst_o <= 1'b1;
+                if (awaddr_q == REG_REBOOT && s_axi_wdata == REBOOT_MAGIC)
+                    icap_reboot_o <= 1'b1;
                 aw_captured  <= 1'b0;
             end else begin
                 s_axi_wready <= 1'b0;

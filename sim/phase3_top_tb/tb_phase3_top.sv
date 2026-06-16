@@ -122,7 +122,10 @@ module tb_phase3_top;
         .spi_sck_o    (),
         .spi_cs_n_o   (),
         .spi_mosi_o   (),
-        .spi_miso_i   (1'b0)
+        .spi_miso_i   (1'b0),
+        .icap_csib_o  (),
+        .icap_rdwrb_o (),
+        .icap_i_o     ()
     );
 
     int    errors = 0;
