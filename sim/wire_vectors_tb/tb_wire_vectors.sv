@@ -118,7 +118,11 @@ module tb_wire_vectors;
         .gen_udp_dp_o        (gen_udp_w),
         .flow_rows_o         (),
         .stats_clear_o       (),
-        .dp_soft_rst_o       ()
+        .dp_soft_rst_o       (),
+        .spi_sck_o           (),
+        .spi_cs_n_o          (),
+        .spi_mosi_o          (),
+        .spi_miso_i          (1'b0)
     );
 
     int    errors = 0;
