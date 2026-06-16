@@ -23,6 +23,7 @@
 #include <json-c/json.h>
 
 #include "packetwyrm/packetwyrm.h"
+#include "packetwyrm/spi_flash.h"
 
 static volatile sig_atomic_t g_stop = 0;
 static void on_signal(int sig) { (void)sig; g_stop = 1; }
@@ -736,6 +737,60 @@ static void handle_client(int cfd,
                 json_object_object_add(resp, "id",     json_object_new_int64(id));
                 json_object_object_add(resp, "enable", json_object_new_boolean(en));
                 json_object_object_add(resp, "status", json_object_new_string(pw_strerror(s)));
+            }
+        } else if (!strcmp(name, "flash.id")) {
+            int ci = -1;
+            for (size_t i = 0; i < cfg->n_cards; i++) if (cards[i].open) { ci = (int)i; break; }
+            if (ci < 0) resp = build_error("no open card");
+            else {
+                uint8_t id[3] = {0};
+                pw_status s = pw_flash_read_id(cards[ci].backend.ops, cards[ci].backend.ctx, id);
+                char buf[16]; snprintf(buf, sizeof buf, "%02x %02x %02x", id[0], id[1], id[2]);
+                resp = json_object_new_object();
+                json_object_object_add(resp, "jedec_id", json_object_new_string(buf));
+                json_object_object_add(resp, "status",   json_object_new_string(pw_strerror(s)));
+            }
+        } else if (!strcmp(name, "flash.write")) {
+            /* Live config-flash write: read the file (same host, root) and
+             * program+verify it over the SPI engine while the data plane
+             * keeps running. {path, offset?} -> {bytes, mismatch, verified}. */
+            struct json_object *jp, *jo;
+            int ci = -1;
+            for (size_t i = 0; i < cfg->n_cards; i++) if (cards[i].open) { ci = (int)i; break; }
+            if (!json_object_object_get_ex(req, "path", &jp)) {
+                resp = build_error("missing path");
+            } else if (ci < 0) {
+                resp = build_error("no open card");
+            } else {
+                const char *path = json_object_get_string(jp);
+                uint32_t off = 0x00E00000u;
+                if (json_object_object_get_ex(req, "offset", &jo))
+                    off = (uint32_t)json_object_get_int64(jo);
+                FILE *f = fopen(path, "rb");
+                if (!f) { resp = build_error("open file failed"); }
+                else {
+                    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+                    if (sz <= 0 || sz > (8 << 20)) { fclose(f); resp = build_error("bad file size"); }
+                    else {
+                        uint8_t *img = malloc((size_t)sz);
+                        size_t rd = fread(img, 1, (size_t)sz, f); fclose(f);
+                        if (rd != (size_t)sz) { free(img); resp = build_error("file read failed"); }
+                        else {
+                            uint64_t mism = 0;
+                            pw_status s = pw_flash_program(cards[ci].backend.ops,
+                                                           cards[ci].backend.ctx,
+                                                           off, img, (size_t)sz, &mism);
+                            free(img);
+                            resp = json_object_new_object();
+                            json_object_object_add(resp, "bytes",    json_object_new_int64(sz));
+                            json_object_object_add(resp, "offset",   json_object_new_int64(off));
+                            json_object_object_add(resp, "mismatch", json_object_new_int64((int64_t)mism));
+                            json_object_object_add(resp, "verified",
+                                json_object_new_boolean(s == PW_OK && mism == 0));
+                            json_object_object_add(resp, "status",   json_object_new_string(pw_strerror(s)));
+                        }
+                    }
+                }
             }
         } else {
             resp = build_error("unknown rpc");
