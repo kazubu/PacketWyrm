@@ -154,12 +154,18 @@ module pwfpga_top_phase3_board (
 
     wire [63:0] punt_d;  wire [7:0] punt_k;  wire punt_v, punt_l;
 
-    // Full small-card scale: 8 flows / 8 classifier rules / 16 latency bins.
-    // The wide-bus skeleton congested the KU3P here (forcing 2/2/8); the
-    // 64-bit streaming data plane routes and closes timing at this scale.
+    // Large scale: 32 flows / 16 classifier rules / 16 latency bins.
+    // Enabled by the BRAM-backed latency histogram (freed the FF wall)
+    // plus the wide CSR address map (16 KB classifier/flow/stats windows,
+    // 8 KB histogram, 128 B histogram stride). 64/64/16 overflows the
+    // xcku3p (LUTs 135%); 32/32/16 fits but is congestion-limited (WNS
+    // -1.58, 78% LUT, the 32-entry classifier key match fanout dominates
+    // the route delay). Halving the classifier to 16 rules relieves that
+    // congestion while keeping the 32-slot generator / checker / BRAM
+    // histogram (16 rules => up to 16 distinctly-classified flows).
     pwfpga_top_phase3 #(
         .ADDR_W(ADDR_W), .CAPABILITIES(PW_PHASE1_CAPABILITIES),
-        .NUM_PORTS(2), .NUM_FLOWS(8), .NUM_CLASSIFIER(8), .NUM_HIST_BINS(16)
+        .NUM_PORTS(2), .NUM_FLOWS(32), .NUM_CLASSIFIER(16), .NUM_HIST_BINS(16)
     ) u_dp (
         .clk(dp_clk), .rst_n(dp_aresetn),
         .s_axi_awaddr(daw), .s_axi_awvalid(dawv), .s_axi_awready(dawr),

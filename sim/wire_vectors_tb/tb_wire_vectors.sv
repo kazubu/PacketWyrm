@@ -171,14 +171,15 @@ module tb_wire_vectors;
 
         // ---- replay every non-zero dword in the classifier and
         //      flow window regions as an AXI-Lite write. Identity
-        //      registers (offset < 0x1000) are read-only; skip
-        //      them. Commit registers (0x1FFC, 0x2FFC) are part of
-        //      the window range and get replayed too. ----
+        //      registers (offset < 0x2000) are read-only; skip them.
+        //      The wide map puts classifier at 0x2000..0x5FFF and the
+        //      flow window at 0x6000..0x9FFF (commit regs at 0x5FFC /
+        //      0x9FFC); replay that whole span. ----
         scenario = "replay";
         begin
             int writes;
             writes = 0;
-            for (int i = 16'h1000 / 4; i < 16'h3000 / 4; i++) begin
+            for (int i = 16'h2000 / 4; i < 16'hA000 / 4; i++) begin
                 if (image[i] != 32'h0) begin
                     axi_write(16'(i * 4), image[i]);
                     writes++;

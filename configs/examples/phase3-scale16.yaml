@@ -1,0 +1,213 @@
+# Phase 3 hardware: 16 concurrent TEST_RX flows over the SFP+ DAC loopback,
+# 8 per egress port -- exercises the 32-flow / 16-classifier data plane
+# (16 classifier rows => up to 16 distinctly-classified flows; the generator,
+# checker and BRAM histogram hold 32 slots). 2x the validated-8 milestone.
+#
+# flows 1..8  : p0 -> p1, udp 50001..50008
+# flows 9..16 : p1 -> p0, udp 50009..50016
+
+system:
+  name: "pw-phase3-scale16"
+  mode: "multi-card"
+  default_speed: "10g"
+  control_socket: "/tmp/pw-phase3.sock"
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+logical_interfaces:
+  - id: 1000
+    global_port: 0
+    vlan: 100
+    mac: "02:a5:02:00:00:64"
+    mtu: 9000
+    punt: { arp: false, ipv6_nd: false, lldp: false, icmp: false, bgp: false, ospf: false }
+  - id: 1001
+    global_port: 1
+    vlan: 101
+    mac: "02:a5:02:00:00:65"
+    mtu: 9000
+    punt: { arp: false, ipv6_nd: false, lldp: false, icmp: false, bgp: false, ospf: false }
+
+flows:
+  - id: 1
+    name: "f1"
+    tx_global_port: 0
+    rx_global_port: 1
+    logical_if_id: 1000
+    l2:   { src_mac: "02:a5:02:00:00:01", dst_mac: "02:a5:02:00:00:02" }
+    ipv4: { src: "192.0.2.1", dst: "192.0.2.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50001 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 2,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 2
+    name: "f2"
+    tx_global_port: 0
+    rx_global_port: 1
+    logical_if_id: 1000
+    l2:   { src_mac: "02:a5:02:00:00:01", dst_mac: "02:a5:02:00:00:02" }
+    ipv4: { src: "192.0.2.1", dst: "192.0.2.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50002 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 2,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 3
+    name: "f3"
+    tx_global_port: 0
+    rx_global_port: 1
+    logical_if_id: 1000
+    l2:   { src_mac: "02:a5:02:00:00:01", dst_mac: "02:a5:02:00:00:02" }
+    ipv4: { src: "192.0.2.1", dst: "192.0.2.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50003 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 2,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 4
+    name: "f4"
+    tx_global_port: 0
+    rx_global_port: 1
+    logical_if_id: 1000
+    l2:   { src_mac: "02:a5:02:00:00:01", dst_mac: "02:a5:02:00:00:02" }
+    ipv4: { src: "192.0.2.1", dst: "192.0.2.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50004 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 2,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 5
+    name: "f5"
+    tx_global_port: 0
+    rx_global_port: 1
+    logical_if_id: 1000
+    l2:   { src_mac: "02:a5:02:00:00:01", dst_mac: "02:a5:02:00:00:02" }
+    ipv4: { src: "192.0.2.1", dst: "192.0.2.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50005 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 2,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 6
+    name: "f6"
+    tx_global_port: 0
+    rx_global_port: 1
+    logical_if_id: 1000
+    l2:   { src_mac: "02:a5:02:00:00:01", dst_mac: "02:a5:02:00:00:02" }
+    ipv4: { src: "192.0.2.1", dst: "192.0.2.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50006 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 2,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 7
+    name: "f7"
+    tx_global_port: 0
+    rx_global_port: 1
+    logical_if_id: 1000
+    l2:   { src_mac: "02:a5:02:00:00:01", dst_mac: "02:a5:02:00:00:02" }
+    ipv4: { src: "192.0.2.1", dst: "192.0.2.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50007 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 2,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 8
+    name: "f8"
+    tx_global_port: 0
+    rx_global_port: 1
+    logical_if_id: 1000
+    l2:   { src_mac: "02:a5:02:00:00:01", dst_mac: "02:a5:02:00:00:02" }
+    ipv4: { src: "192.0.2.1", dst: "192.0.2.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50008 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 2,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 9
+    name: "f9"
+    tx_global_port: 1
+    rx_global_port: 0
+    logical_if_id: 1001
+    l2:   { src_mac: "02:a5:02:00:00:03", dst_mac: "02:a5:02:00:00:04" }
+    ipv4: { src: "198.51.100.1", dst: "198.51.100.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50009 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 2,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 10
+    name: "f10"
+    tx_global_port: 1
+    rx_global_port: 0
+    logical_if_id: 1001
+    l2:   { src_mac: "02:a5:02:00:00:03", dst_mac: "02:a5:02:00:00:04" }
+    ipv4: { src: "198.51.100.1", dst: "198.51.100.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50010 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 2,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 11
+    name: "f11"
+    tx_global_port: 1
+    rx_global_port: 0
+    logical_if_id: 1001
+    l2:   { src_mac: "02:a5:02:00:00:03", dst_mac: "02:a5:02:00:00:04" }
+    ipv4: { src: "198.51.100.1", dst: "198.51.100.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50011 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 2,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 12
+    name: "f12"
+    tx_global_port: 1
+    rx_global_port: 0
+    logical_if_id: 1001
+    l2:   { src_mac: "02:a5:02:00:00:03", dst_mac: "02:a5:02:00:00:04" }
+    ipv4: { src: "198.51.100.1", dst: "198.51.100.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50012 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 2,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 13
+    name: "f13"
+    tx_global_port: 1
+    rx_global_port: 0
+    logical_if_id: 1001
+    l2:   { src_mac: "02:a5:02:00:00:03", dst_mac: "02:a5:02:00:00:04" }
+    ipv4: { src: "198.51.100.1", dst: "198.51.100.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50013 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 2,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 14
+    name: "f14"
+    tx_global_port: 1
+    rx_global_port: 0
+    logical_if_id: 1001
+    l2:   { src_mac: "02:a5:02:00:00:03", dst_mac: "02:a5:02:00:00:04" }
+    ipv4: { src: "198.51.100.1", dst: "198.51.100.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50014 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 2,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 15
+    name: "f15"
+    tx_global_port: 1
+    rx_global_port: 0
+    logical_if_id: 1001
+    l2:   { src_mac: "02:a5:02:00:00:03", dst_mac: "02:a5:02:00:00:04" }
+    ipv4: { src: "198.51.100.1", dst: "198.51.100.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50015 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 2,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 16
+    name: "f16"
+    tx_global_port: 1
+    rx_global_port: 0
+    logical_if_id: 1001
+    l2:   { src_mac: "02:a5:02:00:00:03", dst_mac: "02:a5:02:00:00:04" }
+    ipv4: { src: "198.51.100.1", dst: "198.51.100.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50016 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 2,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }

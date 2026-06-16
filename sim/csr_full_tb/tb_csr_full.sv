@@ -30,13 +30,14 @@ module tb_csr_full;
     localparam logic [15:0] REG_DEVICE_ID         = 16'h0000;
     localparam logic [15:0] REG_VERSION           = 16'h0004;
     localparam logic [15:0] REG_NUM_FLOWS         = 16'h0018;
-    localparam logic [15:0] WIN_CLS_BASE          = 16'h1000;
-    localparam logic [15:0] REG_CLS_COMMIT        = WIN_CLS_BASE + 16'h0FFC;
-    localparam logic [15:0] WIN_STATS_BASE        = 16'h3000;
-    localparam logic [15:0] REG_SNAPSHOT_TRIGGER  = WIN_STATS_BASE + 16'h0FFC;
+    localparam logic [15:0] WIN_CLS_BASE          = 16'h2000;
+    localparam logic [15:0] REG_CLS_COMMIT        = WIN_CLS_BASE + 16'h3FFC;
+    localparam logic [15:0] WIN_STATS_BASE        = 16'hC000;
+    localparam logic [15:0] REG_SNAPSHOT_TRIGGER  = WIN_STATS_BASE + 16'h3FFC;
     localparam logic [15:0] FLOW_BASE_IN_SNAP     = 16'h0100;
     localparam int          OFF_RX_FRAMES         = 16;
-    localparam logic [15:0] WIN_HIST_BASE         = 16'h4000;
+    localparam logic [15:0] WIN_HIST_BASE         = 16'hA000;
+    localparam int          HIST_STRIDE_B         = 128;   // 16 buckets * 8 B
 
     logic clk = 1'b0;
     always #5 clk = ~clk;
@@ -332,13 +333,13 @@ module tb_csr_full;
         end
         begin
             logic [31:0] lo, hi;
-            // flow 3 hist base = WIN_HIST + 3 * 512; bucket 2 = +16
-            axi_read(WIN_HIST_BASE + 3*512 + 2*8, lo);
-            axi_read(WIN_HIST_BASE + 3*512 + 2*8 + 4, hi);
+            // flow 3 hist base = WIN_HIST + 3 * 128; bucket 2 = +16
+            axi_read(WIN_HIST_BASE + 3*HIST_STRIDE_B + 2*8, lo);
+            axi_read(WIN_HIST_BASE + 3*HIST_STRIDE_B + 2*8 + 4, hi);
             check_eq("hist flow3 bucket2 lo", lo, 32'd6);
             check_eq("hist flow3 bucket2 hi", hi, 0);
             // an untouched bucket reads zero
-            axi_read(WIN_HIST_BASE + 3*512 + 5*8, lo);
+            axi_read(WIN_HIST_BASE + 3*HIST_STRIDE_B + 5*8, lo);
             check_eq("hist flow3 bucket5 zero", lo, 0);
         end
 

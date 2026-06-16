@@ -121,14 +121,23 @@ module pw_csr_full #(
     localparam logic [15:0] REG_TIMESTAMP_HIGH = 16'h010C;
     localparam logic [15:0] REG_ERROR_STATUS   = 16'h0110;
 
-    localparam logic [15:0] WIN_CLS_BASE       = 16'h1000;
-    localparam logic [15:0] WIN_FLOW_BASE      = 16'h2000;
-    localparam logic [15:0] WIN_STATS_BASE     = 16'h3000;
-    localparam logic [15:0] WIN_HIST_BASE      = 16'h4000;
-    localparam logic [15:0] COMMIT_OFF         = 16'h0FFC;
+    // Wide CSR address map (64 flows / 64 classifier rows). Each
+    // table window holds 64 rows * 128 B = 8 KB of data; the
+    // commit-bearing windows are spaced 16 KB apart so the commit /
+    // trigger / clear registers sit ABOVE the 8 KB data region
+    // (COMMIT_OFF = 0x3FFC, clear = 0x3FF8). The histogram has no
+    // commit (live read), so it gets an 8 KB slot. The whole 64 KB
+    // BAR is used; the unused SLOW_RX/TX placeholders are reclaimed.
+    localparam logic [15:0] WIN_CLS_BASE       = 16'h2000;  // 0x2000..0x5FFF
+    localparam logic [15:0] WIN_FLOW_BASE      = 16'h6000;  // 0x6000..0x9FFF
+    localparam logic [15:0] WIN_HIST_BASE      = 16'hA000;  // 0xA000..0xBFFF (8 KB)
+    localparam logic [15:0] WIN_STATS_BASE     = 16'hC000;  // 0xC000..0xFFFF
+    localparam logic [15:0] WIN_SPAN_16K       = 16'h4000;
+    localparam logic [15:0] WIN_SPAN_8K        = 16'h2000;
+    localparam logic [15:0] COMMIT_OFF         = 16'h3FFC;
     localparam logic [15:0] STATS_TRIGGER_ADDR = WIN_STATS_BASE + COMMIT_OFF;
-    localparam logic [15:0] STATS_CLEAR_ADDR   = WIN_STATS_BASE + 16'h0FF8;
-    localparam logic [15:0] HIST_STRIDE        = 16'd512;   // bytes per flow (host layout)
+    localparam logic [15:0] STATS_CLEAR_ADDR   = WIN_STATS_BASE + 16'h3FF8;
+    localparam logic [15:0] HIST_STRIDE        = 16'd128;   // 16 buckets * 8 B per flow
 
     import pw_version_pkg::*;
     import pw_pkg::*;
@@ -318,15 +327,16 @@ module pw_csr_full #(
                 s_axi_arready <= 1'b1;
                 s_axi_rresp   <= 2'b00;
                 if (s_axi_araddr >= WIN_HIST_BASE &&
-                    s_axi_araddr < (WIN_HIST_BASE + 16'h1000)) begin
+                    s_axi_araddr < (WIN_HIST_BASE + WIN_SPAN_8K)) begin
                     // BRAM read launched this cycle; capture it next cycle.
                     hist_pend   <= 1'b1;
                     hist_half_q <= h_half;
                     hist_val_q  <= h_valid;
                 end else begin
                     s_axi_rvalid <= 1'b1;
-                    if (s_axi_araddr >= WIN_STATS_BASE &&
-                        s_axi_araddr < (WIN_STATS_BASE + 16'h1000)) begin
+                    // Stats is the topmost window (0xC000..0xFFFF), so an
+                    // open-ended lower-bound check avoids 16-bit wrap.
+                    if (s_axi_araddr >= WIN_STATS_BASE) begin
                         s_axi_rdata <= stats_rdata;
                     end else begin
                         case (s_axi_araddr)

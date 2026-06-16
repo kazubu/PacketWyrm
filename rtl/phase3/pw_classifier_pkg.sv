@@ -13,7 +13,7 @@ package pw_classifier_pkg;
         PW_ACT_FORWARD_PORT   = 3'd4
     } pw_action_e;
 
-    parameter int PW_CLASSIFIER_ENTRIES = 8;
+    parameter int PW_CLASSIFIER_ENTRIES = 16;
     parameter int PW_ENTRY_IDX_W        = $clog2(PW_CLASSIFIER_ENTRIES);
 
     // Fields the parser extracts; the classifier matches a subset of
