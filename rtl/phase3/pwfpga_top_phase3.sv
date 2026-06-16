@@ -160,13 +160,15 @@ module pwfpga_top_phase3 #(
         .gen_dst_ip_o        (gen_dst_ip),
         .gen_udp_sp_o        (gen_udp_sp),
         .gen_udp_dp_o        (gen_udp_dp),
-        .flow_rows_o         (flow_rows_w)
+        .flow_rows_o         (flow_rows_w),
+        .stats_clear_o       (stats_clear_w)
     );
 
     // --- Streaming data plane (MAC AXIS straight through) -------
     // The multi-flow generators take the full decoded flow table from the
     // CSR; each egress port's generator emits the rows targeting it.
     pw_flow_row_t flow_rows_w [NUM_FLOWS];
+    logic         stats_clear_w;
 
     pw_data_plane_axis #(
         .PW_PORTS      (NUM_PORTS),
@@ -176,6 +178,7 @@ module pwfpga_top_phase3 #(
         .clk               (clk),
         .rst_n             (rst_n),
         .timestamp_i       (timestamp_i),
+        .stats_clear_i     (stats_clear_w),
         .cls_table_i       (cls_table),
         .s_axis_rx_tdata   (s_axis_rx_tdata),
         .s_axis_rx_tkeep   (s_axis_rx_tkeep),

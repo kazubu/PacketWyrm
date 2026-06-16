@@ -13,6 +13,13 @@
 
 #include "packetwyrm/packetwyrm.h"
 
+/* The FPGA's latency counters and histogram buckets are in data-plane
+ * clock ticks (the free-running timestamp runs at PWFPGA_DATA_PLANE_CLOCK_HZ
+ * = 156.25 MHz, i.e. 6.4 ns/tick). Convert to nanoseconds for display. */
+static inline unsigned long pw_ticks_to_ns(unsigned long long ticks) {
+    return (unsigned long)(ticks * 1000000000ULL / PWFPGA_DATA_PLANE_CLOCK_HZ);
+}
+
 static int cmd_help(void);
 
 static int load_config(const char *path, struct pw_config **out_cfg,
@@ -501,7 +508,7 @@ int main(int argc, char **argv) {
             for (j = 0; j < bar && j < 40; j++) line[j] = '#';
             line[j] = '\0';
             printf("  [%2zu] (>= %lu ns) %10ld  %s\n",
-                   i, (unsigned long)(1ULL << i), (long)v, line);
+                   i, pw_ticks_to_ns(1ULL << i), (long)v, line);
         }
         json_object_put(root);
         return 0;
@@ -575,7 +582,7 @@ int main(int argc, char **argv) {
                         printf("%-4s %-5s %-5s %10s %10s %8s %8s %8s %10s %10s %10s %s\n",
                                "id", "tx_c", "rx_c", "tx_frames", "rx_frames",
                                "lost", "dup", "reord",
-                               "min_lat", "avg_lat", "max_lat", "lat_valid");
+                               "min_ns", "avg_ns", "max_ns", "lat_valid");
                         size_t n = json_object_array_length(arr);
                         for (size_t i = 0; i < n; i++) {
                             struct json_object *f = json_object_array_get_idx(arr, i);
@@ -602,9 +609,9 @@ int main(int argc, char **argv) {
                                    (long)fid, (long)tc, (long)rc,
                                    (long)tx, (long)rx,
                                    (long)lost, (long)dup, (long)reord,
-                                   lv ? (long)mn : 0,
-                                   lv ? (long)avg : 0,
-                                   lv ? (long)mx : 0,
+                                   lv ? (long)pw_ticks_to_ns((unsigned long long)mn) : 0,
+                                   lv ? (long)pw_ticks_to_ns((unsigned long long)avg) : 0,
+                                   lv ? (long)pw_ticks_to_ns((unsigned long long)mx) : 0,
                                    lv ? "yes" : "no");
                         }
                         json_object_put(root);

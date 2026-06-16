@@ -133,7 +133,8 @@ module tb_csr_full;
         .gen_dst_ip_o        (gen_dip_w),
         .gen_udp_sp_o        (gen_usp_w),
         .gen_udp_dp_o        (gen_udp_w),
-        .flow_rows_o         ()
+        .flow_rows_o         (),
+        .stats_clear_o       ()
     );
 
     int    errors = 0;

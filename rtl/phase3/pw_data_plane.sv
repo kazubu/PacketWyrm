@@ -138,6 +138,7 @@ module pw_data_plane #(
     ) u_checker (
         .clk             (clk),
         .rst_n           (rst_n),
+        .clear_i         (1'b0),
         .timestamp_i     (timestamp_i),
         .key_i           (chk_key),
         .result_i        (chk_res),

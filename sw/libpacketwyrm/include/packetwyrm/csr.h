@@ -242,5 +242,9 @@ struct pwfpga_dma_cpl {
 #define PWFPGA_REG_CLASSIFIER_COMMIT       (PWFPGA_WIN_CLASSIFIER + 0xFFCu)
 #define PWFPGA_REG_FLOW_COMMIT             (PWFPGA_WIN_FLOW_TABLE + 0xFFCu)
 #define PWFPGA_REG_STATS_SNAPSHOT_TRIGGER  (PWFPGA_WIN_STATS_SNAPSHOT + 0xFFCu)
+/* Write 1: soft-clear all RX checker counters + re-baseline sequence
+ * tracking (no rst_n). `test arm` uses this so a measurement run starts
+ * from zero. */
+#define PWFPGA_REG_STATS_CLEAR             (PWFPGA_WIN_STATS_SNAPSHOT + 0xFF8u)
 
 #endif

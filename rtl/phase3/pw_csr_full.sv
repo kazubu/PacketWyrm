@@ -89,7 +89,10 @@ module pw_csr_full #(
     output logic [NUM_PORTS-1:0] [15:0]   gen_udp_dp_o,
 
     // Full decoded flow table for the multi-flow generator.
-    output pw_flow_row_t                  flow_rows_o [NUM_FLOWS]
+    output pw_flow_row_t                  flow_rows_o [NUM_FLOWS],
+
+    // Soft clear pulse for the RX checkers (write to STATS_CLEAR_ADDR).
+    output logic                          stats_clear_o
 );
 
     // Top-level register offsets we still serve here (the rest live
@@ -116,6 +119,7 @@ module pw_csr_full #(
     localparam logic [15:0] WIN_HIST_BASE      = 16'h4000;
     localparam logic [15:0] COMMIT_OFF         = 16'h0FFC;
     localparam logic [15:0] STATS_TRIGGER_ADDR = WIN_STATS_BASE + COMMIT_OFF;
+    localparam logic [15:0] STATS_CLEAR_ADDR   = WIN_STATS_BASE + 16'h0FF8;
 
     import pw_version_pkg::*;
     import pw_pkg::*;
@@ -155,9 +159,11 @@ module pw_csr_full #(
             wr_addr          <= '0;
             wr_data          <= '0;
             snapshot_trigger <= 1'b0;
+            stats_clear_o    <= 1'b0;
         end else begin
             wr_en            <= 1'b0;
             snapshot_trigger <= 1'b0;
+            stats_clear_o    <= 1'b0;
 
             if (!aw_captured && s_axi_awvalid) begin
                 aw_captured   <= 1'b1;
@@ -183,6 +189,8 @@ module pw_csr_full #(
                 wr_data <= s_axi_wdata;
                 if (awaddr_q == STATS_TRIGGER_ADDR && s_axi_wdata[0])
                     snapshot_trigger <= 1'b1;
+                if (awaddr_q == STATS_CLEAR_ADDR && s_axi_wdata[0])
+                    stats_clear_o <= 1'b1;
                 aw_captured  <= 1'b0;
             end else begin
                 s_axi_wready <= 1'b0;

@@ -29,6 +29,11 @@ module pw_test_rx_checker #(
     input  wire                  clk,
     input  wire                  rst_n,
 
+    // Synchronous soft clear: zeroes all per-flow counters + state and
+    // re-baselines sequence tracking (the next frame sets expected_seq).
+    // Driven by a CSR write so `test arm` can reset stats without rst_n.
+    input  wire                  clear_i,
+
     input  wire [63:0]           timestamp_i,
 
     input  pw_match_key_t        key_i,
@@ -96,7 +101,7 @@ module pw_test_rx_checker #(
     if (PIPELINE == 0) begin : g_flat
         // ---- single-cycle compute + update (original behaviour) ----
         always_ff @(posedge clk or negedge rst_n) begin
-            if (!rst_n) begin
+            if (!rst_n || clear_i) begin
                 for (int i = 0; i < NUM_FLOWS; i++) begin
                     rx_frames_o[i]    <= '0;
                     lost_o[i]         <= '0;
@@ -153,7 +158,7 @@ module pw_test_rx_checker #(
         logic [$clog2(NUM_BUCKETS)-1:0] s1_bucket;
 
         always_ff @(posedge clk or negedge rst_n) begin
-            if (!rst_n) begin
+            if (!rst_n || clear_i) begin
                 s1_valid <= 1'b0;
             end else begin
                 automatic logic [63:0] lat = timestamp_i - key_i.test_tx_timestamp;
@@ -169,7 +174,7 @@ module pw_test_rx_checker #(
 
         // ---- stage 2: counter / seq-gap / histogram update ----
         always_ff @(posedge clk or negedge rst_n) begin
-            if (!rst_n) begin
+            if (!rst_n || clear_i) begin
                 for (int i = 0; i < NUM_FLOWS; i++) begin
                     rx_frames_o[i]    <= '0;
                     lost_o[i]         <= '0;

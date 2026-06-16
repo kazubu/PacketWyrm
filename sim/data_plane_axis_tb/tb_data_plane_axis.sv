@@ -62,6 +62,8 @@ module tb_data_plane_axis;
     logic        punt_tready = 1'b1;
     logic        punt_tlast;
 
+    logic stats_clear = 1'b0;   // pulse to soft-reset the checkers
+
     // loopback: when set, port-1 ingress is fed from port-0 egress.
     logic lb_en;
 
@@ -120,6 +122,7 @@ module tb_data_plane_axis;
         .clk              (clk),
         .rst_n            (rst_n),
         .timestamp_i      (ts),
+        .stats_clear_i    (stats_clear),
         .cls_table_i      (cls_table),
         .s_axis_rx_tdata  (rx_tdata),
         .s_axis_rx_tkeep  (rx_tkeep),
@@ -545,6 +548,21 @@ module tb_data_plane_axis;
             check_eq("bidir flow0 no new loss", flow_lost[0] - lost0_a, 0);
             check_eq("bidir flow1 no new loss", flow_lost[1] - lost1_a, 0);
         end
+
+        // ---------------- scenario 11: soft counter clear ----------------
+        // The bidir run left flow0/flow1 counters non-zero. A stats_clear
+        // pulse must zero all per-flow counters (re-baseline), as `test arm`
+        // does on hardware.
+        scenario = "clear";
+        check_eq("pre-clear flow0 rx > 0", (flow_rx[0] > 0) ? 1 : 0, 1);
+        stats_clear = 1'b1;
+        @(posedge clk);
+        stats_clear = 1'b0;
+        repeat (4) @(posedge clk);
+        check_eq("clear flow0 rx==0",      flow_rx[0],      0);
+        check_eq("clear flow0 lost==0",    flow_lost[0],    0);
+        check_eq("clear flow0 samples==0", flow_samples[0], 0);
+        check_eq("clear flow1 rx==0",      flow_rx[1],      0);
 
         if (errors == 0) begin
             $display("ALL DATA PLANE AXIS SCENARIOS PASS");

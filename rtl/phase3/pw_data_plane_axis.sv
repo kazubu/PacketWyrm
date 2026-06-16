@@ -47,6 +47,9 @@ module pw_data_plane_axis #(
 
     input  wire [63:0]            timestamp_i,
 
+    // Soft clear pulse (from a CSR write): re-baselines all flow checkers.
+    input  wire                   stats_clear_i,
+
     input  pw_classifier_table_t  cls_table_i,
 
     // Per-port AXIS RX (MAC -> data plane ingress). The parser snoops
@@ -230,6 +233,7 @@ module pw_data_plane_axis #(
             ) u_checker (
                 .clk             (clk),
                 .rst_n           (rst_n),
+                .clear_i         (stats_clear_i),
                 .timestamp_i     (timestamp_i),
                 .key_i           (rx_key_d[gp]),
                 .result_i        (rx_res[gp]),

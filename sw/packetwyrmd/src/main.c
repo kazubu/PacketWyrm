@@ -686,10 +686,20 @@ static void handle_client(int cfd,
             bool en = (strcmp(name, "test.start") == 0);
             int  changed = 0, failed = 0;
             /* test.arm pushes the compiled program again (idempotent
-             * resync) but leaves enable as-is. test.start /
-             * test.stop walk every flow and flip the enable bit. */
+             * resync), then soft-clears the RX checker counters on each
+             * card so a measurement run starts from zero (the data plane
+             * has no auto-reset; only this CSR write or rst_n). test.start
+             * / test.stop walk every flow and flip the enable bit. */
             if (!strcmp(name, "test.arm")) {
                 program_backends(prog, cfg, cards);
+                for (size_t ci = 0; ci < cfg->n_cards; ci++) {
+                    if (cards[ci].open && cards[ci].backend.ops->write32) {
+                        pw_status s = cards[ci].backend.ops->write32(
+                            cards[ci].backend.ctx, PWFPGA_REG_STATS_CLEAR, 1u);
+                        if (s == PW_OK) changed++;
+                        else            failed++;
+                    }
+                }
             } else {
                 for (size_t k = 0; k < prog->n_flow_meta; k++) {
                     pw_status s = set_flow_enable(prog, cards,
