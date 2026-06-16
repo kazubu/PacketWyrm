@@ -44,12 +44,12 @@ module tb_phase3_top;
     localparam int F_BURST_BYTES        = 79;
     localparam int F_TX_ENABLE          = 90;
 
-    localparam logic [15:0] WIN_CLS  = 16'h1000;
-    localparam logic [15:0] WIN_FLOW = 16'h2000;
-    localparam logic [15:0] CLS_COMMIT  = WIN_CLS  + 16'h0FFC;
-    localparam logic [15:0] FLOW_COMMIT = WIN_FLOW + 16'h0FFC;
-    localparam logic [15:0] STATS_TRIGGER = 16'h3000 + 16'h0FFC;
-    localparam logic [15:0] STATS_FLOW_BASE = 16'h3000 + 16'h0100;
+    localparam logic [15:0] WIN_CLS  = 16'h2000;
+    localparam logic [15:0] WIN_FLOW = 16'h6000;
+    localparam logic [15:0] CLS_COMMIT  = WIN_CLS  + 16'h3FFC;
+    localparam logic [15:0] FLOW_COMMIT = WIN_FLOW + 16'h3FFC;
+    localparam logic [15:0] STATS_TRIGGER = 16'hC000 + 16'h3FFC;
+    localparam logic [15:0] STATS_FLOW_BASE = 16'hC000 + 16'h0100;
     localparam int          OFF_RX_FRAMES = 16;
 
     logic clk = 0; always #5 clk = ~clk;

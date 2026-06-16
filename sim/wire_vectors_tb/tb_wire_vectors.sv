@@ -46,7 +46,9 @@ module tb_wire_vectors;
     logic [63:0] flow_max_lat    [NUM_FLOWS];
     logic [63:0] flow_sum_lat    [NUM_FLOWS];
     logic [63:0] flow_samples    [NUM_FLOWS];
-    logic [63:0] flow_hist       [NUM_FLOWS * NUM_HIST];
+    // Histogram is BRAM-backed in the data plane now; this TB exercises
+    // the register/window wire format only, so tie the read data low.
+    logic [63:0] hist_rd_data_w = '0;
 
     pw_classifier_table_t          cls_table;
     logic [NUM_PORTS-1:0]          gen_enable_w;
@@ -100,7 +102,8 @@ module tb_wire_vectors;
         .flow_max_lat_i      (flow_max_lat),
         .flow_sum_lat_i      (flow_sum_lat),
         .flow_samples_i      (flow_samples),
-        .flow_hist_i         (flow_hist),
+        .hist_rd_addr_o      (),
+        .hist_rd_data_i      (hist_rd_data_w),
         .cls_table_o         (cls_table),
         .gen_enable_o        (gen_enable_w),
         .gen_tokens_fp_o     (gen_tokens_w),
@@ -112,7 +115,9 @@ module tb_wire_vectors;
         .gen_src_ip_o        (gen_sip_w),
         .gen_dst_ip_o        (gen_dip_w),
         .gen_udp_sp_o        (gen_usp_w),
-        .gen_udp_dp_o        (gen_udp_w)
+        .gen_udp_dp_o        (gen_udp_w),
+        .flow_rows_o         (),
+        .stats_clear_o       ()
     );
 
     int    errors = 0;
@@ -159,7 +164,6 @@ module tb_wire_vectors;
             flow_last_seq[f]=0; flow_min_lat[f]=0; flow_max_lat[f]=0;
             flow_sum_lat[f]=0; flow_samples[f]=0;
         end
-        for (int i = 0; i < NUM_FLOWS * NUM_HIST; i++) flow_hist[i] = '0;
 
         repeat (8) @(posedge clk);
         rst_n = 1;
@@ -167,14 +171,15 @@ module tb_wire_vectors;
 
         // ---- replay every non-zero dword in the classifier and
         //      flow window regions as an AXI-Lite write. Identity
-        //      registers (offset < 0x1000) are read-only; skip
-        //      them. Commit registers (0x1FFC, 0x2FFC) are part of
-        //      the window range and get replayed too. ----
+        //      registers (offset < 0x2000) are read-only; skip them.
+        //      The wide map puts classifier at 0x2000..0x5FFF and the
+        //      flow window at 0x6000..0x9FFF (commit regs at 0x5FFC /
+        //      0x9FFC); replay that whole span. ----
         scenario = "replay";
         begin
             int writes;
             writes = 0;
-            for (int i = 16'h1000 / 4; i < 16'h3000 / 4; i++) begin
+            for (int i = 16'h2000 / 4; i < 16'hA000 / 4; i++) begin
                 if (image[i] != 32'h0) begin
                     axi_write(16'(i * 4), image[i]);
                     writes++;

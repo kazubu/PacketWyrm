@@ -63,6 +63,7 @@ module tb_data_plane_axis;
     logic        punt_tlast;
 
     logic stats_clear = 1'b0;   // pulse to soft-reset the checkers
+    // hist_rd_addr / hist_rd_data declared below near the DUT counters
 
     // loopback: when set, port-1 ingress is fed from port-0 egress.
     logic lb_en;
@@ -109,7 +110,8 @@ module tb_data_plane_axis;
     logic [63:0] flow_max_lat   [FLOWS];
     logic [63:0] flow_sum_lat   [FLOWS];
     logic [63:0] flow_samples   [FLOWS];
-    logic [63:0] flow_hist      [FLOWS * BUCKETS];
+    logic [15:0] hist_rd_addr = 16'h0;
+    logic [63:0] hist_rd_data;
     logic [31:0] port_drops     [PORTS];
 
     pw_data_plane_axis #(
@@ -149,7 +151,8 @@ module tb_data_plane_axis;
         .flow_max_lat     (flow_max_lat),
         .flow_sum_lat     (flow_sum_lat),
         .flow_samples     (flow_samples),
-        .flow_hist        (flow_hist),
+        .hist_rd_addr_i   (hist_rd_addr),
+        .hist_rd_data_o   (hist_rd_data),
         .port_drops_o     (port_drops)
     );
 
@@ -338,9 +341,17 @@ module tb_data_plane_axis;
                  (flow_min_lat[0] <= flow_max_lat[0]) ? 1 : 0, 1);
         begin
             int nonzero;
+            logic [63:0] hb;
             nonzero = 0;
-            for (int j = 0; j < BUCKETS; j++)
-                if (flow_hist[j] > 0) nonzero++;
+            // Read flow 0's buckets live via the BRAM read port (flat
+            // address = flow*BUCKETS + bucket; registered, 1-cycle).
+            for (int j = 0; j < BUCKETS; j++) begin
+                hist_rd_addr = 16'(j);
+                @(posedge clk);
+                @(posedge clk);
+                hb = hist_rd_data;
+                if (hb > 0) nonzero++;
+            end
             check_eq("loopback histogram has buckets", (nonzero > 0) ? 1 : 0, 1);
         end
 

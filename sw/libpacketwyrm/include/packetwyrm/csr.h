@@ -32,12 +32,14 @@ enum {
     PWFPGA_REG_PORT1_BASE           = 0x0300,
     PWFPGA_REG_PORT_STRIDE          = 0x0100,
 
-    PWFPGA_WIN_CLASSIFIER           = 0x1000,
-    PWFPGA_WIN_FLOW_TABLE           = 0x2000,
-    PWFPGA_WIN_STATS_SNAPSHOT       = 0x3000,
-    PWFPGA_WIN_HISTOGRAM            = 0x4000,
-    PWFPGA_WIN_SLOW_RX              = 0x8000,
-    PWFPGA_WIN_SLOW_TX              = 0x9000,
+    /* Wide map for 64 flows / 64 classifier rows. Commit-bearing
+     * windows are 16 KB apart (8 KB data + commit reg above it); the
+     * live-read histogram gets 8 KB. Fills the 64 KB BAR; the former
+     * SLOW_RX/TX placeholders (0x8000/0x9000) are reclaimed. */
+    PWFPGA_WIN_CLASSIFIER           = 0x2000,  /* 0x2000..0x5FFF */
+    PWFPGA_WIN_FLOW_TABLE           = 0x6000,  /* 0x6000..0x9FFF */
+    PWFPGA_WIN_HISTOGRAM            = 0xA000,  /* 0xA000..0xBFFF (8 KB) */
+    PWFPGA_WIN_STATS_SNAPSHOT       = 0xC000,  /* 0xC000..0xFFFF */
 };
 
 /* global_control bits */
@@ -234,17 +236,19 @@ struct pwfpga_dma_cpl {
 #define PWFPGA_FLOW_STRIDE             128u
 #define PWFPGA_PORT_STATS_STRIDE       128u
 #define PWFPGA_FLOW_STATS_STRIDE       128u
-#define PWFPGA_FLOW_HIST_STRIDE        512u   /* 64 * 8 bytes = 64 buckets */
+#define PWFPGA_FLOW_HIST_STRIDE        128u   /* 16 * 8 bytes = 16 buckets */
 /* Per-flow stats sit above the per-port stats area inside the
  * snapshot window. Two 128-byte port blocks = 0x100 bytes. */
 #define PWFPGA_FLOW_STATS_BASE         0x100u
 
-#define PWFPGA_REG_CLASSIFIER_COMMIT       (PWFPGA_WIN_CLASSIFIER + 0xFFCu)
-#define PWFPGA_REG_FLOW_COMMIT             (PWFPGA_WIN_FLOW_TABLE + 0xFFCu)
-#define PWFPGA_REG_STATS_SNAPSHOT_TRIGGER  (PWFPGA_WIN_STATS_SNAPSHOT + 0xFFCu)
+/* Commit/trigger/clear registers sit above each window's 8 KB data
+ * region (64 rows * 128 B), at window + 0x3FFC / 0x3FF8. */
+#define PWFPGA_REG_CLASSIFIER_COMMIT       (PWFPGA_WIN_CLASSIFIER + 0x3FFCu)
+#define PWFPGA_REG_FLOW_COMMIT             (PWFPGA_WIN_FLOW_TABLE + 0x3FFCu)
+#define PWFPGA_REG_STATS_SNAPSHOT_TRIGGER  (PWFPGA_WIN_STATS_SNAPSHOT + 0x3FFCu)
 /* Write 1: soft-clear all RX checker counters + re-baseline sequence
  * tracking (no rst_n). `test arm` uses this so a measurement run starts
  * from zero. */
-#define PWFPGA_REG_STATS_CLEAR             (PWFPGA_WIN_STATS_SNAPSHOT + 0xFF8u)
+#define PWFPGA_REG_STATS_CLEAR             (PWFPGA_WIN_STATS_SNAPSHOT + 0x3FF8u)
 
 #endif

@@ -39,6 +39,7 @@ DPA_RTL := \
     $(REPO)/rtl/phase3/pw_parser_axis.sv \
     $(REPO)/rtl/phase3/pw_classifier.sv \
     $(REPO)/rtl/phase3/pw_test_rx_checker.sv \
+    $(REPO)/rtl/phase3/pw_lat_histogram.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_axis.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_multi.sv \
     $(REPO)/rtl/phase3/pw_frame_saf.sv \
@@ -59,8 +60,8 @@ FLOW_RTL := \
 STATS_RTL := \
     $(REPO)/rtl/phase3/pw_stats_snapshot.sv
 
-HIST_RTL := \
-    $(REPO)/rtl/phase3/pw_histogram_snapshot.sv
+LAT_RTL := \
+    $(REPO)/rtl/phase3/pw_lat_histogram.sv
 
 FULL_RTL := \
     $(REPO)/rtl/shared/pw_pkg.sv \
@@ -71,7 +72,7 @@ FULL_RTL := \
     $(REPO)/rtl/phase3/pw_classifier_window.sv \
     $(REPO)/rtl/phase3/pw_flow_window.sv \
     $(REPO)/rtl/phase3/pw_stats_snapshot.sv \
-    $(REPO)/rtl/phase3/pw_histogram_snapshot.sv \
+    $(REPO)/rtl/phase3/pw_lat_histogram.sv \
     $(REPO)/rtl/phase3/pw_csr_full.sv
 
 TOP_RTL := \
@@ -83,7 +84,7 @@ TOP_RTL := \
     $(REPO)/rtl/phase3/pw_classifier_window.sv \
     $(REPO)/rtl/phase3/pw_flow_window.sv \
     $(REPO)/rtl/phase3/pw_stats_snapshot.sv \
-    $(REPO)/rtl/phase3/pw_histogram_snapshot.sv \
+    $(REPO)/rtl/phase3/pw_lat_histogram.sv \
     $(REPO)/rtl/phase3/pw_csr_full.sv \
     $(REPO)/rtl/phase3/pw_parser_axis.sv \
     $(REPO)/rtl/phase3/pw_classifier.sv \
@@ -99,7 +100,7 @@ TB_AXIS  := axis_serial_tb/tb_axis_serial.sv
 TB_CSR   := csr_window_tb/tb_csr_window.sv
 TB_FLOW  := flow_window_tb/tb_flow_window.sv
 TB_STATS := stats_snapshot_tb/tb_stats_snapshot.sv
-TB_HIST  := histogram_tb/tb_histogram.sv
+TB_LAT   := lat_histogram_tb/tb_lat_histogram.sv
 TB_FULL  := csr_full_tb/tb_csr_full.sv
 TB_TOP   := phase3_top_tb/tb_phase3_top.sv
 TB_VEC   := wire_vectors_tb/tb_wire_vectors.sv
@@ -116,7 +117,7 @@ VFLAGS := --binary -j 0 \
           -Wno-PINCONNECTEMPTY \
           --timing
 
-.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_fga sim_fgm sim_pax sim_saf sim_dpa sim_top sim_vec sim_all wave clean vectors
+.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_full sim_fga sim_fgm sim_pax sim_saf sim_dpa sim_top sim_vec sim_all wave clean vectors
 
 sim: sim_build/data_plane
 	./sim_build/data_plane
@@ -133,8 +134,8 @@ sim_flow: sim_build/flow_window
 sim_stats: sim_build/stats_snapshot
 	./sim_build/stats_snapshot
 
-sim_hist: sim_build/histogram
-	./sim_build/histogram
+sim_lat: sim_build/lat_histogram
+	./sim_build/lat_histogram
 
 sim_full: sim_build/csr_full
 	./sim_build/csr_full
@@ -173,7 +174,7 @@ vectors_clean:
 sim_vec: sim_build/wire_vectors $(VECTORS)
 	./sim_build/wire_vectors
 
-sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_hist sim_full sim_fga sim_fgm sim_pax sim_saf sim_dpa sim_top sim_vec
+sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_full sim_fga sim_fgm sim_pax sim_saf sim_dpa sim_top sim_vec
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
@@ -215,12 +216,12 @@ sim_build/stats_snapshot: $(STATS_RTL) $(TB_STATS)
 	    -o stats_snapshot \
 	    $(STATS_RTL) $(TB_STATS)
 
-sim_build/histogram: $(HIST_RTL) $(TB_HIST)
+sim_build/lat_histogram: $(LAT_RTL) $(TB_LAT)
 	$(VERILATOR) $(VFLAGS) \
 	    -Mdir sim_build \
-	    --top-module tb_histogram \
-	    -o histogram \
-	    $(HIST_RTL) $(TB_HIST)
+	    --top-module tb_lat_histogram \
+	    -o lat_histogram \
+	    $(LAT_RTL) $(TB_LAT)
 
 sim_build/csr_full: $(FULL_RTL) $(TB_FULL)
 	$(VERILATOR) $(VFLAGS) \

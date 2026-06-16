@@ -30,13 +30,14 @@ module tb_csr_full;
     localparam logic [15:0] REG_DEVICE_ID         = 16'h0000;
     localparam logic [15:0] REG_VERSION           = 16'h0004;
     localparam logic [15:0] REG_NUM_FLOWS         = 16'h0018;
-    localparam logic [15:0] WIN_CLS_BASE          = 16'h1000;
-    localparam logic [15:0] REG_CLS_COMMIT        = WIN_CLS_BASE + 16'h0FFC;
-    localparam logic [15:0] WIN_STATS_BASE        = 16'h3000;
-    localparam logic [15:0] REG_SNAPSHOT_TRIGGER  = WIN_STATS_BASE + 16'h0FFC;
+    localparam logic [15:0] WIN_CLS_BASE          = 16'h2000;
+    localparam logic [15:0] REG_CLS_COMMIT        = WIN_CLS_BASE + 16'h3FFC;
+    localparam logic [15:0] WIN_STATS_BASE        = 16'hC000;
+    localparam logic [15:0] REG_SNAPSHOT_TRIGGER  = WIN_STATS_BASE + 16'h3FFC;
     localparam logic [15:0] FLOW_BASE_IN_SNAP     = 16'h0100;
     localparam int          OFF_RX_FRAMES         = 16;
-    localparam logic [15:0] WIN_HIST_BASE         = 16'h4000;
+    localparam logic [15:0] WIN_HIST_BASE         = 16'hA000;
+    localparam int          HIST_STRIDE_B         = 128;   // 16 buckets * 8 B
 
     logic clk = 1'b0;
     always #5 clk = ~clk;
@@ -66,7 +67,14 @@ module tb_csr_full;
     logic [63:0] flow_max_lat    [NUM_FLOWS];
     logic [63:0] flow_sum_lat    [NUM_FLOWS];
     logic [63:0] flow_samples    [NUM_FLOWS];
-    logic [63:0] flow_hist       [NUM_FLOWS * NUM_HIST];
+
+    // Live histogram read port + an event-fed BRAM histogram standing
+    // in for the data plane's pw_lat_histogram.
+    logic [15:0] hist_rd_addr_w;
+    logic [63:0] hist_rd_data_w;
+    logic        h_ev   [1];
+    logic [15:0] h_flow [1];
+    logic [15:0] h_bkt  [1];
 
     pw_classifier_table_t          cls_table;
     logic [NUM_PORTS-1:0]          gen_enable_w;
@@ -120,7 +128,8 @@ module tb_csr_full;
         .flow_max_lat_i      (flow_max_lat),
         .flow_sum_lat_i      (flow_sum_lat),
         .flow_samples_i      (flow_samples),
-        .flow_hist_i         (flow_hist),
+        .hist_rd_addr_o      (hist_rd_addr_w),
+        .hist_rd_data_i      (hist_rd_data_w),
         .cls_table_o         (cls_table),
         .gen_enable_o        (gen_enable_w),
         .gen_tokens_fp_o     (gen_tokens_w),
@@ -135,6 +144,24 @@ module tb_csr_full;
         .gen_udp_dp_o        (gen_udp_w),
         .flow_rows_o         (),
         .stats_clear_o       ()
+    );
+
+    // BRAM histogram backing the CSR's addressed read port, fed by
+    // events exactly as the data plane's RX checkers would.
+    pw_lat_histogram #(
+        .NUM_FLOWS  (NUM_FLOWS),
+        .NUM_BUCKETS(NUM_HIST),
+        .N_EV       (1),
+        .RD_ADDR_W  (16)
+    ) u_hist (
+        .clk        (clk),
+        .rst_n      (rst_n),
+        .clear_i    (1'b0),
+        .ev_valid_i (h_ev),
+        .ev_flow_i  (h_flow),
+        .ev_bucket_i(h_bkt),
+        .rd_addr_i  (hist_rd_addr_w),
+        .rd_data_o  (hist_rd_data_w)
     );
 
     int    errors = 0;
@@ -231,7 +258,7 @@ module tb_csr_full;
             flow_last_seq[f]=0; flow_min_lat[f]=0; flow_max_lat[f]=0;
             flow_sum_lat[f]=0; flow_samples[f]=0;
         end
-        for (int i = 0; i < NUM_FLOWS * NUM_HIST; i++) flow_hist[i] = '0;
+        h_ev[0] = 1'b0; h_flow[0] = '0; h_bkt[0] = '0;
 
         repeat (8) @(posedge clk);
         rst_n = 1'b1;
@@ -290,19 +317,30 @@ module tb_csr_full;
             check_eq("snap flow3 rx_frames hi", hi, 0);
         end
 
-        // ---- histogram readback ----
+        // ---- histogram readback (live BRAM, addressed pass-through) ----
+        // Inject 6 events for flow 3 / bucket 2 into the BRAM histogram
+        // (spaced so the two-phase RMW retires each), then read the
+        // count back through the CSR's WIN_HIST window.
         scenario = "histogram";
-        flow_hist[3 * NUM_HIST + 2] = 64'h00000000_DEADBEEF;
-        axi_write(REG_SNAPSHOT_TRIGGER, 32'h1);
-        @(posedge clk);
-        @(posedge clk);
+        // Let the BRAM histogram's post-reset clear walk
+        // (NUM_FLOWS*NUM_HIST cycles) finish before injecting events.
+        repeat (NUM_FLOWS * NUM_HIST + 16) @(posedge clk);
+        for (int i = 0; i < 6; i++) begin
+            h_ev[0] = 1'b1; h_flow[0] = 16'd3; h_bkt[0] = 16'd2;
+            @(posedge clk);
+            h_ev[0] = 1'b0;
+            repeat (3) @(posedge clk);
+        end
         begin
             logic [31:0] lo, hi;
-            // flow 3 hist base = WIN_HIST + 3 * 512; bucket 2 = +16
-            axi_read(WIN_HIST_BASE + 3*512 + 2*8, lo);
-            axi_read(WIN_HIST_BASE + 3*512 + 2*8 + 4, hi);
-            check_eq("hist flow3 bucket2 lo", lo, 32'hDEADBEEF);
+            // flow 3 hist base = WIN_HIST + 3 * 128; bucket 2 = +16
+            axi_read(WIN_HIST_BASE + 3*HIST_STRIDE_B + 2*8, lo);
+            axi_read(WIN_HIST_BASE + 3*HIST_STRIDE_B + 2*8 + 4, hi);
+            check_eq("hist flow3 bucket2 lo", lo, 32'd6);
             check_eq("hist flow3 bucket2 hi", hi, 0);
+            // an untouched bucket reads zero
+            axi_read(WIN_HIST_BASE + 3*HIST_STRIDE_B + 5*8, lo);
+            check_eq("hist flow3 bucket5 zero", lo, 0);
         end
 
         if (errors == 0) begin

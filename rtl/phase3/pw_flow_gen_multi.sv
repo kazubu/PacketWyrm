@@ -71,12 +71,32 @@ module pw_flow_gen_multi #(
     // frames a slot's bucket only grows, so a 1-cycle-stale "eligible" is
     // still eligible, and a just-emptied slot is `active` (not re-picked)
     // until its frame finishes, by which point eligible_q has caught up.
+    // Per-slot quasi-static fields (registered). f_rows_i is written once at
+    // config time and then held, so pulling `mine` / token `cost` / bucket
+    // `cap` into registers takes frame_bytes()/shifts OUT of both the
+    // eligibility compare and the pick->deduct path -- the dominant timing
+    // path once NUM_SLOTS grows (32 slots blew 156.25 MHz otherwise).
+    logic        mine_q [NUM_SLOTS];
+    logic [31:0] cost_q [NUM_SLOTS];
+    logic [31:0] cap_q  [NUM_SLOTS];
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (int s = 0; s < NUM_SLOTS; s++) begin
+                mine_q[s] <= 1'b0; cost_q[s] <= '0; cap_q[s] <= '0;
+            end
+        end else begin
+            for (int s = 0; s < NUM_SLOTS; s++) begin
+                mine_q[s] <= mine(f_rows_i[s]);
+                cost_q[s] <= {16'(frame_bytes(f_rows_i[s].vlan_en)), 16'h0};
+                cap_q[s]  <= {f_rows_i[s].burst, 16'h0};
+            end
+        end
+    end
+
     logic [NUM_SLOTS-1:0] eligible;
     always_comb begin
-        for (int s = 0; s < NUM_SLOTS; s++) begin
-            automatic logic [31:0] cost = {16'(frame_bytes(f_rows_i[s].vlan_en)), 16'h0};
-            eligible[s] = mine(f_rows_i[s]) && (tokens_q[s] >= cost);
-        end
+        for (int s = 0; s < NUM_SLOTS; s++)
+            eligible[s] = mine_q[s] && (tokens_q[s] >= cost_q[s]);
     end
     logic [NUM_SLOTS-1:0] eligible_q;
     always_ff @(posedge clk or negedge rst_n) begin
@@ -100,7 +120,25 @@ module pw_flow_gen_multi #(
         end
     end
 
-    wire start = !active && pick_valid;
+    // Register the round-robin pick so the priority select (over NUM_SLOTS)
+    // and the pick-indexed wide row mux + token arithmetic land in separate
+    // pipeline stages. Safe for the same reason eligible_q is registered:
+    // rr_ptr is stable while a frame is active and a picked slot stays
+    // eligible (its bucket only grows) until its frame starts, so a
+    // 1-cycle-stale pick selects the same slot it would have anyway.
+    logic [SELW-1:0] pick_q;
+    logic            pick_valid_q;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            pick_q       <= '0;
+            pick_valid_q <= 1'b0;
+        end else begin
+            pick_q       <= pick;
+            pick_valid_q <= pick_valid;
+        end
+    end
+
+    wire start = !active && pick_valid_q;
 
     wire [11:0] rem  = frame_len - byte_off;
     wire        last = active && (rem <= 12'd8);
@@ -174,30 +212,30 @@ module pw_flow_gen_multi #(
             // Token buckets: accumulate per active slot, clamp to cap.
             for (int s = 0; s < NUM_SLOTS; s++) begin
                 automatic logic [32:0] sum;
-                automatic logic [31:0] cap = {f_rows_i[s].burst, 16'h0};
-                if (!mine(f_rows_i[s])) begin
+                if (!mine_q[s]) begin
                     tokens_q[s] <= '0;
                 end else begin
                     sum = {1'b0, tokens_q[s]} + {1'b0, f_rows_i[s].tokens_fp};
-                    if (sum > {1'b0, cap}) sum = {1'b0, cap};
+                    if (sum > {1'b0, cap_q[s]}) sum = {1'b0, cap_q[s]};
                     tokens_q[s] <= sum[31:0];
                 end
             end
 
             if (!active) begin
                 if (start) begin
-                    // Accrue + clamp + deduct for the picked slot; this write
-                    // overrides the accrual loop above (last write wins).
-                    automatic logic [31:0] cost = {16'(frame_bytes(f_rows_i[pick].vlan_en)), 16'h0};
-                    automatic logic [31:0] cap  = {f_rows_i[pick].burst, 16'h0};
-                    automatic logic [32:0] acc  = {1'b0, tokens_q[pick]} + {1'b0, f_rows_i[pick].tokens_fp};
+                    // Accrue + clamp + deduct for the (registered) picked slot;
+                    // this write overrides the accrual loop above (last write
+                    // wins). cost/cap are pre-registered per slot.
+                    automatic logic [31:0] cost = cost_q[pick_q];
+                    automatic logic [31:0] cap  = cap_q[pick_q];
+                    automatic logic [32:0] acc  = {1'b0, tokens_q[pick_q]} + {1'b0, f_rows_i[pick_q].tokens_fp};
                     automatic logic [31:0] accv = (acc > {1'b0, cap}) ? cap : acc[31:0];
-                    build(f_rows_i[pick], sequence_q[pick], timestamp_i);
-                    sel      <= pick;
+                    build(f_rows_i[pick_q], sequence_q[pick_q], timestamp_i);
+                    sel      <= pick_q;
                     active   <= 1'b1;
                     byte_off <= '0;
-                    rr_ptr   <= (pick == SELW'(NUM_SLOTS-1)) ? '0 : pick + 1'b1;
-                    tokens_q[pick] <= (accv >= cost) ? (accv - cost) : '0;
+                    rr_ptr   <= (pick_q == SELW'(NUM_SLOTS-1)) ? '0 : pick_q + 1'b1;
+                    tokens_q[pick_q] <= (accv >= cost) ? (accv - cost) : '0;
                 end
             end else if (m_tready) begin
                 if (last) begin
