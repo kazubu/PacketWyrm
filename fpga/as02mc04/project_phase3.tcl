@@ -134,6 +134,11 @@ if {[lsearch $argv "synth"] >= 0 || [lsearch $argv "impl"] >= 0} {
     wait_on_run synth_1
 }
 if {[lsearch $argv "impl"] >= 0} {
+    # Enable physical optimisation (post-place + post-route): the 8/8/16
+    # data plane closes at 156.25 MHz only by a thin margin (~+0.15 ns), so
+    # marginal route-dominated paths need phys_opt to recover reliably.
+    set_property STEPS.PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
+    set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
     launch_runs impl_1 -to_step write_bitstream -jobs 8
     wait_on_run impl_1
     puts "INFO: bitstream at $proj_dir/$proj_name.runs/impl_1/${top_module}.bit"
