@@ -9,13 +9,16 @@
 //   - The flow table window (0x2000..0x2FFF) via pw_flow_window.
 //   - The stats snapshot window (0x3000..0x3FFF) via
 //     pw_stats_snapshot.
-//   - The histogram window (0x4000..0x4FFF) via
-//     pw_histogram_snapshot.
+//   - The latency-histogram window (0x4000..0x4FFF) as an addressed
+//     pass-through to the data plane's BRAM histogram
+//     (pw_lat_histogram): the read address decodes to a flat
+//     (flow,bucket) BRAM address and the 64-bit count returns one
+//     cycle later.
 //
 // A single AXI-Lite write decode produces the `wr_en/wr_addr/wr_data`
 // strobe that the classifier and flow windows consume. Writes to
-// PWFPGA_REG_STATS_SNAPSHOT_TRIGGER (0x3FFC) trigger both the stats
-// and histogram shadows in lockstep.
+// PWFPGA_REG_STATS_SNAPSHOT_TRIGGER (0x3FFC) trigger the stats shadow;
+// the histogram is read live (not snapshotted).
 
 `default_nettype none
 
@@ -72,7 +75,6 @@ module pw_csr_full #(
     input  wire [63:0]       flow_max_lat_i    [NUM_FLOWS],
     input  wire [63:0]       flow_sum_lat_i    [NUM_FLOWS],
     input  wire [63:0]       flow_samples_i    [NUM_FLOWS],
-    input  wire [63:0]       flow_hist_i       [NUM_FLOWS * NUM_HIST_BINS],
 
     // Outputs to the data plane.
     output pw_classifier_table_t          cls_table_o,
@@ -90,6 +92,12 @@ module pw_csr_full #(
 
     // Full decoded flow table for the multi-flow generator.
     output pw_flow_row_t                  flow_rows_o [NUM_FLOWS],
+
+    // Live latency-histogram read port into the data plane's BRAM
+    // (pw_lat_histogram). Flat (flow*NUM_HIST_BINS+bucket) address out,
+    // 64-bit count back one cycle later.
+    output logic [15:0]                   hist_rd_addr_o,
+    input  wire  [63:0]                   hist_rd_data_i,
 
     // Soft clear pulse for the RX checkers (write to STATS_CLEAR_ADDR).
     output logic                          stats_clear_o
@@ -120,6 +128,7 @@ module pw_csr_full #(
     localparam logic [15:0] COMMIT_OFF         = 16'h0FFC;
     localparam logic [15:0] STATS_TRIGGER_ADDR = WIN_STATS_BASE + COMMIT_OFF;
     localparam logic [15:0] STATS_CLEAR_ADDR   = WIN_STATS_BASE + 16'h0FF8;
+    localparam logic [15:0] HIST_STRIDE        = 16'd512;   // bytes per flow (host layout)
 
     import pw_version_pkg::*;
     import pw_pkg::*;
@@ -203,7 +212,20 @@ module pw_csr_full #(
 
     // --- window read ports ---------------------------------------
     logic [31:0] stats_rdata;
-    logic [31:0] hist_rdata;
+
+    // Histogram read decode: the host reads the per-flow latency
+    // distribution at WIN_HIST_BASE + flow*HIST_STRIDE + bucket*8 (+0/+4
+    // for the lo/hi dword). Decode the current read address into the
+    // flat BRAM address (driven into the data plane) and a dword-half
+    // select; the registered 64-bit count comes back on hist_rd_data_i
+    // one cycle later (handled by the read FSM's wait state below).
+    wire [15:0] h_off   = (s_axi_araddr[15:0] - WIN_HIST_BASE) & 16'hFFFC;
+    wire [15:0] h_flow  = h_off / HIST_STRIDE;
+    wire [15:0] h_boff  = h_off - h_flow * HIST_STRIDE;
+    wire [15:0] h_bkt   = h_boff >> 3;
+    wire        h_valid = (h_flow < NUM_FLOWS) && (h_bkt < NUM_HIST_BINS);
+    wire        h_half  = s_axi_araddr[2];   // +0 -> lo dword, +4 -> hi dword
+    assign hist_rd_addr_o = h_valid ? 16'(h_flow * NUM_HIST_BINS + h_bkt) : 16'd0;
 
     pw_classifier_window #(
         .ADDR_W        (ADDR_W),
@@ -267,19 +289,20 @@ module pw_csr_full #(
         .rd_data_o      (stats_rdata)
     );
 
-    pw_histogram_snapshot #(
-        .NUM_FLOWS  (NUM_FLOWS),
-        .NUM_BUCKETS(NUM_HIST_BINS)
-    ) u_hist (
-        .clk       (s_axi_aclk),
-        .rst_n     (s_axi_aresetn),
-        .trigger_i (snapshot_trigger),
-        .hist_i    (flow_hist_i),
-        .rd_addr_i (s_axi_araddr[15:0] - WIN_HIST_BASE),
-        .rd_data_o (hist_rdata)
-    );
+    // (The histogram is now BRAM-backed in the data plane; the read is
+    // an addressed pass-through -- see hist_rd_addr_o decode above and
+    // the WIN_HIST wait state in the read FSM below.)
 
     // --- read-side -----------------------------------------------
+    // WIN_HIST reads are BRAM-backed: the address is presented to the
+    // data plane combinationally (hist_rd_addr_o) and the 64-bit count
+    // returns on hist_rd_data_i one cycle later. The FSM accepts the
+    // read (arready) but defers rvalid one cycle to capture it. All
+    // other reads stay single-cycle.
+    reg hist_pend;
+    reg hist_half_q;
+    reg hist_val_q;
+
     always_ff @(posedge s_axi_aclk or negedge s_axi_aresetn) begin
         if (!s_axi_aresetn) begin
             s_axi_arready          <= 1'b0;
@@ -287,48 +310,65 @@ module pw_csr_full #(
             s_axi_rdata            <= '0;
             s_axi_rresp            <= 2'b00;
             timestamp_high_latched <= '0;
+            hist_pend              <= 1'b0;
+            hist_half_q            <= 1'b0;
+            hist_val_q             <= 1'b0;
         end else begin
-            if (!s_axi_rvalid && s_axi_arvalid) begin
+            if (!s_axi_rvalid && !hist_pend && s_axi_arvalid) begin
                 s_axi_arready <= 1'b1;
-                s_axi_rvalid  <= 1'b1;
                 s_axi_rresp   <= 2'b00;
                 if (s_axi_araddr >= WIN_HIST_BASE &&
                     s_axi_araddr < (WIN_HIST_BASE + 16'h1000)) begin
-                    s_axi_rdata <= hist_rdata;
-                end else if (s_axi_araddr >= WIN_STATS_BASE &&
-                             s_axi_araddr < (WIN_STATS_BASE + 16'h1000)) begin
-                    s_axi_rdata <= stats_rdata;
+                    // BRAM read launched this cycle; capture it next cycle.
+                    hist_pend   <= 1'b1;
+                    hist_half_q <= h_half;
+                    hist_val_q  <= h_valid;
                 end else begin
-                    case (s_axi_araddr)
-                        REG_DEVICE_ID:      s_axi_rdata <= PW_DEVICE_ID;
-                        REG_VERSION:        s_axi_rdata <= PW_VERSION;
-                        REG_BUILD_ID:       s_axi_rdata <= PW_BUILD_ID;
-                        REG_GIT_HASH:       s_axi_rdata <= PW_GIT_HASH;
-                        REG_CAPABILITIES:   s_axi_rdata <= CAPABILITIES;
-                        REG_NUM_PORTS:      s_axi_rdata <= NUM_PORTS[31:0];
-                        REG_NUM_FLOWS:      s_axi_rdata <= NUM_FLOWS[31:0];
-                        REG_NUM_LOG_IFS:    s_axi_rdata <= NUM_LOGICAL_IFS[31:0];
-                        REG_NUM_CLS:        s_axi_rdata <= NUM_CLASSIFIER[31:0];
-                        REG_NUM_HIST_BINS:  s_axi_rdata <= NUM_HIST_BINS[31:0];
-                        REG_GLOBAL_CONTROL: s_axi_rdata <= global_control_q;
-                        REG_GLOBAL_STATUS:  s_axi_rdata <= 32'h0000_0001;
-                        REG_TIMESTAMP_LOW: begin
-                            s_axi_rdata            <= timestamp_low;
-                            timestamp_high_latched <= timestamp_high;
-                        end
-                        REG_TIMESTAMP_HIGH: s_axi_rdata <= timestamp_high_latched;
-                        REG_ERROR_STATUS:   s_axi_rdata <= error_status_q;
-                        default: begin
-                            s_axi_rdata <= 32'h0;
-                            // Don't SLVERR on the table windows; their
-                            // read responses are intentionally 0 today
-                            // (host reads come back via the snapshot
-                            // windows instead).
-                        end
-                    endcase
+                    s_axi_rvalid <= 1'b1;
+                    if (s_axi_araddr >= WIN_STATS_BASE &&
+                        s_axi_araddr < (WIN_STATS_BASE + 16'h1000)) begin
+                        s_axi_rdata <= stats_rdata;
+                    end else begin
+                        case (s_axi_araddr)
+                            REG_DEVICE_ID:      s_axi_rdata <= PW_DEVICE_ID;
+                            REG_VERSION:        s_axi_rdata <= PW_VERSION;
+                            REG_BUILD_ID:       s_axi_rdata <= PW_BUILD_ID;
+                            REG_GIT_HASH:       s_axi_rdata <= PW_GIT_HASH;
+                            REG_CAPABILITIES:   s_axi_rdata <= CAPABILITIES;
+                            REG_NUM_PORTS:      s_axi_rdata <= NUM_PORTS[31:0];
+                            REG_NUM_FLOWS:      s_axi_rdata <= NUM_FLOWS[31:0];
+                            REG_NUM_LOG_IFS:    s_axi_rdata <= NUM_LOGICAL_IFS[31:0];
+                            REG_NUM_CLS:        s_axi_rdata <= NUM_CLASSIFIER[31:0];
+                            REG_NUM_HIST_BINS:  s_axi_rdata <= NUM_HIST_BINS[31:0];
+                            REG_GLOBAL_CONTROL: s_axi_rdata <= global_control_q;
+                            REG_GLOBAL_STATUS:  s_axi_rdata <= 32'h0000_0001;
+                            REG_TIMESTAMP_LOW: begin
+                                s_axi_rdata            <= timestamp_low;
+                                timestamp_high_latched <= timestamp_high;
+                            end
+                            REG_TIMESTAMP_HIGH: s_axi_rdata <= timestamp_high_latched;
+                            REG_ERROR_STATUS:   s_axi_rdata <= error_status_q;
+                            default: begin
+                                s_axi_rdata <= 32'h0;
+                                // Don't SLVERR on the table windows; their
+                                // read responses are intentionally 0 today
+                                // (host reads come back via the snapshot
+                                // windows instead).
+                            end
+                        endcase
+                    end
                 end
             end else begin
                 s_axi_arready <= 1'b0;
+                if (hist_pend) begin
+                    // BRAM data valid now; complete the histogram read.
+                    hist_pend    <= 1'b0;
+                    s_axi_rvalid <= 1'b1;
+                    s_axi_rdata  <= hist_val_q
+                                      ? (hist_half_q ? hist_rd_data_i[63:32]
+                                                     : hist_rd_data_i[31:0])
+                                      : 32'h0;
+                end
             end
             if (s_axi_rvalid && s_axi_rready) s_axi_rvalid <= 1'b0;
         end

@@ -46,7 +46,9 @@ module tb_wire_vectors;
     logic [63:0] flow_max_lat    [NUM_FLOWS];
     logic [63:0] flow_sum_lat    [NUM_FLOWS];
     logic [63:0] flow_samples    [NUM_FLOWS];
-    logic [63:0] flow_hist       [NUM_FLOWS * NUM_HIST];
+    // Histogram is BRAM-backed in the data plane now; this TB exercises
+    // the register/window wire format only, so tie the read data low.
+    logic [63:0] hist_rd_data_w = '0;
 
     pw_classifier_table_t          cls_table;
     logic [NUM_PORTS-1:0]          gen_enable_w;
@@ -100,7 +102,8 @@ module tb_wire_vectors;
         .flow_max_lat_i      (flow_max_lat),
         .flow_sum_lat_i      (flow_sum_lat),
         .flow_samples_i      (flow_samples),
-        .flow_hist_i         (flow_hist),
+        .hist_rd_addr_o      (),
+        .hist_rd_data_i      (hist_rd_data_w),
         .cls_table_o         (cls_table),
         .gen_enable_o        (gen_enable_w),
         .gen_tokens_fp_o     (gen_tokens_w),
@@ -112,7 +115,9 @@ module tb_wire_vectors;
         .gen_src_ip_o        (gen_sip_w),
         .gen_dst_ip_o        (gen_dip_w),
         .gen_udp_sp_o        (gen_usp_w),
-        .gen_udp_dp_o        (gen_udp_w)
+        .gen_udp_dp_o        (gen_udp_w),
+        .flow_rows_o         (),
+        .stats_clear_o       ()
     );
 
     int    errors = 0;
@@ -159,7 +164,6 @@ module tb_wire_vectors;
             flow_last_seq[f]=0; flow_min_lat[f]=0; flow_max_lat[f]=0;
             flow_sum_lat[f]=0; flow_samples[f]=0;
         end
-        for (int i = 0; i < NUM_FLOWS * NUM_HIST; i++) flow_hist[i] = '0;
 
         repeat (8) @(posedge clk);
         rst_n = 1;

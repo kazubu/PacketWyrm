@@ -90,7 +90,12 @@ module pw_data_plane_axis #(
     output logic [63:0]           flow_max_lat   [PW_NUM_FLOWS],
     output logic [63:0]           flow_sum_lat   [PW_NUM_FLOWS],
     output logic [63:0]           flow_samples   [PW_NUM_FLOWS],
-    output logic [63:0]           flow_hist      [PW_NUM_FLOWS * PW_NUM_BUCKETS],
+
+    // Live latency-histogram read port (BRAM-backed pw_lat_histogram):
+    // flat address (flow*PW_NUM_BUCKETS + bucket) in, 64-bit count out
+    // (registered, 1-cycle latency).
+    input  wire [15:0]            hist_rd_addr_i,
+    output logic [63:0]           hist_rd_data_o,
 
     // Per-port simple drop counters
     output logic [31:0]           port_drops_o   [PW_PORTS]
@@ -220,16 +225,21 @@ module pw_data_plane_axis #(
     logic [63:0] pc_max  [PW_PORTS][PW_NUM_FLOWS];
     logic [63:0] pc_sum  [PW_PORTS][PW_NUM_FLOWS];
     logic [63:0] pc_samp [PW_PORTS][PW_NUM_FLOWS];
-    logic [63:0] pc_hist [PW_PORTS][PW_NUM_FLOWS * PW_NUM_BUCKETS];
+
+    // Per-port registered histogram events into the BRAM histogram.
+    logic        hev_v  [PW_PORTS];
+    logic [15:0] hev_fl [PW_PORTS];
+    logic [15:0] hev_bk [PW_PORTS];
 
     generate
         for (gp = 0; gp < PW_PORTS; gp++) begin : g_chk
             wire chk_ev = rx_kv_d[gp] && rx_res[gp].hit &&
                           (rx_res[gp].action == PW_ACT_TEST_RX);
             pw_test_rx_checker #(
-                .NUM_FLOWS  (PW_NUM_FLOWS),
-                .NUM_BUCKETS(PW_NUM_BUCKETS),
-                .PIPELINE   (1)
+                .NUM_FLOWS       (PW_NUM_FLOWS),
+                .NUM_BUCKETS     (PW_NUM_BUCKETS),
+                .PIPELINE        (1),
+                .EMIT_HIST_ARRAY (0)   // histogram lives in BRAM, not FFs
             ) u_checker (
                 .clk             (clk),
                 .rst_n           (rst_n),
@@ -247,10 +257,30 @@ module pw_data_plane_axis #(
                 .max_latency_o   (pc_max[gp]),
                 .sum_latency_o   (pc_sum[gp]),
                 .sample_count_o  (pc_samp[gp]),
-                .hist_o          (pc_hist[gp])
+                .hist_ev_o       (hev_v[gp]),
+                .hist_flow_o     (hev_fl[gp]),
+                .hist_bucket_o   (hev_bk[gp]),
+                .hist_o          ()                // unused: histogram in BRAM
             );
         end
     endgenerate
+
+    // Shared BRAM latency histogram, fed by every port's checker events.
+    pw_lat_histogram #(
+        .NUM_FLOWS  (PW_NUM_FLOWS),
+        .NUM_BUCKETS(PW_NUM_BUCKETS),
+        .N_EV       (PW_PORTS),
+        .RD_ADDR_W  (16)
+    ) u_hist (
+        .clk         (clk),
+        .rst_n       (rst_n),
+        .clear_i     (stats_clear_i),
+        .ev_valid_i  (hev_v),
+        .ev_flow_i   (hev_fl),
+        .ev_bucket_i (hev_bk),
+        .rd_addr_i   (hist_rd_addr_i),
+        .rd_data_o   (hist_rd_data_o)
+    );
 
     // Merge the per-port checkers into the per-flow outputs.
     always_comb begin
@@ -278,11 +308,6 @@ module pw_data_plane_axis #(
             flow_last_seq[f] = lseq;
             flow_min_lat[f]  = mn;
             flow_max_lat[f]  = mx;
-        end
-        for (int j = 0; j < PW_NUM_FLOWS * PW_NUM_BUCKETS; j++) begin
-            automatic logic [63:0] h = '0;
-            for (int p = 0; p < PW_PORTS; p++) h += pc_hist[p][j];
-            flow_hist[j] = h;
         end
     end
 

@@ -22,7 +22,7 @@ classifier / flow_gen behavioural mirrors).
 | `make sim_csr`  | `csr_tb/`                     | 24         | AXI-Lite CSR window (classifier table) decode + W1C + commit            |
 | `make sim_flow` | `flow_window_tb/`             | 16         | flow-template CSR window                                                |
 | `make sim_stats`| `stats_snapshot_tb/`          | 16         | per-flow stats counters + snapshot trigger semantics                    |
-| `make sim_hist` | `histogram_tb/`               | 21         | power-of-two latency histogram + snapshot latch                         |
+| `make sim_lat`  | `lat_histogram_tb/`           | 16         | BRAM-backed per-flow latency histogram: accumulate, live read, clear    |
 | `make sim_full` | `csr_full_tb/`                | 12         | `pw_csr_full` AXI-Lite slave integrating all four windows               |
 | `make sim_top`  | `phase3_top_tb/`              |  4         | `pwfpga_top_phase3`: AXI-Lite -> CSR -> flow_gen -> AXIS loop -> RX     |
 | `make sim_vec`  | `wire_vectors_tb/`            | 25         | C `pw_bar_backend` byte image vs SV `pw_csr_full` decoder agree         |

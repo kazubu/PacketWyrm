@@ -133,8 +133,9 @@ module pw_data_plane #(
     end
 
     pw_test_rx_checker #(
-        .NUM_FLOWS  (PW_NUM_FLOWS),
-        .NUM_BUCKETS(PW_NUM_BUCKETS)
+        .NUM_FLOWS       (PW_NUM_FLOWS),
+        .NUM_BUCKETS     (PW_NUM_BUCKETS),
+        .EMIT_HIST_ARRAY (1)   // legacy plane keeps the flat FF histogram
     ) u_checker (
         .clk             (clk),
         .rst_n           (rst_n),
@@ -152,6 +153,9 @@ module pw_data_plane #(
         .max_latency_o   (flow_max_lat),
         .sum_latency_o   (flow_sum_lat),
         .sample_count_o  (flow_samples),
+        .hist_ev_o       (),
+        .hist_flow_o     (),
+        .hist_bucket_o   (),
         .hist_o          (flow_hist)
     );
 

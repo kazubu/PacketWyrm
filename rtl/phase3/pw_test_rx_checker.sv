@@ -2,12 +2,19 @@
 //
 // Sees one classification event per cycle (frame_valid && action ==
 // TEST_RX). Updates per-flow counters: rx_frames, lost (gap),
-// duplicate, out_of_order, last_sequence, plus a power-of-two
-// latency histogram with NUM_BUCKETS bins keyed off
-// (timestamp_i - key.test_tx_timestamp). Latency is meaningful
-// only for same-card flows; cross-card flows pass through the
-// same code path, but the daemon ignores their histogram by
+// duplicate, out_of_order, last_sequence, plus per-flow min/max/sum
+// latency, keyed off (timestamp_i - key.test_tx_timestamp). Latency
+// is meaningful only for same-card flows; cross-card flows pass
+// through the same code path, but the daemon ignores their latency by
 // honouring `latency_valid` in the flow meta.
+//
+// The latency *histogram* lives in BRAM (pw_lat_histogram), so this
+// checker no longer keeps the power-of-two bucket array in flip-flops
+// on the data path. Instead it emits a registered histogram *event*
+// per counted frame -- {hist_ev_o, hist_flow_o, hist_bucket_o} -- that
+// pw_lat_histogram accumulates. The flat FF histogram (hist_o) is kept
+// only when EMIT_HIST_ARRAY=1, for the legacy wide-bus plane and its
+// sims; the streaming data plane sets it to 0 and leaves hist_o open.
 
 `default_nettype none
 
@@ -20,11 +27,15 @@ module pw_test_rx_checker #(
     // 0: single-cycle compute+update (default; wide-bus plane + its sims
     //    expect counters one cycle after the event).
     // 1: split into stage-1 {latency / log2 bucket / idx} register and
-    //    stage-2 counter+histogram update, to break the long
-    //    classifier -> 64-bit subtract -> priority-encoder -> hist path.
-    //    Identical counter values, produced one extra cycle later. Safe
-    //    because TEST_RX events are frame-spaced (no back-to-back).
-    parameter int PIPELINE    = 0
+    //    stage-2 counter update, to break the long classifier ->
+    //    64-bit subtract -> priority-encoder path. Identical counter
+    //    values, produced one extra cycle later. Safe because TEST_RX
+    //    events are frame-spaced (no back-to-back).
+    parameter int PIPELINE    = 0,
+    // 1: keep the flat FF latency histogram on hist_o (legacy plane).
+    // 0: drop it (hist_o tied 0); the streaming plane accumulates the
+    //    histogram in BRAM from the emitted events instead.
+    parameter int EMIT_HIST_ARRAY = 1
 ) (
     input  wire                  clk,
     input  wire                  rst_n,
@@ -50,7 +61,14 @@ module pw_test_rx_checker #(
     output logic [63:0]          sum_latency_o [NUM_FLOWS],
     output logic [63:0]          sample_count_o[NUM_FLOWS],
 
-    // Flat histogram: hist_o[flow * NUM_BUCKETS + bucket]
+    // Registered histogram event: one pulse per counted frame, carrying
+    // the flow id and its log2 latency bucket. Always driven.
+    output logic                 hist_ev_o,
+    output logic [15:0]          hist_flow_o,
+    output logic [15:0]          hist_bucket_o,
+
+    // Flat histogram: hist_o[flow * NUM_BUCKETS + bucket]. Driven only
+    // when EMIT_HIST_ARRAY=1, otherwise tied to 0.
     output logic [63:0]          hist_o        [NUM_FLOWS * NUM_BUCKETS]
 );
 
@@ -69,14 +87,17 @@ module pw_test_rx_checker #(
         return b;
     endfunction
 
-    // Per-flow + histogram register reset. Verilator dislikes
-    // delayed-assignment-in-for-loop on unpacked arrays, so reset
-    // the histogram via an initial block (works under sim and as
-    // an FPGA bitstream-init value); the per-flow counters still
-    // get the synchronous reset path that ASIC tools want.
+    // Histogram-event source signals (combinational), shared by the
+    // emitted event registers and the optional flat FF array. Their
+    // timing matches the counter update of the active PIPELINE mode.
+    logic        h_wr;
+    logic [31:0] h_idx;
+    logic [15:0] h_bkt;
+
+    // Per-flow counter reset via an initial block (works under sim and
+    // as an FPGA bitstream-init value); the per-flow counters also get
+    // the synchronous reset path below.
     initial begin
-        for (int j = 0; j < NUM_FLOWS * NUM_BUCKETS; j++)
-            hist_o[j] = '0;
         for (int i = 0; i < NUM_FLOWS; i++) begin
             rx_frames_o[i]    = '0;
             lost_o[i]         = '0;
@@ -100,6 +121,15 @@ module pw_test_rx_checker #(
     generate
     if (PIPELINE == 0) begin : g_flat
         // ---- single-cycle compute + update (original behaviour) ----
+        always_comb begin
+            automatic logic [63:0] lat = timestamp_i - key_i.test_tx_timestamp;
+            automatic int          b   = log2_bucket(lat);
+            if (b >= NUM_BUCKETS) b = NUM_BUCKETS - 1;
+            h_wr  = event_take;
+            h_idx = 32'(result_i.local_flow_id);
+            h_bkt = 16'(b);
+        end
+
         always_ff @(posedge clk or negedge rst_n) begin
             if (!rst_n || clear_i) begin
                 for (int i = 0; i < NUM_FLOWS; i++) begin
@@ -119,9 +149,6 @@ module pw_test_rx_checker #(
                 automatic int           idx       = int'(result_i.local_flow_id);
                 automatic logic [63:0]  rx_seq    = key_i.test_sequence;
                 automatic logic [63:0]  latency   = timestamp_i - key_i.test_tx_timestamp;
-                automatic int           bucket    = log2_bucket(latency);
-
-                if (bucket >= NUM_BUCKETS) bucket = NUM_BUCKETS - 1;
 
                 rx_frames_o[idx]            <= rx_frames_o[idx] + 64'd1;
                 last_seq_o[idx]             <= rx_seq;
@@ -129,8 +156,6 @@ module pw_test_rx_checker #(
                 sample_count_o[idx]         <= sample_count_o[idx] + 64'd1;
                 if (latency < min_latency_o[idx]) min_latency_o[idx] <= latency;
                 if (latency > max_latency_o[idx]) max_latency_o[idx] <= latency;
-                hist_o[idx * NUM_BUCKETS + bucket]
-                    <= hist_o[idx * NUM_BUCKETS + bucket] + 64'd1;
 
                 if (!flow_seen[idx]) begin
                     expected_seq[idx] <= rx_seq + 64'd1;
@@ -172,7 +197,15 @@ module pw_test_rx_checker #(
             end
         end
 
-        // ---- stage 2: counter / seq-gap / histogram update ----
+        // Histogram event sourced from the (already registered) stage-1
+        // values, so the HW path keeps the subtract/encoder pipelined.
+        always_comb begin
+            h_wr  = s1_valid;
+            h_idx = s1_idx;
+            h_bkt = 16'(s1_bucket);
+        end
+
+        // ---- stage 2: counter / seq-gap update ----
         always_ff @(posedge clk or negedge rst_n) begin
             if (!rst_n || clear_i) begin
                 for (int i = 0; i < NUM_FLOWS; i++) begin
@@ -192,7 +225,6 @@ module pw_test_rx_checker #(
                 automatic int          idx     = int'(s1_idx);
                 automatic logic [63:0] rx_seq  = s1_seq;
                 automatic logic [63:0] latency = s1_lat;
-                automatic int          bucket  = int'(s1_bucket);
 
                 rx_frames_o[idx]            <= rx_frames_o[idx] + 64'd1;
                 last_seq_o[idx]             <= rx_seq;
@@ -200,8 +232,6 @@ module pw_test_rx_checker #(
                 sample_count_o[idx]         <= sample_count_o[idx] + 64'd1;
                 if (latency < min_latency_o[idx]) min_latency_o[idx] <= latency;
                 if (latency > max_latency_o[idx]) max_latency_o[idx] <= latency;
-                hist_o[idx * NUM_BUCKETS + bucket]
-                    <= hist_o[idx * NUM_BUCKETS + bucket] + 64'd1;
 
                 if (!flow_seen[idx]) begin
                     expected_seq[idx] <= rx_seq + 64'd1;
@@ -218,6 +248,40 @@ module pw_test_rx_checker #(
                 end
             end
         end
+    end
+    endgenerate
+
+    // ---- registered histogram event outputs (always driven) ----
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n || clear_i) begin
+            hist_ev_o     <= 1'b0;
+            hist_flow_o   <= '0;
+            hist_bucket_o <= '0;
+        end else begin
+            hist_ev_o     <= h_wr;
+            hist_flow_o   <= h_idx[15:0];
+            hist_bucket_o <= h_bkt;
+        end
+    end
+
+    // ---- optional flat FF histogram (legacy plane only) ----
+    generate
+    if (EMIT_HIST_ARRAY != 0) begin : g_harr
+        initial begin
+            for (int j = 0; j < NUM_FLOWS * NUM_BUCKETS; j++) hist_o[j] = '0;
+        end
+        always_ff @(posedge clk or negedge rst_n) begin
+            if (!rst_n || clear_i) begin
+                for (int j = 0; j < NUM_FLOWS * NUM_BUCKETS; j++) hist_o[j] <= '0;
+            end else if (h_wr) begin
+                automatic int fi = int'(h_idx);
+                automatic int bi = int'(h_bkt);
+                hist_o[fi * NUM_BUCKETS + bi] <= hist_o[fi * NUM_BUCKETS + bi] + 64'd1;
+            end
+        end
+    end else begin : g_noharr
+        for (genvar j = 0; j < NUM_FLOWS * NUM_BUCKETS; j++)
+            assign hist_o[j] = 64'd0;
     end
     endgenerate
 
