@@ -82,6 +82,8 @@ set pw_srcs [list \
     "$repo_root/rtl/phase3/pw_data_plane_axis.sv" \
     "$repo_root/rtl/phase3/pw_csr_full.sv" \
     "$repo_root/rtl/phase3/pw_icap_reboot.sv" \
+    "$repo_root/rtl/phase3/pw_ts_gray_cdc.sv" \
+    "$repo_root/rtl/phase3/pw_ts_insert.sv" \
     "$repo_root/rtl/phase3/pwfpga_top_phase3.sv" \
     "$script_dir/src/pcie_axi_lite_bridge.sv" \
     "$script_dir/src/clock_reset.sv" \
