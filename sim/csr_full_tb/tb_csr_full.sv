@@ -143,7 +143,8 @@ module tb_csr_full;
         .gen_udp_sp_o        (gen_usp_w),
         .gen_udp_dp_o        (gen_udp_w),
         .flow_rows_o         (),
-        .stats_clear_o       ()
+        .stats_clear_o       (),
+        .dp_soft_rst_o       ()
     );
 
     // BRAM histogram backing the CSR's addressed read port, fed by

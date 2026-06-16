@@ -216,6 +216,12 @@ static void program_backends(const struct pw_program *prog,
         if (!cards[ci].open) continue;
         const struct pw_card_backend *b = &cards[ci].backend;
         bool any_err = false;
+        /* Soft-reset the data plane before (re)writing the tables. This
+         * quiesces the generators / SAF / arbiters so reprogramming over a
+         * running data plane cannot wedge it (configuration is preserved,
+         * and we re-commit it immediately below). */
+        if (b->ops->write32)
+            (void)b->ops->write32(b->ctx, PWFPGA_REG_DP_RESET, 1u);
         for (size_t r = 0; r < cp->n_classifier_rows; r++) {
             pw_status s = b->ops->classifier_write
                 ? b->ops->classifier_write(b->ctx, (uint32_t)r, &cp->classifier_rows[r])

@@ -100,7 +100,12 @@ module pw_csr_full #(
     input  wire  [63:0]                   hist_rd_data_i,
 
     // Soft clear pulse for the RX checkers (write to STATS_CLEAR_ADDR).
-    output logic                          stats_clear_o
+    output logic                          stats_clear_o,
+
+    // Data-plane soft reset pulse (write to DP_RESET_ADDR): resets the
+    // wedge-prone datapath state machines (gen / SAF / arbiters) so a
+    // wedged data plane recovers without a JTAG reconfig.
+    output logic                          dp_soft_rst_o
 );
 
     // Top-level register offsets we still serve here (the rest live
@@ -137,6 +142,7 @@ module pw_csr_full #(
     localparam logic [15:0] COMMIT_OFF         = 16'h3FFC;
     localparam logic [15:0] STATS_TRIGGER_ADDR = WIN_STATS_BASE + COMMIT_OFF;
     localparam logic [15:0] STATS_CLEAR_ADDR   = WIN_STATS_BASE + 16'h3FF8;
+    localparam logic [15:0] DP_RESET_ADDR      = WIN_STATS_BASE + 16'h3FF4;
     localparam logic [15:0] HIST_STRIDE        = 16'd128;   // 16 buckets * 8 B per flow
 
     import pw_version_pkg::*;
@@ -178,10 +184,12 @@ module pw_csr_full #(
             wr_data          <= '0;
             snapshot_trigger <= 1'b0;
             stats_clear_o    <= 1'b0;
+            dp_soft_rst_o    <= 1'b0;
         end else begin
             wr_en            <= 1'b0;
             snapshot_trigger <= 1'b0;
             stats_clear_o    <= 1'b0;
+            dp_soft_rst_o    <= 1'b0;
 
             if (!aw_captured && s_axi_awvalid) begin
                 aw_captured   <= 1'b1;
@@ -209,6 +217,8 @@ module pw_csr_full #(
                     snapshot_trigger <= 1'b1;
                 if (awaddr_q == STATS_CLEAR_ADDR && s_axi_wdata[0])
                     stats_clear_o <= 1'b1;
+                if (awaddr_q == DP_RESET_ADDR && s_axi_wdata[0])
+                    dp_soft_rst_o <= 1'b1;
                 aw_captured  <= 1'b0;
             end else begin
                 s_axi_wready <= 1'b0;

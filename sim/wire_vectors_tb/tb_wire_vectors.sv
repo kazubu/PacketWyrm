@@ -117,7 +117,8 @@ module tb_wire_vectors;
         .gen_udp_sp_o        (gen_usp_w),
         .gen_udp_dp_o        (gen_udp_w),
         .flow_rows_o         (),
-        .stats_clear_o       ()
+        .stats_clear_o       (),
+        .dp_soft_rst_o       ()
     );
 
     int    errors = 0;
