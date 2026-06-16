@@ -536,6 +536,60 @@ int main(int argc, char **argv) {
         fwrite(resp, 1, got, stdout); fputc('\n', stdout);
         return 0;
     }
+    if (!strcmp(sub, "flash")) {
+        if (argc < 3) {
+            fprintf(stderr,
+                "usage: pktwyrm flash write <file> [--offset 0xADDR] [--socket PATH]\n"
+                "       pktwyrm flash id [--socket PATH]\n"
+                "  Live config-flash write over PCIe (FPGA keeps running). Default\n"
+                "  offset 0x00E00000 (scratch, past the boot image); 0 = boot image.\n");
+            return 2;
+        }
+        const char *what = argv[2];
+        const char *sock = PW_IPC_DEFAULT_PATH;
+        if (!strcmp(what, "id")) {
+            for (int i = 3; i < argc; i++)
+                if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
+            char  resp[PW_IPC_FRAME_MAX]; size_t got = 0;
+            if (rpc_call(sock, "{\"rpc\":\"flash.id\"}", resp, sizeof(resp), &got) < 0) {
+                fprintf(stderr, "rpc call failed (socket=%s)\n", sock); return 1;
+            }
+            fwrite(resp, 1, got, stdout); fputc('\n', stdout);
+            return 0;
+        }
+        if (!strcmp(what, "write")) {
+            if (argc < 4) { fprintf(stderr, "usage: pktwyrm flash write <file> [--offset 0xADDR] [--socket PATH]\n"); return 2; }
+            const char *file = argv[3];
+            long off = 0x00E00000;
+            for (int i = 4; i < argc; i++) {
+                if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
+                else if (!strcmp(argv[i], "--offset") && i + 1 < argc) off = strtol(argv[++i], NULL, 0);
+            }
+            /* Absolute path so the daemon (any cwd) opens the right file. */
+            char abspath[4096];
+            if (!realpath(file, abspath)) { fprintf(stderr, "cannot resolve %s\n", file); return 1; }
+            struct json_object *req = json_object_new_object();
+            json_object_object_add(req, "rpc",    json_object_new_string("flash.write"));
+            json_object_object_add(req, "path",   json_object_new_string(abspath));
+            json_object_object_add(req, "offset", json_object_new_int64(off));
+            const char *req_str = json_object_to_json_string_ext(req, JSON_C_TO_STRING_PLAIN);
+            char  resp[PW_IPC_FRAME_MAX]; size_t got = 0;
+            int rc = rpc_call(sock, req_str, resp, sizeof(resp), &got);
+            json_object_put(req);
+            if (rc < 0) { fprintf(stderr, "rpc call failed (socket=%s)\n", sock); return 1; }
+            fwrite(resp, 1, got, stdout); fputc('\n', stdout);
+            struct json_tokener *tk = json_tokener_new();
+            struct json_object  *r  = json_tokener_parse_ex(tk, resp, (int)got);
+            json_tokener_free(tk);
+            int ok = 0;
+            if (r) { struct json_object *v;
+                     if (json_object_object_get_ex(r, "verified", &v)) ok = json_object_get_boolean(v);
+                     json_object_put(r); }
+            return ok ? 0 : 1;
+        }
+        fprintf(stderr, "unknown flash subcommand: %s\n", what);
+        return 2;
+    }
     if (!strcmp(sub, "flow")) {
         if (argc < 3) {
             fprintf(stderr,
