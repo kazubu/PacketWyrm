@@ -119,13 +119,35 @@ module pwfpga_top_phase3_board (
         .rx_clk(sfp_rx_clk), .rx_rst(sfp_rx_rst), .tx_clk(sfp_tx_clk), .tx_rst(sfp_tx_rst),
         .mac_rx_tdata(mac_rx_d), .mac_rx_tkeep(mac_rx_k), .mac_rx_tvalid(mac_rx_v),
         .mac_rx_tlast(mac_rx_l), .mac_rx_tuser(mac_rx_u),
-        .mac_tx_tdata(mac_tx_d), .mac_tx_tkeep(mac_tx_k), .mac_tx_tvalid(mac_tx_v),
-        .mac_tx_tready(mac_tx_r), .mac_tx_tlast(mac_tx_l), .mac_tx_tuser(mac_tx_u),
+        .mac_tx_tdata(cdc_tx_d), .mac_tx_tkeep(cdc_tx_k), .mac_tx_tvalid(cdc_tx_v),
+        .mac_tx_tready(cdc_tx_r), .mac_tx_tlast(cdc_tx_l), .mac_tx_tuser(cdc_tx_u),
         .dp_rx_tdata(dprx_d), .dp_rx_tkeep(dprx_k), .dp_rx_tvalid(dprx_v),
         .dp_rx_tready(dprx_r), .dp_rx_tlast(dprx_l), .dp_rx_tuser(dprx_u),
         .dp_tx_tdata(dptx_d), .dp_tx_tkeep(dptx_k), .dp_tx_tvalid(dptx_v),
         .dp_tx_tready(dptx_r), .dp_tx_tlast(dptx_l), .dp_tx_tuser(dptx_u)
     );
+
+    // --- egress hardware timestamping (MAC TX clock domain) ----------------
+    // Overwrite each test packet's tx_timestamp with the true departure time
+    // (here, at the MAC), so measured latency reflects the DUT, not this
+    // tester's own TX-FIFO queuing. The dp_clk timestamp is Gray-CDC'd into
+    // each port's MAC TX clock. Sits between the CDC's MAC-TX output and the
+    // MAC's TX AXIS.
+    wire [63:0] cdc_tx_d[2];  wire [7:0] cdc_tx_k[2];
+    wire        cdc_tx_v[2], cdc_tx_r[2], cdc_tx_l[2], cdc_tx_u[2];
+    wire [63:0] ts_tx[2];
+    for (genvar p = 0; p < 2; p++) begin : g_ts_egress
+        pw_ts_gray_cdc #(.W(64)) u_tscdc (
+            .src_clk(dp_clk), .src_bin(ts), .dst_clk(sfp_tx_clk[p]), .dst_bin(ts_tx[p])
+        );
+        pw_ts_insert u_tsins (
+            .clk(sfp_tx_clk[p]), .rst_n(~sfp_tx_rst[p]), .ts_now(ts_tx[p]),
+            .s_tdata(cdc_tx_d[p]), .s_tkeep(cdc_tx_k[p]), .s_tvalid(cdc_tx_v[p]),
+            .s_tready(cdc_tx_r[p]), .s_tlast(cdc_tx_l[p]), .s_tuser(cdc_tx_u[p]),
+            .m_tdata(mac_tx_d[p]), .m_tkeep(mac_tx_k[p]), .m_tvalid(mac_tx_v[p]),
+            .m_tready(mac_tx_r[p]), .m_tlast(mac_tx_l[p]), .m_tuser(mac_tx_u[p])
+        );
+    end
 
     // --- timestamp + data plane core ----------------------------------------
     // Timestamp lives in dp_clk: the flow generator stamps TX frames and the

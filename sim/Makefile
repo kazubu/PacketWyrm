@@ -184,7 +184,7 @@ vectors_clean:
 sim_vec: sim_build/wire_vectors $(VECTORS)
 	./sim_build/wire_vectors
 
-sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_full sim_fga sim_fgm sim_pax sim_saf sim_dpa sim_top sim_vec
+sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_icap sim_tsi sim_full sim_fga sim_fgm sim_pax sim_saf sim_dpa sim_top sim_vec
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
@@ -297,3 +297,10 @@ sim_icap: sim_build/icap_reboot
 	./sim_build/icap_reboot
 sim_build/icap_reboot: $(ICAP_RTL) $(TB_ICAP)
 	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Mdir sim_build --top-module tb_icap_reboot -o icap_reboot $(ICAP_RTL) $(TB_ICAP)
+
+TSI_RTL := $(REPO)/rtl/phase3/pw_ts_gray_cdc.sv $(REPO)/rtl/phase3/pw_ts_insert.sv
+TB_TSI  := ts_insert_tb/tb_ts_insert.sv
+sim_tsi: sim_build/ts_insert
+	./sim_build/ts_insert
+sim_build/ts_insert: $(TSI_RTL) $(TB_TSI)
+	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Mdir sim_build --top-module tb_ts_insert -o ts_insert $(REPO)/rtl/phase3/pw_ts_insert.sv $(TB_TSI)
