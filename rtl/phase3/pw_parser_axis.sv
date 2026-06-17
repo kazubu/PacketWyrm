@@ -77,23 +77,31 @@ module pw_parser_axis #(
         end
     end
 
-    // --- parse (one cycle after EOF; same logic as pw_parser) --------------
-    pw_match_key_t key_q;
-    logic          key_valid_q;
-    assign key_o       = key_q;
-    assign key_valid_o = key_valid_q;
+    // --- parse, pipelined into two stages to close timing -----------------
+    // Stage A: L2/L3/L4 framing + payload offset (the frame_len-guarded
+    // length checks). Stage B: test-header field extraction (the wide
+    // hdr-byte mux). Splitting the ~12-level eof->key path roughly in half
+    // recovers timing margin; the extra cycle is self-contained because all
+    // downstream alignment (classifier latency, the data plane's key/decision
+    // delay) is relative to key_valid_o.
+    pw_match_key_t             keyA;
+    logic                      validA;
+    logic                      test_eligA;   // payload long enough for the test header
+    logic [15:0]               pay_offA;      // test header start offset
+    logic [HDR_BYTES-1:0][7:0] hdrA;          // snapshot of hdr for stage B
 
     always_ff @(posedge clk or negedge rst_n) begin
         automatic pw_match_key_t k;
         automatic logic          ok;
+        automatic logic          telig;
         automatic logic [15:0]   etype0;
         automatic int            l3_off, ip_hlen, udp_off, pay_off;
         automatic int            flen;
 
         if (!rst_n) begin
-            key_q <= '0; key_valid_q <= 1'b0;
+            keyA <= '0; validA <= 1'b0; test_eligA <= 1'b0; pay_offA <= '0;
         end else begin
-            k = '0; ok = 1'b0; etype0 = '0;
+            k = '0; ok = 1'b0; telig = 1'b0; etype0 = '0;
             l3_off = 14; ip_hlen = 20; udp_off = 0; pay_off = 0;
             flen = int'(frame_len_q);
 
@@ -139,15 +147,7 @@ module pw_parser_axis #(
                     end
                     if (k.is_udp && flen >= l3_off + ip_hlen + 8) begin
                         pay_off = l3_off + ip_hlen + 8;
-                        if (flen >= pay_off + 32 && pay_off + 32 <= HDR_BYTES) begin
-                            k.test_magic    = {hdr[pay_off+0], hdr[pay_off+1], hdr[pay_off+2], hdr[pay_off+3]};
-                            k.test_flow_id  = {hdr[pay_off+8], hdr[pay_off+9], hdr[pay_off+10], hdr[pay_off+11]};
-                            k.test_sequence = {hdr[pay_off+12], hdr[pay_off+13], hdr[pay_off+14], hdr[pay_off+15],
-                                               hdr[pay_off+16], hdr[pay_off+17], hdr[pay_off+18], hdr[pay_off+19]};
-                            k.test_tx_timestamp = {hdr[pay_off+20], hdr[pay_off+21], hdr[pay_off+22], hdr[pay_off+23],
-                                                   hdr[pay_off+24], hdr[pay_off+25], hdr[pay_off+26], hdr[pay_off+27]};
-                            k.is_test = (k.test_magic == PW_TEST_HDR_MAGIC);
-                        end
+                        telig   = (flen >= pay_off + 32 && pay_off + 32 <= HDR_BYTES);
                     end
                     ok = 1'b1;
                 end else if (k.is_ipv4 && flen >= l3_off + 20) begin
@@ -167,24 +167,47 @@ module pw_parser_axis #(
                     end
                     if (k.is_udp && ip_hlen >= 20 && flen >= l3_off + ip_hlen + 8) begin
                         pay_off = l3_off + ip_hlen + 8;
-                        if (flen >= pay_off + 32 && pay_off + 32 <= HDR_BYTES) begin
-                            k.test_magic    = {hdr[pay_off+0], hdr[pay_off+1], hdr[pay_off+2], hdr[pay_off+3]};
-                            k.test_flow_id  = {hdr[pay_off+8], hdr[pay_off+9], hdr[pay_off+10], hdr[pay_off+11]};
-                            k.test_sequence = {hdr[pay_off+12], hdr[pay_off+13], hdr[pay_off+14], hdr[pay_off+15],
-                                               hdr[pay_off+16], hdr[pay_off+17], hdr[pay_off+18], hdr[pay_off+19]};
-                            k.test_tx_timestamp = {hdr[pay_off+20], hdr[pay_off+21], hdr[pay_off+22], hdr[pay_off+23],
-                                                   hdr[pay_off+24], hdr[pay_off+25], hdr[pay_off+26], hdr[pay_off+27]};
-                            k.is_test = (k.test_magic == PW_TEST_HDR_MAGIC);
-                        end
+                        telig   = (flen >= pay_off + 32 && pay_off + 32 <= HDR_BYTES);
                     end
                     ok = 1'b1;
                 end else if (k.ethertype != 16'h0) begin
                     ok = 1'b1;
                 end
             end
-            k.valid = ok;
+            k.valid    = ok;
+            keyA       <= k;
+            validA     <= ok;
+            test_eligA <= telig;
+            pay_offA   <= pay_off[15:0];
+            hdrA       <= hdr;
+        end
+    end
+
+    // Stage B: extract the test header at the registered offset, finalise key.
+    pw_match_key_t key_q;
+    logic          key_valid_q;
+    assign key_o       = key_q;
+    assign key_valid_o = key_valid_q;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        automatic pw_match_key_t k;
+        automatic int            po;
+        if (!rst_n) begin
+            key_q <= '0; key_valid_q <= 1'b0;
+        end else begin
+            k  = keyA;
+            po = int'(pay_offA);
+            if (test_eligA) begin
+                k.test_magic    = {hdrA[po+0], hdrA[po+1], hdrA[po+2], hdrA[po+3]};
+                k.test_flow_id  = {hdrA[po+8], hdrA[po+9], hdrA[po+10], hdrA[po+11]};
+                k.test_sequence = {hdrA[po+12], hdrA[po+13], hdrA[po+14], hdrA[po+15],
+                                   hdrA[po+16], hdrA[po+17], hdrA[po+18], hdrA[po+19]};
+                k.test_tx_timestamp = {hdrA[po+20], hdrA[po+21], hdrA[po+22], hdrA[po+23],
+                                       hdrA[po+24], hdrA[po+25], hdrA[po+26], hdrA[po+27]};
+                k.is_test = (k.test_magic == PW_TEST_HDR_MAGIC);
+            end
             key_q       <= k;
-            key_valid_q <= ok;
+            key_valid_q <= validA;
         end
     end
 

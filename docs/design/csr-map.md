@@ -52,16 +52,48 @@ the initial proposal; concrete field bit definitions are owned by the
 0x0304  port1_status           R
 0x0308..0x03fc port1 stats     R
 
-0x1000..0x1fff  classifier_table_window
-0x2000..0x2fff  flow_table_window
-0x3000..0x3fff  stats_snapshot_window
-0x4000..0x4fff  histogram_window
+0x0120  reboot                 W     write 0x52424F54 ("RBOT") -> ICAP IPROG
+                                     (reload bitstream from flash; PCIe drops)
 
-0x8000..0x8fff  slow_path_rx_ring_control
-0x9000..0x9fff  slow_path_tx_ring_control
+0x0800..0x0cff  spi_flash_window       in-system SPI flash master (live
+                                       config-flash erase/program/read):
+  0x0800  spi_ctrl   W:[0]go [1]cs_hold  R:[0]busy
+  0x0804  spi_len    bytes to shift this transfer
+  0x0900  spi_txbuf  512 B TX buffer
+  0x0b00  spi_rxbuf  512 B RX buffer
+
+# Slow-path TX inject window (host -> FPGA; pw_inject_tx_window)
+0x0d00..0x0fff  inject_tx_window
+  0x0d00  inject_ctrl  W:[0]go      R:[0]busy
+  0x0d04  inject_info  W:[13:0]byte_len [19:16]egress_port
+  0x0d40  inject_data  W: frame word i at +i*4 (little-endian; up to 512 B)
+
+# Punt / slow-path RX window (FPGA -> host, BAR-polled; pw_punt_rx_window)
+0x1000..0x1fff  punt_rx_window
+  0x1000  punt_status  R:[0]frame_valid [1]overflow
+  0x1004  punt_info    R:[13:0]byte_len [19:16]ingress_port
+  0x1008  punt_lif     R: logical_if_id of the punted frame
+  0x100c  punt_pop     W:1 -> release the current frame
+  0x1010  punt_data    R: frame word i at +i*4 (little-endian; up to 2 KB)
+
+# Wide table windows (64 flows / 64 classifier rows max). The
+# commit-bearing windows are 16 KB apart so their commit / trigger /
+# clear registers sit above the 8 KB data region; the live-read
+# histogram gets 8 KB. Fills the 64 KB BAR.
+0x2000..0x5fff  classifier_table_window   (rows @128 B; commit @+0x3FFC)
+0x6000..0x9fff  flow_table_window         (rows @128 B; commit @+0x3FFC)
+0xa000..0xbfff  histogram_window          (per-flow @128 B = 16 bins; live read)
+0xc000..0xffff  stats_snapshot_window     (trigger @+0x3FFC, clear @+0x3FF8,
+                                           data-plane soft-reset @+0x3FF4)
 ```
 
-`capabilities` bits (initial proposal):
+The earlier compact map (classifier 0x1000 / flow 0x2000 / stats 0x3000
+/ histogram 0x4000, 4 KB each) was replaced by the wide map above when
+the design scaled past 8 flows. The histogram is BRAM-backed and read
+live (no snapshot latch); its stride dropped 512 B -> 128 B (16 bins).
+The former SLOW_RX/TX placeholders (0x8000 / 0x9000) were reclaimed.
+
+`capabilities` bits:
 
 | Bit | Name                  | Meaning                                  |
 |----:|-----------------------|------------------------------------------|
@@ -71,6 +103,12 @@ the initial proposal; concrete field bit definitions are owned by the
 |   3 | CAP_HAS_QINQ_PARSER   | QinQ parser implemented                  |
 |   4 | CAP_HAS_TIMESTAMP_SYNC| cross-card timestamp sync available      |
 |   5 | CAP_HAS_MIRROR        | classifier `MIRROR_TO_HOST` implemented  |
+|   6 | CAP_HAS_PUNT          | slow-path punt RX + TX-inject windows    |
+
+> **Note:** the Phase 3 board top advertises `PW_PHASE3_CAPABILITIES`
+> = `0x0000_006C` (HISTOGRAM | QINQ_PARSER | MIRROR | PUNT — the features
+> implemented in the data plane; DMA / MSI-X / cross-card timestamp sync
+> stay clear). Software does not currently gate on these bits.
 
 ## Port stats block (per port)
 
@@ -108,7 +146,7 @@ A write-1-to-commit register lives at the last dword of the
 window:
 
 ```
-PWFPGA_REG_CLASSIFIER_COMMIT = PWFPGA_WIN_CLASSIFIER + 0xFFC
+PWFPGA_REG_CLASSIFIER_COMMIT = PWFPGA_WIN_CLASSIFIER + 0x3FFC
 ```
 
 The shadow table holds the staged entry; writing 1 to
@@ -125,6 +163,13 @@ Each row carries a 16-bit `flags` field. Currently defined:
 The host must set `PWFPGA_CLS_FLAG_ENABLE` for every active row.
 Clearing the bit on a re-commit takes the row out of the lookup
 without disturbing any other entry.
+
+For a `FORWARD_PORT` action, `egress_local_port` (byte 92 of the row,
+just past `flags`) selects the egress port the matched frame is
+store-and-forwarded to. The data plane already routed by the
+classifier result's `egress_port`; this byte is what carries the
+host's choice into it (earlier bitstreams hardwired it to 0). Ignored
+for non-FORWARD actions.
 
 The RTL side of the window is implemented by
 `rtl/shared/pw_csr_window.sv` (generic shadow + commit) and
@@ -145,14 +190,18 @@ PWFPGA_WIN_FLOW_TABLE + row_index * PWFPGA_FLOW_STRIDE  (128 bytes)
 Commit register at:
 
 ```
-PWFPGA_REG_FLOW_COMMIT = PWFPGA_WIN_FLOW_TABLE + 0xFFC
+PWFPGA_REG_FLOW_COMMIT = PWFPGA_WIN_FLOW_TABLE + 0x3FFC
 ```
 
 ## Stats snapshot window
 
 ```
-PWFPGA_REG_STATS_SNAPSHOT_TRIGGER  = PWFPGA_WIN_STATS_SNAPSHOT + 0xFFC
+PWFPGA_REG_STATS_SNAPSHOT_TRIGGER  = PWFPGA_WIN_STATS_SNAPSHOT + 0x3FFC
    W     write 1 to copy live counters into the shadow region
+PWFPGA_REG_STATS_CLEAR             = PWFPGA_WIN_STATS_SNAPSHOT + 0x3FF8
+   W     write 1 to soft-clear all RX checker counters (re-baseline; `test arm`)
+PWFPGA_REG_DP_RESET                = PWFPGA_WIN_STATS_SNAPSHOT + 0x3FF4
+   W     write 1 to soft-reset the wedge-prone datapath (gen / SAF / arbiters)
 
 per-port block (read-only after snapshot):
    PWFPGA_WIN_STATS_SNAPSHOT + N * PWFPGA_PORT_STATS_STRIDE  (128 B)
@@ -174,17 +223,55 @@ shadow region, not the live counters. This makes
 ## Histogram window
 
 ```
-PWFPGA_WIN_HISTOGRAM + N * PWFPGA_FLOW_HIST_STRIDE  (512 B = 64 bins)
+PWFPGA_WIN_HISTOGRAM + N * PWFPGA_FLOW_HIST_STRIDE  (128 B = 16 bins)
    N = local_flow_id
 
-Bin layout: 64 power-of-two buckets keyed off log2(latency)
-(matches `pw_test_rx_checker` in `rtl/phase3/`). Buckets are u64
-each; the stride leaves room for 64 of them.
+Bin layout: power-of-two buckets keyed off log2(latency); the build
+ships 16 bins (stride 128 B). Buckets are u64. The histogram is
+BRAM-backed (`rtl/phase3/pw_lat_histogram.sv`, fed by per-port checker
+events) and read LIVE through this window -- there is no snapshot latch
+for the histogram (unlike the stats window). The egress timestamp
+(`pw_ts_insert`) means these latencies reflect the DUT, not the tester.
 ```
 
 Concrete strides and offsets are defined as preprocessor macros
 in `sw/libpacketwyrm/include/packetwyrm/csr.h` and used by the
 host BAR backend.
+
+## Punt / slow-path RX window (implemented, BAR-polled)
+
+`pw_punt_rx_window` (0x1000) delivers classifier `PUNT_TO_HOST` /
+`MIRROR_TO_HOST` frames to the host without DMA. The data plane's punt
+arbiter feeds it (the SAF carries each frame's `logical_if_id` + ingress
+port through to the window). One frame is buffered at a time (up to
+2 KB); while a frame waits, the window backpressures the punt AXIS so the
+SAF holds the next one (head-of-line — fine for occasional control
+traffic). The host polls:
+
+1. read `punt_status`; if `frame_valid` (bit 0) is clear, no frame.
+2. read `punt_info` for `byte_len` + `ingress_port`, and `punt_lif` for
+   the `logical_if_id`.
+3. read `ceil(byte_len/4)` words from `punt_data` (little-endian).
+4. write 1 to `punt_pop` to release the slot.
+
+`bar_slow_path_rx` in `backend_bar.c` implements exactly this; the daemon
+`host_plane` calls it and routes each frame to the TAP for its
+`logical_if_id`. The `overflow` bit (status bit 1) latches if a frame
+larger than the buffer was dropped. Host -> FPGA injection
+(`slow_path_tx`) is implemented too -- see the inject window below.
+
+## Slow-path TX inject window (implemented, BAR-driven)
+
+`pw_inject_tx_window` (0x0D00) is the host -> FPGA complement of the punt
+window. The host composes a frame in `inject_data` (little-endian 32-bit
+words, in order), sets `inject_info` (`byte_len` + `egress_port`), then
+writes `inject_ctrl.go`; the window emits the frame as a 64-bit AXIS
+master into that egress port's TX arbiter, at priority between forwarded
+frames and the test generator. One frame in flight (`busy` gates `go`);
+512 B max (slow-path control traffic). `bar_slow_path_tx` implements the
+sequence (write words -> INFO -> GO -> poll busy). Verified on HW by
+`pw_phase3_inject`: a frame injected out egress 0 loops over the DAC to
+RX1, is PUNTed back, and read by `slow_path_rx` byte-identical.
 
 ## Slow-path DMA rings (Phase 2)
 

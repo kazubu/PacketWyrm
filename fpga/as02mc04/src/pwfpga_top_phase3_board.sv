@@ -174,8 +174,6 @@ module pwfpga_top_phase3_board (
         .m_axi_rdata(drd), .m_axi_rresp(drresp), .m_axi_rvalid(drv), .m_axi_rready(drr)
     );
 
-    wire [63:0] punt_d;  wire [7:0] punt_k;  wire punt_v, punt_l;
-
     // Large scale: 32 flows / 16 classifier rules / 16 latency bins.
     // Enabled by the BRAM-backed latency histogram (freed the FF wall)
     // plus the wide CSR address map (16 KB classifier/flow/stats windows,
@@ -186,7 +184,7 @@ module pwfpga_top_phase3_board (
     // congestion while keeping the 32-slot generator / checker / BRAM
     // histogram (16 rules => up to 16 distinctly-classified flows).
     pwfpga_top_phase3 #(
-        .ADDR_W(ADDR_W), .CAPABILITIES(PW_PHASE1_CAPABILITIES),
+        .ADDR_W(ADDR_W), .CAPABILITIES(PW_PHASE3_CAPABILITIES),
         .NUM_PORTS(2), .NUM_FLOWS(32), .NUM_CLASSIFIER(16), .NUM_HIST_BINS(16)
     ) u_dp (
         .clk(dp_clk), .rst_n(dp_aresetn),
@@ -199,8 +197,6 @@ module pwfpga_top_phase3_board (
         .s_axis_rx_tready(dprx_r), .s_axis_rx_tlast(dprx_l),
         .m_axis_tx_tdata(dptx_d), .m_axis_tx_tkeep(dptx_k), .m_axis_tx_tvalid(dptx_v),
         .m_axis_tx_tready(dptx_r), .m_axis_tx_tlast(dptx_l),
-        .m_axis_punt_tdata(punt_d), .m_axis_punt_tkeep(punt_k), .m_axis_punt_tvalid(punt_v),
-        .m_axis_punt_tready(1'b1), .m_axis_punt_tlast(punt_l),
         .timestamp_i(ts),
         .spi_sck_o(spi_sck), .spi_cs_n_o(spi_cs_n), .spi_mosi_o(spi_mosi), .spi_miso_i(spi_miso),
         .icap_csib_o(icap_csib), .icap_rdwrb_o(icap_rdwrb), .icap_i_o(icap_i)

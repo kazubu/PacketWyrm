@@ -21,10 +21,19 @@ package pw_pkg;
     localparam logic [31:0] PW_CAP_HAS_QINQ_PARSER    = 32'h0000_0008;
     localparam logic [31:0] PW_CAP_HAS_TIMESTAMP_SYNC = 32'h0000_0010;
     localparam logic [31:0] PW_CAP_HAS_MIRROR         = 32'h0000_0020;
+    localparam logic [31:0] PW_CAP_HAS_PUNT           = 32'h0000_0040;
 
     // Phase 1 advertises no optional features. Each phase OR's its
     // contribution into PW_CAPABILITIES via a build-time override.
     localparam logic [31:0] PW_PHASE1_CAPABILITIES = 32'h0000_0000;
+
+    // Phase 3 advertises the features that are implemented on silicon:
+    // BRAM histogram, QinQ parser, classifier MIRROR_TO_HOST, and the
+    // slow-path punt RX + TX-inject windows. (DMA / MSI-X / cross-card
+    // timestamp sync are not implemented, so their bits stay clear.)
+    localparam logic [31:0] PW_PHASE3_CAPABILITIES =
+        PW_CAP_HAS_HISTOGRAM | PW_CAP_HAS_QINQ_PARSER |
+        PW_CAP_HAS_MIRROR    | PW_CAP_HAS_PUNT;   // = 0x0000_006C
 
     // BAR0 register offsets (see docs/design/csr-map.md).
     localparam logic [11:0] PW_REG_DEVICE_ID      = 12'h000;

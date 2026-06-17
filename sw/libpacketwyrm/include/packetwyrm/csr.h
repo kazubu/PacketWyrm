@@ -69,6 +69,7 @@ enum {
     PWFPGA_CAP_HAS_QINQ_PARSER    = 1u << 3,
     PWFPGA_CAP_HAS_TIMESTAMP_SYNC = 1u << 4,
     PWFPGA_CAP_HAS_MIRROR         = 1u << 5,
+    PWFPGA_CAP_HAS_PUNT           = 1u << 6,  /* slow-path RX/TX windows */
 };
 
 /* Classifier actions. */
@@ -107,13 +108,15 @@ enum {
 };
 
 struct pwfpga_classifier_entry {
-    struct pwfpga_match_key key;
-    struct pwfpga_match_key mask;
-    uint32_t logical_if_id;
-    uint32_t local_flow_id;
-    uint8_t  action;     /* enum pwfpga_action */
-    uint8_t  priority;   /* lower numbers win */
-    uint16_t flags;      /* PWFPGA_CLS_FLAG_* */
+    struct pwfpga_match_key key;       /* bytes  0..39 */
+    struct pwfpga_match_key mask;      /* bytes 40..79 */
+    uint32_t logical_if_id;            /* bytes 80..83 */
+    uint32_t local_flow_id;            /* bytes 84..87 */
+    uint8_t  action;     /* enum pwfpga_action       byte 88 */
+    uint8_t  priority;   /* lower numbers win        byte 89 */
+    uint16_t flags;      /* PWFPGA_CLS_FLAG_*    bytes 90..91 */
+    uint8_t  egress_local_port; /* FORWARD_PORT target port  byte 92 */
+    uint8_t  _reserved[3];      /* pad to a 32-bit word      bytes 93..95 */
 } __attribute__((packed));
 
 enum pwfpga_payload_mode {
@@ -181,7 +184,30 @@ struct pwfpga_flow_config {
      * of a cross-card flow). */
     uint8_t  tx_enable;
     uint8_t  rx_check_enable;
+
+    /* Per-field modifiers (commercial-gen "field modifier"): vary the
+     * masked bits of a header field per emitted frame so one slot looks
+     * like many flows to the DUT. mode = enum pwfpga_field_mod; mask
+     * selects which bits rotate (e.g. 0x000003FF = low 10 bits = 1024
+     * apparent flows). The test header (magic/flow_id/seq/ts) is never
+     * modified, so RX loss/latency measurement is unaffected, and the IPv4
+     * header checksum is recomputed in hardware from the modified address.
+     * (MAC/VLAN modifiers are a mechanical extension of the same scheme.) */
+    uint8_t  src_ipv4_mod;       /* byte 92 */
+    uint32_t src_ipv4_mask;      /* bytes 93..96 */
+    uint8_t  dst_ipv4_mod;       /* byte 97 */
+    uint32_t dst_ipv4_mask;      /* bytes 98..101 */
+    uint8_t  udp_src_mod;        /* byte 102 */
+    uint16_t udp_src_mask;       /* bytes 103..104 */
+    uint8_t  udp_dst_mod;        /* byte 105 */
+    uint16_t udp_dst_mask;       /* bytes 106..107 */
 } __attribute__((packed));
+
+enum pwfpga_field_mod {
+    PWFPGA_FIELD_STATIC    = 0,
+    PWFPGA_FIELD_INCREMENT = 1,
+    PWFPGA_FIELD_RANDOM    = 2,
+};
 
 /* On-wire test packet header (carried inside the UDP payload). */
 struct pwfpga_test_hdr {
@@ -272,6 +298,38 @@ struct pwfpga_dma_cpl {
 #define PWFPGA_SPI_CTRL_GO                 (1u << 0)
 #define PWFPGA_SPI_CTRL_CS_HOLD            (1u << 1)
 #define PWFPGA_SPI_STATUS_BUSY             (1u << 0)
+
+/* Punt / slow-path RX window (pw_punt_rx_window) -- FPGA -> host delivery
+ * of classifier PUNT_TO_HOST / MIRROR_TO_HOST frames, BAR-polled (no DMA).
+ * Lives in the free 0x1000 region. One frame at a time: poll STATUS, read
+ * INFO + LIF + the DATA words, then write POP to release the slot. Frames
+ * larger than the buffer (2 KB) are dropped and flagged in STATUS. */
+#define PWFPGA_WIN_PUNT_RX                 0x1000u
+#define PWFPGA_REG_PUNT_STATUS             (PWFPGA_WIN_PUNT_RX + 0x000u) /* R:[0]frame_valid [1]overflow */
+#define PWFPGA_REG_PUNT_INFO               (PWFPGA_WIN_PUNT_RX + 0x004u) /* R:[13:0]byte_len [19:16]ingress_port */
+#define PWFPGA_REG_PUNT_LIF                (PWFPGA_WIN_PUNT_RX + 0x008u) /* R: logical_if_id */
+#define PWFPGA_REG_PUNT_POP                (PWFPGA_WIN_PUNT_RX + 0x00Cu) /* W:1 -> release current frame */
+#define PWFPGA_PUNT_DATA                   (PWFPGA_WIN_PUNT_RX + 0x010u) /* R: frame word i at +i*4, LE */
+#define PWFPGA_PUNT_MAX_FRAME              2048u
+#define PWFPGA_PUNT_STATUS_VALID           (1u << 0)
+#define PWFPGA_PUNT_STATUS_OVERFLOW        (1u << 1)
+#define PWFPGA_PUNT_INFO_LEN_MASK          0x3FFFu
+#define PWFPGA_PUNT_INFO_INGRESS_SHIFT     16u
+
+/* Slow-path TX inject window (host -> FPGA; pw_inject_tx_window). The host
+ * composes a frame in DATA (little-endian 32-bit words, in order), sets
+ * INFO (byte_len + egress_port), then writes CTRL.go=1; the window emits it
+ * into the chosen egress port's TX arbiter. Poll CTRL.busy for completion.
+ * Slow-path control traffic only -> 512 B max frame. Lives in the free
+ * 0x0D00 region (below the punt window). */
+#define PWFPGA_WIN_INJECT_TX               0x0D00u
+#define PWFPGA_REG_INJECT_CTRL             (PWFPGA_WIN_INJECT_TX + 0x000u) /* W:[0]go  R:[0]busy */
+#define PWFPGA_REG_INJECT_INFO             (PWFPGA_WIN_INJECT_TX + 0x004u) /* W:[13:0]byte_len [19:16]egress_port */
+#define PWFPGA_INJECT_DATA                 (PWFPGA_WIN_INJECT_TX + 0x040u) /* W: frame word i at +i*4, LE */
+#define PWFPGA_INJECT_MAX_FRAME            512u
+#define PWFPGA_INJECT_CTRL_GO              (1u << 0)
+#define PWFPGA_INJECT_STATUS_BUSY          (1u << 0)
+#define PWFPGA_INJECT_INFO_EGRESS_SHIFT    16u
 
 /* Magic written to PWFPGA_REG_REBOOT to trigger in-band reconfiguration
  * (ICAP IPROG -> reload bitstream from flash). "RBOT". */

@@ -1,17 +1,18 @@
 # YAML configuration schema
 
-The PacketWyrm configuration is a single YAML document with four top-level
-keys: `system`, `cards`, `logical_interfaces`, and `flows`. The schema is
-designed for multi-card deployments; a single-card system simply has a
-`cards:` list of length one.
+The PacketWyrm configuration is a single YAML document with these
+top-level keys: `system`, `cards`, `logical_interfaces`, `flows`, and
+`forwards`. The schema is designed for multi-card deployments; a
+single-card system simply has a `cards:` list of length one.
 
 ## Top-level
 
 ```yaml
 system:               # required
 cards:                # required, len >= 1
-logical_interfaces:   # required, len >= 0
-flows:                # required, len >= 0
+logical_interfaces:   # optional, len >= 0
+flows:                # optional, len >= 0
+forwards:             # optional, len >= 0  (store-and-forward rules)
 ```
 
 ## `system`
@@ -123,7 +124,35 @@ flows:
       jitter: true
       # Cross-card flows must set latency:false and jitter:false.
       # The daemon refuses the config otherwise.
+
+    modifiers:                       # optional: per-field "field modifiers"
+      dst_ipv4: { mode: increment, mask: 0x000003ff }  # rotate low 10 bits -> 1024 flows
+      src_ipv4: { mode: random,    mask: 0x0000ffff }
+      udp_src:  { mode: increment, mask: 0xffff }
+      udp_dst:  { mode: static }     # (default; same as omitting)
 ```
+
+`modifiers` vary the **masked bits** of a header field per emitted frame
+so one generator slot looks like many flows to the DUT (for hashing /
+ECMP / per-flow-state testing). `mode` is `static` (default) /
+`increment` / `random`; `mask` selects which bits rotate (hex or decimal).
+The rotated bits are driven by the slot's per-frame sequence number, so
+there is no extra per-slot state. Notes:
+
+- The **test header** (`magic` / `flow_id` / `sequence` / `tx_timestamp`)
+  is never modified, so RX loss / latency / order measurement is
+  unaffected — the DUT sees many flows; PacketWyrm tracks one.
+- The **IPv4 header checksum** is recomputed in hardware from the modified
+  addresses (the generator always emits a correct IPv4 checksum now).
+- Do **not** rotate a field the classifier matches on for measurement
+  (e.g. if a TEST_RX rule keys on `udp_dst`, don't modify `udp_dst`) —
+  it would misclassify the return traffic.
+- Per-*apparent*-flow individual RX stats are limited to the HW slot
+  count (`NUM_FLOWS`); aggregate loss/latency across the diversified
+  traffic is unaffected.
+- v1 covers `src_ipv4` / `dst_ipv4` / `udp_src` / `udp_dst`; all rotate
+  off the same sequence (correlated, not a full cross-product). MAC / VLAN
+  modifiers are a mechanical extension of the same scheme.
 
 Constraints:
 
@@ -138,6 +167,33 @@ Constraints:
   `frame_len_min/max/step` triple.
 - `measurements.latency` and `.jitter` may not be `true` on a
   cross-card flow.
+
+## `forwards`
+
+Store-and-forward rules: relay frames from one port to another on the
+same card. Each rule compiles to a classifier `FORWARD_PORT` row whose
+`egress_local_port` is resolved from `egress_port`. The optional match
+keys narrow which frames are relayed (all `0`/absent = forward every
+frame arriving on `ingress_port`).
+
+```yaml
+forwards:
+  - name: "relay-udp5000"   # optional, informational
+    ingress_port: 0         # required, global port id
+    egress_port: 1          # required, global port id (SAME card)
+    priority: 40            # optional, 0..255, lower wins (default 40)
+    ethertype: 0x0800       # optional match (0/absent = any)
+    ip_proto: 17            # optional match (IPv4 proto / IPv6 next-hdr)
+    udp_dst: 5000           # optional match
+    vlan: 100               # optional match (0..4094)
+```
+
+- `ingress_port` and `egress_port` must resolve to ports, and must be
+  on the **same card** (the classifier is per-card; `egress_local_port`
+  is a local port id).
+- Hex (`0x0800`) and decimal are both accepted for match values.
+- FORWARD rules are independent of `flows` / `logical_interfaces`; a
+  config may have only `forwards` (a pure relay/DUT-in-path setup).
 
 ## Validator output
 

@@ -117,7 +117,24 @@ module pw_csr_full #(
     // In-band reconfiguration trigger: pulses when the host writes the
     // magic to REG_REBOOT. Drives pw_icap_reboot (ICAP IPROG) -> the FPGA
     // reloads its bitstream from flash (PCIe drops; host re-enumerates).
-    output logic                          icap_reboot_o
+    output logic                          icap_reboot_o,
+
+    // Punt / slow-path RX window (pw_punt_rx_window lives in the top).
+    // Addressed read is combinational out / registered back (1-cycle), like
+    // the histogram. punt_pop_o pulses when the host writes PUNT_POP.
+    output logic                          punt_rd_en_o,
+    output logic [15:0]                   punt_rd_addr_o,
+    input  wire  [31:0]                   punt_rd_data_i,
+    output logic                          punt_pop_o,
+
+    // Slow-path TX inject AXIS master (pw_inject_tx_window lives here; the
+    // data plane mixes this into the selected egress port's TX arbiter).
+    output logic [63:0]                   inj_m_tdata,
+    output logic [7:0]                    inj_m_tkeep,
+    output logic                          inj_m_tvalid,
+    input  wire                           inj_m_tready,
+    output logic                          inj_m_tlast,
+    output logic [3:0]                    inj_egress_o
 );
 
     // Top-level register offsets we still serve here (the rest live
@@ -161,6 +178,13 @@ module pw_csr_full #(
     // 0x2000 table windows). Spans CTRL/LEN + 512 B TX + 512 B RX.
     localparam logic [15:0] SPI_BASE           = 16'h0800;
     localparam logic [15:0] SPI_SPAN           = 16'h0500;   // 0x0800..0x0CFF
+
+    localparam logic [15:0] PUNT_BASE          = 16'h1000;   // 0x1000..0x1FFF
+    localparam logic [15:0] PUNT_SPAN          = 16'h1000;
+    localparam logic [15:0] PUNT_POP_ADDR      = PUNT_BASE + 16'h000C;
+
+    localparam logic [15:0] INJ_BASE           = 16'h0D00;   // 0x0D00..0x0FFF
+    localparam logic [15:0] INJ_SPAN           = 16'h0300;
     localparam logic [15:0] HIST_STRIDE        = 16'd128;   // 16 buckets * 8 B per flow
 
     import pw_version_pkg::*;
@@ -204,12 +228,14 @@ module pw_csr_full #(
             stats_clear_o    <= 1'b0;
             dp_soft_rst_o    <= 1'b0;
             icap_reboot_o    <= 1'b0;
+            punt_pop_o       <= 1'b0;
         end else begin
             wr_en            <= 1'b0;
             snapshot_trigger <= 1'b0;
             stats_clear_o    <= 1'b0;
             dp_soft_rst_o    <= 1'b0;
             icap_reboot_o    <= 1'b0;
+            punt_pop_o       <= 1'b0;
 
             if (!aw_captured && s_axi_awvalid) begin
                 aw_captured   <= 1'b1;
@@ -241,6 +267,8 @@ module pw_csr_full #(
                     dp_soft_rst_o <= 1'b1;
                 if (awaddr_q == REG_REBOOT && s_axi_wdata == REBOOT_MAGIC)
                     icap_reboot_o <= 1'b1;
+                if (awaddr_q == PUNT_POP_ADDR && s_axi_wdata[0])
+                    punt_pop_o <= 1'b1;
                 aw_captured  <= 1'b0;
             end else begin
                 s_axi_wready <= 1'b0;
@@ -254,6 +282,33 @@ module pw_csr_full #(
     // --- window read ports ---------------------------------------
     logic [31:0] stats_rdata;
     logic [31:0] spi_rdata;
+    logic [31:0] inj_rdata;
+
+    // Slow-path TX inject window: host composes a frame here; it emits the
+    // frame as an AXIS master into the data plane egress mux. Region-gated
+    // write strobe so writes to other windows do not land in its buffer.
+    wire inj_wr_sel = (wr_addr >= INJ_BASE) && (wr_addr < (INJ_BASE + INJ_SPAN));
+    pw_inject_tx_window #(
+        .ADDR_W   (ADDR_W),
+        .BUF_BYTES(512),
+        .CTRL_OFF (16'h0000),
+        .INFO_OFF (16'h0004),
+        .DATA_OFF (16'h0040)
+    ) u_inj (
+        .clk      (s_axi_aclk),
+        .rst_n    (s_axi_aresetn),
+        .wr_en    (wr_en && inj_wr_sel),
+        .wr_addr  (wr_addr - INJ_BASE),
+        .wr_data  (wr_data),
+        .rd_addr  (s_axi_araddr[15:0] - INJ_BASE),
+        .rd_data  (inj_rdata),
+        .m_tdata  (inj_m_tdata),
+        .m_tkeep  (inj_m_tkeep),
+        .m_tvalid (inj_m_tvalid),
+        .m_tready (inj_m_tready),
+        .m_tlast  (inj_m_tlast),
+        .egress_o (inj_egress_o)
+    );
 
     // In-system SPI flash master (live config-flash access over PCIe).
     pw_spi_flash #(
@@ -288,6 +343,14 @@ module pw_csr_full #(
     wire        h_valid = (h_flow < NUM_FLOWS) && (h_bkt < NUM_HIST_BINS);
     wire        h_half  = s_axi_araddr[2];   // +0 -> lo dword, +4 -> hi dword
     assign hist_rd_addr_o = h_valid ? 16'(h_flow * NUM_HIST_BINS + h_bkt) : 16'd0;
+
+    // Punt window read: combinational address out, registered data back one
+    // cycle later (same timing as the histogram). rd_en keeps the window's
+    // registered read tracking the current address.
+    wire punt_sel_rd   = (s_axi_araddr[15:0] >= PUNT_BASE) &&
+                         (s_axi_araddr[15:0] <  (PUNT_BASE + PUNT_SPAN));
+    assign punt_rd_en_o   = punt_sel_rd;
+    assign punt_rd_addr_o = s_axi_araddr[15:0] - PUNT_BASE;
 
     pw_classifier_window #(
         .ADDR_W        (ADDR_W),
@@ -364,6 +427,7 @@ module pw_csr_full #(
     reg hist_pend;
     reg hist_half_q;
     reg hist_val_q;
+    reg punt_pend;
 
     always_ff @(posedge s_axi_aclk or negedge s_axi_aresetn) begin
         if (!s_axi_aresetn) begin
@@ -375,8 +439,9 @@ module pw_csr_full #(
             hist_pend              <= 1'b0;
             hist_half_q            <= 1'b0;
             hist_val_q             <= 1'b0;
+            punt_pend              <= 1'b0;
         end else begin
-            if (!s_axi_rvalid && !hist_pend && s_axi_arvalid) begin
+            if (!s_axi_rvalid && !hist_pend && !punt_pend && s_axi_arvalid) begin
                 s_axi_arready <= 1'b1;
                 s_axi_rresp   <= 2'b00;
                 if (s_axi_araddr >= WIN_HIST_BASE &&
@@ -385,6 +450,9 @@ module pw_csr_full #(
                     hist_pend   <= 1'b1;
                     hist_half_q <= h_half;
                     hist_val_q  <= h_valid;
+                end else if (punt_sel_rd) begin
+                    // Punt window: registered read, capture next cycle.
+                    punt_pend   <= 1'b1;
                 end else begin
                     s_axi_rvalid <= 1'b1;
                     // Stats is the topmost window (0xC000..0xFFFF), so an
@@ -394,6 +462,9 @@ module pw_csr_full #(
                     end else if (s_axi_araddr >= SPI_BASE &&
                                  s_axi_araddr < (SPI_BASE + SPI_SPAN)) begin
                         s_axi_rdata <= spi_rdata;   // SPI flash status / RX buffer
+                    end else if (s_axi_araddr >= INJ_BASE &&
+                                 s_axi_araddr < (INJ_BASE + INJ_SPAN)) begin
+                        s_axi_rdata <= inj_rdata;   // inject window busy status
                     end else begin
                         case (s_axi_araddr)
                             REG_DEVICE_ID:      s_axi_rdata <= PW_DEVICE_ID;
@@ -434,6 +505,11 @@ module pw_csr_full #(
                                       ? (hist_half_q ? hist_rd_data_i[63:32]
                                                      : hist_rd_data_i[31:0])
                                       : 32'h0;
+                end else if (punt_pend) begin
+                    // Punt window registered data valid now; complete read.
+                    punt_pend    <= 1'b0;
+                    s_axi_rvalid <= 1'b1;
+                    s_axi_rdata  <= punt_rd_data_i;
                 end
             end
             if (s_axi_rvalid && s_axi_rready) s_axi_rvalid <= 1'b0;

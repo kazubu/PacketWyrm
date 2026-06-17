@@ -85,6 +85,17 @@ module pw_data_plane_axis #(
     output logic                  m_axis_punt_tvalid,
     input  wire                   m_axis_punt_tready,
     output logic                  m_axis_punt_tlast,
+    output logic [35:0]           m_axis_punt_tuser,   // {ingress[3:0], logical_if_id[31:0]} of head frame
+
+    // Slow-path TX inject (host -> FPGA): one AXIS source mixed into the
+    // egress arbiter for the host-selected egress port (priority below
+    // forwarded frames, above the generator).
+    input  wire [63:0]            s_axis_inj_tdata,
+    input  wire [7:0]             s_axis_inj_tkeep,
+    input  wire                   s_axis_inj_tvalid,
+    output logic                  s_axis_inj_tready,
+    input  wire                   s_axis_inj_tlast,
+    input  wire [3:0]             s_axis_inj_egress,
 
     // Flow gen control (one generator per egress port, flow 1+port)
     // Full decoded flow table; each egress port's multi-flow generator
@@ -116,6 +127,7 @@ module pw_data_plane_axis #(
     // ingress SAFs, PW_PORTS selects the local flow generator.
     localparam int SELW  = $clog2(PW_PORTS + 1);
     localparam int RW    = 5;            // route tag: {is_punt, egress[3:0]}
+    localparam int MW    = 36;           // punt metadata: {ingress[3:0], logical_if_id[31:0]}
 
     // ------------------------------------------------------------
     // Data-plane soft reset: stretch the 1-cycle CSR pulse to a few
@@ -163,6 +175,7 @@ module pw_data_plane_axis #(
     logic             saf_tv [PW_PORTS];
     logic             saf_tl [PW_PORTS];
     logic [RW-1:0]    saf_rt [PW_PORTS];
+    logic [MW-1:0]    saf_md [PW_PORTS];   // per-frame punt metadata {ingress[3:0], lif[31:0]}
     logic             saf_tr [PW_PORTS];   // tready into the SAF (from arbiters)
 
     genvar gp;
@@ -206,7 +219,8 @@ module pw_data_plane_axis #(
             pw_frame_saf #(
                 .DEPTH_BEATS(SAF_DEPTH_BEATS),
                 .DESC_DEPTH (16),
-                .ROUTE_W    (RW)
+                .ROUTE_W    (RW),
+                .META_W     (MW)
             ) u_saf (
                 .clk             (clk),
                 .rst_n           (dp_rst_n),   // soft-reset clears wedged FIFO
@@ -218,13 +232,15 @@ module pw_data_plane_axis #(
                 .dec_keep_i      (rx_kv_d[gp] && rx_res[gp].hit && (act_fwd || act_punt)),
                 .dec_route_i     (act_punt ? {1'b1, 4'd0}
                                            : {1'b0, rx_res[gp].egress_port}),
+                .dec_meta_i      ({4'(gp), rx_res[gp].logical_if_id}),
                 .overflow_drop_o (),                 // future: per-port telemetry tap
                 .m_tdata         (saf_td[gp]),
                 .m_tkeep         (saf_tk[gp]),
                 .m_tvalid        (saf_tv[gp]),
                 .m_tready        (saf_tr[gp]),
                 .m_tlast         (saf_tl[gp]),
-                .m_route         (saf_rt[gp])
+                .m_route         (saf_rt[gp]),
+                .m_meta          (saf_md[gp])
             );
         end
     endgenerate
@@ -398,6 +414,7 @@ module pw_data_plane_axis #(
     // Per-egress selection exported for the SAF-ready aggregation below.
     logic [SELW-1:0] egr_src       [PW_PORTS];  // selected source index
     logic            egr_drain_saf [PW_PORTS];  // selected source is a SAF
+    logic            egr_drain_inj [PW_PORTS];  // selected source is the injector
 
     generate
         for (gp = 0; gp < PW_PORTS; gp++) begin : g_tx
@@ -417,22 +434,34 @@ module pw_data_plane_axis #(
                 end
             end
 
-            wire             win_gen   = !any_fwd && gen_tv[gp];
-            wire             win_valid = any_fwd || win_gen;
-            wire [SELW-1:0]  win       = any_fwd ? win_p : SELW'(PW_PORTS);
+            // Source priority: forwarded SAF frame > host inject > generator.
+            // Encoding: 0..PW_PORTS-1 = SAF index, PW_PORTS = generator,
+            // PW_PORTS+1 = inject.
+            wire             inj_here  = s_axis_inj_tvalid && (int'(s_axis_inj_egress) == gp);
+            wire             win_inj   = !any_fwd && inj_here;
+            wire             win_gen   = !any_fwd && !inj_here && gen_tv[gp];
+            wire             win_valid = any_fwd || inj_here || win_gen;
+            wire [SELW-1:0]  win       = any_fwd ? win_p
+                                       : (inj_here ? SELW'(PW_PORTS + 1)
+                                                   : SELW'(PW_PORTS));
 
             logic            busy;
             logic [SELW-1:0] gsel;
             wire [SELW-1:0]  sel       = busy ? gsel : win;
             wire             sel_valid = busy ? 1'b1 : win_valid;
             wire             sel_gen   = (sel == SELW'(PW_PORTS));
-            wire [SELW-1:0]  saf_idx   = sel_gen ? '0 : sel;
+            wire             sel_inj   = (sel == SELW'(PW_PORTS + 1));
+            wire [SELW-1:0]  saf_idx   = (sel_gen || sel_inj) ? '0 : sel;
 
-            assign m_axis_tx_tdata[gp]  = sel_gen ? gen_td[gp] : saf_td[saf_idx];
-            assign m_axis_tx_tkeep[gp]  = sel_gen ? gen_tk[gp] : saf_tk[saf_idx];
-            assign m_axis_tx_tlast[gp]  = sel_gen ? gen_tl[gp] : saf_tl[saf_idx];
+            assign m_axis_tx_tdata[gp]  = sel_inj ? s_axis_inj_tdata
+                                        : (sel_gen ? gen_td[gp] : saf_td[saf_idx]);
+            assign m_axis_tx_tkeep[gp]  = sel_inj ? s_axis_inj_tkeep
+                                        : (sel_gen ? gen_tk[gp] : saf_tk[saf_idx]);
+            assign m_axis_tx_tlast[gp]  = sel_inj ? s_axis_inj_tlast
+                                        : (sel_gen ? gen_tl[gp] : saf_tl[saf_idx]);
             assign m_axis_tx_tvalid[gp] = sel_valid &&
-                                          (sel_gen ? gen_tv[gp] : saf_tv[saf_idx]);
+                                          (sel_inj ? s_axis_inj_tvalid
+                                         : (sel_gen ? gen_tv[gp] : saf_tv[saf_idx]));
 
             wire hs   = m_axis_tx_tvalid[gp] && m_axis_tx_tready[gp];
             wire done = hs && m_axis_tx_tlast[gp];
@@ -442,7 +471,8 @@ module pw_data_plane_axis #(
 
             // Export selection for SAF-ready aggregation.
             assign egr_src[gp]       = sel;
-            assign egr_drain_saf[gp] = sel_valid && !sel_gen;
+            assign egr_drain_saf[gp] = sel_valid && !sel_gen && !sel_inj;
+            assign egr_drain_inj[gp] = sel_valid && sel_inj;
 
             always_ff @(posedge clk or negedge dp_rst_n) begin
                 if (!dp_rst_n) begin
@@ -487,6 +517,7 @@ module pw_data_plane_axis #(
     assign m_axis_punt_tdata  = saf_td[punt_sel];
     assign m_axis_punt_tkeep  = saf_tk[punt_sel];
     assign m_axis_punt_tlast  = saf_tl[punt_sel];
+    assign m_axis_punt_tuser  = saf_md[punt_sel];
     assign m_axis_punt_tvalid = punt_sel_valid && saf_tv[punt_sel];
 
     wire punt_hs   = m_axis_punt_tvalid && m_axis_punt_tready;
@@ -520,6 +551,15 @@ module pw_data_plane_axis #(
             if (punt_sel_valid && (int'(punt_sel) == p))
                 saf_tr[p] = saf_tr[p] | m_axis_punt_tready;
         end
+    end
+
+    // Inject tready: the single inject source targets exactly one egress, so
+    // OR the readiness of whichever egress arbiter currently grants it.
+    always_comb begin
+        s_axis_inj_tready = 1'b0;
+        for (int e = 0; e < PW_PORTS; e++)
+            if (egr_drain_inj[e])
+                s_axis_inj_tready = s_axis_inj_tready | m_axis_tx_tready[e];
     end
 
 endmodule

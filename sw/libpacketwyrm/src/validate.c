@@ -134,6 +134,28 @@ pw_status pw_config_validate(const struct pw_config *cfg, struct pw_diag *d) {
         }
     }
 
+    /* forward rules: both ports resolve and live on the same card (the
+     * classifier is per-card; egress_local_port is a local port). */
+    for (size_t i = 0; i < cfg->n_forwards; i++) {
+        const struct pw_forward_rule *fr = &cfg->forwards[i];
+        struct pwfpga_port_ref ing, egr;
+        if (pw_config_resolve_port(cfg, fr->ingress_port, &ing) != PW_OK) {
+            char p[80]; snprintf(p, sizeof(p), "forwards[%zu].ingress_port", i);
+            diag(d, PW_E_UNKNOWN_GLOBAL_PORT, p, "ingress_port does not resolve to a card port");
+            return PW_E_UNKNOWN_GLOBAL_PORT;
+        }
+        if (pw_config_resolve_port(cfg, fr->egress_port, &egr) != PW_OK) {
+            char p[80]; snprintf(p, sizeof(p), "forwards[%zu].egress_port", i);
+            diag(d, PW_E_UNKNOWN_GLOBAL_PORT, p, "egress_port does not resolve to a card port");
+            return PW_E_UNKNOWN_GLOBAL_PORT;
+        }
+        if (ing.card_id != egr.card_id) {
+            char p[80]; snprintf(p, sizeof(p), "forwards[%zu]", i);
+            diag(d, PW_E_INVAL, p, "ingress and egress ports must be on the same card");
+            return PW_E_INVAL;
+        }
+    }
+
     if (d) d->code = PW_OK;
     return PW_OK;
 }

@@ -96,6 +96,21 @@ struct pw_flow_meas {
     bool jitter;
 };
 
+/* Per-field modifier: vary the masked bits of a header field per emitted
+ * frame (commercial-gen "field modifier"). mode 0=static, 1=increment,
+ * 2=random (matches enum pwfpga_field_mod). mask=0 / mode static = off. */
+struct pw_field_mod {
+    uint8_t  mode;
+    uint32_t mask;
+};
+
+struct pw_flow_modifiers {
+    struct pw_field_mod src_ipv4;
+    struct pw_field_mod dst_ipv4;
+    struct pw_field_mod udp_src;
+    struct pw_field_mod udp_dst;
+};
+
 struct pw_flow {
     uint32_t id;                         /* global_flow_id */
     char     name[PW_NAME_MAX];
@@ -109,6 +124,22 @@ struct pw_flow {
     struct pw_flow_udp     udp;
     struct pw_flow_traffic traffic;
     struct pw_flow_meas    meas;
+    struct pw_flow_modifiers mod;
+};
+
+/* Store-and-forward rule: relay frames matching the (optional) key from
+ * one port to another on the same card. Compiles to a classifier
+ * FORWARD_PORT row. ingress/egress are global port ids; match fields are
+ * 0 = don't care. */
+struct pw_forward_rule {
+    char     name[PW_NAME_MAX];
+    uint16_t ingress_port;               /* global port id */
+    uint16_t egress_port;                /* global port id (same card) */
+    uint8_t  priority;                   /* lower wins; default 40 */
+    uint16_t ethertype;                  /* 0 = any */
+    uint8_t  ip_proto;                   /* 0 = any */
+    uint16_t udp_dst;                    /* 0 = any */
+    uint16_t vlan;                       /* 0 = any */
 };
 
 struct pw_config {
@@ -122,6 +153,9 @@ struct pw_config {
 
     struct pw_flow      *flows;
     size_t               n_flows;
+
+    struct pw_forward_rule *forwards;
+    size_t                  n_forwards;
 };
 
 /* Diagnostic produced by the parser / validator. */

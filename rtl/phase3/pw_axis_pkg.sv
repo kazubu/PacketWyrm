@@ -48,6 +48,18 @@ package pw_axis_pkg;
         logic [31:0] dst_ipv4;
         logic [15:0] udp_sp;
         logic [15:0] udp_dp;
+        // Per-field modifiers (commercial-gen "field modifier"): vary the
+        // masked bits of a header field per emitted frame so one slot looks
+        // like many flows to the DUT. mode: 0=static, 1=increment, 2=random.
+        // Rotated bits are driven by the slot's per-frame sequence number
+        // (increment = seq, random = scrambled seq) -> no extra per-slot
+        // state. The test header (magic/flow_id/seq/ts) is NOT modified, so
+        // RX loss/latency measurement is unaffected. The IPv4 header
+        // checksum is recomputed from the modified addresses.
+        logic [1:0]  sip_mod;   logic [31:0] sip_mask;
+        logic [1:0]  dip_mod;   logic [31:0] dip_mask;
+        logic [1:0]  sp_mod;    logic [15:0] sp_mask;
+        logic [1:0]  dp_mod;    logic [15:0] dp_mask;
     } pw_flow_row_t;
 
 endpackage : pw_axis_pkg

@@ -141,6 +141,13 @@ Backpressure on TAP side: TAP fds are non-blocking. If a TAP would
 block, the daemon drops with a counter; control-plane protocols
 retransmit. Slow-path packet plane is intentionally not lossless.
 
+Both directions are live on the real card as of Phase 3: the BAR
+backend implements `slow_path_rx` (draining the punt window,
+`pw_punt_rx_window` @ 0x1000) and `slow_path_tx` (the inject window,
+`pw_inject_tx_window` @ 0x0D00), and `pw_host_plane` calls both. The
+FPGA→host direction is HW-validated; the host→FPGA inject path is
+HW-validated at the backend op level (`pw_phase3_inject` round-trip).
+
 Implementation: `pw_host_plane` in `libpacketwyrm` is the concrete
 data-mover. `pw_tap_open()` / `pw_tap_set_*()` create the TAP
 devices via `/dev/net/tun` and ioctl; the host plane binds each

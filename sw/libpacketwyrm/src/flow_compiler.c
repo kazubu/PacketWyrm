@@ -91,6 +91,11 @@ static pw_status compile_one_flow(struct pw_program *out,
     tx_row.dscp = f->ipv4.dscp;
     tx_row.udp_src_port = f->udp.src_port;
     tx_row.udp_dst_port = f->udp.dst_port;
+    /* Per-field modifiers (DUT-facing flow diversification). */
+    tx_row.src_ipv4_mod  = f->mod.src_ipv4.mode; tx_row.src_ipv4_mask = f->mod.src_ipv4.mask;
+    tx_row.dst_ipv4_mod  = f->mod.dst_ipv4.mode; tx_row.dst_ipv4_mask = f->mod.dst_ipv4.mask;
+    tx_row.udp_src_mod   = f->mod.udp_src.mode;  tx_row.udp_src_mask  = (uint16_t)f->mod.udp_src.mask;
+    tx_row.udp_dst_mod   = f->mod.udp_dst.mode;  tx_row.udp_dst_mask  = (uint16_t)f->mod.udp_dst.mask;
     if (f->traffic.frame_len_fixed_set) {
         tx_row.frame_len_min = f->traffic.frame_len_fixed;
         tx_row.frame_len_max = f->traffic.frame_len_fixed;
@@ -221,6 +226,35 @@ static pw_status compile_punt_rules(struct pw_program *out, const struct pw_conf
     return PW_OK;
 }
 
+static pw_status compile_forward_rules(struct pw_program *out, const struct pw_config *cfg) {
+    for (size_t i = 0; i < cfg->n_forwards; i++) {
+        const struct pw_forward_rule *fr = &cfg->forwards[i];
+        struct pwfpga_port_ref ing, egr;
+        pw_status r = pw_config_resolve_port(cfg, fr->ingress_port, &ing);
+        if (r != PW_OK) return r;
+        if ((r = pw_config_resolve_port(cfg, fr->egress_port, &egr)) != PW_OK) return r;
+        if (ing.card_id != egr.card_id) return PW_E_INVAL;
+        struct pw_card_program *cp = card_slot(out, ing.card_id);
+        if (!cp) return PW_E_UNKNOWN_CARD;
+
+        struct pwfpga_classifier_entry e = {0};
+        e.action            = PWFPGA_ACT_FORWARD_PORT;
+        e.flags             = PWFPGA_CLS_FLAG_ENABLE;
+        e.priority          = fr->priority;
+        e.egress_local_port = egr.local_port_id;
+        e.key.ingress_local_port  = ing.local_port_id;
+        e.mask.ingress_local_port = 0xff;
+        if (fr->vlan)      { e.key.vlan_id    = fr->vlan;      e.mask.vlan_id    = 0x0FFF;   }
+        if (fr->ethertype) { e.key.ethertype  = fr->ethertype; e.mask.ethertype  = 0xFFFF;  }
+        if (fr->ip_proto)  { e.key.l3_proto   = fr->ip_proto;  e.mask.l3_proto   = 0xff;    }
+        if (fr->udp_dst)   { e.key.udp_dst_port = fr->udp_dst; e.mask.udp_dst_port = 0xFFFF; }
+
+        pw_status er = append_classifier(cp, &e);
+        if (er != PW_OK) return er;
+    }
+    return PW_OK;
+}
+
 pw_status pw_flow_compile(const struct pw_config *cfg, struct pw_program *out,
                           struct pw_diag *diag) {
     if (!cfg || !out) return PW_E_INVAL;
@@ -243,5 +277,7 @@ pw_status pw_flow_compile(const struct pw_config *cfg, struct pw_program *out,
         if (r != PW_OK) return r;
     }
 
-    return compile_punt_rules(out, cfg);
+    r = compile_punt_rules(out, cfg);
+    if (r != PW_OK) return r;
+    return compile_forward_rules(out, cfg);
 }

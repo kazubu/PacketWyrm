@@ -43,9 +43,20 @@ The project currently ships:
   packets with sequence + timestamp via a Q16.16 token-bucket
   scheduler, and checks RX for per-flow loss / duplicate /
   out-of-order plus per-flow min/max/sum/count latency and a
-  power-of-two latency histogram. `pwfpga_top_phase3` integrates
-  data plane + CSR window (`pw_csr_full` AXI4-Lite slave) + per-port
-  AXIS serializer / deserializer + punt-AXIS path.
+  power-of-two latency histogram (BRAM-backed). The 64-bit AXIS
+  streams straight from the MAC into the data plane (no wide-frame
+  serializer); `pwfpga_top_phase3` integrates the data plane + CSR
+  window (`pw_csr_full` AXI4-Lite slave) + punt-AXIS path. On the
+  AS02MC04 it runs on silicon at 32 flows / 16 classifier rows / 16
+  latency bins, loss=0 at line rate, with egress hardware
+  timestamping (per-flow DUT latency), a CSR data-plane soft-reset,
+  live SPI-flash write over PCIe (`pktwyrm flash`), and in-band
+  reconfiguration via ICAP (`pw_reboot`). The classifier `FORWARD_PORT`
+  action (host-selectable egress port) and the full slow path are on
+  silicon too: **PUNT_TO_HOST / MIRROR_TO_HOST RX** via the BAR-polled
+  `pw_punt_rx_window` (0x1000) and **host&rarr;FPGA TX inject** via the
+  BAR-driven `pw_inject_tx_window` (0x0D00) &mdash; both round-tripped
+  on hardware.
 - **Lab / container integration** &mdash; `tools/pktwyrm-tinet/`
   turns a small lab spec into a [tinet](https://github.com/tinynetwork/tinet)
   topology + per-router FRR configs that boot N routing containers
@@ -53,11 +64,13 @@ The project currently ships:
   lab.yaml`) starts `packetwyrmd`, waits for TAPs, runs `tinet up`
   and `tinet conf`. State persists under `<out>/.pktwyrm-lab.json`
   so `down` / `conf` / `status` work standalone.
-- **AS02MC04 Phase 1 Vivado project** &mdash; reproducible
-  `project.tcl`, real pin assignments (refclk / PERST# / LEDs /
-  PCIe x8 lanes / SFP+ MGT) sourced from the published
-  reverse-engineering work, lint-clean RTL, OpenOCD + JTAG
-  bring-up recipe.
+- **AS02MC04 FPGA build** &mdash; reproducible `project_phase3.tcl`
+  builds the full Phase 1+2+3 bitstream (PCIe + dual 10GBASE-R +
+  streaming data plane), closes timing at 156.25 MHz, and is flashed
+  to the on-board SPI as the cold-boot image. Real pin assignments
+  (refclk / PERST# / LEDs / PCIe x8 / SFP+ MGT), JTAG program/flash
+  recipes (`make program` / `make flash`), and host tools for live
+  flash update (`pw_flash`) and in-band reboot (`pw_reboot`).
 
 | Layer                                | Status                          |
 |--------------------------------------|---------------------------------|
@@ -65,7 +78,7 @@ The project currently ships:
 | Phase 0.5 &mdash; PCI vendor/device  | `10ee:a502` (private dev IDs)   |
 | Phase 1  &mdash; KU3P PCIe bring-up  | done on HW (`10ee:a502` enumerates, identity reads back) |
 | Phase 2  &mdash; SFP+ MAC / PCS      | done on HW: 10GBASE-R DAC loopback, line-rate, loss=0 both directions |
-| Phase 3  &mdash; data-plane RTL      | data plane + CSR + AXIS integrated; sim green |
+| Phase 3  &mdash; data-plane RTL      | done on HW: 64-bit streaming plane at 32 flows / 16 classifier / 16 bins, loss=0 at line rate; BRAM histogram; egress HW timestamping; data-plane soft-reset; live SPI-flash write + ICAP reboot |
 | Phase 4  &mdash; BAR-mmap backend    | done                            |
 | Phase 5  &mdash; TAP + host plane    | done                            |
 | Phase 6  &mdash; multi-card mgmt     | done (per-card worker threads)  |
@@ -77,9 +90,9 @@ Test surface today (all green):
 
 | Command                            | Result                                          |
 |------------------------------------|-------------------------------------------------|
-| `make -C sw test`                  | 164 / 164 unit assertions                       |
+| `make -C sw test`                  | 156 / 156 unit assertions                       |
 | `make -C sw e2e`                   | 18 / 18 daemon &harr; CLI smoke                 |
-| `make -C sim sim_all`              | 172 assertions across 9 SV testbenches          |
+| `make -C sim sim_all`              | 19 testbenches green: data plane, parser (2-stage), classifier, flow gen, BRAM histogram, SPI flash, ICAP, egress TS, punt RX, TX inject, end-to-end |
 | `make -C sim/cocotb all`           | 17 / 17 Scapy-driven parser/classifier/flow_gen |
 | `make -C tools/pktwyrm-tinet test` | 35 / 35 generator + lifecycle orchestrator      |
 | `make -C fpga/as02mc04 lint`       | clean (Verilator + Xilinx blackbox)             |
@@ -146,6 +159,25 @@ docs/                   design notes (architecture, ID system, CSR
                         map, daemon, flow compiler, ...).
 ```
 
+### Standalone hardware tools (`sw/tests/`, vfio/BAR)
+
+Single-shot diagnostics that talk to a real card directly (run as
+`sudo env PW_BACKEND=vfio sw/build/<tool> <pci-bdf> ...`; build with
+`make -C sw <tool>`). They bypass the daemon, so stop `packetwyrmd`
+first (it holds the device).
+
+| Tool                 | What it does                                                        |
+|----------------------|---------------------------------------------------------------------|
+| `pw_card_probe`      | Read + verify the identity block (device_id / version / build / git). |
+| `pw_sfp_test`        | SFP+ link / block-lock status check.                                |
+| `pw_phase3_loopback` | Program one flow, loop SFP0<->SFP1 over a DAC, report loss/latency. |
+| `pw_phase3_forward`  | Validate the SAF `FORWARD_PORT` path; `[fwd_egress]` picks the port. |
+| `pw_phase3_punt`     | Validate the PUNT/slow-path: punt frames to the host, check lif + length. |
+| `pw_phase3_inject`   | Validate slow-path TX: inject a frame, loop it back via PUNT, byte-compare. |
+| `pw_flash`           | Live in-system SPI config-flash erase/program/verify over PCIe.     |
+| `pw_reboot`          | Trigger in-band ICAP IPROG reconfiguration from flash.              |
+| `gen_bar_vectors`    | Dump the post-write BAR byte image (drives the `sim_vec` regression). |
+
 ## Try it (no FPGA required)
 
 ```sh
@@ -160,7 +192,7 @@ sudo ./sw/build/pktwyrm stats          # pretty table, refresh with --watch MS
 ./sw/build/pktwyrm rpc cards           # raw JSON RPC
 
 # RTL (Verilator >= 5 for sim_all; Icarus >= 12 + cocotb 2 for sim/cocotb)
-make -C sim sim_all                    # 172 assertions, 9 SV testbenches
+make -C sim sim_all                    # ~441 assertions, 19 SV testbenches
 make -C sim/cocotb all                 # 17 assertions, Scapy-driven units
 
 # Lab / container integration (no FPGA still works for the

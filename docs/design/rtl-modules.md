@@ -4,7 +4,48 @@ The AS02MC04 carries a Kintex UltraScale+ KU3P, two SFP+ cages, and a
 PCIe endpoint. RTL only deals with **one card at a time**; no global ID
 ever crosses the PCIe boundary.
 
-## Top-level module hierarchy
+## As-built hierarchy (Phase 3, on silicon)
+
+This is what actually builds and runs today. The original sketch below
+(`## Top-level module hierarchy`) is kept for design intent, but the
+streaming Phase 3 plane diverged from it (no wide frame bus, no serdes).
+
+```
+pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
++-- pcie (XDMA) + axi_clk_conv    BAR -> AXI-Lite, 250 -> 156.25 MHz
++-- pw_sfp_10g + pw_mac_axis_cdc  dual 10GBASE-R (Taxi MAC/GTY) <-> dp_clk
++-- STARTUPE3  + pw_ts_gray_cdc + pw_ts_insert   egress HW timestamping
++-- ICAPE3     <- pw_icap_reboot                 in-band IPROG reload
++-- pwfpga_top_phase3            board-agnostic core
+    +-- pw_csr_full              AXI-Lite slave: identity + windows +
+    |   +-- pw_classifier_window /  pw_flow_window /  pw_stats_snapshot
+    |   +-- pw_spi_flash         CSR SPI master (live config-flash access)
+    |   +-- DP_RESET / REBOOT / STATS_CLEAR / SNAPSHOT triggers
+    +-- pw_punt_rx_window        punt AXIS -> CSR-polled frame buffer (host RX)
+    +-- pw_inject_tx_window      CSR frame buffer -> AXIS into egress (host TX)
+    +-- pw_data_plane_axis       64-bit AXIS streaming data plane
+        +-- per ingress port: pw_parser_axis -> pw_classifier (RESULT_STAGES=2)
+        |                      -> pw_frame_saf (store-and-forward)
+        +-- per ingress port: pw_test_rx_checker (loss/dup/ooo/min/max/sum)
+        +-- pw_lat_histogram     shared BRAM latency histogram
+        +-- per egress port:  pw_flow_gen_multi (N-slot token-bucket gen)
+        +-- egress / punt arbiters
+```
+
+Module notes: `pw_parser_axis` is pipelined (2-stage key extract);
+`pw_classifier` uses RESULT_STAGES + a parallel priority winner;
+`pw_lat_histogram` replaced the FF histogram; `pw_ts_insert` overwrites
+the tx_timestamp at egress so latency measures the DUT; `pw_frame_saf`
+is BRAM-backed (reset-less write + registered read-ahead drain) — freed
+~24% FF / ~14% LUT vs the former register array. `pw_flow_gen_multi`
+applies per-field modifiers (static/increment/random + bitmask on
+src/dst IPv4 + UDP ports, driven by the slot sequence so the DUT sees
+many flows while the fixed test header keeps measurement intact) and
+emits a correct IPv4 header checksum. The wide-bus
+`pw_data_plane` / `pw_parser` / `pw_flow_gen` remain only for the legacy
+sim (`tb_data_plane`).
+
+## Top-level module hierarchy (original design sketch)
 
 ```
 pwfpga_top
@@ -108,9 +149,13 @@ Output: a flat "header descriptor" with all extracted fields plus a
 
 - Priority-ordered linear table (Phase 1).
 - Each entry: match key + mask, action, priority,
-  `local_flow_id`, `logical_if_id`.
+  `local_flow_id`, `logical_if_id`, `egress_local_port`.
 - Actions: `DROP`, `TEST_RX`, `PUNT_TO_HOST`, `MIRROR_TO_HOST`,
   `FORWARD_PORT`.
+- `FORWARD_PORT` uses `egress_local_port` (byte 92 of the wire row,
+  decoded in `pw_classifier_window`) to pick the egress port the SAF
+  drains to; the data plane routes by the result's `egress_port`. See
+  `docs/design/csr-map.md` (classifier window).
 - Double-buffered: stage row, then write `commit` to swap.
 - Returns the matched action + IDs to the rest of the RX pipeline.
 
@@ -135,6 +180,13 @@ Output: a flat "header descriptor" with all extracted fields plus a
 - Backpressures into the RX pipeline only after dropping per the
   classifier's overflow policy (initial: drop and bump
   `punt_drop_counter`).
+
+> **As-built (Phase 3):** implemented as `pw_punt_rx_window` — the punt
+> AXIS (PUNT/MIRROR frames from the SAF, which carries `logical_if_id` +
+> ingress port as metadata) drains into a single-frame buffer the host
+> polls over the CSR BAR (`PWFPGA_WIN_PUNT_RX`); no DMA. `byte_len`,
+> `ingress_port`, `logical_if_id`, the frame words and an `overflow` flag
+> are exposed; `bar_slow_path_rx` drains it. See `docs/design/csr-map.md`.
 
 ### flow_gen_array / tx_arbiter
 

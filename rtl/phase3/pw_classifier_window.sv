@@ -77,7 +77,7 @@ module pw_classifier_window #(
             cls_table_o[r].enable        = flags[0];
             cls_table_o[r].action        = pw_action_e'(row[88*8 +: 8]);
             cls_table_o[r].priority_     = row[89*8 +: 8];
-            cls_table_o[r].egress_port   = '0;  // not in wire struct yet
+            cls_table_o[r].egress_port   = row[92*8 +: 4];  // FORWARD_PORT target
             cls_table_o[r].local_flow_id = {row[(84+3)*8 +: 8], row[(84+2)*8 +: 8],
                                             row[(84+1)*8 +: 8], row[(84+0)*8 +: 8]};
             cls_table_o[r].logical_if_id = {row[(80+3)*8 +: 8], row[(80+2)*8 +: 8],

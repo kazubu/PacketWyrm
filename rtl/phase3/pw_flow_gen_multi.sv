@@ -156,9 +156,55 @@ module pw_flow_gen_multi #(
     assign m_tvalid = active;
     assign m_tlast  = last;
 
+    // --- field modifiers + IP checksum -------------------------------------
+    // xorshift32 scramble for the "random" modifier mode (combinational).
+    function automatic logic [31:0] scramble(input logic [31:0] x);
+        logic [31:0] v;
+        v = x ^ (x << 13);
+        v = v ^ (v >> 17);
+        v = v ^ (v << 5);
+        return v;
+    endfunction
+    // Apply a field modifier: static -> base; increment -> seq in the masked
+    // bits; random -> scrambled seq in the masked bits. Unmasked bits keep
+    // the base value, so e.g. mask=0x000003FF rotates the low 10 bits (1024
+    // apparent flows) while the rest of the address stays put.
+    function automatic logic [31:0] mod32(input logic [1:0] mode, input logic [31:0] base,
+                                          input logic [31:0] mask, input logic [63:0] seq);
+        logic [31:0] rot;
+        rot = (mode == 2'd2) ? scramble(seq[31:0]) : seq[31:0];
+        return (mode == 2'd0) ? base : ((base & ~mask) | (rot & mask));
+    endfunction
+    function automatic logic [15:0] mod16(input logic [1:0] mode, input logic [15:0] base,
+                                          input logic [15:0] mask, input logic [63:0] seq);
+        logic [15:0] rot;
+        rot = (mode == 2'd2) ? scramble(seq[31:0])>>3 : seq[15:0];
+        return (mode == 2'd0) ? base : ((base & ~mask) | (rot & mask));
+    endfunction
+    // IPv4 header checksum over the (mostly constant) header with the
+    // effective src/dst addresses. Constants: ver/ihl/tos=0x4500,
+    // flags/frag=0x4000, ttl/proto=0x4011; id and csum contribute 0.
+    function automatic logic [15:0] ip_csum16(input logic [15:0] tot,
+                                              input logic [31:0] sip, input logic [31:0] dip);
+        logic [31:0] s;
+        s = 32'h4500 + {16'b0, tot} + 32'h4000 + 32'h4011
+          + {16'b0, sip[31:16]} + {16'b0, sip[15:0]}
+          + {16'b0, dip[31:16]} + {16'b0, dip[15:0]};
+        s = {16'b0, s[31:16]} + {16'b0, s[15:0]};
+        s = {16'b0, s[31:16]} + {16'b0, s[15:0]};
+        return ~s[15:0];
+    endfunction
+
     // Build a slot's frame into fb at frame start.
     task automatic build(input pw_flow_row_t r, input logic [63:0] seq, input logic [63:0] ts);
         int off, tl, total_len;
+        logic [31:0] eff_sip, eff_dip;
+        logic [15:0] eff_sp, eff_dp, csum;
+        eff_sip = mod32(r.sip_mod, r.src_ipv4, r.sip_mask, seq);
+        eff_dip = mod32(r.dip_mod, r.dst_ipv4, r.dip_mask, seq);
+        eff_sp  = mod16(r.sp_mod,  r.udp_sp,   r.sp_mask,  seq);
+        eff_dp  = mod16(r.dp_mod,  r.udp_dp,   r.dp_mask,  seq);
+        csum    = ip_csum16(16'(20 + 8 + FRAME_LEN_PAYLOAD), eff_sip, eff_dip);
         for (int i = 0; i < HDR_MAX_BYTES; i++) fb[i] <= 8'h00;
         fb[0]<=r.dst_mac[47:40]; fb[1]<=r.dst_mac[39:32]; fb[2]<=r.dst_mac[31:24];
         fb[3]<=r.dst_mac[23:16]; fb[4]<=r.dst_mac[15:8];  fb[5]<=r.dst_mac[7:0];
@@ -175,14 +221,14 @@ module pw_flow_gen_multi #(
         fb[off+0]<=8'h45; fb[off+1]<=8'h00;
         fb[off+2]<=total_len[15:8]; fb[off+3]<=total_len[7:0];
         fb[off+4]<=8'h00; fb[off+5]<=8'h00; fb[off+6]<=8'h40; fb[off+7]<=8'h00;
-        fb[off+8]<=8'h40; fb[off+9]<=8'h11; fb[off+10]<=8'h00; fb[off+11]<=8'h00;
-        fb[off+12]<=r.src_ipv4[31:24]; fb[off+13]<=r.src_ipv4[23:16];
-        fb[off+14]<=r.src_ipv4[15:8];  fb[off+15]<=r.src_ipv4[7:0];
-        fb[off+16]<=r.dst_ipv4[31:24]; fb[off+17]<=r.dst_ipv4[23:16];
-        fb[off+18]<=r.dst_ipv4[15:8];  fb[off+19]<=r.dst_ipv4[7:0];
+        fb[off+8]<=8'h40; fb[off+9]<=8'h11; fb[off+10]<=csum[15:8]; fb[off+11]<=csum[7:0];
+        fb[off+12]<=eff_sip[31:24]; fb[off+13]<=eff_sip[23:16];
+        fb[off+14]<=eff_sip[15:8];  fb[off+15]<=eff_sip[7:0];
+        fb[off+16]<=eff_dip[31:24]; fb[off+17]<=eff_dip[23:16];
+        fb[off+18]<=eff_dip[15:8];  fb[off+19]<=eff_dip[7:0];
         off += 20;
-        fb[off+0]<=r.udp_sp[15:8]; fb[off+1]<=r.udp_sp[7:0];
-        fb[off+2]<=r.udp_dp[15:8]; fb[off+3]<=r.udp_dp[7:0];
+        fb[off+0]<=eff_sp[15:8]; fb[off+1]<=eff_sp[7:0];
+        fb[off+2]<=eff_dp[15:8]; fb[off+3]<=eff_dp[7:0];
         tl = 8 + FRAME_LEN_PAYLOAD;
         fb[off+4]<=tl[15:8]; fb[off+5]<=tl[7:0]; fb[off+6]<=8'h00; fb[off+7]<=8'h00;
         off += 8;

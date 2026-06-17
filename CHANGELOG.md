@@ -10,6 +10,83 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ### Added
 
+- **Phase 3 data plane on silicon (AS02MC04 / KU3P)** — the 64-bit
+  streaming data plane runs on hardware at line rate, loss=0:
+  - Rewrote the unroutable wide `pw_frame_t` bus into a 64-bit AXIS
+    streaming plane (`pw_parser_axis`, `pw_flow_gen_multi`,
+    `pw_frame_saf`, `pw_data_plane_axis`); closes timing at 156.25 MHz.
+  - Scaled to **32 flows / 16 classifier rows / 16 latency bins**;
+    bidirectional + 16 concurrent flows validated at loss=0.
+  - **Store-and-forward FORWARD validated on silicon** — a classifier
+    `FORWARD_PORT` rule routes ingress frames through `pw_frame_saf` to
+    the egress port; HW test (`pw_phase3_forward`) crossed the DAC twice
+    at line rate with loss=0.
+  - **FORWARD egress port now host-selectable** — added
+    `egress_local_port` (byte 92) to the classifier wire struct and
+    decoded it in `pw_classifier_window`; the data plane already routed
+    by the classifier result's `egress_port` (previously hardwired to
+    0). `pw_phase3_forward [fwd_egress]` validates routing to either
+    port; `sim_vec` covers the new wire byte.
+  - **FORWARD rules from config** — a top-level `forwards:` YAML section
+    (ingress/egress port + optional ethertype/ip_proto/udp_dst/vlan
+    match) compiles to classifier `FORWARD_PORT` rows; ingress/egress
+    must be on the same card. Example `configs/examples/phase3-forward.yaml`;
+    schema in `docs/design/yaml-schema.md`.
+  - **Timing margin recovered** — pipelined `pw_parser_axis` key extract
+    into two stages; WNS +0.003 → +0.020 ns at 156.25 MHz, HW-revalidated
+    at loss=0.
+  - **Generator field modifiers + correct IPv4 checksum** — per-field
+    modifiers (`static` / `increment` / `random` with a bitmask) on
+    `src_ipv4` / `dst_ipv4` / `udp_src` / `udp_dst` rotate the masked bits
+    per emitted frame (driven by the slot's sequence number, no extra
+    per-slot state), so one generator slot looks like many flows to the
+    DUT. The test header (magic/flow_id/seq/ts) is never modified, so RX
+    loss/latency measurement is unaffected. `build()` now emits a correct
+    IPv4 header checksum (was 0), recomputed from the modified addresses.
+    Configured via a `modifiers:` block per flow (`forwards`-style); see
+    `configs/examples/phase3-modifiers.yaml` and `docs/design/yaml-schema.md`.
+    Sim (`sim_fgm`) verifies the dst-IP rotation (masked) + a valid on-wire
+    IPv4 checksum.
+  - **SAF buffer BRAM-backed** — `pw_frame_saf`'s 512-beat frame buffer
+    now infers as block RAM (reset-less write port + registered read-ahead
+    drain) instead of ~37k FFs/instance + a wide mux. Frees ~24% of device
+    FFs and ~14% LUTs across the two instances, which de-congested the
+    route-dominated paths: **WNS +0.005 → +0.143 ns** with no feature or
+    scale change. HW-revalidated (loopback loss=0, FORWARD, PUNT, inject
+    round-trip).
+  - **PUNT / slow-path RX to the host** — `pw_punt_rx_window` sinks the
+    data plane's punt AXIS (`PUNT_TO_HOST` / `MIRROR_TO_HOST`) into a
+    CSR-polled single-frame buffer (`PWFPGA_WIN_PUNT_RX`, BAR, no DMA).
+    The SAF now carries each frame's `logical_if_id` + ingress port as
+    metadata; `bar_slow_path_rx` drains frame + lif, and the daemon
+    `host_plane` routes them to the per-`logical_if_id` TAP. New
+    `sim_punt` unit tb; the `sim_top` punt scenario reads the frame back
+    over the CSR BAR (lif verified).
+  - **PUNT / slow-path TX from the host** — `pw_inject_tx_window` is the
+    host → FPGA complement: the host composes a frame in a CSR buffer
+    (`PWFPGA_WIN_INJECT_TX`, 512 B max), sets length + egress, writes GO;
+    the window emits it into that egress port's TX arbiter (priority
+    between forwarded frames and the generator). `bar_slow_path_tx`
+    drives it. New `sim_inj` unit tb + a `tb_data_plane_axis` inject
+    scenario (arbiter routes inject to the chosen egress). HW round-trip
+    (`pw_phase3_inject`): inject out egress 0 → DAC → RX1 → PUNT → read
+    back byte-identical, proving both slow-path directions on silicon.
+  - **BRAM-backed latency histogram** (`pw_lat_histogram`) — freed the
+    FF wall that capped flow scaling; read live via the CSR window.
+  - **Egress hardware timestamping** (`pw_ts_insert` + `pw_ts_gray_cdc`)
+    — tx_timestamp applied at the MAC (PTP one-step style), so measured
+    latency reflects the DUT, not the tester's own TX queuing.
+  - **CSR data-plane soft-reset** (`REG_DP_RESET`) — recover a wedged
+    data plane without a JTAG reconfig.
+  - **Wide CSR address map** — classifier/flow/stats windows 16 KB,
+    histogram 8 KB (128 B stride); commit/trigger/clear above the data
+    region. (ABI change; see `docs/design/csr-map.md`.)
+- **In-system flash + reconfiguration**
+  - `pw_spi_flash` CSR SPI master via STARTUPE3 — erase/program/read the
+    config flash live over PCIe (no JTAG); `pktwyrm flash` / `pw_flash`.
+  - `pw_icap_reboot` (ICAP IPROG via `REG_REBOOT`) — reload the bitstream
+    from flash in-band; `pw_reboot`. The full-feature image is flashed as
+    the cold-boot image.
 - **Lab integration: pktwyrm-tinet**
   - `tools/pktwyrm-tinet/` generates a [tinet](https://github.com/tinynetwork/tinet)
     topology + per-router FRR configs from a small lab spec that
@@ -130,9 +207,11 @@ For where work is going next, see `NEXT-STEPS.md`.
     snapshot window (per-port + per-flow counters latched on
     trigger, wire-format byte offsets match `pw_port_stats` /
     `pw_flow_stats`, re-trigger replaces the shadow).
-  - `make -C sim sim_hist`: 21 / 21 assertions for the per-flow
-    latency histogram snapshot (`PWFPGA_WIN_HISTOGRAM` window;
-    NUM_BUCKETS u64s per flow at `lfid * PWFPGA_FLOW_HIST_STRIDE`).
+  - `make -C sim sim_lat`: 16 / 16 assertions for the BRAM-backed
+    per-flow latency histogram (`pw_lat_histogram`): accumulate via
+    per-port checker events, live addressed read through
+    `PWFPGA_WIN_HISTOGRAM` (NUM_BUCKETS u64s per flow at
+    `lfid * PWFPGA_FLOW_HIST_STRIDE`), and clear.
   - `make -C sim sim_full`: 12 / 12 assertions exercising the
     full `pw_csr_full` AXI4-Lite slave end-to-end: identity
     reads, classifier write+commit through `axi_write`, stats

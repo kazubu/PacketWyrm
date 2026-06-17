@@ -32,10 +32,21 @@ static void set_mac(uint8_t d[6], uint64_t v) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "usage: %s <bdf> [iters] [burn]\n", argv[0]); return 2; }
+    if (argc < 2) { fprintf(stderr, "usage: %s <bdf> [iters] [burn] [fwd_egress]\n", argv[0]); return 2; }
     const char *bdf = argv[1];
     int  iters = (argc >= 3) ? atoi(argv[2]) : 6;
     long burn  = (argc >= 4) ? atol(argv[3]) : 300000;
+    /* FORWARD egress port to validate (default 1 -- exercises the now
+     * wire-carried egress field; pass 0 for the legacy egress-0 path).
+     * Topology is mirrored around it so frames cross the DAC twice:
+     *   gen[1-fe] -> RX[fe] -[FORWARD egress=fe]-> SAF -> TX[fe]
+     *             -> RX[1-fe] -[TEST_RX]-> checker
+     */
+    int  fe        = (argc >= 5) ? atoi(argv[4]) : 1;
+    if (fe < 0 || fe > 1) { fprintf(stderr, "fwd_egress must be 0 or 1\n"); return 2; }
+    int  gen_egr   = 1 - fe;   /* generator emits out the opposite port   */
+    int  fwd_ingr  = fe;       /* forwarded frames are matched here        */
+    int  chk_ingr  = 1 - fe;   /* re-emitted copies are TEST_RX'd here     */
 
     pw_vfio_bind(bdf);
     struct pw_card_backend be;
@@ -48,10 +59,10 @@ int main(int argc, char **argv) {
            bdf, info.device_id, info.version, info.num_local_ports,
            info.num_local_flows, info.num_classifier_entries);
 
-    /* --- generator flow row on egress port 1 (emits test flow_id 2) --- */
+    /* --- generator flow row on egress port (1-fe) (emits test flow_id 2) --- */
     struct pwfpga_flow_config f = {0};
     f.enable            = 1;
-    f.egress_local_port = 1;
+    f.egress_local_port = (uint8_t)gen_egr;
     f.global_flow_id    = 2;
     f.local_flow_id     = 0;
     f.logical_if_id     = 1001;
@@ -90,20 +101,27 @@ int main(int argc, char **argv) {
         for (unsigned r = 0; r < nf; r++) if (o->flow_write) o->flow_write(be.ctx, r, &zf);
     }
 
-    /* --- classifier rule 0: FORWARD frames arriving on ingress 0 --- */
+    /* NOTE: the RX checker's per-flow sequence state is NOT reset between
+     * tool invocations. Run each egress case from a freshly reconfigured
+     * data plane; a back-to-back invocation reusing local_flow_id 0 will
+     * report out_of_order against the previous run's stale expected_seq
+     * (the forwarding itself is unaffected -- lost stays ~0). */
+
+    /* --- classifier rule 0: FORWARD frames arriving on ingress fwd_ingr --- */
     struct pwfpga_classifier_entry fwd = {0};
-    fwd.key.ingress_local_port = 0;       fwd.mask.ingress_local_port = 0xFF;
+    fwd.key.ingress_local_port = (uint8_t)fwd_ingr; fwd.mask.ingress_local_port = 0xFF;
     fwd.key.udp_dst_port       = 50001;   fwd.mask.udp_dst_port       = 0xFFFF;
     fwd.key.test_magic         = 0xA5027E57; fwd.mask.test_magic      = 0xFFFFFFFF;
     fwd.key.global_flow_id     = 2;       fwd.mask.global_flow_id     = 0xFFFFFFFF;
-    fwd.action   = PWFPGA_ACT_FORWARD_PORT;   /* egress hardwired to 0 in RTL */
+    fwd.action            = PWFPGA_ACT_FORWARD_PORT;
+    fwd.egress_local_port = (uint8_t)fe;  /* now wire-carried into the classifier */
     fwd.priority = 5;
     fwd.flags    = PWFPGA_CLS_FLAG_ENABLE;
     if (o->classifier_write) o->classifier_write(be.ctx, 0, &fwd);
 
-    /* --- classifier rule 1: TEST_RX the re-emitted copies on ingress 1 --- */
+    /* --- classifier rule 1: TEST_RX the re-emitted copies on ingress chk_ingr --- */
     struct pwfpga_classifier_entry chk = {0};
-    chk.key.ingress_local_port = 1;       chk.mask.ingress_local_port = 0xFF;
+    chk.key.ingress_local_port = (uint8_t)chk_ingr; chk.mask.ingress_local_port = 0xFF;
     chk.key.udp_dst_port       = 50001;   chk.mask.udp_dst_port       = 0xFFFF;
     chk.key.test_magic         = 0xA5027E57; chk.mask.test_magic      = 0xFFFFFFFF;
     chk.key.global_flow_id     = 2;       chk.mask.global_flow_id     = 0xFFFFFFFF;
@@ -119,9 +137,10 @@ int main(int argc, char **argv) {
     if (o->flow_write) o->flow_write(be.ctx, 0, &f);
     if (o->flow_commit) o->flow_commit(be.ctx);
 
-    printf("programmed: gen on egress 1 (flow_id 2), FORWARD(ingress0->egress0) + "
-           "TEST_RX(ingress1, lf=0)\n");
-    printf("path: gen[1] -> RX0 -[FWD]-> SAF -> TX0 -> RX1 -[TEST_RX]-> checker\n");
+    printf("programmed: gen on egress %d (flow_id 2), FORWARD(ingress%d->egress%d) + "
+           "TEST_RX(ingress%d, lf=0)\n", gen_egr, fwd_ingr, fe, chk_ingr);
+    printf("path: gen[%d] -> RX%d -[FWD]-> SAF -> TX%d -> RX%d -[TEST_RX]-> checker\n",
+           gen_egr, fwd_ingr, fe, chk_ingr);
 
     for (int it = 0; it < iters; it++) {
         volatile uint32_t junk = 0;

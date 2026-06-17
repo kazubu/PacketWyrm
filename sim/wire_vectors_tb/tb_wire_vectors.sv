@@ -123,7 +123,17 @@ module tb_wire_vectors;
         .spi_cs_n_o          (),
         .spi_mosi_o          (),
         .spi_miso_i          (1'b0),
-        .icap_reboot_o       ()
+        .icap_reboot_o       (),
+        .punt_rd_en_o        (),
+        .punt_rd_addr_o      (),
+        .punt_rd_data_i      (32'h0),
+        .punt_pop_o          (),
+        .inj_m_tdata         (),
+        .inj_m_tkeep         (),
+        .inj_m_tvalid        (),
+        .inj_m_tready        (1'b1),
+        .inj_m_tlast         (),
+        .inj_egress_o        ()
     );
 
     int    errors = 0;
@@ -203,6 +213,7 @@ module tb_wire_vectors;
         check_eq("row1 enable",     cls_table[1].enable ? 1 : 0, 1);
         check_eq("row1 action",     longint'(cls_table[1].action), 1);
         check_eq("row1 priority",   cls_table[1].priority_, 5);
+        check_eq("row1 egress",     cls_table[1].egress_port, 1);
         check_eq("row1 lfid",       cls_table[1].local_flow_id, 3);
         check_eq("row1 lif",        cls_table[1].logical_if_id, 1000);
         check_eq("row1 l3_proto",   cls_table[1].key.l3_proto, 17);

@@ -11,23 +11,25 @@ module tb_frame_saf;
 
     localparam int DEPTH = 16;     // small, to exercise overflow
     localparam int RW    = 5;
+    localparam int MW    = 36;     // metadata width (matches data plane)
 
     logic clk = 0; always #5 clk = ~clk;
     logic rst_n = 0;
 
     logic [63:0] s_tdata; logic [7:0] s_tkeep; logic s_tvalid, s_tlast;
-    logic        dec_valid, dec_keep; logic [RW-1:0] dec_route;
+    logic        dec_valid, dec_keep; logic [RW-1:0] dec_route; logic [MW-1:0] dec_meta;
     logic        ovf;
     logic [63:0] m_tdata; logic [7:0] m_tkeep; logic m_tvalid, m_tready, m_tlast;
-    logic [RW-1:0] m_route;
+    logic [RW-1:0] m_route; logic [MW-1:0] m_meta;
 
-    pw_frame_saf #(.DEPTH_BEATS(DEPTH), .DESC_DEPTH(4), .ROUTE_W(RW)) dut (
+    pw_frame_saf #(.DEPTH_BEATS(DEPTH), .DESC_DEPTH(4), .ROUTE_W(RW), .META_W(MW)) dut (
         .clk(clk), .rst_n(rst_n),
         .s_tdata(s_tdata), .s_tkeep(s_tkeep), .s_tvalid(s_tvalid), .s_tlast(s_tlast),
         .dec_valid_i(dec_valid), .dec_keep_i(dec_keep), .dec_route_i(dec_route),
+        .dec_meta_i(dec_meta),
         .overflow_drop_o(ovf),
         .m_tdata(m_tdata), .m_tkeep(m_tkeep), .m_tvalid(m_tvalid),
-        .m_tready(m_tready), .m_tlast(m_tlast), .m_route(m_route)
+        .m_tready(m_tready), .m_tlast(m_tlast), .m_route(m_route), .m_meta(m_meta)
     );
 
     int errors = 0;
@@ -46,11 +48,13 @@ module tb_frame_saf;
     // drain collector
     logic [63:0] drained_data [$];
     logic [RW-1:0] drained_route [$];
+    logic [MW-1:0] drained_meta [$];
     logic          drained_last [$];
     always_ff @(posedge clk) begin
         if (rst_n && m_tvalid && m_tready) begin
             drained_data.push_back(m_tdata);
             drained_route.push_back(m_route);
+            drained_meta.push_back(m_meta);
             drained_last.push_back(m_tlast);
         end
     end
@@ -70,6 +74,7 @@ module tb_frame_saf;
         @(negedge clk);
         s_tvalid = 1'b0; s_tlast = 1'b0;
         dec_valid = 1'b1; dec_keep = keep; dec_route = route;
+        dec_meta  = {4'(route), fid};   // deterministic from frame args
         @(posedge clk);
         @(negedge clk);
         dec_valid = 1'b0;
@@ -91,10 +96,11 @@ module tb_frame_saf;
         chk("beat0", drained_data[0], {32'hAA, 32'd0});
         chk("beat2", drained_data[2], {32'hAA, 32'd2});
         chk("route", drained_route[0], 5);
+        chk("meta", drained_meta[0], {4'd5, 32'hAA});
         chk("last on beat2", drained_last[2], 1);
         chk("last not on beat0", drained_last[0], 0);
         chk("no overflow", ovf_seen, 0);
-        drained_data.delete(); drained_route.delete(); drained_last.delete();
+        drained_data.delete(); drained_route.delete(); drained_meta.delete(); drained_last.delete();
 
         // --- scenario 2: discard a frame -> nothing drains ---
         scen = "discard";
@@ -115,7 +121,7 @@ module tb_frame_saf;
         chk("f2 beat0", drained_data[2], {32'hC2, 32'd0});
         chk("f2 route", drained_route[2], 9);
         chk("f2 last@5", drained_last[5], 1);
-        drained_data.delete(); drained_route.delete(); drained_last.delete();
+        drained_data.delete(); drained_route.delete(); drained_meta.delete(); drained_last.delete();
 
         // --- scenario 4: oversized keep frame overflows -> dropped whole ---
         scen = "overflow";

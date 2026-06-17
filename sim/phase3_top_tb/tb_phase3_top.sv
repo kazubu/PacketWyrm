@@ -27,10 +27,18 @@ module tb_phase3_top;
     // Wire offsets (mirror csr.h)
     localparam int W_KEY_OFF    = 0;
     localparam int W_MASK_OFF   = 40;
+    localparam int W_LIF        = 80;
     localparam int W_LOCAL_FLOW = 84;
     localparam int W_ACTION     = 88;
     localparam int W_PRIORITY   = 89;
     localparam int W_FLAGS      = 90;
+
+    // Punt / slow-path RX window (PWFPGA_WIN_PUNT_RX = 0x1000)
+    localparam logic [15:0] PUNT_STATUS = 16'h1000;
+    localparam logic [15:0] PUNT_INFO   = 16'h1004;
+    localparam logic [15:0] PUNT_LIF    = 16'h1008;
+    localparam logic [15:0] PUNT_POP    = 16'h100C;
+    localparam logic [15:0] PUNT_DATA   = 16'h1010;
     localparam int F_ENABLE             = 0;
     localparam int F_EGRESS_PORT        = 1;
     localparam int F_GLOBAL_FLOW_ID     = 2;
@@ -113,11 +121,7 @@ module tb_phase3_top;
         .m_axis_tx_tvalid (tx_tvalid),
         .m_axis_tx_tready (tx_tready),
         .m_axis_tx_tlast  (tx_tlast),
-        .m_axis_punt_tdata (punt_tdata),
-        .m_axis_punt_tkeep (punt_tkeep),
-        .m_axis_punt_tvalid(punt_tvalid),
-        .m_axis_punt_tready(punt_tready),
-        .m_axis_punt_tlast (punt_tlast),
+        // punt is consumed internally by pw_punt_rx_window (read via CSR)
         .timestamp_i  (ts),
         .spi_sck_o    (),
         .spi_cs_n_o   (),
@@ -209,13 +213,8 @@ module tb_phase3_top;
         end
     endtask
 
-    // Sticky monitor: count tlast pulses on punt AXIS.
-    int punt_frames_seen;
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) punt_frames_seen <= 0;
-        else if (punt_tvalid && punt_tready && punt_tlast)
-            punt_frames_seen <= punt_frames_seen + 1;
-    end
+    // (Punt frames are now consumed by pw_punt_rx_window and read back
+    // over the CSR BAR -- see the "punt" scenario.)
 
     // Send one ARP-like frame (14 bytes, no payload) on port 0 into the
     // DUT's 64-bit AXIS RX. Bytes are packed little-endian (byte k in
@@ -291,6 +290,7 @@ module tb_phase3_top;
             cls = put_u8 (cls, W_ACTION,   8'd2);          // PUNT_TO_HOST
             cls = put_u8 (cls, W_PRIORITY, 8'd10);
             cls = put_u16(cls, W_FLAGS,    16'h0001);
+            cls = put_u32(cls, W_LIF,      32'h0000_0099); // logical_if_id -> punt tuser
             write_row(WIN_CLS, 1, cls);
 
             axi_write(CLS_COMMIT, 32'h1);
@@ -345,14 +345,26 @@ module tb_phase3_top;
             check_eq("snap flow0 rx_frames hi   = 0", hi, 0);
         end
 
-        // ---- ARP punt path: drive an ARP frame on RX[0] ------
+        // ---- ARP punt path: drive an ARP frame on RX[0], drain it from
+        //      the punt RX window over the CSR BAR --------------------
         scenario = "punt";
         begin
-            int before_punt;
-            before_punt = punt_frames_seen;
+            logic [31:0] st, info, lif;
             send_arp_on_rx(0);
-            repeat (16) @(posedge clk);
-            check_eq("arp punt observed", (punt_frames_seen > before_punt) ? 1 : 0, 1);
+            repeat (24) @(posedge clk);
+            axi_read(PUNT_STATUS, st);
+            check_eq("punt frame_valid",  st[0], 1);
+            check_eq("punt no overflow",  st[1], 0);
+            axi_read(PUNT_INFO, info);
+            check_eq("punt byte_len > 0", (info[13:0] > 0) ? 1 : 0, 1);
+            check_eq("punt ingress port", info[19:16], 0);
+            axi_read(PUNT_LIF, lif);
+            check_eq("punt logical_if_id", lif, 32'h0000_0099);
+            // release the slot and confirm it clears
+            axi_write(PUNT_POP, 32'h1);
+            repeat (4) @(posedge clk);
+            axi_read(PUNT_STATUS, st);
+            check_eq("punt slot freed", st[0], 0);
         end
 
         if (errors == 0) begin
