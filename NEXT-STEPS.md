@@ -32,11 +32,14 @@ need to keep moving is here or one link away.
 > it. ~~host → FPGA `slow_path_tx`~~ **DONE** — `pw_inject_tx_window`
 > (CSR frame buffer → AXIS into the egress arbiter) + `bar_slow_path_tx`;
 > HW round-trip via `pw_phase3_inject` (inject → DAC → PUNT → read back
-> byte-identical). Both slow-path directions now work on silicon. Next:
-> optionally move RX timestamping to the ingress MAC for absolute
-> accuracy; then multi-card. Smaller follow-ups: a flow-compiler/YAML
-> construct for FORWARD rules (currently backend-direct); wire the daemon
-> host_plane TX path to `slow_path_tx` for TAP → wire injection.
+> byte-identical). Both slow-path directions now work on silicon, and the
+> daemon `host_plane` already calls both `slow_path_rx`/`slow_path_tx`, so
+> the TAP ↔ wire bridge is functional end-to-end. Next: optionally move RX
+> timestamping to the ingress MAC for absolute accuracy; then multi-card.
+> Smaller follow-ups: advertise the implemented `capabilities` bits
+> (HISTOGRAM/MIRROR/PUNT) in the bitstream's `CAPABILITIES` parameter
+> (currently 0 — needs a rebuild); a flow-compiler/YAML construct for
+> FORWARD rules (currently backend-direct).
 
 ## Where the tree is right now
 

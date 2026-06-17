@@ -51,7 +51,12 @@ The project currently ships:
   latency bins, loss=0 at line rate, with egress hardware
   timestamping (per-flow DUT latency), a CSR data-plane soft-reset,
   live SPI-flash write over PCIe (`pktwyrm flash`), and in-band
-  reconfiguration via ICAP (`pw_reboot`).
+  reconfiguration via ICAP (`pw_reboot`). The classifier `FORWARD_PORT`
+  action (host-selectable egress port) and the full slow path are on
+  silicon too: **PUNT_TO_HOST / MIRROR_TO_HOST RX** via the BAR-polled
+  `pw_punt_rx_window` (0x1000) and **host&rarr;FPGA TX inject** via the
+  BAR-driven `pw_inject_tx_window` (0x0D00) &mdash; both round-tripped
+  on hardware.
 - **Lab / container integration** &mdash; `tools/pktwyrm-tinet/`
   turns a small lab spec into a [tinet](https://github.com/tinynetwork/tinet)
   topology + per-router FRR configs that boot N routing containers
@@ -87,7 +92,7 @@ Test surface today (all green):
 |------------------------------------|-------------------------------------------------|
 | `make -C sw test`                  | 156 / 156 unit assertions                       |
 | `make -C sw e2e`                   | 18 / 18 daemon &harr; CLI smoke                 |
-| `make -C sim sim_all`              | all green across the SV testbench suite (data plane, classifier, flow gen, BRAM histogram, SPI flash, ICAP, egress TS) |
+| `make -C sim sim_all`              | 19 testbenches green: data plane, parser (2-stage), classifier, flow gen, BRAM histogram, SPI flash, ICAP, egress TS, punt RX, TX inject, end-to-end |
 | `make -C sim/cocotb all`           | 17 / 17 Scapy-driven parser/classifier/flow_gen |
 | `make -C tools/pktwyrm-tinet test` | 35 / 35 generator + lifecycle orchestrator      |
 | `make -C fpga/as02mc04 lint`       | clean (Verilator + Xilinx blackbox)             |
@@ -187,7 +192,7 @@ sudo ./sw/build/pktwyrm stats          # pretty table, refresh with --watch MS
 ./sw/build/pktwyrm rpc cards           # raw JSON RPC
 
 # RTL (Verilator >= 5 for sim_all; Icarus >= 12 + cocotb 2 for sim/cocotb)
-make -C sim sim_all                    # 172 assertions, 9 SV testbenches
+make -C sim sim_all                    # ~441 assertions, 19 SV testbenches
 make -C sim/cocotb all                 # 17 assertions, Scapy-driven units
 
 # Lab / container integration (no FPGA still works for the

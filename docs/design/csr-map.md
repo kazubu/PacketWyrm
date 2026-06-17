@@ -93,7 +93,7 @@ the design scaled past 8 flows. The histogram is BRAM-backed and read
 live (no snapshot latch); its stride dropped 512 B -> 128 B (16 bins).
 The former SLOW_RX/TX placeholders (0x8000 / 0x9000) were reclaimed.
 
-`capabilities` bits (initial proposal):
+`capabilities` bits:
 
 | Bit | Name                  | Meaning                                  |
 |----:|-----------------------|------------------------------------------|
@@ -103,6 +103,15 @@ The former SLOW_RX/TX placeholders (0x8000 / 0x9000) were reclaimed.
 |   3 | CAP_HAS_QINQ_PARSER   | QinQ parser implemented                  |
 |   4 | CAP_HAS_TIMESTAMP_SYNC| cross-card timestamp sync available      |
 |   5 | CAP_HAS_MIRROR        | classifier `MIRROR_TO_HOST` implemented  |
+|   6 | CAP_HAS_PUNT          | slow-path punt RX + TX-inject windows    |
+
+> **Note:** the bits above are a registry of meanings. The current Phase 3
+> bitstream still passes `PW_PHASE1_CAPABILITIES` (0) to the CSR, so the
+> `capabilities` register reads `0x0` even though HISTOGRAM, MIRROR and
+> PUNT are implemented on silicon. Advertising the implemented bits
+> (set the `CAPABILITIES` parameter in `pwfpga_top_phase3_board.sv`) is a
+> pending follow-up that needs a bitstream rebuild — software does not yet
+> gate on these bits, so nothing currently depends on it.
 
 ## Port stats block (per port)
 
@@ -252,7 +261,7 @@ traffic). The host polls:
 `host_plane` calls it and routes each frame to the TAP for its
 `logical_if_id`. The `overflow` bit (status bit 1) latches if a frame
 larger than the buffer was dropped. Host -> FPGA injection
-(`slow_path_tx`) is not wired on the BAR backend yet (see NEXT-STEPS).
+(`slow_path_tx`) is implemented too -- see the inject window below.
 
 ## Slow-path TX inject window (implemented, BAR-driven)
 

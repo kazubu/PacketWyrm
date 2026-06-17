@@ -69,6 +69,7 @@ enum {
     PWFPGA_CAP_HAS_QINQ_PARSER    = 1u << 3,
     PWFPGA_CAP_HAS_TIMESTAMP_SYNC = 1u << 4,
     PWFPGA_CAP_HAS_MIRROR         = 1u << 5,
+    PWFPGA_CAP_HAS_PUNT           = 1u << 6,  /* slow-path RX/TX windows */
 };
 
 /* Classifier actions. */
