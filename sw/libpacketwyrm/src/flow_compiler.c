@@ -221,6 +221,35 @@ static pw_status compile_punt_rules(struct pw_program *out, const struct pw_conf
     return PW_OK;
 }
 
+static pw_status compile_forward_rules(struct pw_program *out, const struct pw_config *cfg) {
+    for (size_t i = 0; i < cfg->n_forwards; i++) {
+        const struct pw_forward_rule *fr = &cfg->forwards[i];
+        struct pwfpga_port_ref ing, egr;
+        pw_status r = pw_config_resolve_port(cfg, fr->ingress_port, &ing);
+        if (r != PW_OK) return r;
+        if ((r = pw_config_resolve_port(cfg, fr->egress_port, &egr)) != PW_OK) return r;
+        if (ing.card_id != egr.card_id) return PW_E_INVAL;
+        struct pw_card_program *cp = card_slot(out, ing.card_id);
+        if (!cp) return PW_E_UNKNOWN_CARD;
+
+        struct pwfpga_classifier_entry e = {0};
+        e.action            = PWFPGA_ACT_FORWARD_PORT;
+        e.flags             = PWFPGA_CLS_FLAG_ENABLE;
+        e.priority          = fr->priority;
+        e.egress_local_port = egr.local_port_id;
+        e.key.ingress_local_port  = ing.local_port_id;
+        e.mask.ingress_local_port = 0xff;
+        if (fr->vlan)      { e.key.vlan_id    = fr->vlan;      e.mask.vlan_id    = 0x0FFF;   }
+        if (fr->ethertype) { e.key.ethertype  = fr->ethertype; e.mask.ethertype  = 0xFFFF;  }
+        if (fr->ip_proto)  { e.key.l3_proto   = fr->ip_proto;  e.mask.l3_proto   = 0xff;    }
+        if (fr->udp_dst)   { e.key.udp_dst_port = fr->udp_dst; e.mask.udp_dst_port = 0xFFFF; }
+
+        pw_status er = append_classifier(cp, &e);
+        if (er != PW_OK) return er;
+    }
+    return PW_OK;
+}
+
 pw_status pw_flow_compile(const struct pw_config *cfg, struct pw_program *out,
                           struct pw_diag *diag) {
     if (!cfg || !out) return PW_E_INVAL;
@@ -243,5 +272,7 @@ pw_status pw_flow_compile(const struct pw_config *cfg, struct pw_program *out,
         if (r != PW_OK) return r;
     }
 
-    return compile_punt_rules(out, cfg);
+    r = compile_punt_rules(out, cfg);
+    if (r != PW_OK) return r;
+    return compile_forward_rules(out, cfg);
 }

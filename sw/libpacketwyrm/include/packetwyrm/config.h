@@ -111,6 +111,21 @@ struct pw_flow {
     struct pw_flow_meas    meas;
 };
 
+/* Store-and-forward rule: relay frames matching the (optional) key from
+ * one port to another on the same card. Compiles to a classifier
+ * FORWARD_PORT row. ingress/egress are global port ids; match fields are
+ * 0 = don't care. */
+struct pw_forward_rule {
+    char     name[PW_NAME_MAX];
+    uint16_t ingress_port;               /* global port id */
+    uint16_t egress_port;                /* global port id (same card) */
+    uint8_t  priority;                   /* lower wins; default 40 */
+    uint16_t ethertype;                  /* 0 = any */
+    uint8_t  ip_proto;                   /* 0 = any */
+    uint16_t udp_dst;                    /* 0 = any */
+    uint16_t vlan;                       /* 0 = any */
+};
+
 struct pw_config {
     struct pw_system     system;
 
@@ -122,6 +137,9 @@ struct pw_config {
 
     struct pw_flow      *flows;
     size_t               n_flows;
+
+    struct pw_forward_rule *forwards;
+    size_t                  n_forwards;
 };
 
 /* Diagnostic produced by the parser / validator. */

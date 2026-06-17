@@ -1,0 +1,41 @@
+# Phase 3 store-and-forward (FORWARD_PORT) example.
+#
+# Relays frames arriving on p0 out p1 (same card) via the data plane's
+# store-and-forward path -- the card acts as an in-line element rather
+# than only a generator/checker. `forwards` rules compile to classifier
+# FORWARD_PORT rows (egress_local_port resolved from egress_port). The
+# optional match keys narrow which frames are relayed; omit them to
+# forward everything arriving on the ingress port.
+#
+# Note: ingress and egress must be on the same card (the classifier is
+# per-card). FORWARD egress is host-selectable as of Phase 3.
+
+system:
+  name: "pw-phase3-forward"
+  mode: "multi-card"
+  default_speed: "10g"
+  control_socket: "/tmp/pw-phase3.sock"
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+forwards:
+  # Relay all IPv4/UDP:5000 traffic from p0 to p1.
+  - name: "relay-udp5000"
+    ingress_port: 0
+    egress_port: 1
+    ethertype: 0x0800     # optional match (0/absent = any)
+    ip_proto: 17          # UDP
+    udp_dst: 5000
+    priority: 40
+
+  # Relay everything else arriving on p1 back out p0 (no match key).
+  - name: "relay-all-back"
+    ingress_port: 1
+    egress_port: 0
+    priority: 50

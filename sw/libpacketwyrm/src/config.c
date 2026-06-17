@@ -39,6 +39,7 @@ void pw_config_free(struct pw_config *cfg) {
     free(cfg->cards);
     free(cfg->logical_if);
     free(cfg->flows);
+    free(cfg->forwards);
     free(cfg);
 }
 
@@ -442,6 +443,58 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
     return PW_OK;
 }
 
+static pw_status parse_forward(const pw_yaml_node *m, struct pw_forward_rule *fr,
+                               size_t idx, struct pw_diag *diag) {
+    char path[64];
+    snprintf(path, sizeof(path), "forwards[%zu]", idx);
+    REQ_MAP(m, path);
+    const char *s;
+    pw_status r;
+    uint16_t u16;
+
+    if ((r = get_scalar(m, "ingress_port", path, true, &s, diag)) != PW_OK) return r;
+    if (!pw_parse_u16(s, &fr->ingress_port)) {
+        diag_set(diag, PW_E_PARSE, path, "ingress_port must be unsigned integer"); return PW_E_PARSE;
+    }
+    if ((r = get_scalar(m, "egress_port", path, true, &s, diag)) != PW_OK) return r;
+    if (!pw_parse_u16(s, &fr->egress_port)) {
+        diag_set(diag, PW_E_PARSE, path, "egress_port must be unsigned integer"); return PW_E_PARSE;
+    }
+
+    if ((r = get_scalar(m, "name", path, false, &s, diag)) != PW_OK) return r;
+    if (s) copy_str(fr->name, sizeof(fr->name), s);
+
+    fr->priority = 40;
+    if ((r = get_scalar(m, "priority", path, false, &s, diag)) != PW_OK) return r;
+    if (s) {
+        if (!pw_parse_u8(s, &fr->priority)) {
+            diag_set(diag, PW_E_OUT_OF_RANGE, path, "priority must be 0..255"); return PW_E_OUT_OF_RANGE;
+        }
+    }
+
+    /* optional match key (0 / absent = don't care) */
+    if ((r = get_scalar(m, "ethertype", path, false, &s, diag)) != PW_OK) return r;
+    if (s && !pw_parse_u16(s, &fr->ethertype)) {
+        diag_set(diag, PW_E_PARSE, path, "ethertype must be a 16-bit value"); return PW_E_PARSE;
+    }
+    if ((r = get_scalar(m, "ip_proto", path, false, &s, diag)) != PW_OK) return r;
+    if (s && !pw_parse_u8(s, &fr->ip_proto)) {
+        diag_set(diag, PW_E_PARSE, path, "ip_proto must be 0..255"); return PW_E_PARSE;
+    }
+    if ((r = get_scalar(m, "udp_dst", path, false, &s, diag)) != PW_OK) return r;
+    if (s && !pw_parse_u16(s, &fr->udp_dst)) {
+        diag_set(diag, PW_E_PARSE, path, "udp_dst must be a 16-bit value"); return PW_E_PARSE;
+    }
+    if ((r = get_scalar(m, "vlan", path, false, &s, diag)) != PW_OK) return r;
+    if (s) {
+        if (!pw_parse_u16(s, &u16) || u16 >= 4095) {
+            diag_set(diag, PW_E_OUT_OF_RANGE, path, "vlan must be 0..4094"); return PW_E_OUT_OF_RANGE;
+        }
+        fr->vlan = u16;
+    }
+    return PW_OK;
+}
+
 static pw_status parse_root(const pw_yaml_node *root, struct pw_config *cfg, struct pw_diag *diag) {
     REQ_MAP(root, "");
 
@@ -481,6 +534,17 @@ static pw_status parse_root(const pw_yaml_node *root, struct pw_config *cfg, str
         cfg->n_flows = flows->u.seq.n;
         for (size_t i = 0; i < cfg->n_flows; i++) {
             if ((r = parse_flow(flows->u.seq.items[i], &cfg->flows[i], i, diag)) != PW_OK) return r;
+        }
+    }
+
+    const pw_yaml_node *fwds = pw_yaml_map_get(root, "forwards");
+    if (fwds) {
+        REQ_SEQ(fwds, "forwards");
+        cfg->forwards = (struct pw_forward_rule *)calloc(fwds->u.seq.n, sizeof(struct pw_forward_rule));
+        if (!cfg->forwards && fwds->u.seq.n) return PW_E_NO_RESOURCES;
+        cfg->n_forwards = fwds->u.seq.n;
+        for (size_t i = 0; i < cfg->n_forwards; i++) {
+            if ((r = parse_forward(fwds->u.seq.items[i], &cfg->forwards[i], i, diag)) != PW_OK) return r;
         }
     }
 

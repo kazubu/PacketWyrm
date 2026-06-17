@@ -27,6 +27,11 @@ For where work is going next, see `NEXT-STEPS.md`.
     by the classifier result's `egress_port` (previously hardwired to
     0). `pw_phase3_forward [fwd_egress]` validates routing to either
     port; `sim_vec` covers the new wire byte.
+  - **FORWARD rules from config** — a top-level `forwards:` YAML section
+    (ingress/egress port + optional ethertype/ip_proto/udp_dst/vlan
+    match) compiles to classifier `FORWARD_PORT` rows; ingress/egress
+    must be on the same card. Example `configs/examples/phase3-forward.yaml`;
+    schema in `docs/design/yaml-schema.md`.
   - **Timing margin recovered** — pipelined `pw_parser_axis` key extract
     into two stages; WNS +0.003 → +0.020 ns at 156.25 MHz, HW-revalidated
     at loss=0.
