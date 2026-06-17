@@ -21,12 +21,14 @@ need to keep moving is here or one link away.
 > silicon~~ **DONE** — `pw_phase3_forward` on HW (gen[1]→RX0→FWD→SAF→TX0
 > →RX1→TEST_RX, frames cross the DAC twice): rx 4.75M, **loss=0**, ooo=0,
 > latency uniform (the constant dup=1 / ~27 startup drops are one-time
-> pre-commit artifacts). Caveat: the classifier wire struct doesn't carry
-> a FORWARD egress port yet, so FORWARD is hardwired to egress 0 in RTL —
-> generalising that (egress port in `pwfpga_classifier_entry` + RTL) is
-> the remaining FORWARD work. Next: implement the **PUNT/slow-path** to
-> the host (the punt AXIS is currently tied off); optionally move RX
-> timestamping to the ingress MAC for absolute accuracy; then multi-card.
+> pre-commit artifacts). FORWARD egress port is now **host-selectable**
+> (`egress_local_port` byte 92 in `pwfpga_classifier_entry`, decoded in
+> `pw_classifier_window`; the data plane already routed by the result's
+> `egress_port`). Next: implement the **PUNT/slow-path** to the host (the
+> punt AXIS is currently tied off); optionally move RX timestamping to the
+> ingress MAC for absolute accuracy; then multi-card. (FORWARD still has
+> no flow-compiler/YAML construct — rules are programmed via the backend;
+> a compiler construct would make FORWARD usable from config.)
 
 ## Where the tree is right now
 

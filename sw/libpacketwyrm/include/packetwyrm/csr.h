@@ -107,13 +107,15 @@ enum {
 };
 
 struct pwfpga_classifier_entry {
-    struct pwfpga_match_key key;
-    struct pwfpga_match_key mask;
-    uint32_t logical_if_id;
-    uint32_t local_flow_id;
-    uint8_t  action;     /* enum pwfpga_action */
-    uint8_t  priority;   /* lower numbers win */
-    uint16_t flags;      /* PWFPGA_CLS_FLAG_* */
+    struct pwfpga_match_key key;       /* bytes  0..39 */
+    struct pwfpga_match_key mask;      /* bytes 40..79 */
+    uint32_t logical_if_id;            /* bytes 80..83 */
+    uint32_t local_flow_id;            /* bytes 84..87 */
+    uint8_t  action;     /* enum pwfpga_action       byte 88 */
+    uint8_t  priority;   /* lower numbers win        byte 89 */
+    uint16_t flags;      /* PWFPGA_CLS_FLAG_*    bytes 90..91 */
+    uint8_t  egress_local_port; /* FORWARD_PORT target port  byte 92 */
+    uint8_t  _reserved[3];      /* pad to a 32-bit word      bytes 93..95 */
 } __attribute__((packed));
 
 enum pwfpga_payload_mode {

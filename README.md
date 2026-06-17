@@ -154,6 +154,23 @@ docs/                   design notes (architecture, ID system, CSR
                         map, daemon, flow compiler, ...).
 ```
 
+### Standalone hardware tools (`sw/tests/`, vfio/BAR)
+
+Single-shot diagnostics that talk to a real card directly (run as
+`sudo env PW_BACKEND=vfio sw/build/<tool> <pci-bdf> ...`; build with
+`make -C sw <tool>`). They bypass the daemon, so stop `packetwyrmd`
+first (it holds the device).
+
+| Tool                 | What it does                                                        |
+|----------------------|---------------------------------------------------------------------|
+| `pw_card_probe`      | Read + verify the identity block (device_id / version / build / git). |
+| `pw_sfp_test`        | SFP+ link / block-lock status check.                                |
+| `pw_phase3_loopback` | Program one flow, loop SFP0<->SFP1 over a DAC, report loss/latency. |
+| `pw_phase3_forward`  | Validate the SAF `FORWARD_PORT` path; `[fwd_egress]` picks the port. |
+| `pw_flash`           | Live in-system SPI config-flash erase/program/verify over PCIe.     |
+| `pw_reboot`          | Trigger in-band ICAP IPROG reconfiguration from flash.              |
+| `gen_bar_vectors`    | Dump the post-write BAR byte image (drives the `sim_vec` regression). |
+
 ## Try it (no FPGA required)
 
 ```sh

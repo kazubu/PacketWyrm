@@ -141,9 +141,13 @@ Output: a flat "header descriptor" with all extracted fields plus a
 
 - Priority-ordered linear table (Phase 1).
 - Each entry: match key + mask, action, priority,
-  `local_flow_id`, `logical_if_id`.
+  `local_flow_id`, `logical_if_id`, `egress_local_port`.
 - Actions: `DROP`, `TEST_RX`, `PUNT_TO_HOST`, `MIRROR_TO_HOST`,
   `FORWARD_PORT`.
+- `FORWARD_PORT` uses `egress_local_port` (byte 92 of the wire row,
+  decoded in `pw_classifier_window`) to pick the egress port the SAF
+  drains to; the data plane routes by the result's `egress_port`. See
+  `docs/design/csr-map.md` (classifier window).
 - Double-buffered: stage row, then write `commit` to swap.
 - Returns the matched action + IDs to the rest of the RX pipeline.
 

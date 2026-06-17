@@ -144,6 +144,13 @@ The host must set `PWFPGA_CLS_FLAG_ENABLE` for every active row.
 Clearing the bit on a re-commit takes the row out of the lookup
 without disturbing any other entry.
 
+For a `FORWARD_PORT` action, `egress_local_port` (byte 92 of the row,
+just past `flags`) selects the egress port the matched frame is
+store-and-forwarded to. The data plane already routed by the
+classifier result's `egress_port`; this byte is what carries the
+host's choice into it (earlier bitstreams hardwired it to 0). Ignored
+for non-FORWARD actions.
+
 The RTL side of the window is implemented by
 `rtl/shared/pw_csr_window.sv` (generic shadow + commit) and
 `rtl/phase3/pw_classifier_window.sv` (wire-format ↔

@@ -20,8 +20,13 @@ For where work is going next, see `NEXT-STEPS.md`.
   - **Store-and-forward FORWARD validated on silicon** — a classifier
     `FORWARD_PORT` rule routes ingress frames through `pw_frame_saf` to
     the egress port; HW test (`pw_phase3_forward`) crossed the DAC twice
-    at line rate with loss=0. (FORWARD egress is hardwired to port 0 in
-    RTL until the classifier wire struct carries an egress-port field.)
+    at line rate with loss=0.
+  - **FORWARD egress port now host-selectable** — added
+    `egress_local_port` (byte 92) to the classifier wire struct and
+    decoded it in `pw_classifier_window`; the data plane already routed
+    by the classifier result's `egress_port` (previously hardwired to
+    0). `pw_phase3_forward [fwd_egress]` validates routing to either
+    port; `sim_vec` covers the new wire byte.
   - **Timing margin recovered** — pipelined `pw_parser_axis` key extract
     into two stages; WNS +0.003 → +0.020 ns at 156.25 MHz, HW-revalidated
     at loss=0.
@@ -161,9 +166,11 @@ For where work is going next, see `NEXT-STEPS.md`.
     snapshot window (per-port + per-flow counters latched on
     trigger, wire-format byte offsets match `pw_port_stats` /
     `pw_flow_stats`, re-trigger replaces the shadow).
-  - `make -C sim sim_hist`: 21 / 21 assertions for the per-flow
-    latency histogram snapshot (`PWFPGA_WIN_HISTOGRAM` window;
-    NUM_BUCKETS u64s per flow at `lfid * PWFPGA_FLOW_HIST_STRIDE`).
+  - `make -C sim sim_lat`: 16 / 16 assertions for the BRAM-backed
+    per-flow latency histogram (`pw_lat_histogram`): accumulate via
+    per-port checker events, live addressed read through
+    `PWFPGA_WIN_HISTOGRAM` (NUM_BUCKETS u64s per flow at
+    `lfid * PWFPGA_FLOW_HIST_STRIDE`), and clear.
   - `make -C sim sim_full`: 12 / 12 assertions exercising the
     full `pw_csr_full` AXI4-Lite slave end-to-end: identity
     reads, classifier write+commit through `axi_write`, stats

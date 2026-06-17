@@ -55,6 +55,7 @@ int main(int argc, char **argv) {
     ce.action               = PWFPGA_ACT_TEST_RX;
     ce.priority             = 5;
     ce.flags                = PWFPGA_CLS_FLAG_ENABLE;
+    ce.egress_local_port    = 1;   /* exercise the FORWARD egress wire byte */
     ce.local_flow_id        = 3;
     ce.logical_if_id        = 1000;
     ce.key.l3_proto         = 17;
