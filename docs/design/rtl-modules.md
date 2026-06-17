@@ -4,7 +4,40 @@ The AS02MC04 carries a Kintex UltraScale+ KU3P, two SFP+ cages, and a
 PCIe endpoint. RTL only deals with **one card at a time**; no global ID
 ever crosses the PCIe boundary.
 
-## Top-level module hierarchy
+## As-built hierarchy (Phase 3, on silicon)
+
+This is what actually builds and runs today. The original sketch below
+(`## Top-level module hierarchy`) is kept for design intent, but the
+streaming Phase 3 plane diverged from it (no wide frame bus, no serdes).
+
+```
+pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
++-- pcie (XDMA) + axi_clk_conv    BAR -> AXI-Lite, 250 -> 156.25 MHz
++-- pw_sfp_10g + pw_mac_axis_cdc  dual 10GBASE-R (Taxi MAC/GTY) <-> dp_clk
++-- STARTUPE3  + pw_ts_gray_cdc + pw_ts_insert   egress HW timestamping
++-- ICAPE3     <- pw_icap_reboot                 in-band IPROG reload
++-- pwfpga_top_phase3            board-agnostic core
+    +-- pw_csr_full              AXI-Lite slave: identity + windows +
+    |   +-- pw_classifier_window /  pw_flow_window /  pw_stats_snapshot
+    |   +-- pw_spi_flash         CSR SPI master (live config-flash access)
+    |   +-- DP_RESET / REBOOT / STATS_CLEAR / SNAPSHOT triggers
+    +-- pw_data_plane_axis       64-bit AXIS streaming data plane
+        +-- per ingress port: pw_parser_axis -> pw_classifier (RESULT_STAGES=2)
+        |                      -> pw_frame_saf (store-and-forward)
+        +-- per ingress port: pw_test_rx_checker (loss/dup/ooo/min/max/sum)
+        +-- pw_lat_histogram     shared BRAM latency histogram
+        +-- per egress port:  pw_flow_gen_multi (N-slot token-bucket gen)
+        +-- egress / punt arbiters
+```
+
+Module notes: `pw_parser_axis` is pipelined (2-stage key extract);
+`pw_classifier` uses RESULT_STAGES + a parallel priority winner;
+`pw_lat_histogram` replaced the FF histogram; `pw_ts_insert` overwrites
+the tx_timestamp at egress so latency measures the DUT. The wide-bus
+`pw_data_plane` / `pw_parser` / `pw_flow_gen` remain only for the legacy
+sim (`tb_data_plane`).
+
+## Top-level module hierarchy (original design sketch)
 
 ```
 pwfpga_top

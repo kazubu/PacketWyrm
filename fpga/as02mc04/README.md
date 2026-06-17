@@ -1,4 +1,17 @@
-# AS02MC04 board-support &mdash; Phase 1 bring-up
+# AS02MC04 board-support
+
+> **Status: Phase 3 complete on hardware.** The board now runs the full
+> streaming data plane — dual 10GBASE-R links, 32-flow generator /
+> 16-row classifier, BRAM latency histogram, egress HW timestamping,
+> CSR-driven SPI-flash write and ICAP reboot — booted from the onboard
+> flash at power-on. This README keeps the original Phase 1 bring-up
+> recipe (pinout, PCIe IP, JTAG, flash boot) because that board-support
+> work is unchanged and still the way you bring a bare board up; the
+> sections flagged *(Phase 1)* describe the first milestone, not the
+> current capability. See `CHANGELOG.md`, `docs/design/rtl-modules.md`
+> and `docs/phases/poc-phase-1-3.md` for the as-built Phase 3 result.
+
+## Phase 1 bring-up
 
 Goal of this phase: produce a bitstream that
 
@@ -121,6 +134,16 @@ make program HW_TARGET=*jlink*
 > stub build with `make synth` `... -tclargs use_ip=0` only for a
 > LED/timing smoke test -- PCIe will not enumerate.
 
+> **Building the Phase 3 bitstream.** The `make` targets above build
+> the Phase 1 top (`pwfpga_top_phase1`). The full tester is a separate
+> project: `project_phase3.tcl` creates
+> `build/pwfpga_as02mc04_phase3/`, and
+> `scripts/synth_impl_phase3.tcl` runs synth + impl + write_bitstream
+> and prints the final WNS. The bitstream lands at
+> `build/pwfpga_as02mc04_phase3/pwfpga_as02mc04_phase3.runs/impl_1/pwfpga_top_phase3_board.bit`;
+> program it over JTAG with `scripts/program.tcl` or write it to the
+> onboard flash with `scripts/flash.tcl` for power-on boot.
+
 If you prefer OpenOCD (no licensed Vivado on the lab box), generate
 the SVF from Vivado and follow `docs/jtag-bringup.md` &mdash; that
 recipe is verified working on AS02MC04 via Segger J-Link and Altera
@@ -177,9 +200,12 @@ Expected output:
 > subsystem `10ee:7e57`). See `docs/design/pci-ids.md` for the
 > rationale behind those values.
 
-`packetwyrmd` Phase 4 reads the same registers through the
-forthcoming BAR backend (`pw_bar_backend_open`). Phase 1 only proves
-that the BAR is reachable and the FPGA presents the right identity.
+`packetwyrmd` reads the same identity registers through the BAR
+backend (`pw_bar_backend_open`, now in tree and used in production) and
+then programs the classifier / flow / histogram windows over the same
+AXI-Lite path. Phase 1 proved the BAR is reachable and the FPGA
+presents the right identity; Phase 3 builds the whole tester on top of
+it.
 
 ## Definition of done
 
@@ -231,7 +257,9 @@ stable across repeats and the full identity block reads back correctly.
 > and reboots the host. The FPGA keeps its volatile config across a warm
 > reboot (cold power-off loses it -- a flash boot image fixes that).
 
-Phase 2 (10G MAC / PCS frame loopback) starts next.
+Phase 2 (10G MAC / PCS frame loopback) and Phase 3 (full generator /
+classifier / checker data plane) both built on this and are now
+complete on hardware — see the status banner at the top.
 
 ## Why we are not just using Taxi / Corundum
 

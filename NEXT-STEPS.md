@@ -3,6 +3,24 @@
 This is the agent-to-agent baton. Read top to bottom; everything you
 need to keep moving is here or one link away.
 
+> **CURRENT STATE (supersedes the snapshot below).** Phase 3 is done on
+> hardware: the 64-bit streaming data plane runs on the AS02MC04 at 32
+> flows / 16 classifier rows / 16 latency bins, loss=0 at line rate, with
+> a BRAM histogram, egress hardware timestamping, a CSR data-plane
+> soft-reset, live SPI-flash write (`pktwyrm flash` / `pw_flash`) and
+> in-band ICAP reboot (`pw_reboot`). The full image is flashed as the
+> cold-boot image. See `CHANGELOG.md` (Unreleased) for the feature list
+> and `docs/design/{csr-map,rtl-modules}.md` for the as-built design. The
+> "Where the tree is" / commit-graph / Open-TODO sections below predate
+> this work and are kept only for history.
+>
+> **Remaining / next** (priority): recover timing margin (the full
+> feature stack closes at a thin WNS ~+0.003 @156.25 MHz); validate the
+> SAF **FORWARD** path on silicon (only TEST_RX loopback is HW-tested);
+> implement the **PUNT/slow-path** to the host (the punt AXIS is currently
+> tied off); optionally move RX timestamping to the ingress MAC for
+> absolute accuracy; then multi-card.
+
 ## Where the tree is right now
 
 Branch: `claude/brave-bohr-ha75N` (all work pushed). Author identity

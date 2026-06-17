@@ -52,14 +52,32 @@ the initial proposal; concrete field bit definitions are owned by the
 0x0304  port1_status           R
 0x0308..0x03fc port1 stats     R
 
-0x1000..0x1fff  classifier_table_window
-0x2000..0x2fff  flow_table_window
-0x3000..0x3fff  stats_snapshot_window
-0x4000..0x4fff  histogram_window
+0x0120  reboot                 W     write 0x52424F54 ("RBOT") -> ICAP IPROG
+                                     (reload bitstream from flash; PCIe drops)
 
-0x8000..0x8fff  slow_path_rx_ring_control
-0x9000..0x9fff  slow_path_tx_ring_control
+0x0800..0x0cff  spi_flash_window       in-system SPI flash master (live
+                                       config-flash erase/program/read):
+  0x0800  spi_ctrl   W:[0]go [1]cs_hold  R:[0]busy
+  0x0804  spi_len    bytes to shift this transfer
+  0x0900  spi_txbuf  512 B TX buffer
+  0x0b00  spi_rxbuf  512 B RX buffer
+
+# Wide table windows (64 flows / 64 classifier rows max). The
+# commit-bearing windows are 16 KB apart so their commit / trigger /
+# clear registers sit above the 8 KB data region; the live-read
+# histogram gets 8 KB. Fills the 64 KB BAR.
+0x2000..0x5fff  classifier_table_window   (rows @128 B; commit @+0x3FFC)
+0x6000..0x9fff  flow_table_window         (rows @128 B; commit @+0x3FFC)
+0xa000..0xbfff  histogram_window          (per-flow @128 B = 16 bins; live read)
+0xc000..0xffff  stats_snapshot_window     (trigger @+0x3FFC, clear @+0x3FF8,
+                                           data-plane soft-reset @+0x3FF4)
 ```
+
+The earlier compact map (classifier 0x1000 / flow 0x2000 / stats 0x3000
+/ histogram 0x4000, 4 KB each) was replaced by the wide map above when
+the design scaled past 8 flows. The histogram is BRAM-backed and read
+live (no snapshot latch); its stride dropped 512 B -> 128 B (16 bins).
+The former SLOW_RX/TX placeholders (0x8000 / 0x9000) were reclaimed.
 
 `capabilities` bits (initial proposal):
 
@@ -108,7 +126,7 @@ A write-1-to-commit register lives at the last dword of the
 window:
 
 ```
-PWFPGA_REG_CLASSIFIER_COMMIT = PWFPGA_WIN_CLASSIFIER + 0xFFC
+PWFPGA_REG_CLASSIFIER_COMMIT = PWFPGA_WIN_CLASSIFIER + 0x3FFC
 ```
 
 The shadow table holds the staged entry; writing 1 to
@@ -145,14 +163,18 @@ PWFPGA_WIN_FLOW_TABLE + row_index * PWFPGA_FLOW_STRIDE  (128 bytes)
 Commit register at:
 
 ```
-PWFPGA_REG_FLOW_COMMIT = PWFPGA_WIN_FLOW_TABLE + 0xFFC
+PWFPGA_REG_FLOW_COMMIT = PWFPGA_WIN_FLOW_TABLE + 0x3FFC
 ```
 
 ## Stats snapshot window
 
 ```
-PWFPGA_REG_STATS_SNAPSHOT_TRIGGER  = PWFPGA_WIN_STATS_SNAPSHOT + 0xFFC
+PWFPGA_REG_STATS_SNAPSHOT_TRIGGER  = PWFPGA_WIN_STATS_SNAPSHOT + 0x3FFC
    W     write 1 to copy live counters into the shadow region
+PWFPGA_REG_STATS_CLEAR             = PWFPGA_WIN_STATS_SNAPSHOT + 0x3FF8
+   W     write 1 to soft-clear all RX checker counters (re-baseline; `test arm`)
+PWFPGA_REG_DP_RESET                = PWFPGA_WIN_STATS_SNAPSHOT + 0x3FF4
+   W     write 1 to soft-reset the wedge-prone datapath (gen / SAF / arbiters)
 
 per-port block (read-only after snapshot):
    PWFPGA_WIN_STATS_SNAPSHOT + N * PWFPGA_PORT_STATS_STRIDE  (128 B)
@@ -174,12 +196,15 @@ shadow region, not the live counters. This makes
 ## Histogram window
 
 ```
-PWFPGA_WIN_HISTOGRAM + N * PWFPGA_FLOW_HIST_STRIDE  (512 B = 64 bins)
+PWFPGA_WIN_HISTOGRAM + N * PWFPGA_FLOW_HIST_STRIDE  (128 B = 16 bins)
    N = local_flow_id
 
-Bin layout: 64 power-of-two buckets keyed off log2(latency)
-(matches `pw_test_rx_checker` in `rtl/phase3/`). Buckets are u64
-each; the stride leaves room for 64 of them.
+Bin layout: power-of-two buckets keyed off log2(latency); the build
+ships 16 bins (stride 128 B). Buckets are u64. The histogram is
+BRAM-backed (`rtl/phase3/pw_lat_histogram.sv`, fed by per-port checker
+events) and read LIVE through this window -- there is no snapshot latch
+for the histogram (unlike the stats window). The egress timestamp
+(`pw_ts_insert`) means these latencies reflect the DUT, not the tester.
 ```
 
 Concrete strides and offsets are defined as preprocessor macros

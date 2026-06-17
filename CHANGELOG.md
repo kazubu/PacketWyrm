@@ -10,6 +10,29 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ### Added
 
+- **Phase 3 data plane on silicon (AS02MC04 / KU3P)** — the 64-bit
+  streaming data plane runs on hardware at line rate, loss=0:
+  - Rewrote the unroutable wide `pw_frame_t` bus into a 64-bit AXIS
+    streaming plane (`pw_parser_axis`, `pw_flow_gen_multi`,
+    `pw_frame_saf`, `pw_data_plane_axis`); closes timing at 156.25 MHz.
+  - Scaled to **32 flows / 16 classifier rows / 16 latency bins**;
+    bidirectional + 16 concurrent flows validated at loss=0.
+  - **BRAM-backed latency histogram** (`pw_lat_histogram`) — freed the
+    FF wall that capped flow scaling; read live via the CSR window.
+  - **Egress hardware timestamping** (`pw_ts_insert` + `pw_ts_gray_cdc`)
+    — tx_timestamp applied at the MAC (PTP one-step style), so measured
+    latency reflects the DUT, not the tester's own TX queuing.
+  - **CSR data-plane soft-reset** (`REG_DP_RESET`) — recover a wedged
+    data plane without a JTAG reconfig.
+  - **Wide CSR address map** — classifier/flow/stats windows 16 KB,
+    histogram 8 KB (128 B stride); commit/trigger/clear above the data
+    region. (ABI change; see `docs/design/csr-map.md`.)
+- **In-system flash + reconfiguration**
+  - `pw_spi_flash` CSR SPI master via STARTUPE3 — erase/program/read the
+    config flash live over PCIe (no JTAG); `pktwyrm flash` / `pw_flash`.
+  - `pw_icap_reboot` (ICAP IPROG via `REG_REBOOT`) — reload the bitstream
+    from flash in-band; `pw_reboot`. The full-feature image is flashed as
+    the cold-boot image.
 - **Lab integration: pktwyrm-tinet**
   - `tools/pktwyrm-tinet/` generates a [tinet](https://github.com/tinynetwork/tinet)
     topology + per-router FRR configs from a small lab spec that

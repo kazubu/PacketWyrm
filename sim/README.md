@@ -23,6 +23,9 @@ classifier / flow_gen behavioural mirrors).
 | `make sim_flow` | `flow_window_tb/`             | 16         | flow-template CSR window                                                |
 | `make sim_stats`| `stats_snapshot_tb/`          | 16         | per-flow stats counters + snapshot trigger semantics                    |
 | `make sim_lat`  | `lat_histogram_tb/`           | 16         | BRAM-backed per-flow latency histogram: accumulate, live read, clear    |
+| `make sim_spi`  | `spi_flash_tb/`               |  5         | CSR SPI byte engine: loopback + behavioural-flash program/read-back     |
+| `make sim_icap` | `icap_reboot_tb/`             |  9         | ICAP IPROG command stream (sync / WBSTAR / IPROG, bit-swapped)          |
+| `make sim_tsi`  | `ts_insert_tb/`               | ~25        | egress tx_ts overwrite: no-VLAN / VLAN offsets, magic-gated passthrough |
 | `make sim_full` | `csr_full_tb/`                | 12         | `pw_csr_full` AXI-Lite slave integrating all four windows               |
 | `make sim_top`  | `phase3_top_tb/`              |  4         | `pwfpga_top_phase3`: AXI-Lite -> CSR -> flow_gen -> AXIS loop -> RX     |
 | `make sim_vec`  | `wire_vectors_tb/`            | 25         | C `pw_bar_backend` byte image vs SV `pw_csr_full` decoder agree         |

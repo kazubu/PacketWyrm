@@ -43,9 +43,15 @@ The project currently ships:
   packets with sequence + timestamp via a Q16.16 token-bucket
   scheduler, and checks RX for per-flow loss / duplicate /
   out-of-order plus per-flow min/max/sum/count latency and a
-  power-of-two latency histogram. `pwfpga_top_phase3` integrates
-  data plane + CSR window (`pw_csr_full` AXI4-Lite slave) + per-port
-  AXIS serializer / deserializer + punt-AXIS path.
+  power-of-two latency histogram (BRAM-backed). The 64-bit AXIS
+  streams straight from the MAC into the data plane (no wide-frame
+  serializer); `pwfpga_top_phase3` integrates the data plane + CSR
+  window (`pw_csr_full` AXI4-Lite slave) + punt-AXIS path. On the
+  AS02MC04 it runs on silicon at 32 flows / 16 classifier rows / 16
+  latency bins, loss=0 at line rate, with egress hardware
+  timestamping (per-flow DUT latency), a CSR data-plane soft-reset,
+  live SPI-flash write over PCIe (`pktwyrm flash`), and in-band
+  reconfiguration via ICAP (`pw_reboot`).
 - **Lab / container integration** &mdash; `tools/pktwyrm-tinet/`
   turns a small lab spec into a [tinet](https://github.com/tinynetwork/tinet)
   topology + per-router FRR configs that boot N routing containers
@@ -53,11 +59,13 @@ The project currently ships:
   lab.yaml`) starts `packetwyrmd`, waits for TAPs, runs `tinet up`
   and `tinet conf`. State persists under `<out>/.pktwyrm-lab.json`
   so `down` / `conf` / `status` work standalone.
-- **AS02MC04 Phase 1 Vivado project** &mdash; reproducible
-  `project.tcl`, real pin assignments (refclk / PERST# / LEDs /
-  PCIe x8 lanes / SFP+ MGT) sourced from the published
-  reverse-engineering work, lint-clean RTL, OpenOCD + JTAG
-  bring-up recipe.
+- **AS02MC04 FPGA build** &mdash; reproducible `project_phase3.tcl`
+  builds the full Phase 1+2+3 bitstream (PCIe + dual 10GBASE-R +
+  streaming data plane), closes timing at 156.25 MHz, and is flashed
+  to the on-board SPI as the cold-boot image. Real pin assignments
+  (refclk / PERST# / LEDs / PCIe x8 / SFP+ MGT), JTAG program/flash
+  recipes (`make program` / `make flash`), and host tools for live
+  flash update (`pw_flash`) and in-band reboot (`pw_reboot`).
 
 | Layer                                | Status                          |
 |--------------------------------------|---------------------------------|
@@ -65,7 +73,7 @@ The project currently ships:
 | Phase 0.5 &mdash; PCI vendor/device  | `10ee:a502` (private dev IDs)   |
 | Phase 1  &mdash; KU3P PCIe bring-up  | done on HW (`10ee:a502` enumerates, identity reads back) |
 | Phase 2  &mdash; SFP+ MAC / PCS      | done on HW: 10GBASE-R DAC loopback, line-rate, loss=0 both directions |
-| Phase 3  &mdash; data-plane RTL      | data plane + CSR + AXIS integrated; sim green |
+| Phase 3  &mdash; data-plane RTL      | done on HW: 64-bit streaming plane at 32 flows / 16 classifier / 16 bins, loss=0 at line rate; BRAM histogram; egress HW timestamping; data-plane soft-reset; live SPI-flash write + ICAP reboot |
 | Phase 4  &mdash; BAR-mmap backend    | done                            |
 | Phase 5  &mdash; TAP + host plane    | done                            |
 | Phase 6  &mdash; multi-card mgmt     | done (per-card worker threads)  |
@@ -77,9 +85,9 @@ Test surface today (all green):
 
 | Command                            | Result                                          |
 |------------------------------------|-------------------------------------------------|
-| `make -C sw test`                  | 164 / 164 unit assertions                       |
+| `make -C sw test`                  | 156 / 156 unit assertions                       |
 | `make -C sw e2e`                   | 18 / 18 daemon &harr; CLI smoke                 |
-| `make -C sim sim_all`              | 172 assertions across 9 SV testbenches          |
+| `make -C sim sim_all`              | all green across the SV testbench suite (data plane, classifier, flow gen, BRAM histogram, SPI flash, ICAP, egress TS) |
 | `make -C sim/cocotb all`           | 17 / 17 Scapy-driven parser/classifier/flow_gen |
 | `make -C tools/pktwyrm-tinet test` | 35 / 35 generator + lifecycle orchestrator      |
 | `make -C fpga/as02mc04 lint`       | clean (Verilator + Xilinx blackbox)             |

@@ -1,5 +1,14 @@
 # PoC plan: Phase 1&ndash;3 (single-card)
 
+> **Status: COMPLETE on hardware.** All three phases run on the AS02MC04:
+> PCIe enumerates, dual 10GBASE-R links up, and the data plane generates
+> test flows out one SFP, loops them through a DAC into the other, and
+> reports per-flow loss / latency (egress-timestamped) / jitter from
+> `pktwyrm`. The plan below is the original workstream breakdown; see
+> `CHANGELOG.md` and `docs/design/rtl-modules.md` for the as-built result
+> (which scaled to 32 flows / 16 classifier rows and added a BRAM
+> histogram, egress HW timestamping, soft-reset, and live flash/reboot).
+
 This is the proof-of-concept work that turns the design into a single
 working AS02MC04 tester. The PoC ends when one card can generate test
 traffic out of SFP0, receive it on SFP1 through a DAC, and report
