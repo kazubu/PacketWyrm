@@ -219,6 +219,42 @@ static int bar_slow_path_rx(void *vctx, void *buf, size_t buflen,
     return (int)copy;
 }
 
+/* Slow-path TX (host -> FPGA): inject one frame out the given egress port
+ * via the inject window. Writes the frame words, sets INFO (len + egress),
+ * pulses GO, and waits for the window to drain (busy clears). */
+static pw_status bar_slow_path_tx(void *vctx, const void *frame, size_t len,
+                                  uint32_t logical_if_id, uint8_t egress_local_port) {
+    struct bar_ctx *c = vctx;
+    (void)logical_if_id;                              /* TX inject targets a port, not a lif */
+    if (!frame || len == 0) return PW_E_INVAL;
+    if (len > PWFPGA_INJECT_MAX_FRAME) return PW_E_INVAL;
+    if ((size_t)PWFPGA_INJECT_DATA + ((len + 3) & ~3u) > c->size) return PW_E_OUT_OF_RANGE;
+
+    /* Wait for a previous inject to finish (bounded spin). */
+    for (int i = 0; i < 100000; i++)
+        if (!(*reg_at(c, PWFPGA_REG_INJECT_CTRL) & PWFPGA_INJECT_STATUS_BUSY)) break;
+    if (*reg_at(c, PWFPGA_REG_INJECT_CTRL) & PWFPGA_INJECT_STATUS_BUSY) return PW_E_IO;
+
+    /* Frame words (little-endian; tail bytes zero-padded to a word). */
+    const uint8_t *p = frame;
+    size_t nwords = (len + 3) / 4;
+    for (size_t w = 0; w < nwords; w++) {
+        uint32_t v = 0;
+        for (int b = 0; b < 4 && (w * 4 + (size_t)b) < len; b++)
+            v |= (uint32_t)p[w * 4 + b] << (8 * b);
+        *reg_at(c, (uint32_t)(PWFPGA_INJECT_DATA + w * 4)) = v;
+    }
+
+    *reg_at(c, PWFPGA_REG_INJECT_INFO) =
+        ((uint32_t)egress_local_port << PWFPGA_INJECT_INFO_EGRESS_SHIFT) | (uint32_t)(len & 0x3FFF);
+    *reg_at(c, PWFPGA_REG_INJECT_CTRL) = PWFPGA_INJECT_CTRL_GO;
+
+    /* Wait for the frame to drain. */
+    for (int i = 0; i < 100000; i++)
+        if (!(*reg_at(c, PWFPGA_REG_INJECT_CTRL) & PWFPGA_INJECT_STATUS_BUSY)) return PW_OK;
+    return PW_E_IO;
+}
+
 static void bar_close(void *vctx) {
     struct bar_ctx *c = vctx;
     if (!c) return;
@@ -240,6 +276,7 @@ static const struct pw_card_backend_ops bar_ops = {
     .flow_stats_read     = bar_flow_stats_read,
     .flow_hist_read      = bar_flow_hist_read,
     .slow_path_rx        = bar_slow_path_rx,
+    .slow_path_tx        = bar_slow_path_tx,
     .close               = bar_close,
 };
 

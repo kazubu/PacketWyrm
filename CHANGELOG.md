@@ -37,8 +37,16 @@ For where work is going next, see `NEXT-STEPS.md`.
     metadata; `bar_slow_path_rx` drains frame + lif, and the daemon
     `host_plane` routes them to the per-`logical_if_id` TAP. New
     `sim_punt` unit tb; the `sim_top` punt scenario reads the frame back
-    over the CSR BAR (lif verified). (Host → FPGA `slow_path_tx`
-    injection on the BAR backend is still pending.)
+    over the CSR BAR (lif verified).
+  - **PUNT / slow-path TX from the host** — `pw_inject_tx_window` is the
+    host → FPGA complement: the host composes a frame in a CSR buffer
+    (`PWFPGA_WIN_INJECT_TX`, 512 B max), sets length + egress, writes GO;
+    the window emits it into that egress port's TX arbiter (priority
+    between forwarded frames and the generator). `bar_slow_path_tx`
+    drives it. New `sim_inj` unit tb + a `tb_data_plane_axis` inject
+    scenario (arbiter routes inject to the chosen egress). HW round-trip
+    (`pw_phase3_inject`): inject out egress 0 → DAC → RX1 → PUNT → read
+    back byte-identical, proving both slow-path directions on silicon.
   - **BRAM-backed latency histogram** (`pw_lat_histogram`) — freed the
     FF wall that capped flow scaling; read live via the CSR window.
   - **Egress hardware timestamping** (`pw_ts_insert` + `pw_ts_gray_cdc`)

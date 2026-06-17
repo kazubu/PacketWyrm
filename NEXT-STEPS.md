@@ -29,11 +29,14 @@ need to keep moving is here or one link away.
 > CSR-polled frame buffer (PWFPGA_WIN_PUNT_RX); the SAF carries
 > `logical_if_id` + ingress port; `bar_slow_path_rx` drains it and the
 > daemon routes to TAPs. `sim_punt` + the `sim_top` punt readback cover
-> it. Next: **host → FPGA `slow_path_tx`** injection on the BAR backend
-> (the RTL TX-inject path + a CSR inject window are not built yet);
+> it. ~~host → FPGA `slow_path_tx`~~ **DONE** — `pw_inject_tx_window`
+> (CSR frame buffer → AXIS into the egress arbiter) + `bar_slow_path_tx`;
+> HW round-trip via `pw_phase3_inject` (inject → DAC → PUNT → read back
+> byte-identical). Both slow-path directions now work on silicon. Next:
 > optionally move RX timestamping to the ingress MAC for absolute
-> accuracy; then multi-card. (FORWARD still has no flow-compiler/YAML
-> construct — rules are programmed via the backend.)
+> accuracy; then multi-card. Smaller follow-ups: a flow-compiler/YAML
+> construct for FORWARD rules (currently backend-direct); wire the daemon
+> host_plane TX path to `slow_path_tx` for TAP → wire injection.
 
 ## Where the tree is right now
 

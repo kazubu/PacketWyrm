@@ -62,6 +62,12 @@ the initial proposal; concrete field bit definitions are owned by the
   0x0900  spi_txbuf  512 B TX buffer
   0x0b00  spi_rxbuf  512 B RX buffer
 
+# Slow-path TX inject window (host -> FPGA; pw_inject_tx_window)
+0x0d00..0x0fff  inject_tx_window
+  0x0d00  inject_ctrl  W:[0]go      R:[0]busy
+  0x0d04  inject_info  W:[13:0]byte_len [19:16]egress_port
+  0x0d40  inject_data  W: frame word i at +i*4 (little-endian; up to 512 B)
+
 # Punt / slow-path RX window (FPGA -> host, BAR-polled; pw_punt_rx_window)
 0x1000..0x1fff  punt_rx_window
   0x1000  punt_status  R:[0]frame_valid [1]overflow
@@ -247,6 +253,19 @@ traffic). The host polls:
 `logical_if_id`. The `overflow` bit (status bit 1) latches if a frame
 larger than the buffer was dropped. Host -> FPGA injection
 (`slow_path_tx`) is not wired on the BAR backend yet (see NEXT-STEPS).
+
+## Slow-path TX inject window (implemented, BAR-driven)
+
+`pw_inject_tx_window` (0x0D00) is the host -> FPGA complement of the punt
+window. The host composes a frame in `inject_data` (little-endian 32-bit
+words, in order), sets `inject_info` (`byte_len` + `egress_port`), then
+writes `inject_ctrl.go`; the window emits the frame as a 64-bit AXIS
+master into that egress port's TX arbiter, at priority between forwarded
+frames and the test generator. One frame in flight (`busy` gates `go`);
+512 B max (slow-path control traffic). `bar_slow_path_tx` implements the
+sequence (write words -> INFO -> GO -> poll busy). Verified on HW by
+`pw_phase3_inject`: a frame injected out egress 0 loops over the DAC to
+RX1, is PUNTed back, and read by `slow_path_rx` byte-identical.
 
 ## Slow-path DMA rings (Phase 2)
 

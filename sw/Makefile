@@ -105,6 +105,10 @@ pw_phase3_punt: $(BUILD_DIR)/pw_phase3_punt
 $(BUILD_DIR)/pw_phase3_punt: tests/pw_phase3_punt.c $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_phase3_punt.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
+pw_phase3_inject: $(BUILD_DIR)/pw_phase3_inject
+$(BUILD_DIR)/pw_phase3_inject: tests/pw_phase3_inject.c $(LIBA) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_phase3_inject.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+
 pw_flash: $(BUILD_DIR)/pw_flash
 $(BUILD_DIR)/pw_flash: tests/pw_flash.c $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_flash.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
@@ -113,7 +117,7 @@ pw_reboot: $(BUILD_DIR)/pw_reboot
 $(BUILD_DIR)/pw_reboot: tests/pw_reboot.c $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_reboot.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
-.PHONY: e2e gen_bar_vectors pw_card_probe pw_sfp_test pw_phase3_loopback pw_phase3_forward pw_phase3_punt
+.PHONY: e2e gen_bar_vectors pw_card_probe pw_sfp_test pw_phase3_loopback pw_phase3_forward pw_phase3_punt pw_phase3_inject
 e2e: $(DAEMON_BIN) $(CLI_BIN)
 	tests/integration/e2e_smoke.sh
 

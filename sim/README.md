@@ -4,7 +4,7 @@ SystemVerilog testbenches driven by Verilator. The full sweep:
 
 ```sh
 cd sim
-make sim_all       # all 18 testbenches; ~425 assertions total
+make sim_all       # all 19 testbenches; ~441 assertions total
 make wave          # rebuild sim with FST tracing -> sim_build/data_plane.fst
 make clean
 ```
@@ -28,7 +28,8 @@ classifier / flow_gen behavioural mirrors).
 | `make sim_fgm`  | `flow_gen_multi_tb/`          |  5         | N-slot round-robin multi-flow generator (token buckets, per-slot flow_id) |
 | `make sim_saf`  | `frame_saf_tb/`               | 23         | store-and-forward buffer: whole-frame buffering, route tag + metadata, backpressure/drop |
 | `make sim_punt` | `punt_window_tb/`             | 18         | punt RX window: capture frame + metadata, CSR readback, pop, overflow |
-| `make sim_dpa`  | `data_plane_axis_tb/`         | 43         | 64-bit streaming data plane end-to-end (parser->classifier->SAF->checker; FORWARD/PUNT+lif/loopback) |
+| `make sim_inj`  | `inject_window_tb/`           | 11         | TX inject window: host buffer -> AXIS frame (beats, tkeep, tlast, egress, busy) |
+| `make sim_dpa`  | `data_plane_axis_tb/`         | 48         | 64-bit streaming data plane end-to-end (parser->classifier->SAF->checker; FORWARD/PUNT+lif/inject/loopback) |
 | `make sim_spi`  | `spi_flash_tb/`               |  5         | CSR SPI byte engine: loopback + behavioural-flash program/read-back     |
 | `make sim_icap` | `icap_reboot_tb/`             |  9         | ICAP IPROG command stream (sync / WBSTAR / IPROG, bit-swapped)          |
 | `make sim_tsi`  | `ts_insert_tb/`               | ~25        | egress tx_ts overwrite: no-VLAN / VLAN offsets, magic-gated passthrough |

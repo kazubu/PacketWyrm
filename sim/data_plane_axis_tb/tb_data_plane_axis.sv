@@ -58,6 +58,11 @@ module tb_data_plane_axis;
     // punt (tied off in DUT)
     logic [35:0] punt_tuser;   // {ingress[3:0], logical_if_id[31:0]}
     logic [35:0] pn_user_last; // latched punt tuser of the last punted frame
+
+    // slow-path TX inject source (host -> egress)
+    logic [63:0] txinj_tdata = 0; logic [7:0] txinj_tkeep = 0;
+    logic        txinj_tvalid = 0, txinj_tlast = 0; wire txinj_tready;
+    logic [3:0]  txinj_egress = 0;
     logic [63:0] punt_tdata;
     logic [7:0]  punt_tkeep;
     logic        punt_tvalid;
@@ -146,6 +151,12 @@ module tb_data_plane_axis;
         .m_axis_punt_tready(punt_tready),
         .m_axis_punt_tlast (punt_tlast),
         .m_axis_punt_tuser (punt_tuser),
+        .s_axis_inj_tdata  (txinj_tdata),
+        .s_axis_inj_tkeep  (txinj_tkeep),
+        .s_axis_inj_tvalid (txinj_tvalid),
+        .s_axis_inj_tready (txinj_tready),
+        .s_axis_inj_tlast  (txinj_tlast),
+        .s_axis_inj_egress (txinj_egress),
         .flow_rows_i      (flow_rows),
         .flow_rx          (flow_rx),
         .flow_lost        (flow_lost),
@@ -615,6 +626,33 @@ module tb_data_plane_axis;
         flow_rows[0].valid = 1'b0;
         repeat (24) @(posedge clk);
         lb_en = 1'b0;
+
+        // ---------------- scenario 12: slow-path TX inject --------------
+        // Drive the inject AXIS source targeting egress 1 (no flows, no
+        // loopback -> egress 1 idle, so inject wins the arbiter). Verify
+        // the injected frame appears on m_axis_tx[1].
+        scenario = "inject";
+        for (int i = 0; i < FLOWS; i++) flow_rows[i].valid = 1'b0;
+        tx1_data.delete(); tx1_keep.delete(); tx1_last.delete();
+        repeat (8) @(posedge clk);
+        txinj_egress = 4'd1;
+        // beat 0
+        @(negedge clk);
+        txinj_tdata = 64'hA1A2A3A4A5A6A7A8; txinj_tkeep = 8'hFF; txinj_tlast = 1'b0; txinj_tvalid = 1'b1;
+        do @(posedge clk); while (!txinj_tready);
+        // beat 1 (last, 4 valid bytes)
+        @(negedge clk);
+        txinj_tdata = 64'h00000000B1B2B3B4; txinj_tkeep = 8'h0F; txinj_tlast = 1'b1;
+        do @(posedge clk); while (!txinj_tready);
+        @(negedge clk); txinj_tvalid = 1'b0; txinj_tlast = 1'b0;
+        repeat (8) @(posedge clk);
+        check_eq("inject beats on tx1",  tx1_data.size(), 2);
+        if (tx1_data.size() >= 2) begin
+            check_eq("inject tx1 beat0",  tx1_data[0], 64'hA1A2A3A4A5A6A7A8);
+            check_eq("inject tx1 beat1",  tx1_data[1][31:0], 32'hB1B2B3B4);
+            check_eq("inject tx1 last@1", tx1_last[1], 1);
+            check_eq("inject tx1 keep@1", tx1_keep[1], 8'h0F);
+        end
 
         if (errors == 0) begin
             $display("ALL DATA PLANE AXIS SCENARIOS PASS");

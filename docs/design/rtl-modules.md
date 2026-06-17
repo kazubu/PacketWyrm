@@ -22,6 +22,7 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
     |   +-- pw_spi_flash         CSR SPI master (live config-flash access)
     |   +-- DP_RESET / REBOOT / STATS_CLEAR / SNAPSHOT triggers
     +-- pw_punt_rx_window        punt AXIS -> CSR-polled frame buffer (host RX)
+    +-- pw_inject_tx_window      CSR frame buffer -> AXIS into egress (host TX)
     +-- pw_data_plane_axis       64-bit AXIS streaming data plane
         +-- per ingress port: pw_parser_axis -> pw_classifier (RESULT_STAGES=2)
         |                      -> pw_frame_saf (store-and-forward)

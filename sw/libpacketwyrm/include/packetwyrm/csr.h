@@ -292,6 +292,21 @@ struct pwfpga_dma_cpl {
 #define PWFPGA_PUNT_INFO_LEN_MASK          0x3FFFu
 #define PWFPGA_PUNT_INFO_INGRESS_SHIFT     16u
 
+/* Slow-path TX inject window (host -> FPGA; pw_inject_tx_window). The host
+ * composes a frame in DATA (little-endian 32-bit words, in order), sets
+ * INFO (byte_len + egress_port), then writes CTRL.go=1; the window emits it
+ * into the chosen egress port's TX arbiter. Poll CTRL.busy for completion.
+ * Slow-path control traffic only -> 512 B max frame. Lives in the free
+ * 0x0D00 region (below the punt window). */
+#define PWFPGA_WIN_INJECT_TX               0x0D00u
+#define PWFPGA_REG_INJECT_CTRL             (PWFPGA_WIN_INJECT_TX + 0x000u) /* W:[0]go  R:[0]busy */
+#define PWFPGA_REG_INJECT_INFO             (PWFPGA_WIN_INJECT_TX + 0x004u) /* W:[13:0]byte_len [19:16]egress_port */
+#define PWFPGA_INJECT_DATA                 (PWFPGA_WIN_INJECT_TX + 0x040u) /* W: frame word i at +i*4, LE */
+#define PWFPGA_INJECT_MAX_FRAME            512u
+#define PWFPGA_INJECT_CTRL_GO              (1u << 0)
+#define PWFPGA_INJECT_STATUS_BUSY          (1u << 0)
+#define PWFPGA_INJECT_INFO_EGRESS_SHIFT    16u
+
 /* Magic written to PWFPGA_REG_REBOOT to trigger in-band reconfiguration
  * (ICAP IPROG -> reload bitstream from flash). "RBOT". */
 #define PWFPGA_REBOOT_MAGIC                0x52424F54u

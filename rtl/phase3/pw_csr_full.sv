@@ -125,7 +125,16 @@ module pw_csr_full #(
     output logic                          punt_rd_en_o,
     output logic [15:0]                   punt_rd_addr_o,
     input  wire  [31:0]                   punt_rd_data_i,
-    output logic                          punt_pop_o
+    output logic                          punt_pop_o,
+
+    // Slow-path TX inject AXIS master (pw_inject_tx_window lives here; the
+    // data plane mixes this into the selected egress port's TX arbiter).
+    output logic [63:0]                   inj_m_tdata,
+    output logic [7:0]                    inj_m_tkeep,
+    output logic                          inj_m_tvalid,
+    input  wire                           inj_m_tready,
+    output logic                          inj_m_tlast,
+    output logic [3:0]                    inj_egress_o
 );
 
     // Top-level register offsets we still serve here (the rest live
@@ -173,6 +182,9 @@ module pw_csr_full #(
     localparam logic [15:0] PUNT_BASE          = 16'h1000;   // 0x1000..0x1FFF
     localparam logic [15:0] PUNT_SPAN          = 16'h1000;
     localparam logic [15:0] PUNT_POP_ADDR      = PUNT_BASE + 16'h000C;
+
+    localparam logic [15:0] INJ_BASE           = 16'h0D00;   // 0x0D00..0x0FFF
+    localparam logic [15:0] INJ_SPAN           = 16'h0300;
     localparam logic [15:0] HIST_STRIDE        = 16'd128;   // 16 buckets * 8 B per flow
 
     import pw_version_pkg::*;
@@ -270,6 +282,33 @@ module pw_csr_full #(
     // --- window read ports ---------------------------------------
     logic [31:0] stats_rdata;
     logic [31:0] spi_rdata;
+    logic [31:0] inj_rdata;
+
+    // Slow-path TX inject window: host composes a frame here; it emits the
+    // frame as an AXIS master into the data plane egress mux. Region-gated
+    // write strobe so writes to other windows do not land in its buffer.
+    wire inj_wr_sel = (wr_addr >= INJ_BASE) && (wr_addr < (INJ_BASE + INJ_SPAN));
+    pw_inject_tx_window #(
+        .ADDR_W   (ADDR_W),
+        .BUF_BYTES(512),
+        .CTRL_OFF (16'h0000),
+        .INFO_OFF (16'h0004),
+        .DATA_OFF (16'h0040)
+    ) u_inj (
+        .clk      (s_axi_aclk),
+        .rst_n    (s_axi_aresetn),
+        .wr_en    (wr_en && inj_wr_sel),
+        .wr_addr  (wr_addr - INJ_BASE),
+        .wr_data  (wr_data),
+        .rd_addr  (s_axi_araddr[15:0] - INJ_BASE),
+        .rd_data  (inj_rdata),
+        .m_tdata  (inj_m_tdata),
+        .m_tkeep  (inj_m_tkeep),
+        .m_tvalid (inj_m_tvalid),
+        .m_tready (inj_m_tready),
+        .m_tlast  (inj_m_tlast),
+        .egress_o (inj_egress_o)
+    );
 
     // In-system SPI flash master (live config-flash access over PCIe).
     pw_spi_flash #(
@@ -423,6 +462,9 @@ module pw_csr_full #(
                     end else if (s_axi_araddr >= SPI_BASE &&
                                  s_axi_araddr < (SPI_BASE + SPI_SPAN)) begin
                         s_axi_rdata <= spi_rdata;   // SPI flash status / RX buffer
+                    end else if (s_axi_araddr >= INJ_BASE &&
+                                 s_axi_araddr < (INJ_BASE + INJ_SPAN)) begin
+                        s_axi_rdata <= inj_rdata;   // inject window busy status
                     end else begin
                         case (s_axi_araddr)
                             REG_DEVICE_ID:      s_axi_rdata <= PW_DEVICE_ID;

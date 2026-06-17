@@ -122,6 +122,11 @@ module pwfpga_top_phase3 #(
     logic        punt_rd_en_w; logic [15:0] punt_rd_addr_w; logic [31:0] punt_rd_data_w;
     logic        punt_pop_w;
 
+    // Slow-path TX inject: pw_csr_full (inject window) -> data plane egress.
+    logic [63:0] inj_td_w;  logic [7:0] inj_tk_w;
+    logic        inj_tv_w,  inj_tr_w,  inj_tl_w;
+    logic [3:0]  inj_eg_w;
+
     pw_csr_full #(
         .ADDR_W          (ADDR_W),
         .CAPABILITIES    (CAPABILITIES),
@@ -188,7 +193,13 @@ module pwfpga_top_phase3 #(
         .punt_rd_en_o        (punt_rd_en_w),
         .punt_rd_addr_o      (punt_rd_addr_w),
         .punt_rd_data_i      (punt_rd_data_w),
-        .punt_pop_o          (punt_pop_w)
+        .punt_pop_o          (punt_pop_w),
+        .inj_m_tdata         (inj_td_w),
+        .inj_m_tkeep         (inj_tk_w),
+        .inj_m_tvalid        (inj_tv_w),
+        .inj_m_tready        (inj_tr_w),
+        .inj_m_tlast         (inj_tl_w),
+        .inj_egress_o        (inj_eg_w)
     );
 
     // Punt / slow-path RX window: sinks the data plane punt AXIS, host
@@ -258,6 +269,12 @@ module pwfpga_top_phase3 #(
         .m_axis_punt_tready(punt_tr_w),
         .m_axis_punt_tlast (punt_tl_w),
         .m_axis_punt_tuser (punt_tu_w),
+        .s_axis_inj_tdata  (inj_td_w),
+        .s_axis_inj_tkeep  (inj_tk_w),
+        .s_axis_inj_tvalid (inj_tv_w),
+        .s_axis_inj_tready (inj_tr_w),
+        .s_axis_inj_tlast  (inj_tl_w),
+        .s_axis_inj_egress (inj_eg_w),
         .flow_rows_i       (flow_rows_w),
         .flow_rx           (flow_rx_w),
         .flow_lost         (flow_lost_w),
