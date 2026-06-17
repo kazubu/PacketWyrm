@@ -37,7 +37,11 @@ Module notes: `pw_parser_axis` is pipelined (2-stage key extract);
 `pw_lat_histogram` replaced the FF histogram; `pw_ts_insert` overwrites
 the tx_timestamp at egress so latency measures the DUT; `pw_frame_saf`
 is BRAM-backed (reset-less write + registered read-ahead drain) — freed
-~24% FF / ~14% LUT vs the former register array. The wide-bus
+~24% FF / ~14% LUT vs the former register array. `pw_flow_gen_multi`
+applies per-field modifiers (static/increment/random + bitmask on
+src/dst IPv4 + UDP ports, driven by the slot sequence so the DUT sees
+many flows while the fixed test header keeps measurement intact) and
+emits a correct IPv4 header checksum. The wide-bus
 `pw_data_plane` / `pw_parser` / `pw_flow_gen` remain only for the legacy
 sim (`tb_data_plane`).
 

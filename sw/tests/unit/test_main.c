@@ -312,6 +312,44 @@ static void test_forward_rule_compiles(void) {
     pw_config_free(cfg);
 }
 
+static void test_flow_field_modifiers(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n"
+        "  - id: 0\n"
+        "    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "flows:\n"
+        "  - id: 1\n"
+        "    tx_global_port: 0\n"
+        "    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv4: { src: \"198.51.100.1\", dst: \"198.51.100.2\" }\n"
+        "    udp:  { src_port: 49152, dst_port: 50001 }\n"
+        "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
+        "    modifiers:\n"
+        "      dst_ipv4: { mode: increment, mask: 0x000003ff }\n"
+        "      udp_src:  { mode: random,    mask: 0xffff }\n";
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    PW_ASSERT_EQ(cfg->flows[0].mod.dst_ipv4.mode, 1);
+    PW_ASSERT_EQ(cfg->flows[0].mod.dst_ipv4.mask, 0x3ff);
+    PW_ASSERT_EQ(cfg->flows[0].mod.udp_src.mode, 2);
+    PW_ASSERT_EQ(cfg->flows[0].mod.src_ipv4.mode, 0);   /* absent -> static */
+    PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
+    const struct pwfpga_flow_config *fr = &prog->per_card[0].flow_rows[0];
+    PW_ASSERT_EQ(fr->dst_ipv4_mod, 1);
+    PW_ASSERT_EQ(fr->dst_ipv4_mask, 0x3ff);
+    PW_ASSERT_EQ(fr->udp_src_mod, 2);
+    PW_ASSERT_EQ(fr->udp_src_mask, 0xffff);
+    PW_ASSERT_EQ(fr->src_ipv4_mod, 0);
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
 static void test_reject_cross_card_forward(void) {
     const char *yaml =
         "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
@@ -842,6 +880,7 @@ int main(void) {
         { "cross_card_flow_compiles", test_cross_card_flow_compiles },
         { "forward_rule_compiles", test_forward_rule_compiles },
         { "reject_cross_card_forward", test_reject_cross_card_forward },
+        { "flow_field_modifiers", test_flow_field_modifiers },
         { "fake_backend", test_fake_backend },
         { "bar_backend_path", test_bar_backend_path },
         { "bar_backend_window_writes", test_bar_backend_window_writes },

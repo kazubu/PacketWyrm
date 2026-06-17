@@ -39,7 +39,14 @@
 //    75    4   tokens_per_tick_fp     (Q16.16 bytes/cycle)
 //    79    2   burst_bytes
 //    81    2   reserved0
-//    ...
+//    83    1   payload_mode    84  4  payload_seed
+//    88    1   insert_sequence 89  1  insert_timestamp
+//    90    1   tx_enable       91  1  rx_check_enable
+//    -- field modifiers (mode in low 2 bits; mask selects rotated bits) --
+//    92    1   src_ipv4_mod    93  4  src_ipv4_mask
+//    97    1   dst_ipv4_mod    98  4  dst_ipv4_mask
+//   102    1   udp_src_mod    103  2  udp_src_mask
+//   105    1   udp_dst_mod    106  2  udp_dst_mask
 
 `default_nettype none
 
@@ -158,6 +165,19 @@ module pw_flow_window #(
             flow_rows_o[r].dst_ipv4  = row_dst_ip[r];
             flow_rows_o[r].udp_sp    = row_udp_sp[r];
             flow_rows_o[r].udp_dp    = row_udp_dp[r];
+
+            // Per-field modifiers (wire bytes 92+, just past the packed C
+            // struct's rx_check_enable @91). mode in low 2 bits.
+            flow_rows_o[r].sip_mod   = row[92*8 +: 2];
+            flow_rows_o[r].sip_mask  = {row[96*8 +: 8], row[95*8 +: 8],
+                                        row[94*8 +: 8], row[93*8 +: 8]};
+            flow_rows_o[r].dip_mod   = row[97*8 +: 2];
+            flow_rows_o[r].dip_mask  = {row[101*8 +: 8], row[100*8 +: 8],
+                                        row[99*8 +: 8], row[98*8 +: 8]};
+            flow_rows_o[r].sp_mod    = row[102*8 +: 2];
+            flow_rows_o[r].sp_mask   = {row[104*8 +: 8], row[103*8 +: 8]};
+            flow_rows_o[r].dp_mod    = row[105*8 +: 2];
+            flow_rows_o[r].dp_mask   = {row[107*8 +: 8], row[106*8 +: 8]};
         end
     end
 

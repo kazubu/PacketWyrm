@@ -280,6 +280,30 @@ static pw_status parse_logical_if(const pw_yaml_node *m, struct pw_logical_if *l
     return PW_OK;
 }
 
+/* Parse one optional field-modifier submap: { mode: static|increment|random,
+ * mask: <u32> }. Absent key leaves the modifier at its zeroed default. */
+static pw_status parse_field_mod(const pw_yaml_node *parent, const char *key,
+                                 const char *path, struct pw_field_mod *fm,
+                                 struct pw_diag *diag) {
+    const pw_yaml_node *n = pw_yaml_map_get(parent, key);
+    if (!n) return PW_OK;
+    char p[112]; snprintf(p, sizeof(p), "%s.%s", path, key);
+    REQ_MAP(n, p);
+    const char *s; pw_status r;
+    if ((r = get_scalar(n, "mode", p, false, &s, diag)) != PW_OK) return r;
+    if (s) {
+        if      (!strcmp(s, "static"))    fm->mode = 0;
+        else if (!strcmp(s, "increment")) fm->mode = 1;
+        else if (!strcmp(s, "random"))    fm->mode = 2;
+        else { diag_set(diag, PW_E_PARSE, p, "mode must be static|increment|random"); return PW_E_PARSE; }
+    }
+    if ((r = get_scalar(n, "mask", p, false, &s, diag)) != PW_OK) return r;
+    if (s && !pw_parse_u32(s, &fm->mask)) {
+        diag_set(diag, PW_E_PARSE, p, "mask must be an unsigned (hex/dec) value"); return PW_E_PARSE;
+    }
+    return PW_OK;
+}
+
 static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
                             size_t idx, struct pw_diag *diag) {
     char path[64];
@@ -438,6 +462,17 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
         } while (0)
         MFLAG(loss); MFLAG(latency); MFLAG(jitter);
 #undef MFLAG
+    }
+
+    /* per-field modifiers (DUT-facing flow diversification) */
+    const pw_yaml_node *mods = pw_yaml_map_get(m, "modifiers");
+    if (mods) {
+        char xp[96]; snprintf(xp, sizeof(xp), "%s.modifiers", path);
+        REQ_MAP(mods, xp);
+        if ((r = parse_field_mod(mods, "src_ipv4", xp, &f->mod.src_ipv4, diag)) != PW_OK) return r;
+        if ((r = parse_field_mod(mods, "dst_ipv4", xp, &f->mod.dst_ipv4, diag)) != PW_OK) return r;
+        if ((r = parse_field_mod(mods, "udp_src",  xp, &f->mod.udp_src,  diag)) != PW_OK) return r;
+        if ((r = parse_field_mod(mods, "udp_dst",  xp, &f->mod.udp_dst,  diag)) != PW_OK) return r;
     }
 
     return PW_OK;

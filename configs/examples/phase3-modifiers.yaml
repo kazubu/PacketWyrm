@@ -1,0 +1,53 @@
+# Phase 3 field-modifier example: one generator slot, many apparent flows.
+#
+# A single TEST_RX flow (p0 -> DAC -> p1) whose L3/L4 header fields rotate
+# per frame, so the DUT sees a spread of flows (for hash / ECMP testing)
+# while PacketWyrm still tracks it as one flow for loss/latency (the test
+# header magic/flow_id/seq/ts are never modified). The IPv4 header checksum
+# is recomputed in hardware from the modified addresses.
+
+system:
+  name: "pw-phase3-modifiers"
+  mode: "multi-card"
+  default_speed: "10g"
+  control_socket: "/tmp/pw-phase3.sock"
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+flows:
+  - id: 1
+    name: "diversified"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2:
+      src_mac: "02:a5:02:00:00:01"
+      dst_mac: "02:a5:02:00:00:02"
+    ipv4:
+      src: "198.51.100.1"
+      dst: "198.51.100.2"
+      ttl: 64
+    udp:
+      src_port: 49152
+      dst_port: 50001          # measurement key — NOT modified
+    traffic:
+      frame_len: 512
+      rate_bps: 1000000000
+      payload: "increment"
+      insert_sequence: true
+      insert_timestamp: true
+    measurements:
+      loss: true
+      latency: true
+      jitter: true
+    modifiers:
+      # 1024 distinct dst IPs (low 10 bits), random source IPs, 256 src ports.
+      dst_ipv4: { mode: increment, mask: 0x000003ff }
+      src_ipv4: { mode: random,    mask: 0x0000ffff }
+      udp_src:  { mode: increment, mask: 0x00ff }
+      # udp_dst left static: it's the classifier/measurement key.

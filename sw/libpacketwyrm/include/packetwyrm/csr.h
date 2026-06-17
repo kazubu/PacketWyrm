@@ -184,7 +184,30 @@ struct pwfpga_flow_config {
      * of a cross-card flow). */
     uint8_t  tx_enable;
     uint8_t  rx_check_enable;
+
+    /* Per-field modifiers (commercial-gen "field modifier"): vary the
+     * masked bits of a header field per emitted frame so one slot looks
+     * like many flows to the DUT. mode = enum pwfpga_field_mod; mask
+     * selects which bits rotate (e.g. 0x000003FF = low 10 bits = 1024
+     * apparent flows). The test header (magic/flow_id/seq/ts) is never
+     * modified, so RX loss/latency measurement is unaffected, and the IPv4
+     * header checksum is recomputed in hardware from the modified address.
+     * (MAC/VLAN modifiers are a mechanical extension of the same scheme.) */
+    uint8_t  src_ipv4_mod;       /* byte 92 */
+    uint32_t src_ipv4_mask;      /* bytes 93..96 */
+    uint8_t  dst_ipv4_mod;       /* byte 97 */
+    uint32_t dst_ipv4_mask;      /* bytes 98..101 */
+    uint8_t  udp_src_mod;        /* byte 102 */
+    uint16_t udp_src_mask;       /* bytes 103..104 */
+    uint8_t  udp_dst_mod;        /* byte 105 */
+    uint16_t udp_dst_mask;       /* bytes 106..107 */
 } __attribute__((packed));
+
+enum pwfpga_field_mod {
+    PWFPGA_FIELD_STATIC    = 0,
+    PWFPGA_FIELD_INCREMENT = 1,
+    PWFPGA_FIELD_RANDOM    = 2,
+};
 
 /* On-wire test packet header (carried inside the UDP payload). */
 struct pwfpga_test_hdr {

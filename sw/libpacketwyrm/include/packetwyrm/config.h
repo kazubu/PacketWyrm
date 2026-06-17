@@ -96,6 +96,21 @@ struct pw_flow_meas {
     bool jitter;
 };
 
+/* Per-field modifier: vary the masked bits of a header field per emitted
+ * frame (commercial-gen "field modifier"). mode 0=static, 1=increment,
+ * 2=random (matches enum pwfpga_field_mod). mask=0 / mode static = off. */
+struct pw_field_mod {
+    uint8_t  mode;
+    uint32_t mask;
+};
+
+struct pw_flow_modifiers {
+    struct pw_field_mod src_ipv4;
+    struct pw_field_mod dst_ipv4;
+    struct pw_field_mod udp_src;
+    struct pw_field_mod udp_dst;
+};
+
 struct pw_flow {
     uint32_t id;                         /* global_flow_id */
     char     name[PW_NAME_MAX];
@@ -109,6 +124,7 @@ struct pw_flow {
     struct pw_flow_udp     udp;
     struct pw_flow_traffic traffic;
     struct pw_flow_meas    meas;
+    struct pw_flow_modifiers mod;
 };
 
 /* Store-and-forward rule: relay frames matching the (optional) key from

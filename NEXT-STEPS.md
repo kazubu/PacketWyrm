@@ -54,7 +54,14 @@ sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
    Deferred by the user ("RX side is fine for now").
 2. **Multi-card** — cross-card flows, multi-card orchestration. Needs a
    second card on the bench.
-3. **Minor**: the `CAPABILITIES` parameter advertises `0x6C` (the
+3. **Field modifiers — extend** (v1 done): generator field modifiers
+   (inc/random/mask) on `src/dst_ipv4` + `udp_src/dst`, test header kept
+   fixed, correct IPv4 checksum. Extensions: MAC/VLAN modifiers (same
+   scheme, mechanical); independent per-field rotation (cross-product
+   rather than the current shared-sequence, correlated rotation);
+   classifier partial-field bitmask (so a rotated field can still be a
+   measurement key).
+4. **Minor**: the `CAPABILITIES` parameter advertises `0x6C` (the
    currently-flashed build reports it).
 
 Timing: the full feature stack now closes at **WNS +0.143 ns @156.25 MHz**

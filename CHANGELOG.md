@@ -35,6 +35,18 @@ For where work is going next, see `NEXT-STEPS.md`.
   - **Timing margin recovered** — pipelined `pw_parser_axis` key extract
     into two stages; WNS +0.003 → +0.020 ns at 156.25 MHz, HW-revalidated
     at loss=0.
+  - **Generator field modifiers + correct IPv4 checksum** — per-field
+    modifiers (`static` / `increment` / `random` with a bitmask) on
+    `src_ipv4` / `dst_ipv4` / `udp_src` / `udp_dst` rotate the masked bits
+    per emitted frame (driven by the slot's sequence number, no extra
+    per-slot state), so one generator slot looks like many flows to the
+    DUT. The test header (magic/flow_id/seq/ts) is never modified, so RX
+    loss/latency measurement is unaffected. `build()` now emits a correct
+    IPv4 header checksum (was 0), recomputed from the modified addresses.
+    Configured via a `modifiers:` block per flow (`forwards`-style); see
+    `configs/examples/phase3-modifiers.yaml` and `docs/design/yaml-schema.md`.
+    Sim (`sim_fgm`) verifies the dst-IP rotation (masked) + a valid on-wire
+    IPv4 checksum.
   - **SAF buffer BRAM-backed** — `pw_frame_saf`'s 512-beat frame buffer
     now infers as block RAM (reset-less write port + registered read-ahead
     drain) instead of ~37k FFs/instance + a wide mux. Frees ~24% of device

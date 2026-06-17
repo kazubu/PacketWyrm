@@ -124,7 +124,35 @@ flows:
       jitter: true
       # Cross-card flows must set latency:false and jitter:false.
       # The daemon refuses the config otherwise.
+
+    modifiers:                       # optional: per-field "field modifiers"
+      dst_ipv4: { mode: increment, mask: 0x000003ff }  # rotate low 10 bits -> 1024 flows
+      src_ipv4: { mode: random,    mask: 0x0000ffff }
+      udp_src:  { mode: increment, mask: 0xffff }
+      udp_dst:  { mode: static }     # (default; same as omitting)
 ```
+
+`modifiers` vary the **masked bits** of a header field per emitted frame
+so one generator slot looks like many flows to the DUT (for hashing /
+ECMP / per-flow-state testing). `mode` is `static` (default) /
+`increment` / `random`; `mask` selects which bits rotate (hex or decimal).
+The rotated bits are driven by the slot's per-frame sequence number, so
+there is no extra per-slot state. Notes:
+
+- The **test header** (`magic` / `flow_id` / `sequence` / `tx_timestamp`)
+  is never modified, so RX loss / latency / order measurement is
+  unaffected — the DUT sees many flows; PacketWyrm tracks one.
+- The **IPv4 header checksum** is recomputed in hardware from the modified
+  addresses (the generator always emits a correct IPv4 checksum now).
+- Do **not** rotate a field the classifier matches on for measurement
+  (e.g. if a TEST_RX rule keys on `udp_dst`, don't modify `udp_dst`) —
+  it would misclassify the return traffic.
+- Per-*apparent*-flow individual RX stats are limited to the HW slot
+  count (`NUM_FLOWS`); aggregate loss/latency across the diversified
+  traffic is unaffected.
+- v1 covers `src_ipv4` / `dst_ipv4` / `udp_src` / `udp_dst`; all rotate
+  off the same sequence (correlated, not a full cross-product). MAC / VLAN
+  modifiers are a mechanical extension of the same scheme.
 
 Constraints:
 
