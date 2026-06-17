@@ -62,6 +62,14 @@ the initial proposal; concrete field bit definitions are owned by the
   0x0900  spi_txbuf  512 B TX buffer
   0x0b00  spi_rxbuf  512 B RX buffer
 
+# Punt / slow-path RX window (FPGA -> host, BAR-polled; pw_punt_rx_window)
+0x1000..0x1fff  punt_rx_window
+  0x1000  punt_status  R:[0]frame_valid [1]overflow
+  0x1004  punt_info    R:[13:0]byte_len [19:16]ingress_port
+  0x1008  punt_lif     R: logical_if_id of the punted frame
+  0x100c  punt_pop     W:1 -> release the current frame
+  0x1010  punt_data    R: frame word i at +i*4 (little-endian; up to 2 KB)
+
 # Wide table windows (64 flows / 64 classifier rows max). The
 # commit-bearing windows are 16 KB apart so their commit / trigger /
 # clear registers sit above the 8 KB data region; the live-read
@@ -217,6 +225,28 @@ for the histogram (unlike the stats window). The egress timestamp
 Concrete strides and offsets are defined as preprocessor macros
 in `sw/libpacketwyrm/include/packetwyrm/csr.h` and used by the
 host BAR backend.
+
+## Punt / slow-path RX window (implemented, BAR-polled)
+
+`pw_punt_rx_window` (0x1000) delivers classifier `PUNT_TO_HOST` /
+`MIRROR_TO_HOST` frames to the host without DMA. The data plane's punt
+arbiter feeds it (the SAF carries each frame's `logical_if_id` + ingress
+port through to the window). One frame is buffered at a time (up to
+2 KB); while a frame waits, the window backpressures the punt AXIS so the
+SAF holds the next one (head-of-line — fine for occasional control
+traffic). The host polls:
+
+1. read `punt_status`; if `frame_valid` (bit 0) is clear, no frame.
+2. read `punt_info` for `byte_len` + `ingress_port`, and `punt_lif` for
+   the `logical_if_id`.
+3. read `ceil(byte_len/4)` words from `punt_data` (little-endian).
+4. write 1 to `punt_pop` to release the slot.
+
+`bar_slow_path_rx` in `backend_bar.c` implements exactly this; the daemon
+`host_plane` calls it and routes each frame to the TAP for its
+`logical_if_id`. The `overflow` bit (status bit 1) latches if a frame
+larger than the buffer was dropped. Host -> FPGA injection
+(`slow_path_tx`) is not wired on the BAR backend yet (see NEXT-STEPS).
 
 ## Slow-path DMA rings (Phase 2)
 

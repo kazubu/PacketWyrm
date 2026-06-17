@@ -56,6 +56,8 @@ module tb_data_plane_axis;
     logic        tx_tlast  [PORTS];
 
     // punt (tied off in DUT)
+    logic [35:0] punt_tuser;   // {ingress[3:0], logical_if_id[31:0]}
+    logic [35:0] pn_user_last; // latched punt tuser of the last punted frame
     logic [63:0] punt_tdata;
     logic [7:0]  punt_tkeep;
     logic        punt_tvalid;
@@ -143,6 +145,7 @@ module tb_data_plane_axis;
         .m_axis_punt_tvalid(punt_tvalid),
         .m_axis_punt_tready(punt_tready),
         .m_axis_punt_tlast (punt_tlast),
+        .m_axis_punt_tuser (punt_tuser),
         .flow_rows_i      (flow_rows),
         .flow_rx          (flow_rx),
         .flow_lost        (flow_lost),
@@ -172,6 +175,7 @@ module tb_data_plane_axis;
             pn_data.push_back(punt_tdata);
             pn_keep.push_back(punt_tkeep);
             pn_last.push_back(punt_tlast);
+            pn_user_last <= punt_tuser;   // {ingress[3:0], logical_if_id[31:0]} of the punted frame
         end
     end
 
@@ -479,6 +483,7 @@ module tb_data_plane_axis;
         cls_table[6].enable             = 1'b1;
         cls_table[6].action             = PW_ACT_PUNT_TO_HOST;
         cls_table[6].priority_          = 8'd8;
+        cls_table[6].logical_if_id      = 32'h0000_1234;   // carried out on punt tuser
         cls_table[6].mask               = '0;
         cls_table[6].mask.match_udp_dst = 1'b1;
         cls_table[6].key.udp_dst        = 16'd179;
@@ -491,6 +496,9 @@ module tb_data_plane_axis;
         check_eq("punt saw last",
                  (pn_last.size() > 0 && pn_last[pn_last.size()-1]) ? 1 : 0, 1);
         check_eq("punt not forwarded", qbytes(tx1_keep), 0);
+        // metadata: ingress port 0, logical_if_id 0x1234
+        check_eq("punt tuser lif",     pn_user_last[31:0], 32'h0000_1234);
+        check_eq("punt tuser ingress", pn_user_last[35:32], 0);
 
         // ---------------- scenario 9: MIRROR_TO_HOST -> punt -------------
         scenario = "mirror";

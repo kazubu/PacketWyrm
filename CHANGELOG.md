@@ -30,6 +30,15 @@ For where work is going next, see `NEXT-STEPS.md`.
   - **Timing margin recovered** — pipelined `pw_parser_axis` key extract
     into two stages; WNS +0.003 → +0.020 ns at 156.25 MHz, HW-revalidated
     at loss=0.
+  - **PUNT / slow-path RX to the host** — `pw_punt_rx_window` sinks the
+    data plane's punt AXIS (`PUNT_TO_HOST` / `MIRROR_TO_HOST`) into a
+    CSR-polled single-frame buffer (`PWFPGA_WIN_PUNT_RX`, BAR, no DMA).
+    The SAF now carries each frame's `logical_if_id` + ingress port as
+    metadata; `bar_slow_path_rx` drains frame + lif, and the daemon
+    `host_plane` routes them to the per-`logical_if_id` TAP. New
+    `sim_punt` unit tb; the `sim_top` punt scenario reads the frame back
+    over the CSR BAR (lif verified). (Host → FPGA `slow_path_tx`
+    injection on the BAR backend is still pending.)
   - **BRAM-backed latency histogram** (`pw_lat_histogram`) — freed the
     FF wall that capped flow scaling; read live via the CSR window.
   - **Egress hardware timestamping** (`pw_ts_insert` + `pw_ts_gray_cdc`)

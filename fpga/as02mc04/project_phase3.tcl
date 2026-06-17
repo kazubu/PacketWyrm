@@ -78,6 +78,7 @@ set pw_srcs [list \
     "$repo_root/rtl/phase3/pw_classifier_window.sv" \
     "$repo_root/rtl/phase3/pw_flow_window.sv" \
     "$repo_root/rtl/phase3/pw_spi_flash.sv" \
+    "$repo_root/rtl/phase3/pw_punt_rx_window.sv" \
     "$repo_root/rtl/phase3/pw_frame_saf.sv" \
     "$repo_root/rtl/phase3/pw_data_plane_axis.sv" \
     "$repo_root/rtl/phase3/pw_csr_full.sv" \

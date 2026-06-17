@@ -64,14 +64,9 @@ module pwfpga_top_phase3 #(
     input  wire              m_axis_tx_tready [NUM_PORTS],
     output wire              m_axis_tx_tlast  [NUM_PORTS],
 
-    // Punt path (PUNT_TO_HOST / MIRROR_TO_HOST) as a 64-bit AXIS
-    // master. Production routes this into a DMA ring; the sim
-    // testbench attaches a deserializer or a sink.
-    output wire [63:0]       m_axis_punt_tdata,
-    output wire [7:0]        m_axis_punt_tkeep,
-    output wire              m_axis_punt_tvalid,
-    input  wire              m_axis_punt_tready,
-    output wire              m_axis_punt_tlast,
+    // (The PUNT_TO_HOST / MIRROR_TO_HOST path is consumed internally by
+    // pw_punt_rx_window and read back over the CSR BAR -- no top-level
+    // punt AXIS port any more.)
 
     // Free-running 64-bit timestamp (driven by pw_timestamp on the
     // board top; the sim drives this from a tb counter).
@@ -119,6 +114,13 @@ module pwfpga_top_phase3 #(
     // Live histogram read port (CSR <-> data-plane BRAM).
     logic [15:0] hist_rd_addr_w;
     logic [63:0] hist_rd_data_w;
+
+    // Punt path: data plane punt AXIS -> pw_punt_rx_window; CSR read/pop.
+    logic [63:0] punt_td_w;  logic [7:0] punt_tk_w;
+    logic        punt_tv_w,  punt_tr_w,  punt_tl_w;
+    logic [35:0] punt_tu_w;
+    logic        punt_rd_en_w; logic [15:0] punt_rd_addr_w; logic [31:0] punt_rd_data_w;
+    logic        punt_pop_w;
 
     pw_csr_full #(
         .ADDR_W          (ADDR_W),
@@ -182,7 +184,32 @@ module pwfpga_top_phase3 #(
         .spi_cs_n_o          (spi_cs_n_o),
         .spi_mosi_o          (spi_mosi_o),
         .spi_miso_i          (spi_miso_i),
-        .icap_reboot_o       (icap_reboot_w)
+        .icap_reboot_o       (icap_reboot_w),
+        .punt_rd_en_o        (punt_rd_en_w),
+        .punt_rd_addr_o      (punt_rd_addr_w),
+        .punt_rd_data_i      (punt_rd_data_w),
+        .punt_pop_o          (punt_pop_w)
+    );
+
+    // Punt / slow-path RX window: sinks the data plane punt AXIS, host
+    // drains it over the CSR BAR (PWFPGA_WIN_PUNT_RX).
+    pw_punt_rx_window #(
+        .ADDR_W    (16),
+        .BUF_BEATS (256)            // 2 KB max punt frame
+    ) u_punt (
+        .clk           (clk),
+        .rst_n         (rst_n),
+        .s_tdata       (punt_td_w),
+        .s_tkeep       (punt_tk_w),
+        .s_tvalid      (punt_tv_w),
+        .s_tready      (punt_tr_w),
+        .s_tlast       (punt_tl_w),
+        .s_tuser       (punt_tu_w),
+        .rd_en_i       (punt_rd_en_w),
+        .rd_addr_i     (punt_rd_addr_w),
+        .rd_data_o     (punt_rd_data_w),
+        .pop_i         (punt_pop_w),
+        .frame_valid_o ()
     );
 
     // In-band reconfiguration: CSR magic -> ICAP IPROG -> reload from flash.
@@ -225,11 +252,12 @@ module pwfpga_top_phase3 #(
         .m_axis_tx_tvalid  (m_axis_tx_tvalid),
         .m_axis_tx_tready  (m_axis_tx_tready),
         .m_axis_tx_tlast   (m_axis_tx_tlast),
-        .m_axis_punt_tdata (m_axis_punt_tdata),
-        .m_axis_punt_tkeep (m_axis_punt_tkeep),
-        .m_axis_punt_tvalid(m_axis_punt_tvalid),
-        .m_axis_punt_tready(m_axis_punt_tready),
-        .m_axis_punt_tlast (m_axis_punt_tlast),
+        .m_axis_punt_tdata (punt_td_w),
+        .m_axis_punt_tkeep (punt_tk_w),
+        .m_axis_punt_tvalid(punt_tv_w),
+        .m_axis_punt_tready(punt_tr_w),
+        .m_axis_punt_tlast (punt_tl_w),
+        .m_axis_punt_tuser (punt_tu_w),
         .flow_rows_i       (flow_rows_w),
         .flow_rx           (flow_rx_w),
         .flow_lost         (flow_lost_w),

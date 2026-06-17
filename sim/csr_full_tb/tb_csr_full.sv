@@ -149,7 +149,11 @@ module tb_csr_full;
         .spi_cs_n_o          (),
         .spi_mosi_o          (),
         .spi_miso_i          (1'b0),
-        .icap_reboot_o       ()
+        .icap_reboot_o       (),
+        .punt_rd_en_o        (),
+        .punt_rd_addr_o      (),
+        .punt_rd_data_i      (32'h0),
+        .punt_pop_o          ()
     );
 
     // BRAM histogram backing the CSR's addressed read port, fed by

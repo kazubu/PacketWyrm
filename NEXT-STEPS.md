@@ -24,11 +24,16 @@ need to keep moving is here or one link away.
 > pre-commit artifacts). FORWARD egress port is now **host-selectable**
 > (`egress_local_port` byte 92 in `pwfpga_classifier_entry`, decoded in
 > `pw_classifier_window`; the data plane already routed by the result's
-> `egress_port`). Next: implement the **PUNT/slow-path** to the host (the
-> punt AXIS is currently tied off); optionally move RX timestamping to the
-> ingress MAC for absolute accuracy; then multi-card. (FORWARD still has
-> no flow-compiler/YAML construct — rules are programmed via the backend;
-> a compiler construct would make FORWARD usable from config.)
+> `egress_port`). ~~Implement the **PUNT/slow-path** to the host~~
+> **DONE (RX direction)** — `pw_punt_rx_window` sinks the punt AXIS into a
+> CSR-polled frame buffer (PWFPGA_WIN_PUNT_RX); the SAF carries
+> `logical_if_id` + ingress port; `bar_slow_path_rx` drains it and the
+> daemon routes to TAPs. `sim_punt` + the `sim_top` punt readback cover
+> it. Next: **host → FPGA `slow_path_tx`** injection on the BAR backend
+> (the RTL TX-inject path + a CSR inject window are not built yet);
+> optionally move RX timestamping to the ingress MAC for absolute
+> accuracy; then multi-card. (FORWARD still has no flow-compiler/YAML
+> construct — rules are programmed via the backend.)
 
 ## Where the tree is right now
 

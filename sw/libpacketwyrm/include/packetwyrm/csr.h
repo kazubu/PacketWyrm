@@ -275,6 +275,23 @@ struct pwfpga_dma_cpl {
 #define PWFPGA_SPI_CTRL_CS_HOLD            (1u << 1)
 #define PWFPGA_SPI_STATUS_BUSY             (1u << 0)
 
+/* Punt / slow-path RX window (pw_punt_rx_window) -- FPGA -> host delivery
+ * of classifier PUNT_TO_HOST / MIRROR_TO_HOST frames, BAR-polled (no DMA).
+ * Lives in the free 0x1000 region. One frame at a time: poll STATUS, read
+ * INFO + LIF + the DATA words, then write POP to release the slot. Frames
+ * larger than the buffer (2 KB) are dropped and flagged in STATUS. */
+#define PWFPGA_WIN_PUNT_RX                 0x1000u
+#define PWFPGA_REG_PUNT_STATUS             (PWFPGA_WIN_PUNT_RX + 0x000u) /* R:[0]frame_valid [1]overflow */
+#define PWFPGA_REG_PUNT_INFO               (PWFPGA_WIN_PUNT_RX + 0x004u) /* R:[13:0]byte_len [19:16]ingress_port */
+#define PWFPGA_REG_PUNT_LIF                (PWFPGA_WIN_PUNT_RX + 0x008u) /* R: logical_if_id */
+#define PWFPGA_REG_PUNT_POP                (PWFPGA_WIN_PUNT_RX + 0x00Cu) /* W:1 -> release current frame */
+#define PWFPGA_PUNT_DATA                   (PWFPGA_WIN_PUNT_RX + 0x010u) /* R: frame word i at +i*4, LE */
+#define PWFPGA_PUNT_MAX_FRAME              2048u
+#define PWFPGA_PUNT_STATUS_VALID           (1u << 0)
+#define PWFPGA_PUNT_STATUS_OVERFLOW        (1u << 1)
+#define PWFPGA_PUNT_INFO_LEN_MASK          0x3FFFu
+#define PWFPGA_PUNT_INFO_INGRESS_SHIFT     16u
+
 /* Magic written to PWFPGA_REG_REBOOT to trigger in-band reconfiguration
  * (ICAP IPROG -> reload bitstream from flash). "RBOT". */
 #define PWFPGA_REBOOT_MAGIC                0x52424F54u

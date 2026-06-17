@@ -123,7 +123,11 @@ module tb_wire_vectors;
         .spi_cs_n_o          (),
         .spi_mosi_o          (),
         .spi_miso_i          (1'b0),
-        .icap_reboot_o       ()
+        .icap_reboot_o       (),
+        .punt_rd_en_o        (),
+        .punt_rd_addr_o      (),
+        .punt_rd_data_i      (32'h0),
+        .punt_pop_o          ()
     );
 
     int    errors = 0;

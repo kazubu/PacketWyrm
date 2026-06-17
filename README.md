@@ -167,6 +167,7 @@ first (it holds the device).
 | `pw_sfp_test`        | SFP+ link / block-lock status check.                                |
 | `pw_phase3_loopback` | Program one flow, loop SFP0<->SFP1 over a DAC, report loss/latency. |
 | `pw_phase3_forward`  | Validate the SAF `FORWARD_PORT` path; `[fwd_egress]` picks the port. |
+| `pw_phase3_punt`     | Validate the PUNT/slow-path: punt frames to the host, check lif + length. |
 | `pw_flash`           | Live in-system SPI config-flash erase/program/verify over PCIe.     |
 | `pw_reboot`          | Trigger in-band ICAP IPROG reconfiguration from flash.              |
 | `gen_bar_vectors`    | Dump the post-write BAR byte image (drives the `sim_vec` regression). |

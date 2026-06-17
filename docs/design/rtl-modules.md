@@ -21,6 +21,7 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
     |   +-- pw_classifier_window /  pw_flow_window /  pw_stats_snapshot
     |   +-- pw_spi_flash         CSR SPI master (live config-flash access)
     |   +-- DP_RESET / REBOOT / STATS_CLEAR / SNAPSHOT triggers
+    +-- pw_punt_rx_window        punt AXIS -> CSR-polled frame buffer (host RX)
     +-- pw_data_plane_axis       64-bit AXIS streaming data plane
         +-- per ingress port: pw_parser_axis -> pw_classifier (RESULT_STAGES=2)
         |                      -> pw_frame_saf (store-and-forward)
@@ -172,6 +173,13 @@ Output: a flat "header descriptor" with all extracted fields plus a
 - Backpressures into the RX pipeline only after dropping per the
   classifier's overflow policy (initial: drop and bump
   `punt_drop_counter`).
+
+> **As-built (Phase 3):** implemented as `pw_punt_rx_window` — the punt
+> AXIS (PUNT/MIRROR frames from the SAF, which carries `logical_if_id` +
+> ingress port as metadata) drains into a single-frame buffer the host
+> polls over the CSR BAR (`PWFPGA_WIN_PUNT_RX`); no DMA. `byte_len`,
+> `ingress_port`, `logical_if_id`, the frame words and an `overflow` flag
+> are exposed; `bar_slow_path_rx` drains it. See `docs/design/csr-map.md`.
 
 ### flow_gen_array / tx_arbiter
 

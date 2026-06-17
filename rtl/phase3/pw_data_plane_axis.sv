@@ -85,6 +85,7 @@ module pw_data_plane_axis #(
     output logic                  m_axis_punt_tvalid,
     input  wire                   m_axis_punt_tready,
     output logic                  m_axis_punt_tlast,
+    output logic [35:0]           m_axis_punt_tuser,   // {ingress[3:0], logical_if_id[31:0]} of head frame
 
     // Flow gen control (one generator per egress port, flow 1+port)
     // Full decoded flow table; each egress port's multi-flow generator
@@ -116,6 +117,7 @@ module pw_data_plane_axis #(
     // ingress SAFs, PW_PORTS selects the local flow generator.
     localparam int SELW  = $clog2(PW_PORTS + 1);
     localparam int RW    = 5;            // route tag: {is_punt, egress[3:0]}
+    localparam int MW    = 36;           // punt metadata: {ingress[3:0], logical_if_id[31:0]}
 
     // ------------------------------------------------------------
     // Data-plane soft reset: stretch the 1-cycle CSR pulse to a few
@@ -163,6 +165,7 @@ module pw_data_plane_axis #(
     logic             saf_tv [PW_PORTS];
     logic             saf_tl [PW_PORTS];
     logic [RW-1:0]    saf_rt [PW_PORTS];
+    logic [MW-1:0]    saf_md [PW_PORTS];   // per-frame punt metadata {ingress[3:0], lif[31:0]}
     logic             saf_tr [PW_PORTS];   // tready into the SAF (from arbiters)
 
     genvar gp;
@@ -206,7 +209,8 @@ module pw_data_plane_axis #(
             pw_frame_saf #(
                 .DEPTH_BEATS(SAF_DEPTH_BEATS),
                 .DESC_DEPTH (16),
-                .ROUTE_W    (RW)
+                .ROUTE_W    (RW),
+                .META_W     (MW)
             ) u_saf (
                 .clk             (clk),
                 .rst_n           (dp_rst_n),   // soft-reset clears wedged FIFO
@@ -218,13 +222,15 @@ module pw_data_plane_axis #(
                 .dec_keep_i      (rx_kv_d[gp] && rx_res[gp].hit && (act_fwd || act_punt)),
                 .dec_route_i     (act_punt ? {1'b1, 4'd0}
                                            : {1'b0, rx_res[gp].egress_port}),
+                .dec_meta_i      ({4'(gp), rx_res[gp].logical_if_id}),
                 .overflow_drop_o (),                 // future: per-port telemetry tap
                 .m_tdata         (saf_td[gp]),
                 .m_tkeep         (saf_tk[gp]),
                 .m_tvalid        (saf_tv[gp]),
                 .m_tready        (saf_tr[gp]),
                 .m_tlast         (saf_tl[gp]),
-                .m_route         (saf_rt[gp])
+                .m_route         (saf_rt[gp]),
+                .m_meta          (saf_md[gp])
             );
         end
     endgenerate
@@ -487,6 +493,7 @@ module pw_data_plane_axis #(
     assign m_axis_punt_tdata  = saf_td[punt_sel];
     assign m_axis_punt_tkeep  = saf_tk[punt_sel];
     assign m_axis_punt_tlast  = saf_tl[punt_sel];
+    assign m_axis_punt_tuser  = saf_md[punt_sel];
     assign m_axis_punt_tvalid = punt_sel_valid && saf_tv[punt_sel];
 
     wire punt_hs   = m_axis_punt_tvalid && m_axis_punt_tready;

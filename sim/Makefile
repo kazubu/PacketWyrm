@@ -90,6 +90,7 @@ TOP_RTL := \
     $(REPO)/rtl/phase3/pw_stats_snapshot.sv \
     $(REPO)/rtl/phase3/pw_lat_histogram.sv \
     $(REPO)/rtl/phase3/pw_spi_flash.sv \
+    $(REPO)/rtl/phase3/pw_punt_rx_window.sv \
     $(REPO)/rtl/phase3/pw_csr_full.sv \
     $(REPO)/rtl/phase3/pw_parser_axis.sv \
     $(REPO)/rtl/phase3/pw_classifier.sv \
@@ -113,6 +114,7 @@ TB_TOP   := phase3_top_tb/tb_phase3_top.sv
 TB_VEC   := wire_vectors_tb/tb_wire_vectors.sv
 TB_DPA   := data_plane_axis_tb/tb_data_plane_axis.sv
 TB_SAF   := frame_saf_tb/tb_frame_saf.sv
+TB_PUNT  := punt_window_tb/tb_punt_window.sv
 
 VECTORS := vectors/bar_image.hex
 
@@ -124,7 +126,7 @@ VFLAGS := --binary -j 0 \
           -Wno-PINCONNECTEMPTY \
           --timing
 
-.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_full sim_fga sim_fgm sim_pax sim_saf sim_dpa sim_top sim_vec sim_all wave clean vectors
+.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_full sim_fga sim_fgm sim_pax sim_saf sim_punt sim_dpa sim_top sim_vec sim_all wave clean vectors
 
 sim: sim_build/data_plane
 	./sim_build/data_plane
@@ -162,6 +164,9 @@ sim_pax: sim_build/parser_axis
 sim_saf: sim_build/frame_saf
 	./sim_build/frame_saf
 
+sim_punt: sim_build/punt_window
+	./sim_build/punt_window
+
 sim_dpa: sim_build/data_plane_axis
 	./sim_build/data_plane_axis
 
@@ -184,7 +189,7 @@ vectors_clean:
 sim_vec: sim_build/wire_vectors $(VECTORS)
 	./sim_build/wire_vectors
 
-sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_icap sim_tsi sim_full sim_fga sim_fgm sim_pax sim_saf sim_dpa sim_top sim_vec
+sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_icap sim_tsi sim_full sim_fga sim_fgm sim_pax sim_saf sim_punt sim_dpa sim_top sim_vec
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
@@ -262,6 +267,13 @@ sim_build/frame_saf: $(REPO)/rtl/phase3/pw_frame_saf.sv $(TB_SAF)
 	    --top-module tb_frame_saf \
 	    -o frame_saf \
 	    $(REPO)/rtl/phase3/pw_frame_saf.sv $(TB_SAF)
+
+sim_build/punt_window: $(REPO)/rtl/phase3/pw_punt_rx_window.sv $(TB_PUNT)
+	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET \
+	    -Mdir sim_build \
+	    --top-module tb_punt_window \
+	    -o punt_window \
+	    $(REPO)/rtl/phase3/pw_punt_rx_window.sv $(TB_PUNT)
 
 sim_build/data_plane_axis: $(DPA_RTL) $(TB_DPA)
 	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET \

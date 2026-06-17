@@ -31,7 +31,8 @@
 module pw_frame_saf #(
     parameter int DEPTH_BEATS = 512,  // beat storage (x8 bytes); ~2.7 max frames at 512
     parameter int DESC_DEPTH  = 16,   // max frames in flight
-    parameter int ROUTE_W     = 5     // opaque routing tag width
+    parameter int ROUTE_W     = 5,    // opaque routing tag width
+    parameter int META_W      = 36    // opaque per-frame metadata (e.g. {ingress[3:0], lif[31:0]})
 ) (
     input  wire               clk,
     input  wire               rst_n,
@@ -46,6 +47,7 @@ module pw_frame_saf #(
     input  wire               dec_valid_i,
     input  wire               dec_keep_i,            // 1 = enqueue, 0 = discard
     input  wire [ROUTE_W-1:0] dec_route_i,
+    input  wire [META_W-1:0]  dec_meta_i,            // opaque metadata, latched with the route
 
     output logic              overflow_drop_o,       // pulse: a keep-frame dropped (full)
 
@@ -55,7 +57,8 @@ module pw_frame_saf #(
     output logic              m_tvalid,
     input  wire               m_tready,
     output logic              m_tlast,
-    output logic [ROUTE_W-1:0] m_route
+    output logic [ROUTE_W-1:0] m_route,
+    output logic [META_W-1:0]  m_meta
 );
     localparam int AW   = $clog2(DEPTH_BEATS);
     localparam int DAW  = $clog2(DESC_DEPTH);
@@ -77,8 +80,9 @@ module pw_frame_saf #(
 
     logic       aborted;       // current frame overflowed -> will be dropped
 
-    // --- descriptor FIFO (route per committed frame) -----------------------
-    logic [ROUTE_W-1:0] desc_mem [DESC_DEPTH];
+    // --- descriptor FIFO (route + metadata per committed frame) ------------
+    logic [ROUTE_W-1:0] desc_mem  [DESC_DEPTH];
+    logic [META_W-1:0]  desc_meta [DESC_DEPTH];
     logic [DAW:0]       desc_rd, desc_wr;
     wire  [DAW:0]       desc_used = desc_wr - desc_rd;
     wire                desc_empty = (desc_wr == desc_rd);
@@ -113,9 +117,10 @@ module pw_frame_saf #(
             // arrives this cycle, so wr_spec is stable here.)
             if (dec_valid_i) begin
                 if (dec_keep_i && !aborted && !desc_full) begin
-                    wr_commit                  <= wr_spec;      // publish frame
-                    desc_mem[desc_wr[DAW-1:0]] <= dec_route_i;
-                    desc_wr                    <= desc_wr + 1'b1;
+                    wr_commit                   <= wr_spec;     // publish frame
+                    desc_mem[desc_wr[DAW-1:0]]  <= dec_route_i;
+                    desc_meta[desc_wr[DAW-1:0]] <= dec_meta_i;
+                    desc_wr                     <= desc_wr + 1'b1;
                 end else begin
                     wr_spec <= wr_commit;                       // drop: roll back
                     if (dec_keep_i && (aborted || desc_full))
@@ -135,7 +140,8 @@ module pw_frame_saf #(
     assign m_tdata  = head[63:0];
     assign m_tkeep  = head[71:64];
     assign m_tlast  = head_last;
-    assign m_route  = desc_empty ? '0 : desc_mem[desc_rd[DAW-1:0]];
+    assign m_route  = desc_empty ? '0 : desc_mem [desc_rd[DAW-1:0]];
+    assign m_meta   = desc_empty ? '0 : desc_meta[desc_rd[DAW-1:0]];
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
