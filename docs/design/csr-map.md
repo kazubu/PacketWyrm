@@ -105,13 +105,10 @@ The former SLOW_RX/TX placeholders (0x8000 / 0x9000) were reclaimed.
 |   5 | CAP_HAS_MIRROR        | classifier `MIRROR_TO_HOST` implemented  |
 |   6 | CAP_HAS_PUNT          | slow-path punt RX + TX-inject windows    |
 
-> **Note:** the bits above are a registry of meanings. The current Phase 3
-> bitstream still passes `PW_PHASE1_CAPABILITIES` (0) to the CSR, so the
-> `capabilities` register reads `0x0` even though HISTOGRAM, MIRROR and
-> PUNT are implemented on silicon. Advertising the implemented bits
-> (set the `CAPABILITIES` parameter in `pwfpga_top_phase3_board.sv`) is a
-> pending follow-up that needs a bitstream rebuild — software does not yet
-> gate on these bits, so nothing currently depends on it.
+> **Note:** the Phase 3 board top advertises `PW_PHASE3_CAPABILITIES`
+> = `0x0000_006C` (HISTOGRAM | QINQ_PARSER | MIRROR | PUNT — the features
+> implemented in the data plane; DMA / MSI-X / cross-card timestamp sync
+> stay clear). Software does not currently gate on these bits.
 
 ## Port stats block (per port)
 

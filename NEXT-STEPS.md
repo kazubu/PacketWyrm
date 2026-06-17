@@ -36,10 +36,8 @@ need to keep moving is here or one link away.
 > daemon `host_plane` already calls both `slow_path_rx`/`slow_path_tx`, so
 > the TAP ↔ wire bridge is functional end-to-end. Next: optionally move RX
 > timestamping to the ingress MAC for absolute accuracy; then multi-card.
-> Smaller follow-ups: advertise the implemented `capabilities` bits
-> (HISTOGRAM/MIRROR/PUNT) in the bitstream's `CAPABILITIES` parameter
-> (currently 0 — needs a rebuild); a flow-compiler/YAML construct for
-> FORWARD rules (currently backend-direct).
+> Smaller follow-up: a flow-compiler/YAML construct for FORWARD rules
+> (currently backend-direct).
 
 ## Where the tree is right now
 
