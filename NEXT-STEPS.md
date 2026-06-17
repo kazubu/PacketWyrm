@@ -39,6 +39,37 @@ need to keep moving is here or one link away.
 > (FORWARD rules now have a YAML/compiler construct — top-level
 > `forwards:` -> classifier FORWARD_PORT rows.)
 
+## Future task: BRAM-back the store-and-forward buffer (`pw_frame_saf`)
+
+Biggest single resource win available, no feature loss. Measured from the
+routed checkpoint (device = 162720 LUT / 325440 FF):
+
+- The two `pw_frame_saf` instances (one per ingress port) cost
+  **~22.3k LUT (≈14% of device) and ~76.4k FF (≈24%)** — the SAF is ~26%
+  of the data plane's LUTs and ~58% of its FFs, by far the largest
+  consumer. Cause: the 512-beat × 73-bit beat buffer is synthesised into
+  registers + a wide mux, not BRAM, because its `mem` write lives in an
+  async-reset `always_ff` (synth: "dissolved into 37376 registers"; same
+  class of issue fixed for `pw_punt_rx_window`).
+- Moving the write to a reset-less `always_ff` would let it infer BRAM
+  (~2–4 RAMB tiles total), freeing **both** the ~14% LUT and ~24% FF —
+  LUT is the tighter constraint today (~81%). The SAF is shared by
+  FORWARD / PUNT / MIRROR, so this keeps all three; deleting FORWARD
+  alone frees almost nothing (the SAF stays for PUNT/MIRROR).
+
+Cost / risk (why it is not a quick change like the punt window): the SAF
+read is **combinational** today (`head = mem[rd_ptr]` drives `m_tdata`),
+woven into the drain handshake. BRAM forces a 1-cycle registered read, so
+the drain side must become a read-ahead pipeline that holds/replays the
+prefetched beat correctly under `m_tready` backpressure (off-by-one-prone
+— cf. the inject stranded-word bug). Also: +1-cycle drain latency on the
+FORWARD/PUNT path (negligible — not the measured-flow path); verify
+`dp_soft_rst` still flushes; needs a bitstream rebuild + full HW
+re-validation (loopback loss=0, FORWARD, PUNT/inject round-trips) at the
+current razor-thin WNS (+0.005), with regression risk to a working
+loss=0 data plane. Plan it deliberately: SAF rework → sim (existing +
+new read-ahead/backpressure scenarios) → build → HW re-validate.
+
 ## Where the tree is right now
 
 Branch: `claude/brave-bohr-ha75N` (all work pushed). Author identity
