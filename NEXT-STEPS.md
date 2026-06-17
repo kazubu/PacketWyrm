@@ -54,46 +54,14 @@ sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
    Deferred by the user ("RX side is fine for now").
 2. **Multi-card** — cross-card flows, multi-card orchestration. Needs a
    second card on the bench.
-3. **BRAM-back `pw_frame_saf`** — the biggest resource win; its own
-   section below.
-4. **Minor**: the `CAPABILITIES` parameter advertises `0x6C` in source;
-   it rides the next bitstream build (no separate action needed).
+3. **Minor**: the `CAPABILITIES` parameter advertises `0x6C` (the
+   currently-flashed build reports it).
 
-Razor-thin timing caveat: the full feature stack closes at **WNS +0.005
-ns @156.25 MHz**. Anything added to the `dp_clk` data plane will likely
-need another timing-recovery pass (the parser pipelining and the SAF
-BRAM-backing below are the levers).
-
-## Future task: BRAM-back the store-and-forward buffer (`pw_frame_saf`)
-
-Biggest single resource win available, no feature loss. Measured from the
-routed checkpoint (device = 162720 LUT / 325440 FF):
-
-- The two `pw_frame_saf` instances (one per ingress port) cost
-  **~22.3k LUT (≈14% of device) and ~76.4k FF (≈24%)** — the SAF is ~26%
-  of the data plane's LUTs and ~58% of its FFs, by far the largest
-  consumer. Cause: the 512-beat × 73-bit beat buffer is synthesised into
-  registers + a wide mux, not BRAM, because its `mem` write lives in an
-  async-reset `always_ff` (synth: "dissolved into 37376 registers"; same
-  class of issue fixed for `pw_punt_rx_window`).
-- Moving the write to a reset-less `always_ff` would let it infer BRAM
-  (~2–4 RAMB tiles total), freeing **both** the ~14% LUT and ~24% FF —
-  LUT is the tighter constraint today (~81%). The SAF is shared by
-  FORWARD / PUNT / MIRROR, so this keeps all three; deleting FORWARD
-  alone frees almost nothing (the SAF stays for PUNT/MIRROR).
-
-Cost / risk (why it is not a quick change like the punt window): the SAF
-read is **combinational** today (`head = mem[rd_ptr]` drives `m_tdata`),
-woven into the drain handshake. BRAM forces a 1-cycle registered read, so
-the drain side must become a read-ahead pipeline that holds/replays the
-prefetched beat correctly under `m_tready` backpressure (off-by-one-prone
-— cf. the inject stranded-word bug). Also: +1-cycle drain latency on the
-FORWARD/PUNT path (negligible — not the measured-flow path); verify
-`dp_soft_rst` still flushes; needs a bitstream rebuild + full HW
-re-validation (loopback loss=0, FORWARD, PUNT/inject round-trips) at the
-current razor-thin WNS, with regression risk to a working loss=0 data
-plane. Plan it deliberately: SAF rework → sim (existing + new
-read-ahead/backpressure scenarios) → build → HW re-validate.
+Timing: the full feature stack now closes at **WNS +0.143 ns @156.25 MHz**
+(after BRAM-backing the SAF freed ~24% FF / ~14% LUT and de-congested the
+route-dominated paths). Comfortable margin, but still watch it when adding
+to the `dp_clk` data plane — the parser pipelining and SAF BRAM-backing
+were the levers used to get here.
 
 ## Test surface
 

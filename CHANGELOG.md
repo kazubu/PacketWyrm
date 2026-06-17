@@ -35,6 +35,13 @@ For where work is going next, see `NEXT-STEPS.md`.
   - **Timing margin recovered** — pipelined `pw_parser_axis` key extract
     into two stages; WNS +0.003 → +0.020 ns at 156.25 MHz, HW-revalidated
     at loss=0.
+  - **SAF buffer BRAM-backed** — `pw_frame_saf`'s 512-beat frame buffer
+    now infers as block RAM (reset-less write port + registered read-ahead
+    drain) instead of ~37k FFs/instance + a wide mux. Frees ~24% of device
+    FFs and ~14% LUTs across the two instances, which de-congested the
+    route-dominated paths: **WNS +0.005 → +0.143 ns** with no feature or
+    scale change. HW-revalidated (loopback loss=0, FORWARD, PUNT, inject
+    round-trip).
   - **PUNT / slow-path RX to the host** — `pw_punt_rx_window` sinks the
     data plane's punt AXIS (`PUNT_TO_HOST` / `MIRROR_TO_HOST`) into a
     CSR-polled single-frame buffer (`PWFPGA_WIN_PUNT_RX`, BAR, no DMA).

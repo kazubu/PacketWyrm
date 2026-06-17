@@ -35,7 +35,9 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
 Module notes: `pw_parser_axis` is pipelined (2-stage key extract);
 `pw_classifier` uses RESULT_STAGES + a parallel priority winner;
 `pw_lat_histogram` replaced the FF histogram; `pw_ts_insert` overwrites
-the tx_timestamp at egress so latency measures the DUT. The wide-bus
+the tx_timestamp at egress so latency measures the DUT; `pw_frame_saf`
+is BRAM-backed (reset-less write + registered read-ahead drain) — freed
+~24% FF / ~14% LUT vs the former register array. The wide-bus
 `pw_data_plane` / `pw_parser` / `pw_flow_gen` remain only for the legacy
 sim (`tb_data_plane`).
 

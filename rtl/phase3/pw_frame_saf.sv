@@ -64,8 +64,13 @@ module pw_frame_saf #(
     localparam int DAW  = $clog2(DESC_DEPTH);
     localparam int BEATW = 1 + 8 + 64;   // {tlast, tkeep, tdata}
 
-    // --- beat storage ------------------------------------------------------
-    logic [BEATW-1:0] mem [DEPTH_BEATS];
+    // --- beat storage (BRAM) -----------------------------------------------
+    // Simple dual-port: write port below (reset-less so it infers as a
+    // block RAM, not ~37k FFs + a wide mux), read port registered on the
+    // drain side. rd_ptr only advances within the committed region, and
+    // writes are speculative (>= wr_commit), so read/write addresses never
+    // collide -> no read-during-write hazard.
+    (* ram_style = "block" *) logic [BEATW-1:0] mem [DEPTH_BEATS];
 
     // Pointers carry one extra MSB for full/empty disambiguation.
     logic [AW:0] rd_ptr;       // drain read pointer (committed region)
@@ -101,11 +106,12 @@ module pw_frame_saf #(
         end else begin
             overflow_drop_o <= 1'b0;
 
-            // Speculative beat write for the in-progress frame.
+            // Speculative beat write for the in-progress frame. (The mem
+            // array write itself lives in the reset-less block below so the
+            // RAM infers as BRAM; here we only advance the pointer / flag.)
             if (s_tvalid) begin
                 if (beat_we) begin
-                    mem[wr_spec[AW-1:0]] <= {s_tlast, s_tkeep, s_tdata};
-                    wr_spec              <= wr_spec + 1'b1;
+                    wr_spec <= wr_spec + 1'b1;
                 end else begin
                     // No room -> this frame can no longer be emitted intact.
                     aborted <= 1'b1;
@@ -131,15 +137,27 @@ module pw_frame_saf #(
         end
     end
 
-    // --- drain / read side -------------------------------------------------
-    wire [BEATW-1:0] head      = mem[rd_ptr[AW-1:0]];
-    wire             head_last = head[BEATW-1];
-    wire             committed_avail = (rd_ptr != wr_commit);
+    // Reset-less BRAM write port (see ram_style note above).
+    always_ff @(posedge clk) begin
+        if (beat_we) mem[wr_spec[AW-1:0]] <= {s_tlast, s_tkeep, s_tdata};
+    end
 
-    assign m_tvalid = !desc_empty && committed_avail;
-    assign m_tdata  = head[63:0];
-    assign m_tkeep  = head[71:64];
-    assign m_tlast  = head_last;
+    // --- drain / read side -------------------------------------------------
+    // BRAM read is synchronous (1-cycle), so the AXIS master is driven from
+    // a registered output beat (`dbeat`/`dvalid`) fed by a one-ahead fetch.
+    // `rd_ptr` is the next address to FETCH. A committed beat is presentable
+    // when rd_ptr has not caught wr_commit and its descriptor exists.
+    logic [BEATW-1:0] dbeat;     // registered BRAM read data (presented beat)
+    logic             dvalid;    // dbeat holds a valid, un-consumed beat
+
+    wire avail   = (rd_ptr != wr_commit) && !desc_empty;
+    wire consume = dvalid && m_tready;
+    wire fetch   = avail && (!dvalid || consume);   // refill when empty or draining
+
+    assign m_tvalid = dvalid;
+    assign m_tdata  = dbeat[63:0];
+    assign m_tkeep  = dbeat[71:64];
+    assign m_tlast  = dbeat[BEATW-1];
     assign m_route  = desc_empty ? '0 : desc_mem [desc_rd[DAW-1:0]];
     assign m_meta   = desc_empty ? '0 : desc_meta[desc_rd[DAW-1:0]];
 
@@ -147,10 +165,18 @@ module pw_frame_saf #(
         if (!rst_n) begin
             rd_ptr  <= '0;
             desc_rd <= '0;
-        end else if (m_tvalid && m_tready) begin
-            rd_ptr <= rd_ptr + 1'b1;
-            if (head_last)
-                desc_rd <= desc_rd + 1'b1;   // frame fully drained
+            dvalid  <= 1'b0;
+        end else begin
+            if (fetch) begin
+                dbeat  <= mem[rd_ptr[AW-1:0]];   // sync read; valid next cycle
+                rd_ptr <= rd_ptr + 1'b1;
+                dvalid <= 1'b1;
+            end else if (consume) begin
+                dvalid <= 1'b0;                  // drained, nothing prefetched
+            end
+            // Advance the descriptor when a frame's last beat is consumed.
+            if (consume && dbeat[BEATW-1])
+                desc_rd <= desc_rd + 1'b1;
         end
     end
 
