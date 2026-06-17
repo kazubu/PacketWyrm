@@ -17,6 +17,14 @@ For where work is going next, see `NEXT-STEPS.md`.
     `pw_frame_saf`, `pw_data_plane_axis`); closes timing at 156.25 MHz.
   - Scaled to **32 flows / 16 classifier rows / 16 latency bins**;
     bidirectional + 16 concurrent flows validated at loss=0.
+  - **Store-and-forward FORWARD validated on silicon** — a classifier
+    `FORWARD_PORT` rule routes ingress frames through `pw_frame_saf` to
+    the egress port; HW test (`pw_phase3_forward`) crossed the DAC twice
+    at line rate with loss=0. (FORWARD egress is hardwired to port 0 in
+    RTL until the classifier wire struct carries an egress-port field.)
+  - **Timing margin recovered** — pipelined `pw_parser_axis` key extract
+    into two stages; WNS +0.003 → +0.020 ns at 156.25 MHz, HW-revalidated
+    at loss=0.
   - **BRAM-backed latency histogram** (`pw_lat_histogram`) — freed the
     FF wall that capped flow scaling; read live via the CSR window.
   - **Egress hardware timestamping** (`pw_ts_insert` + `pw_ts_gray_cdc`)

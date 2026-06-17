@@ -14,12 +14,19 @@ need to keep moving is here or one link away.
 > "Where the tree is" / commit-graph / Open-TODO sections below predate
 > this work and are kept only for history.
 >
-> **Remaining / next** (priority): recover timing margin (the full
-> feature stack closes at a thin WNS ~+0.003 @156.25 MHz); validate the
-> SAF **FORWARD** path on silicon (only TEST_RX loopback is HW-tested);
-> implement the **PUNT/slow-path** to the host (the punt AXIS is currently
-> tied off); optionally move RX timestamping to the ingress MAC for
-> absolute accuracy; then multi-card.
+> **Remaining / next** (priority): ~~recover timing margin~~ **DONE** —
+> the parser key-extract is now 2-stage, WNS +0.003 → +0.020 @156.25 MHz
+> (HW-revalidated: 16-flow loopback, 793M frames, loss=0, latency uniform;
+> new image flashed as cold-boot). ~~Validate the SAF **FORWARD** path on
+> silicon~~ **DONE** — `pw_phase3_forward` on HW (gen[1]→RX0→FWD→SAF→TX0
+> →RX1→TEST_RX, frames cross the DAC twice): rx 4.75M, **loss=0**, ooo=0,
+> latency uniform (the constant dup=1 / ~27 startup drops are one-time
+> pre-commit artifacts). Caveat: the classifier wire struct doesn't carry
+> a FORWARD egress port yet, so FORWARD is hardwired to egress 0 in RTL —
+> generalising that (egress port in `pwfpga_classifier_entry` + RTL) is
+> the remaining FORWARD work. Next: implement the **PUNT/slow-path** to
+> the host (the punt AXIS is currently tied off); optionally move RX
+> timestamping to the ingress MAC for absolute accuracy; then multi-card.
 
 ## Where the tree is right now
 
