@@ -64,11 +64,11 @@ sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
 4. **Minor**: the `CAPABILITIES` parameter advertises `0x6C` (the
    currently-flashed build reports it).
 
-Timing: the full feature stack now closes at **WNS +0.143 ns @156.25 MHz**
-(after BRAM-backing the SAF freed ~24% FF / ~14% LUT and de-congested the
-route-dominated paths). Comfortable margin, but still watch it when adding
-to the `dp_clk` data plane — the parser pipelining and SAF BRAM-backing
-were the levers used to get here.
+Timing: the full feature stack now closes at **WNS +0.198 ns @156.25 MHz**
+(was a razor-thin +0.005; BRAM-backing the SAF freed ~24% FF / ~14% LUT
+and de-congested the route-dominated paths). Comfortable margin, but still
+watch it when adding to the `dp_clk` data plane — the parser pipelining
+and SAF BRAM-backing were the levers used to get here.
 
 ## Test surface
 
