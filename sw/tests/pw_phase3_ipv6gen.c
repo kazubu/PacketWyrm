@@ -64,6 +64,10 @@ int main(int argc, char **argv) {
     memset(f.ipv6_src, 0, 16); f.ipv6_src[0]=0x20; f.ipv6_src[1]=0x01; f.ipv6_src[2]=0x0d; f.ipv6_src[3]=0xb8; f.ipv6_src[15]=0x01;
     memset(f.ipv6_dst, 0, 16); f.ipv6_dst[0]=0x20; f.ipv6_dst[1]=0x01; f.ipv6_dst[2]=0x0d; f.ipv6_dst[3]=0xb8; f.ipv6_dst[15]=0x02;
     f.udp_src_port = 49152; f.udp_dst_port = 50001;
+    f.dscp = 46;            /* EF -> IPv6 traffic class 0xB8 (byte14 0x6B, byte15 0x80) */
+    f.ttl  = 64;            /* hop limit */
+    /* IPv6 dst-address modifier: rotate the low byte (byte 53) per frame. */
+    f.dst_ipv4_mod = PWFPGA_FIELD_INCREMENT; f.dst_ipv4_mask = 0x000000FFu;
     f.frame_len_min = 256; f.frame_len_max = 256; f.frame_len_step = 1;
     f.rate_bps = 10000000ULL;
     { unsigned __int128 num = (unsigned __int128)f.rate_bps * 65536u;
@@ -89,7 +93,8 @@ int main(int argc, char **argv) {
 
     printf("gen IPv6/UDP egress0 (src 2001:db8::1 dst ::2); PUNT(ingress1) -> host\n");
 
-    int got=0, v6_ok=0, csum_ok=0, addr_ok=0;
+    int got=0, v6_ok=0, csum_ok=0, addr_ok=0, tc_ok=0, hop_ok=0;
+    uint8_t dlo_seen[256] = {0}; int dlo_distinct=0;
     uint8_t buf[2048];
     for (long s=0; s<50000000L && got<want; s++) {
         uint32_t lif=0; int n = o->slow_path_rx(be.ctx, buf, sizeof(buf), &lif);
@@ -97,15 +102,20 @@ int main(int argc, char **argv) {
         got++;
         int is6 = (n >= 54 && buf[12]==0x86 && buf[13]==0xDD);
         if (is6) v6_ok++;
-        if (is6 && buf[22]==0x20 && buf[23]==0x01 && buf[37]==0x01 && buf[53]==0x02) addr_ok++;
+        /* fixed bytes: src 2001:db8::1, dst prefix incl byte 52; low byte (53) rotates */
+        if (is6 && buf[22]==0x20 && buf[23]==0x01 && buf[37]==0x01 && buf[52]==0x00) addr_ok++;
+        if (is6 && buf[14]==0x6B && buf[15]==0x80) tc_ok++;     /* traffic class = DSCP<<2 */
+        if (is6 && buf[21]==64) hop_ok++;                       /* hop limit */
         if (is6 && udp6_csum_ok(buf, n)) csum_ok++;
-        if (got<=3) printf("  frame %d: %d bytes ethertype=%02x%02x csum_ok=%d\n",
-                           got, n, buf[12], buf[13], is6 && udp6_csum_ok(buf,n));
+        if (is6 && !dlo_seen[buf[53]]) { dlo_seen[buf[53]]=1; dlo_distinct++; }
+        if (got<=3) printf("  frame %d: %d bytes ethertype=%02x%02x tc=%02x%02x hop=%d dst_lo=%02x csum_ok=%d\n",
+                           got, n, buf[12], buf[13], buf[14], buf[15], buf[21], buf[53], is6 && udp6_csum_ok(buf,n));
     }
 
-    printf("RESULT: punted=%d ipv6=%d addr_ok=%d csum_ok=%d (want %d each)\n",
-           got, v6_ok, addr_ok, csum_ok, want);
-    int pass = (got>=want) && (v6_ok==got) && (addr_ok==got) && (csum_ok==got);
+    printf("RESULT: punted=%d ipv6=%d addr_ok=%d csum_ok=%d tc_ok=%d hop_ok=%d dst_lo_distinct=%d (want %d each)\n",
+           got, v6_ok, addr_ok, csum_ok, tc_ok, hop_ok, dlo_distinct, want);
+    int pass = (got>=want) && (v6_ok==got) && (addr_ok==got) && (csum_ok==got)
+               && (tc_ok==got) && (hop_ok==got) && (dlo_distinct>=4);
     printf("%s\n", pass ? "PASS" : "FAIL");
 
     f.tx_enable=0; f.enable=0; o->flow_write(be.ctx,0,&f); o->flow_commit(be.ctx);

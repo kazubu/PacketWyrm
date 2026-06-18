@@ -384,6 +384,10 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
         if (s && !pw_parse_u8(s, &f->ipv6.hop_limit)) {
             diag_set(diag, PW_E_PARSE, v6p, "hop_limit"); return PW_E_PARSE;
         }
+        if ((r = get_scalar(v6, "dscp", v6p, false, &s, diag)) != PW_OK) return r;
+        if (s && (!pw_parse_u8(s, &f->ipv6.dscp) || f->ipv6.dscp > 63)) {
+            diag_set(diag, PW_E_OUT_OF_RANGE, v6p, "dscp 0..63"); return PW_E_OUT_OF_RANGE;
+        }
         f->ipv6.present = true;
     } else {
         char v4p[96]; snprintf(v4p, sizeof(v4p), "%s.ipv4", path);
@@ -487,8 +491,13 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
     if (mods) {
         char xp[96]; snprintf(xp, sizeof(xp), "%s.modifiers", path);
         REQ_MAP(mods, xp);
-        if ((r = parse_field_mod(mods, "src_ipv4", xp, &f->mod.src_ipv4, diag)) != PW_OK) return r;
-        if ((r = parse_field_mod(mods, "dst_ipv4", xp, &f->mod.dst_ipv4, diag)) != PW_OK) return r;
+        /* Address modifiers use the flow's active family key (src_ipv4/dst_ipv4
+         * for v4, src_ipv6/dst_ipv6 for v6); both populate the same wire slot,
+         * which the generator applies to the active address (v6 = low 32 bits). */
+        const char *src_key = f->ipv6.present ? "src_ipv6" : "src_ipv4";
+        const char *dst_key = f->ipv6.present ? "dst_ipv6" : "dst_ipv4";
+        if ((r = parse_field_mod(mods, src_key, xp, &f->mod.src_ipv4, diag)) != PW_OK) return r;
+        if ((r = parse_field_mod(mods, dst_key, xp, &f->mod.dst_ipv4, diag)) != PW_OK) return r;
         if ((r = parse_field_mod(mods, "udp_src",  xp, &f->mod.udp_src,  diag)) != PW_OK) return r;
         if ((r = parse_field_mod(mods, "udp_dst",  xp, &f->mod.udp_dst,  diag)) != PW_OK) return r;
     }

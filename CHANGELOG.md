@@ -9,6 +9,21 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **IPv4/IPv6 generator feature parity** — IPv6 flows gained the features
+    previously IPv4-only: (1) **address field modifiers** — `src_ipv6` /
+    `dst_ipv6` (YAML, same syntax as the v4 keys) rotate the low 32 bits of
+    the address (host / interface-ID) per frame for DUT hashing / ECMP
+    testing; the modified address is folded into the IPv6 UDP checksum in
+    hardware. The wire reuses the existing address-modifier slots (a flow is
+    one family), applied to the active family. (2) **DSCP / traffic class**
+    and **TTL / hop limit** are now emitted from config for *both* families
+    (`ipv4.dscp` -> IPv4 TOS, `ipv6.dscp` -> IPv6 traffic class; `ttl` /
+    `hop_limit` -> the respective header field) — previously both were
+    silently hardcoded (TOS=0, TTL=64), so the IPv4 `dscp` config was a
+    latent no-op; the IPv4 header checksum now includes TOS + TTL. Defaults
+    (dscp 0, ttl/hop_limit 64) keep existing configs byte-identical.
+    `sim_fgm` checks both families' DSCP, TTL/hop-limit, and the IPv6
+    address modifier (rotates low bits, keeps high bits, checksum valid).
 
 - **Phase 3 data plane on silicon (AS02MC04 / KU3P)** — the 64-bit
   streaming data plane runs on hardware at line rate, loss=0:

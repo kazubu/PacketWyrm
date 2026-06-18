@@ -172,6 +172,8 @@ module pw_flow_window #(
             flow_rows_c[r].dst_ipv4  = row_dst_ip[r];
             flow_rows_c[r].udp_sp    = row_udp_sp[r];
             flow_rows_c[r].udp_dp    = row_udp_dp[r];
+            flow_rows_c[r].dscp      = row[39*8 +: 8];   // IPv4 TOS / IPv6 TC
+            flow_rows_c[r].ttl       = row[40*8 +: 8];   // IPv4 TTL / IPv6 hop limit
 
             // Per-field modifiers (wire bytes 92+, just past the packed C
             // struct's rx_check_enable @91). mode in low 2 bits.

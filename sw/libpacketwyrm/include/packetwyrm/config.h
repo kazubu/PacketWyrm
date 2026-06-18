@@ -69,6 +69,7 @@ struct pw_flow_ipv6 {
     uint8_t  src[16];     /* network order */
     uint8_t  dst[16];
     uint8_t  hop_limit;   /* optional, default 64 */
+    uint8_t  dscp;        /* optional, 0..63; emitted as the IPv6 traffic class */
 };
 
 struct pw_flow_udp {

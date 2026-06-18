@@ -45,6 +45,12 @@ a correct IPv4 header checksum, and can emit IPv6/UDP frames (0x86DD,
 carry the 16-byte addresses). For IPv6 it emits a *partial* UDP checksum
 (the mandatory pseudo-header + UDP + payload sum, **minus** the
 tx_timestamp); `pw_ts_insert` folds the departure stamp in (see below).
+IPv4 and IPv6 are at feature parity: both emit the configured DSCP (IPv4
+TOS / IPv6 traffic class) and TTL / hop limit, and both apply the src/dst
+address field modifiers — for IPv4 the 32-bit address, for IPv6 the low 32
+bits of the address (the modified address is folded into the IPv6 UDP
+checksum). The address-modifier wire fields are shared (a flow is one
+family).
 The modifier-applied header fields and both checksums are **precomputed
 one stage ahead**, registered alongside the round-robin `pick` (identical
 1-cycle staleness, so they align with the built row) — the frame-build

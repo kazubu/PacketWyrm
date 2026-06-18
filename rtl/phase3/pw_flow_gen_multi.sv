@@ -182,12 +182,16 @@ module pw_flow_gen_multi #(
         return (mode == 2'd0) ? base : ((base & ~mask) | (rot & mask));
     endfunction
     // IPv4 header checksum over the (mostly constant) header with the
-    // effective src/dst addresses. Constants: ver/ihl/tos=0x4500,
-    // flags/frag=0x4000, ttl/proto=0x4011; id and csum contribute 0.
+    // effective src/dst addresses, the DSCP (TOS byte) and the TTL.
+    // Constants: ver/ihl=0x45, flags/frag=0x4000, proto=0x11 (UDP); id and
+    // csum contribute 0. tos = {dscp[5:0],2'b00} (6-bit DSCP, ECN=0).
     function automatic logic [15:0] ip_csum16(input logic [15:0] tot,
-                                              input logic [31:0] sip, input logic [31:0] dip);
+                                              input logic [31:0] sip, input logic [31:0] dip,
+                                              input logic [7:0]  dscp, input logic [7:0] ttl);
         logic [31:0] s;
-        s = 32'h4500 + {16'b0, tot} + 32'h4000 + 32'h4011
+        s = {16'b0, 8'h45, dscp[5:0], 2'b00}     // ver/ihl | TOS
+          + {16'b0, tot} + 32'h4000              // total length | flags/frag
+          + {16'b0, ttl, 8'h11}                  // TTL | proto (UDP)
           + {16'b0, sip[31:16]} + {16'b0, sip[15:0]}
           + {16'b0, dip[31:16]} + {16'b0, dip[15:0]};
         s = {16'b0, s[31:16]} + {16'b0, s[15:0]};
@@ -271,15 +275,22 @@ module pw_flow_gen_multi #(
         end
     end
 
-    logic [31:0] pc_sip, pc_dip;
-    logic [15:0] pc_sp, pc_dp, pc_csum, pc_ucsum;
+    logic [31:0]  pc_sip, pc_dip;
+    logic [127:0] pc_v6src, pc_v6dst;
+    logic [15:0]  pc_sp, pc_dp, pc_csum, pc_ucsum;
     always_comb begin
         pc_sip   = mod32(row_l.sip_mod, row_l.src_ipv4, row_l.sip_mask, seq_l);
         pc_dip   = mod32(row_l.dip_mod, row_l.dst_ipv4, row_l.dip_mask, seq_l);
+        // IPv6 address modifiers apply to the low 32 bits (host/interface-ID
+        // portion); the upper 96 bits are static. Reuses the same modifier
+        // fields as the IPv4 src/dst (a flow is either v4 or v6).
+        pc_v6src = {row_l.ipv6_src[127:32], mod32(row_l.sip_mod, row_l.ipv6_src[31:0], row_l.sip_mask, seq_l)};
+        pc_v6dst = {row_l.ipv6_dst[127:32], mod32(row_l.dip_mod, row_l.ipv6_dst[31:0], row_l.dip_mask, seq_l)};
         pc_sp    = mod16(row_l.sp_mod,  row_l.udp_sp,   row_l.sp_mask,  seq_l);
         pc_dp    = mod16(row_l.dp_mod,  row_l.udp_dp,   row_l.dp_mask,  seq_l);
-        pc_csum  = ip_csum16(16'(20 + 8 + FRAME_LEN_PAYLOAD), pc_sip, pc_dip);
-        pc_ucsum = udp6_csum(row_l.ipv6_src, row_l.ipv6_dst, pc_sp, pc_dp,
+        pc_csum  = ip_csum16(16'(20 + 8 + FRAME_LEN_PAYLOAD), pc_sip, pc_dip,
+                             row_l.dscp, row_l.ttl);
+        pc_ucsum = udp6_csum(pc_v6src, pc_v6dst, pc_sp, pc_dp,
                              16'(8 + FRAME_LEN_PAYLOAD), row_l.flow_id, seq_l);
     end
 
@@ -289,11 +300,13 @@ module pw_flow_gen_multi #(
     pw_flow_row_t     row_qq;
     logic [63:0]      seq_qq;
     logic [31:0]      eff_sip_q, eff_dip_q;
+    logic [127:0]     eff_v6src_q, eff_v6dst_q;
     logic [15:0]      eff_sp_q, eff_dp_q, csum_q, ucsum_q;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             pick_qq <= '0; pick_valid_qq <= 1'b0; row_qq <= '0; seq_qq <= '0;
             eff_sip_q <= '0; eff_dip_q <= '0; eff_sp_q <= '0; eff_dp_q <= '0;
+            eff_v6src_q <= '0; eff_v6dst_q <= '0;
             csum_q    <= '0; ucsum_q  <= '0;
         end else begin
             pick_qq       <= pick_l;
@@ -301,6 +314,7 @@ module pw_flow_gen_multi #(
             row_qq        <= row_l;
             seq_qq        <= seq_l;
             eff_sip_q <= pc_sip;  eff_dip_q <= pc_dip;
+            eff_v6src_q <= pc_v6src; eff_v6dst_q <= pc_v6dst;
             eff_sp_q  <= pc_sp;   eff_dp_q  <= pc_dp;
             csum_q    <= pc_csum; ucsum_q   <= pc_ucsum;
         end
@@ -311,9 +325,12 @@ module pw_flow_gen_multi #(
     // and aligned with the picked row); build() only lays out bytes.
     task automatic build(input pw_flow_row_t r, input logic [63:0] seq, input logic [63:0] ts,
                          input logic [31:0] eff_sip, input logic [31:0] eff_dip,
+                         input logic [127:0] eff_v6src, input logic [127:0] eff_v6dst,
                          input logic [15:0] eff_sp,  input logic [15:0] eff_dp,
                          input logic [15:0] csum,    input logic [15:0] ucsum);
         int off, tl, total_len;
+        logic [7:0] tos;
+        tos = {r.dscp[5:0], 2'b00};        // IPv4 TOS / IPv6 TC byte (DSCP<<2, ECN 0)
         for (int i = 0; i < HDR_MAX_BYTES; i++) fb[i] <= 8'h00;
         fb[0]<=r.dst_mac[47:40]; fb[1]<=r.dst_mac[39:32]; fb[2]<=r.dst_mac[31:24];
         fb[3]<=r.dst_mac[23:16]; fb[4]<=r.dst_mac[15:8];  fb[5]<=r.dst_mac[7:0];
@@ -328,20 +345,22 @@ module pw_flow_gen_multi #(
         tl = 8 + FRAME_LEN_PAYLOAD;        // UDP length, common to v4/v6
         if (r.is_v6) begin
             fb[off]<=8'h86; fb[off+1]<=8'hDD; off += 2;        // ethertype IPv6
-            // 40-byte IPv6 header
-            fb[off+0]<=8'h60; fb[off+1]<=8'h00; fb[off+2]<=8'h00; fb[off+3]<=8'h00;  // v6, TC0, FL0
+            // 40-byte IPv6 header. TC (8b) spans byte0[3:0] + byte1[7:4];
+            // flow label 0. tc = tos = dscp<<2.
+            fb[off+0]<={4'h6, tos[7:4]}; fb[off+1]<={tos[3:0], 4'h0};
+            fb[off+2]<=8'h00; fb[off+3]<=8'h00;                // flow label = 0
             fb[off+4]<=tl[15:8]; fb[off+5]<=tl[7:0];           // payload length = UDP+payload
-            fb[off+6]<=8'd17; fb[off+7]<=8'd64;                // next-header UDP, hop-limit 64
-            for (int b = 0; b < 16; b++) fb[off+8+b]  <= r.ipv6_src[127 - b*8 -: 8];
-            for (int b = 0; b < 16; b++) fb[off+24+b] <= r.ipv6_dst[127 - b*8 -: 8];
+            fb[off+6]<=8'd17; fb[off+7]<=r.ttl;                // next-header UDP, hop limit
+            for (int b = 0; b < 16; b++) fb[off+8+b]  <= eff_v6src[127 - b*8 -: 8];
+            for (int b = 0; b < 16; b++) fb[off+24+b] <= eff_v6dst[127 - b*8 -: 8];
             off += 40;
         end else begin
             fb[off]<=8'h08; fb[off+1]<=8'h00; off += 2;        // ethertype IPv4
             total_len = 20 + 8 + FRAME_LEN_PAYLOAD;
-            fb[off+0]<=8'h45; fb[off+1]<=8'h00;
+            fb[off+0]<=8'h45; fb[off+1]<=tos;                  // ver/ihl | TOS (DSCP)
             fb[off+2]<=total_len[15:8]; fb[off+3]<=total_len[7:0];
             fb[off+4]<=8'h00; fb[off+5]<=8'h00; fb[off+6]<=8'h40; fb[off+7]<=8'h00;
-            fb[off+8]<=8'h40; fb[off+9]<=8'h11; fb[off+10]<=csum[15:8]; fb[off+11]<=csum[7:0];
+            fb[off+8]<=r.ttl; fb[off+9]<=8'h11; fb[off+10]<=csum[15:8]; fb[off+11]<=csum[7:0];  // TTL | proto
             fb[off+12]<=eff_sip[31:24]; fb[off+13]<=eff_sip[23:16];
             fb[off+14]<=eff_sip[15:8];  fb[off+15]<=eff_sip[7:0];
             fb[off+16]<=eff_dip[31:24]; fb[off+17]<=eff_dip[23:16];
@@ -401,7 +420,8 @@ module pw_flow_gen_multi #(
                     automatic logic [32:0] acc  = {1'b0, tokens_q[pick_qq]} + {1'b0, row_qq.tokens_fp};
                     automatic logic [31:0] accv = (acc > {1'b0, cap}) ? cap : acc[31:0];
                     build(row_qq, seq_qq, timestamp_i,
-                          eff_sip_q, eff_dip_q, eff_sp_q, eff_dp_q, csum_q, ucsum_q);
+                          eff_sip_q, eff_dip_q, eff_v6src_q, eff_v6dst_q,
+                          eff_sp_q, eff_dp_q, csum_q, ucsum_q);
                     sel      <= pick_qq;
                     active   <= 1'b1;
                     byte_off <= '0;

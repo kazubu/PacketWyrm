@@ -48,21 +48,26 @@ package pw_axis_pkg;
         logic [31:0] dst_ipv4;
         logic [15:0] udp_sp;
         logic [15:0] udp_dp;
+        logic [7:0]  dscp;      // 6-bit DSCP in [7:2]; emitted as IPv4 TOS /
+                                // IPv6 traffic class (no effect on UDP csum).
+        logic [7:0]  ttl;       // IPv4 TTL / IPv6 hop limit.
         // Per-field modifiers (commercial-gen "field modifier"): vary the
         // masked bits of a header field per emitted frame so one slot looks
         // like many flows to the DUT. mode: 0=static, 1=increment, 2=random.
         // Rotated bits are driven by the slot's per-frame sequence number
         // (increment = seq, random = scrambled seq) -> no extra per-slot
         // state. The test header (magic/flow_id/seq/ts) is NOT modified, so
-        // RX loss/latency measurement is unaffected. The IPv4 header
-        // checksum is recomputed from the modified addresses.
+        // RX loss/latency measurement is unaffected; the IPv4/IPv6 checksums
+        // are recomputed from the modified addresses. The src/dst address
+        // modifiers apply to the flow's active family: the 32-bit IPv4 address
+        // for v4 flows, or the low 32 bits of the IPv6 address for v6 flows
+        // (the host/interface-ID portion -- enough for DUT hashing / ECMP).
         logic [1:0]  sip_mod;   logic [31:0] sip_mask;
         logic [1:0]  dip_mod;   logic [31:0] dip_mask;
         logic [1:0]  sp_mod;    logic [15:0] sp_mask;
         logic [1:0]  dp_mod;    logic [15:0] dp_mask;
         // IPv6: when is_v6, the slot emits an IPv6/UDP frame (0x86DD, 40-byte
-        // header, correct non-zero UDP checksum) using these addresses. The
-        // IPv4 field modifiers above are not applied to IPv6 frames in v1.
+        // header, correct non-zero UDP checksum) using these addresses.
         logic         is_v6;
         logic [127:0] ipv6_src;
         logic [127:0] ipv6_dst;

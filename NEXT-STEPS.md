@@ -54,27 +54,37 @@ sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
    Deferred by the user ("RX side is fine for now").
 2. **Multi-card** — cross-card flows, multi-card orchestration. Needs a
    second card on the bench.
-3. **Field modifiers — extend** (v1 done): generator field modifiers
-   (inc/random/mask) on `src/dst_ipv4` + `udp_src/dst`, test header kept
-   fixed, correct IPv4 checksum. Extensions: MAC/VLAN modifiers (same
-   scheme, mechanical); independent per-field rotation (cross-product
-   rather than the current shared-sequence, correlated rotation);
-   classifier partial-field bitmask (so a rotated field can still be a
-   measurement key).
-4. **IPv6 — extend** (generation + egress timestamping done): IPv6/UDP
-   test flows generate with a correct UDP checksum (YAML `ipv6:` block);
-   egress HW timestamping works for IPv6 too (`pw_ts_insert` detects the
-   family, stamps tx_ts @82 and finalizes the UDP checksum by folding the
-   departure stamp into the generator's partial sum). Extensions:
-   IPv6-address field modifiers (128-bit); IPv6 in the wide-bus legacy sim
-   if needed; classifier IPv6-address matching (the wire match key has no
-   IPv6 addr yet — TEST_RX keys on udp_dst + magic + flow_id, which
-   suffices).
+3. **Field modifiers — extend** (v1 + IPv6 done): generator field modifiers
+   (inc/random/mask) on `src/dst_ipv4` (or `src/dst_ipv6`, low 32 bits) +
+   `udp_src/dst`, test header kept fixed, correct IPv4/IPv6 checksum.
+   Extensions: MAC/VLAN modifiers (same scheme, mechanical); full 128-bit
+   IPv6-address rotation (v1 rotates the low 32 bits); independent per-field
+   rotation (cross-product rather than the current shared-sequence,
+   correlated rotation); classifier partial-field bitmask (so a rotated
+   field can still be a measurement key).
+4. **IPv6 — at full generator parity** (done): generation + egress HW
+   timestamping + UDP checksum, DSCP/traffic-class, TTL/hop-limit, and
+   src/dst address field modifiers all work for IPv6 (YAML `ipv6:` block,
+   `src/dst_ipv6` modifiers). Remaining: **classifier IPv6 dst-address
+   matching** — *deferred* (functionally redundant: a TEST_RX IPv6 flow is
+   already uniquely classified by udp_dst + flow_id + magic). NOTE for a
+   future implementer: the RTL match logic already exists (`pw_classifier`
+   computes `m_v6dst` and the parser extracts `ipv6_dst` into the key); the
+   only missing pieces are the wire `pwfpga_match_key` IPv6 fields (which
+   pushes the classifier row past the 128 B stride → grow to 256 B like the
+   flow row), the `pw_classifier_window` decode, and the compiler setting
+   `ce.key.ipv6_dst`/`mask` for v6 flows. Watch timing (margin is +0.037 ns).
+   Also: IPv6 in the wide-bus legacy sim if ever needed.
 4. **Minor**: the `CAPABILITIES` parameter advertises `0x6C` (the
    currently-flashed build reports it).
 
-Timing: the full feature stack **including IPv6** now closes at **WNS
-+0.116 ns @156.25 MHz** (LUT 75% / FF 60% / BRAM 16% on the KU3P). IPv6
+Timing: the full feature stack **including IPv6 + IPv4/IPv6 parity** (DSCP/
+traffic-class, TTL/hop-limit, IPv6 address modifiers) closes at **WNS
++0.037 ns @156.25 MHz** — thin (parity added ~0.08 ns: the IPv6 address
+modifier feeds the UDP checksum, and the IPv4 checksum now covers TOS+TTL).
+Watch this closely before adding more to the generator's checksum cone.
+The earlier IPv6-only stack closed at +0.116 ns (LUT 75% / FF 60% / BRAM
+16% on the KU3P). IPv6
 (256-byte flow rows + the mandatory IPv6 UDP checksum) cost ~0.83 ns and
 was recovered without cutting flows/scale by, in order of impact: (1) a
 **row-latch split** in `pw_flow_gen_multi` — the 32:1 mux of the wide flow

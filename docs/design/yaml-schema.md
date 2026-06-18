@@ -108,6 +108,7 @@ flows:
     #   src: "2001:db8::1"
     #   dst: "2001:db8::2"
     #   hop_limit: 64              # optional, default 64
+    #   dscp: 0                    # optional 0..63 -> IPv6 traffic class
     # An ipv6 flow is emitted as a 40-byte IPv6 header (ethertype 0x86DD) +
     # UDP with a correct, non-zero UDP checksum: the generator emits a
     # partial checksum (minus tx_timestamp) and the egress stamper folds the
@@ -139,6 +140,9 @@ flows:
     modifiers:                       # optional: per-field "field modifiers"
       dst_ipv4: { mode: increment, mask: 0x000003ff }  # rotate low 10 bits -> 1024 flows
       src_ipv4: { mode: random,    mask: 0x0000ffff }
+      # For an ipv6 flow, use src_ipv6 / dst_ipv6 instead (same syntax); the
+      # mask rotates the low 32 bits of the address (host / interface-ID).
+      #   dst_ipv6: { mode: increment, mask: 0x000000ff }
       udp_src:  { mode: increment, mask: 0xffff }
       udp_dst:  { mode: static }     # (default; same as omitting)
 ```
@@ -153,27 +157,29 @@ there is no extra per-slot state. Notes:
 - The **test header** (`magic` / `flow_id` / `sequence` / `tx_timestamp`)
   is never modified, so RX loss / latency / order measurement is
   unaffected — the DUT sees many flows; PacketWyrm tracks one.
-- The **IPv4 header checksum** is recomputed in hardware from the modified
-  addresses (the generator always emits a correct IPv4 checksum now).
+- The **IPv4/IPv6 checksums** are recomputed in hardware from the modified
+  addresses (IPv4 header checksum; IPv6 UDP checksum).
 - Do **not** rotate a field the classifier matches on for measurement
   (e.g. if a TEST_RX rule keys on `udp_dst`, don't modify `udp_dst`) —
   it would misclassify the return traffic.
 - Per-*apparent*-flow individual RX stats are limited to the HW slot
   count (`NUM_FLOWS`); aggregate loss/latency across the diversified
   traffic is unaffected.
-- v1 covers `src_ipv4` / `dst_ipv4` / `udp_src` / `udp_dst`; all rotate
-  off the same sequence (correlated, not a full cross-product). MAC / VLAN
-  modifiers are a mechanical extension of the same scheme.
+- Covers `src_ipv4` / `dst_ipv4` (or `src_ipv6` / `dst_ipv6`, low 32 bits) /
+  `udp_src` / `udp_dst`; all rotate off the same sequence (correlated, not a
+  full cross-product). MAC / VLAN modifiers and full 128-bit IPv6 rotation
+  are mechanical extensions of the same scheme.
 
 Constraints:
 
 - `id` unique.
 - `tx_global_port` and `rx_global_port` must exist.
 - `logical_if_id`, if set, must exist.
-- Exactly one of `ipv4` / `ipv6` must be set (both implemented:
-  IPv4 emits a correct IPv4 header checksum; IPv6 emits a 40-byte header
-  + a correct non-zero UDP checksum). Field modifiers (`modifiers:`)
-  apply to IPv4 src/dst + UDP ports only in v1.
+- Exactly one of `ipv4` / `ipv6` must be set, at full feature parity:
+  both emit DSCP/traffic-class, TTL/hop-limit, and address field modifiers
+  (IPv4 emits a correct header checksum; IPv6 a correct non-zero UDP
+  checksum). Address modifiers use the family key (`src_ipv4`/`dst_ipv4` or
+  `src_ipv6`/`dst_ipv6`); for IPv6 they rotate the low 32 bits.
 - Exactly one of `traffic.rate_bps` / `traffic.rate_pps`.
 - Exactly one of `traffic.frame_len` and the
   `frame_len_min/max/step` triple.

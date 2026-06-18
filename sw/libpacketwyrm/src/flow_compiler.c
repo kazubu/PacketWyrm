@@ -89,6 +89,7 @@ static pw_status compile_one_flow(struct pw_program *out,
         memcpy(tx_row.ipv6_src, f->ipv6.src, 16);
         memcpy(tx_row.ipv6_dst, f->ipv6.dst, 16);
         tx_row.ttl = f->ipv6.hop_limit;
+        tx_row.dscp = f->ipv6.dscp;
     } else {
         tx_row.ip_version = 4;
         tx_row.src_ipv4 = f->ipv4.src;
