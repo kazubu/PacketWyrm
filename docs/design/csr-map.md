@@ -81,7 +81,7 @@ the initial proposal; concrete field bit definitions are owned by the
 # clear registers sit above the 8 KB data region; the live-read
 # histogram gets 8 KB. Fills the 64 KB BAR.
 0x2000..0x5fff  classifier_table_window   (rows @128 B; commit @+0x3FFC)
-0x6000..0x9fff  flow_table_window         (rows @128 B; commit @+0x3FFC)
+0x6000..0x9fff  flow_table_window         (rows @256 B; commit @+0x3FFC)
 0xa000..0xbfff  histogram_window          (per-flow @128 B = 16 bins; live read)
 0xc000..0xffff  stats_snapshot_window     (trigger @+0x3FFC, clear @+0x3FF8,
                                            data-plane soft-reset @+0x3FF4)
@@ -184,8 +184,17 @@ plane classifies according to the committed table.
 Each row is a packed `struct pwfpga_flow_config` at:
 
 ```
-PWFPGA_WIN_FLOW_TABLE + row_index * PWFPGA_FLOW_STRIDE  (128 bytes)
+PWFPGA_WIN_FLOW_TABLE + row_index * PWFPGA_FLOW_STRIDE  (256 bytes)
 ```
+
+The row stride grew from 128 B to **256 B** so each row can carry two
+16-byte IPv6 addresses alongside the IPv4 fields. The generator picks the
+L3 family from the row's `ip_version` (4 → 20-byte IPv4 header, ethertype
+0x0800; 6 → 40-byte IPv6 header, ethertype 0x86DD with a mandatory,
+non-zero UDP checksum). The row also carries per-field **modifier**
+descriptors (mode + 32-bit mask for `src/dst_ipv4` and `udp_src/dst`,
+decoded in `pw_flow_window.sv`); the exact byte offsets are the packed
+`struct pwfpga_flow_config` in `csr.h`.
 
 Commit register at:
 

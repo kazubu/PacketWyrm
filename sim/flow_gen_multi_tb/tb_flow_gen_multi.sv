@@ -90,6 +90,50 @@ module tb_flow_gen_multi;
         return (s[15:0] == 16'hFFFF);
     endfunction
 
+    // Capture the first IPv6 frame (ethertype 0x86DD) for UDP-checksum check.
+    logic [7:0] fbuf [0:127]; int fb_n = 0;
+    logic [7:0] cap6 [0:127]; int cap6_n = 0; logic cap6_done = 0;
+    int v6_seen = 0;
+    always_ff @(posedge clk) begin
+        if (rst_n && tv) begin
+            for (int k = 0; k < 8; k++) if (tk[k]) begin
+                if (fb_n < 128) fbuf[fb_n] = td[k*8 +: 8];
+                fb_n++;
+            end
+            if (tl) begin
+                if (fb_n >= 54 && fbuf[12] == 8'h86 && fbuf[13] == 8'hDD) begin
+                    v6_seen++;
+                    if (!cap6_done) begin
+                        for (int i = 0; i < 128; i++) cap6[i] = fbuf[i];
+                        cap6_n = fb_n; cap6_done <= 1'b1;
+                    end
+                end
+                fb_n = 0;
+            end
+        end
+    end
+
+    // IPv6 UDP *partial* checksum over cap6: pseudo-header (src@22, dst@38,
+    // ulen, nh=17) + UDP header (@54, incl csum field) + payload (@62) but
+    // EXCLUDING the 8-byte tx_timestamp (bytes 82..89 = payload words 10..13).
+    // The generator omits tx_ts from the checksum (pw_ts_insert folds the
+    // departure stamp in at egress), so partial + ~partial folds to 0xFFFF.
+    function automatic logic udp6_csum_ok();
+        logic [31:0] s; logic [15:0] ulen;
+        s = 0;
+        ulen = {cap6[58], cap6[59]};                 // UDP length
+        for (int w = 0; w < 8; w++) s += {cap6[22 + w*2], cap6[22 + w*2 + 1]};  // src
+        for (int w = 0; w < 8; w++) s += {cap6[38 + w*2], cap6[38 + w*2 + 1]};  // dst
+        s += {16'b0, ulen};                          // upper-layer length
+        s += 32'h0000_0011;                          // next-header 17
+        for (int w = 0; w < 4; w++) s += {cap6[54 + w*2], cap6[54 + w*2 + 1]};  // UDP hdr (incl csum)
+        for (int w = 0; w < 16; w++)                 // 32B payload, minus tx_ts
+            if (w < 10 || w > 13) s += {cap6[62 + w*2], cap6[62 + w*2 + 1]};
+        s = (s & 32'hFFFF) + (s >> 16);
+        s = (s & 32'hFFFF) + (s >> 16);
+        return (s[15:0] == 16'hFFFF);                // partial + ~partial == 0xFFFF
+    endfunction
+
     initial begin
         for (int s = 0; s < SLOTS; s++) begin
             f_rows[s] = '0;
@@ -104,8 +148,12 @@ module tb_flow_gen_multi;
         f_rows[0].tokens_fp=32'h00200000; f_rows[0].src_ipv4=32'h0A000001;
         // dst-IP field modifier on flow_id 1: rotate the low 10 bits.
         f_rows[0].dst_ipv4=32'h0A000200; f_rows[0].dip_mod=2'd1; f_rows[0].dip_mask=32'h000003FF;
+        // slot 2: IPv6 flow (flow_id 3) -- exercises the IPv6 frame path + UDP csum.
         f_rows[2].valid=1; f_rows[2].egress=0; f_rows[2].flow_id=32'd3;
-        f_rows[2].tokens_fp=32'h00200000; f_rows[2].src_ipv4=32'h0A000003;
+        f_rows[2].tokens_fp=32'h00200000;
+        f_rows[2].is_v6=1'b1;
+        f_rows[2].ipv6_src=128'h2001_0db8_0000_0000_0000_0000_0000_0001;
+        f_rows[2].ipv6_dst=128'h2001_0db8_0000_0000_0000_0000_0000_0002;
 
         repeat (4) @(posedge clk); rst_n = 1;
         repeat (3000) @(posedge clk);
@@ -122,6 +170,10 @@ module tb_flow_gen_multi;
         chk("dst-ip modifier keeps high bits", dip_hi_const);
         chk("captured first frame", cap_done && cap_n >= 34);
         chk("IPv4 header checksum valid", ip_csum_ok());
+        // IPv6 flow (flow_id 3 / slot 2): frames emitted as IPv6 + valid UDP csum.
+        chk("IPv6 frames emitted", v6_seen >= 4);
+        chk("captured IPv6 frame (94B)", cap6_done && cap6_n == 94);
+        chk("IPv6 UDP checksum valid", udp6_csum_ok());
         $display("flow_gen_multi: fid1=%0d fid3=%0d (%0d pass, %0d fail)", seen_a, seen_b, g_pass, g_fail);
         if (g_fail == 0) $display("ALL FLOW_GEN_MULTI SCENARIOS PASS");
         else $display("FAILED with %0d error(s)", g_fail);

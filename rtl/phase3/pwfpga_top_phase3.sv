@@ -63,6 +63,8 @@ module pwfpga_top_phase3 #(
     output wire              m_axis_tx_tvalid [NUM_PORTS],
     input  wire              m_axis_tx_tready [NUM_PORTS],
     output wire              m_axis_tx_tlast  [NUM_PORTS],
+    // "generator test frame" marker for the egress stamper (NOT MAC tx-error)
+    output wire              m_axis_tx_tuser  [NUM_PORTS],
 
     // (The PUNT_TO_HOST / MIRROR_TO_HOST path is consumed internally by
     // pw_punt_rx_window and read back over the CSR BAR -- no top-level
@@ -263,6 +265,7 @@ module pwfpga_top_phase3 #(
         .m_axis_tx_tvalid  (m_axis_tx_tvalid),
         .m_axis_tx_tready  (m_axis_tx_tready),
         .m_axis_tx_tlast   (m_axis_tx_tlast),
+        .m_axis_tx_tuser   (m_axis_tx_tuser),
         .m_axis_punt_tdata (punt_td_w),
         .m_axis_punt_tkeep (punt_tk_w),
         .m_axis_punt_tvalid(punt_tv_w),

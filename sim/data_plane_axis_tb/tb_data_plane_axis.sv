@@ -54,6 +54,7 @@ module tb_data_plane_axis;
     logic        tx_tvalid [PORTS];
     logic        tx_tready [PORTS];
     logic        tx_tlast  [PORTS];
+    logic        tx_tuser  [PORTS];   // generator-test-frame marker
 
     // punt (tied off in DUT)
     logic [35:0] punt_tuser;   // {ingress[3:0], logical_if_id[31:0]}
@@ -145,6 +146,7 @@ module tb_data_plane_axis;
         .m_axis_tx_tvalid (tx_tvalid),
         .m_axis_tx_tready (tx_tready),
         .m_axis_tx_tlast  (tx_tlast),
+        .m_axis_tx_tuser  (tx_tuser),
         .m_axis_punt_tdata (punt_tdata),
         .m_axis_punt_tkeep (punt_tkeep),
         .m_axis_punt_tvalid(punt_tvalid),

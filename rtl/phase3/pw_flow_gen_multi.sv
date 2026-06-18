@@ -24,7 +24,7 @@ module pw_flow_gen_multi #(
     parameter int EGRESS_PORT       = 0,
     parameter int NUM_SLOTS         = 8,
     parameter int FRAME_LEN_PAYLOAD = 32,    // L4 payload bytes (>=32 = test hdr)
-    parameter int HDR_MAX_BYTES     = 96
+    parameter int HDR_MAX_BYTES     = 112   // IPv6 (40) + VLAN (4) + UDP (8) + payload (32) + eth (14) = 98
 ) (
     input  wire           clk,
     input  wire           rst_n,
@@ -45,8 +45,8 @@ module pw_flow_gen_multi #(
     localparam logic [31:0] PW_TEST_HDR_MAGIC = 32'hA502_7E57;
     localparam int          SELW = $clog2(NUM_SLOTS);
 
-    function automatic int frame_bytes(input logic vlen);
-        return 14 + (vlen ? 4 : 0) + 20 + 8 + FRAME_LEN_PAYLOAD;
+    function automatic int frame_bytes(input logic vlen, input logic v6);
+        return 14 + (vlen ? 4 : 0) + (v6 ? 40 : 20) + 8 + FRAME_LEN_PAYLOAD;
     endfunction
 
     // This slot belongs to this generator's egress port.
@@ -87,7 +87,7 @@ module pw_flow_gen_multi #(
         end else begin
             for (int s = 0; s < NUM_SLOTS; s++) begin
                 mine_q[s] <= mine(f_rows_i[s]);
-                cost_q[s] <= {16'(frame_bytes(f_rows_i[s].vlan_en)), 16'h0};
+                cost_q[s] <= {16'(frame_bytes(f_rows_i[s].vlan_en, f_rows_i[s].is_v6)), 16'h0};
                 cap_q[s]  <= {f_rows_i[s].burst, 16'h0};
             end
         end
@@ -138,7 +138,7 @@ module pw_flow_gen_multi #(
         end
     end
 
-    wire start = !active && pick_valid_q;
+    wire start = !active && pick_valid_qq;
 
     wire [11:0] rem  = frame_len - byte_off;
     wire        last = active && (rem <= 12'd8);
@@ -195,16 +195,125 @@ module pw_flow_gen_multi #(
         return ~s[15:0];
     endfunction
 
-    // Build a slot's frame into fb at frame start.
-    task automatic build(input pw_flow_row_t r, input logic [63:0] seq, input logic [63:0] ts);
+    // IPv6 UDP *partial* checksum (the tx_timestamp is deliberately excluded).
+    // Sums the IPv6 pseudo-header (src + dst + upper-layer length + next-
+    // header) + UDP header + the 32-byte L4 payload (test header: magic / ver /
+    // flow_id / seq + 4 pad bytes) but NOT the 8-byte tx_timestamp. The egress
+    // stamper (pw_ts_insert) overwrites tx_timestamp with the departure time
+    // and folds those 4 words into this partial sum, producing the final,
+    // valid UDP checksum on the wire (and applying the RFC 768 0->0xFFFF rule).
+    // Excluding ts here is what lets the stamper fix the checksum in one pass:
+    // the csum field (byte 60) leaves before the ts field (byte 82), so the
+    // stamper can only *add* the (known, SOF-latched) ts, never subtract the
+    // old one. We therefore emit the raw one's-complement (~s, no 0xFFFF rule)
+    // so that ~csum == s exactly for the stamper to extend. Per-flow constant
+    // apart from seq (which the stamper does not touch).
+    function automatic logic [15:0] udp6_csum(
+            input logic [127:0] src, input logic [127:0] dst,
+            input logic [15:0] sport, input logic [15:0] dport, input logic [15:0] ulen,
+            input logic [31:0] flow_id, input logic [63:0] seq);
+        logic [31:0] s;
+        // Single balanced-tree sum (NOT sequential `+=`): synthesis maps one
+        // multi-term `+` expression to an adder TREE, whereas separate `+=`
+        // statements become a long carry CHAIN. This cone is the dp_clk-
+        // critical path (the deepest in the data plane), so the tree depth
+        // matters. One's-complement addition is associative/commutative, so
+        // the folded result is identical. ~30 16-bit terms: IPv6 pseudo-header
+        // (src + dst + upper-layer length + next-header) + UDP header + the
+        // test-header payload (magic / ver / flow_id / seq) -- but NOT the
+        // tx_timestamp, which pw_ts_insert folds in at egress.
+        s = {16'b0, src[127:112]} + {16'b0, src[111:96]} + {16'b0, src[95:80]}
+          + {16'b0, src[79:64]}   + {16'b0, src[63:48]}  + {16'b0, src[47:32]}
+          + {16'b0, src[31:16]}   + {16'b0, src[15:0]}
+          + {16'b0, dst[127:112]} + {16'b0, dst[111:96]} + {16'b0, dst[95:80]}
+          + {16'b0, dst[79:64]}   + {16'b0, dst[63:48]}  + {16'b0, dst[47:32]}
+          + {16'b0, dst[31:16]}   + {16'b0, dst[15:0]}
+          + {16'b0, ulen} + 32'h0000_0011                  // pseudo-hdr: ulen + next-header 17
+          + {16'b0, sport} + {16'b0, dport} + {16'b0, ulen}            // UDP hdr (csum 0)
+          + {16'b0, PW_TEST_HDR_MAGIC[31:16]} + {16'b0, PW_TEST_HDR_MAGIC[15:0]}
+          + 32'h0000_0001                                  // version=0x0001, reserved=0
+          + {16'b0, flow_id[31:16]} + {16'b0, flow_id[15:0]}
+          + {16'b0, seq[63:48]} + {16'b0, seq[47:32]} + {16'b0, seq[31:16]} + {16'b0, seq[15:0]};
+        s = {16'b0, s[31:16]} + {16'b0, s[15:0]};
+        s = {16'b0, s[31:16]} + {16'b0, s[15:0]};
+        return ~s[15:0];               // raw partial; stamper finalizes
+    endfunction
+
+    // --- precompute pipeline (two stages after the registered pick_q) -------
+    // The effective (modifier-applied) header fields + checksums depend only on
+    // the picked row and its sequence number -- both pick-stable -- so they are
+    // precomputed off pick_q (NOT the combinational `pick`: that would chain
+    // the 32-way priority encoder into the checksum adders). The path is split
+    // into two register stages because, fused, it was the dp_clk-critical path:
+    //
+    //   Stage A (row latch): isolate the 32:1 mux of the wide (256-byte) flow
+    //   rows -- f_rows_i[pick_q] -- into its own register. The mux pulls from
+    //   the spread row array (route-heavy, ~4.3 ns), so it must drive ONLY a
+    //   register, with no logic after it, to close.
+    //
+    //   Stage B (checksum): mod32/scramble + the IPv4/IPv6 checksum adders read
+    //   the COMPACT local latch row_l (short routes) instead of the spread mux.
+    //
+    // build() then consumes the stage-B registers and only lays out bytes. (B
+    // excludes the live tx_timestamp from udp6_csum -- that is what makes the
+    // whole checksum pick-stable and thus precomputable here.)
+    logic [SELW-1:0]  pick_l;
+    logic             pvalid_l;
+    pw_flow_row_t     row_l;
+    logic [63:0]      seq_l;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin pick_l <= '0; pvalid_l <= 1'b0; row_l <= '0; seq_l <= '0; end
+        else begin
+            pick_l   <= pick_q;
+            pvalid_l <= pick_valid_q;
+            row_l    <= f_rows_i[pick_q];      // the wide 32:1 mux, isolated
+            seq_l    <= sequence_q[pick_q];
+        end
+    end
+
+    logic [31:0] pc_sip, pc_dip;
+    logic [15:0] pc_sp, pc_dp, pc_csum, pc_ucsum;
+    always_comb begin
+        pc_sip   = mod32(row_l.sip_mod, row_l.src_ipv4, row_l.sip_mask, seq_l);
+        pc_dip   = mod32(row_l.dip_mod, row_l.dst_ipv4, row_l.dip_mask, seq_l);
+        pc_sp    = mod16(row_l.sp_mod,  row_l.udp_sp,   row_l.sp_mask,  seq_l);
+        pc_dp    = mod16(row_l.dp_mod,  row_l.udp_dp,   row_l.dp_mask,  seq_l);
+        pc_csum  = ip_csum16(16'(20 + 8 + FRAME_LEN_PAYLOAD), pc_sip, pc_dip);
+        pc_ucsum = udp6_csum(row_l.ipv6_src, row_l.ipv6_dst, pc_sp, pc_dp,
+                             16'(8 + FRAME_LEN_PAYLOAD), row_l.flow_id, seq_l);
+    end
+
+    // Stage B latch (consumed by build): picked row + seq + precomputed fields.
+    logic [SELW-1:0]  pick_qq;
+    logic             pick_valid_qq;
+    pw_flow_row_t     row_qq;
+    logic [63:0]      seq_qq;
+    logic [31:0]      eff_sip_q, eff_dip_q;
+    logic [15:0]      eff_sp_q, eff_dp_q, csum_q, ucsum_q;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            pick_qq <= '0; pick_valid_qq <= 1'b0; row_qq <= '0; seq_qq <= '0;
+            eff_sip_q <= '0; eff_dip_q <= '0; eff_sp_q <= '0; eff_dp_q <= '0;
+            csum_q    <= '0; ucsum_q  <= '0;
+        end else begin
+            pick_qq       <= pick_l;
+            pick_valid_qq <= pvalid_l;
+            row_qq        <= row_l;
+            seq_qq        <= seq_l;
+            eff_sip_q <= pc_sip;  eff_dip_q <= pc_dip;
+            eff_sp_q  <= pc_sp;   eff_dp_q  <= pc_dp;
+            csum_q    <= pc_csum; ucsum_q   <= pc_ucsum;
+        end
+    end
+
+    // Build a slot's frame into fb at frame start. The effective header fields
+    // and checksums are supplied precomputed (eff_* / csum / ucsum, registered
+    // and aligned with the picked row); build() only lays out bytes.
+    task automatic build(input pw_flow_row_t r, input logic [63:0] seq, input logic [63:0] ts,
+                         input logic [31:0] eff_sip, input logic [31:0] eff_dip,
+                         input logic [15:0] eff_sp,  input logic [15:0] eff_dp,
+                         input logic [15:0] csum,    input logic [15:0] ucsum);
         int off, tl, total_len;
-        logic [31:0] eff_sip, eff_dip;
-        logic [15:0] eff_sp, eff_dp, csum;
-        eff_sip = mod32(r.sip_mod, r.src_ipv4, r.sip_mask, seq);
-        eff_dip = mod32(r.dip_mod, r.dst_ipv4, r.dip_mask, seq);
-        eff_sp  = mod16(r.sp_mod,  r.udp_sp,   r.sp_mask,  seq);
-        eff_dp  = mod16(r.dp_mod,  r.udp_dp,   r.dp_mask,  seq);
-        csum    = ip_csum16(16'(20 + 8 + FRAME_LEN_PAYLOAD), eff_sip, eff_dip);
         for (int i = 0; i < HDR_MAX_BYTES; i++) fb[i] <= 8'h00;
         fb[0]<=r.dst_mac[47:40]; fb[1]<=r.dst_mac[39:32]; fb[2]<=r.dst_mac[31:24];
         fb[3]<=r.dst_mac[23:16]; fb[4]<=r.dst_mac[15:8];  fb[5]<=r.dst_mac[7:0];
@@ -216,21 +325,35 @@ module pw_flow_gen_multi #(
             fb[off+2]<={4'h0,r.vlan_id[11:8]}; fb[off+3]<=r.vlan_id[7:0];
             off += 4;
         end
-        fb[off]<=8'h08; fb[off+1]<=8'h00; off += 2;           // ethertype IPv4
-        total_len = 20 + 8 + FRAME_LEN_PAYLOAD;
-        fb[off+0]<=8'h45; fb[off+1]<=8'h00;
-        fb[off+2]<=total_len[15:8]; fb[off+3]<=total_len[7:0];
-        fb[off+4]<=8'h00; fb[off+5]<=8'h00; fb[off+6]<=8'h40; fb[off+7]<=8'h00;
-        fb[off+8]<=8'h40; fb[off+9]<=8'h11; fb[off+10]<=csum[15:8]; fb[off+11]<=csum[7:0];
-        fb[off+12]<=eff_sip[31:24]; fb[off+13]<=eff_sip[23:16];
-        fb[off+14]<=eff_sip[15:8];  fb[off+15]<=eff_sip[7:0];
-        fb[off+16]<=eff_dip[31:24]; fb[off+17]<=eff_dip[23:16];
-        fb[off+18]<=eff_dip[15:8];  fb[off+19]<=eff_dip[7:0];
-        off += 20;
+        tl = 8 + FRAME_LEN_PAYLOAD;        // UDP length, common to v4/v6
+        if (r.is_v6) begin
+            fb[off]<=8'h86; fb[off+1]<=8'hDD; off += 2;        // ethertype IPv6
+            // 40-byte IPv6 header
+            fb[off+0]<=8'h60; fb[off+1]<=8'h00; fb[off+2]<=8'h00; fb[off+3]<=8'h00;  // v6, TC0, FL0
+            fb[off+4]<=tl[15:8]; fb[off+5]<=tl[7:0];           // payload length = UDP+payload
+            fb[off+6]<=8'd17; fb[off+7]<=8'd64;                // next-header UDP, hop-limit 64
+            for (int b = 0; b < 16; b++) fb[off+8+b]  <= r.ipv6_src[127 - b*8 -: 8];
+            for (int b = 0; b < 16; b++) fb[off+24+b] <= r.ipv6_dst[127 - b*8 -: 8];
+            off += 40;
+        end else begin
+            fb[off]<=8'h08; fb[off+1]<=8'h00; off += 2;        // ethertype IPv4
+            total_len = 20 + 8 + FRAME_LEN_PAYLOAD;
+            fb[off+0]<=8'h45; fb[off+1]<=8'h00;
+            fb[off+2]<=total_len[15:8]; fb[off+3]<=total_len[7:0];
+            fb[off+4]<=8'h00; fb[off+5]<=8'h00; fb[off+6]<=8'h40; fb[off+7]<=8'h00;
+            fb[off+8]<=8'h40; fb[off+9]<=8'h11; fb[off+10]<=csum[15:8]; fb[off+11]<=csum[7:0];
+            fb[off+12]<=eff_sip[31:24]; fb[off+13]<=eff_sip[23:16];
+            fb[off+14]<=eff_sip[15:8];  fb[off+15]<=eff_sip[7:0];
+            fb[off+16]<=eff_dip[31:24]; fb[off+17]<=eff_dip[23:16];
+            fb[off+18]<=eff_dip[15:8];  fb[off+19]<=eff_dip[7:0];
+            off += 20;
+        end
+        // UDP header (csum: 0 for IPv4, computed/non-zero for IPv6)
         fb[off+0]<=eff_sp[15:8]; fb[off+1]<=eff_sp[7:0];
         fb[off+2]<=eff_dp[15:8]; fb[off+3]<=eff_dp[7:0];
-        tl = 8 + FRAME_LEN_PAYLOAD;
-        fb[off+4]<=tl[15:8]; fb[off+5]<=tl[7:0]; fb[off+6]<=8'h00; fb[off+7]<=8'h00;
+        fb[off+4]<=tl[15:8]; fb[off+5]<=tl[7:0];
+        if (r.is_v6) begin fb[off+6]<=ucsum[15:8]; fb[off+7]<=ucsum[7:0]; end
+        else          begin fb[off+6]<=8'h00;       fb[off+7]<=8'h00;       end
         off += 8;
         fb[off+0]<=PW_TEST_HDR_MAGIC[31:24]; fb[off+1]<=PW_TEST_HDR_MAGIC[23:16];
         fb[off+2]<=PW_TEST_HDR_MAGIC[15:8];  fb[off+3]<=PW_TEST_HDR_MAGIC[7:0];
@@ -241,7 +364,7 @@ module pw_flow_gen_multi #(
         fb[off+16]<=seq[31:24]; fb[off+17]<=seq[23:16]; fb[off+18]<=seq[15:8];  fb[off+19]<=seq[7:0];
         fb[off+20]<=ts[63:56]; fb[off+21]<=ts[55:48]; fb[off+22]<=ts[47:40]; fb[off+23]<=ts[39:32];
         fb[off+24]<=ts[31:24]; fb[off+25]<=ts[23:16]; fb[off+26]<=ts[15:8];  fb[off+27]<=ts[7:0];
-        frame_len <= 12'(20 + 8 + 14 + (r.vlan_en ? 4 : 0) + (FRAME_LEN_PAYLOAD - 32) + 32);
+        frame_len <= 12'(14 + (r.vlan_en ? 4 : 0) + (r.is_v6 ? 40 : 20) + 8 + FRAME_LEN_PAYLOAD);
     endtask
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -269,19 +392,21 @@ module pw_flow_gen_multi #(
 
             if (!active) begin
                 if (start) begin
-                    // Accrue + clamp + deduct for the (registered) picked slot;
-                    // this write overrides the accrual loop above (last write
-                    // wins). cost/cap are pre-registered per slot.
-                    automatic logic [31:0] cost = cost_q[pick_q];
-                    automatic logic [31:0] cap  = cap_q[pick_q];
-                    automatic logic [32:0] acc  = {1'b0, tokens_q[pick_q]} + {1'b0, f_rows_i[pick_q].tokens_fp};
+                    // Accrue + clamp + deduct for the (twice-registered) picked
+                    // slot; this write overrides the accrual loop above (last
+                    // write wins). cost/cap are pre-registered per slot; the row
+                    // + seq + checksums come from the precompute stage (pick_qq).
+                    automatic logic [31:0] cost = cost_q[pick_qq];
+                    automatic logic [31:0] cap  = cap_q[pick_qq];
+                    automatic logic [32:0] acc  = {1'b0, tokens_q[pick_qq]} + {1'b0, row_qq.tokens_fp};
                     automatic logic [31:0] accv = (acc > {1'b0, cap}) ? cap : acc[31:0];
-                    build(f_rows_i[pick_q], sequence_q[pick_q], timestamp_i);
-                    sel      <= pick_q;
+                    build(row_qq, seq_qq, timestamp_i,
+                          eff_sip_q, eff_dip_q, eff_sp_q, eff_dp_q, csum_q, ucsum_q);
+                    sel      <= pick_qq;
                     active   <= 1'b1;
                     byte_off <= '0;
-                    rr_ptr   <= (pick_q == SELW'(NUM_SLOTS-1)) ? '0 : pick_q + 1'b1;
-                    tokens_q[pick_q] <= (accv >= cost) ? (accv - cost) : '0;
+                    rr_ptr   <= (pick_qq == SELW'(NUM_SLOTS-1)) ? '0 : pick_qq + 1'b1;
+                    tokens_q[pick_qq] <= (accv >= cost) ? (accv - cost) : '0;
                 end
             end else if (m_tready) begin
                 if (last) begin

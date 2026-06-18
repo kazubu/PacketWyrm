@@ -84,11 +84,18 @@ static pw_status compile_one_flow(struct pw_program *out,
     tx_row.vlan_enable = f->l2.vlan_set ? 1 : 0;
     tx_row.vlan_id = f->l2.vlan;
     tx_row.pcp = f->l2.pcp;
-    tx_row.ip_version = 4;
-    tx_row.src_ipv4 = f->ipv4.src;
-    tx_row.dst_ipv4 = f->ipv4.dst;
-    tx_row.ttl = f->ipv4.ttl;
-    tx_row.dscp = f->ipv4.dscp;
+    if (f->ipv6.present) {
+        tx_row.ip_version = 6;
+        memcpy(tx_row.ipv6_src, f->ipv6.src, 16);
+        memcpy(tx_row.ipv6_dst, f->ipv6.dst, 16);
+        tx_row.ttl = f->ipv6.hop_limit;
+    } else {
+        tx_row.ip_version = 4;
+        tx_row.src_ipv4 = f->ipv4.src;
+        tx_row.dst_ipv4 = f->ipv4.dst;
+        tx_row.ttl = f->ipv4.ttl;
+        tx_row.dscp = f->ipv4.dscp;
+    }
     tx_row.udp_src_port = f->udp.src_port;
     tx_row.udp_dst_port = f->udp.dst_port;
     /* Per-field modifiers (DUT-facing flow diversification). */
@@ -166,11 +173,18 @@ static pw_status compile_one_flow(struct pw_program *out,
     }
     ce.key.udp_dst_port = f->udp.dst_port;
     ce.mask.udp_dst_port = 0xFFFF;
-    ce.key.ipv4_dst = f->ipv4.dst;
-    ce.mask.ipv4_dst = 0xFFFFFFFFu;
-    ce.key.ip_version = 4;
-    ce.mask.ip_version = 0xff;
-    ce.key.l3_proto = 17; /* UDP */
+    if (!f->ipv6.present) {
+        ce.key.ipv4_dst = f->ipv4.dst;
+        ce.mask.ipv4_dst = 0xFFFFFFFFu;
+        ce.key.ip_version = 4;
+        ce.mask.ip_version = 0xff;
+    } else {
+        /* IPv6: no v4 dst to match; udp_dst + l3_proto + magic + flow_id
+         * identify the test flow (the parser sets l3_proto = next-header). */
+        ce.key.ip_version = 6;
+        ce.mask.ip_version = 0xff;
+    }
+    ce.key.l3_proto = 17; /* UDP (IPv6 next-header for our frames) */
     ce.mask.l3_proto = 0xff;
     ce.key.test_magic = PW_TEST_HDR_MAGIC;
     ce.mask.test_magic = 0xFFFFFFFFu;

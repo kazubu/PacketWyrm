@@ -77,3 +77,11 @@ bool pw_parse_ipv4(const char *s, uint32_t *out) {
     *out = ntohl(a.s_addr);
     return true;
 }
+
+bool pw_parse_ipv6(const char *s, uint8_t out[16]) {
+    if (!s) return false;
+    struct in6_addr a;
+    if (inet_pton(AF_INET6, s, &a) != 1) return false;
+    for (int i = 0; i < 16; i++) out[i] = a.s6_addr[i];   /* network order */
+    return true;
+}

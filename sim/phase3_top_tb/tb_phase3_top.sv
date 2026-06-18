@@ -83,6 +83,7 @@ module tb_phase3_top;
     logic        tx_tvalid [NUM_PORTS];
     logic        tx_tready [NUM_PORTS];
     logic        tx_tlast  [NUM_PORTS];
+    logic        tx_tuser  [NUM_PORTS];   // generator-test-frame marker
 
     // Punt AXIS
     logic [63:0] punt_tdata;
@@ -121,6 +122,7 @@ module tb_phase3_top;
         .m_axis_tx_tvalid (tx_tvalid),
         .m_axis_tx_tready (tx_tready),
         .m_axis_tx_tlast  (tx_tlast),
+        .m_axis_tx_tuser  (tx_tuser),
         // punt is consumed internally by pw_punt_rx_window (read via CSR)
         .timestamp_i  (ts),
         .spi_sck_o    (),

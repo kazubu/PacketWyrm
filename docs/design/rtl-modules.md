@@ -34,16 +34,44 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
 
 Module notes: `pw_parser_axis` is pipelined (2-stage key extract);
 `pw_classifier` uses RESULT_STAGES + a parallel priority winner;
-`pw_lat_histogram` replaced the FF histogram; `pw_ts_insert` overwrites
-the tx_timestamp at egress so latency measures the DUT; `pw_frame_saf`
+`pw_lat_histogram` replaced the FF histogram; `pw_frame_saf`
 is BRAM-backed (reset-less write + registered read-ahead drain) — freed
 ~24% FF / ~14% LUT vs the former register array. `pw_flow_gen_multi`
 applies per-field modifiers (static/increment/random + bitmask on
 src/dst IPv4 + UDP ports, driven by the slot sequence so the DUT sees
-many flows while the fixed test header keeps measurement intact) and
-emits a correct IPv4 header checksum. The wide-bus
+many flows while the fixed test header keeps measurement intact), emits
+a correct IPv4 header checksum, and can emit IPv6/UDP frames (0x86DD,
+40-byte header) for IPv6 flow rows (the flow-table row stride is 256 B to
+carry the 16-byte addresses). For IPv6 it emits a *partial* UDP checksum
+(the mandatory pseudo-header + UDP + payload sum, **minus** the
+tx_timestamp); `pw_ts_insert` folds the departure stamp in (see below).
+The modifier-applied header fields and both checksums are **precomputed
+one stage ahead**, registered alongside the round-robin `pick` (identical
+1-cycle staleness, so they align with the built row) — the frame-build
+cycle then only lays out bytes, keeping mod32/scramble + the checksum
+adders off the build path. (Excluding tx_timestamp from the IPv6 checksum
+is what makes it pick-stable and thus precomputable.)
+`pw_flow_window` **registers** the decoded flow table (`flow_rows_o`):
+the 256-byte rows fan out widely into the generators, so the decode
+terminates at a register rather than feeding `build()` combinationally — a
+commit lands one cycle later, which is harmless. The wide-bus
 `pw_data_plane` / `pw_parser` / `pw_flow_gen` remain only for the legacy
 sim (`tb_data_plane`).
+
+`pw_ts_insert` (per egress port, on the MAC TX clock) overwrites each
+generator test frame's tx_timestamp with the true departure time, so
+latency measures the DUT, not the tester's TX-FIFO queuing. It detects the
+L3 family (IPv4 0x0800 → tx_ts @62; IPv6 0x86DD → tx_ts @82; +4 if VLAN).
+For IPv6 it also **finalizes the UDP checksum**: it adds the four
+departure-stamp 16-bit words to the generator's partial checksum and
+writes the result to the UDP csum field (@60, +4 VLAN), applying the
+RFC 768 `0→0xFFFF` rule. This one-pass fixup works because the csum field
+leaves before the tx_ts field, so only the (SOF-latched) *new* stamp is
+needed, never the old one. Which frames to rewrite is gated by a
+"generator test frame" marker the egress arbiter raises (`sel_gen`),
+carried as AXIS `tuser` through the MAC-TX CDC — so forwarded / injected
+frames (including genuine IPv6/UDP DUT traffic) are never touched. That
+`tuser` is consumed here; the MAC sees `m_tuser=0` (no tx-error).
 
 ## Top-level module hierarchy (original design sketch)
 

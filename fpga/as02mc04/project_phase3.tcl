@@ -140,9 +140,12 @@ if {[lsearch $argv "synth"] >= 0 || [lsearch $argv "impl"] >= 0} {
     wait_on_run synth_1
 }
 if {[lsearch $argv "impl"] >= 0} {
-    # Enable physical optimisation (post-place + post-route): the 8/8/16
-    # data plane closes at 156.25 MHz only by a thin margin (~+0.15 ns), so
+    # Enable physical optimisation (post-place + post-route): the 32/16/16
+    # data plane (incl. IPv6: 256-byte rows + IPv6 UDP checksum) closes at
+    # 156.25 MHz only by a thin margin (post-route WNS ~+0.12 ns), so
     # marginal route-dominated paths need phys_opt to recover reliably.
+    # NB: read timing POST-ROUTE (report_timing on the routed dcp) -- the
+    # post-place estimate runs optimistic and there is no timing gate here.
     set_property STEPS.PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
     set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
     launch_runs impl_1 -to_step write_bitstream -jobs 8

@@ -78,6 +78,12 @@ module pw_data_plane_axis #(
     output logic                  m_axis_tx_tvalid [PW_PORTS],
     input  wire                   m_axis_tx_tready [PW_PORTS],
     output logic                  m_axis_tx_tlast  [PW_PORTS],
+    // tuser = "this egress frame is a generator test frame" (the selected
+    // source is the flow generator). Rides the MAC-TX CDC to pw_ts_insert,
+    // which uses it (SOF-latched) to gate egress timestamping + the IPv6 UDP
+    // checksum fixup -- so forwarded / injected frames are never rewritten.
+    // NOTE: this is NOT the MAC's tx-error tuser; pw_ts_insert consumes it.
+    output logic                  m_axis_tx_tuser  [PW_PORTS],
 
     // Punt path (PUNT_TO_HOST / MIRROR_TO_HOST) as a 64-bit AXIS master.
     output logic [63:0]           m_axis_punt_tdata,
@@ -462,6 +468,9 @@ module pw_data_plane_axis #(
             assign m_axis_tx_tvalid[gp] = sel_valid &&
                                           (sel_inj ? s_axis_inj_tvalid
                                          : (sel_gen ? gen_tv[gp] : saf_tv[saf_idx]));
+            // Mark generator (test) frames so the egress stamper can find them
+            // before the magic streams (the IPv6 UDP csum field precedes it).
+            assign m_axis_tx_tuser[gp]  = sel_gen;
 
             wire hs   = m_axis_tx_tvalid[gp] && m_axis_tx_tready[gp];
             wire done = hs && m_axis_tx_tlast[gp];

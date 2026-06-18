@@ -358,35 +358,53 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
         }
     }
 
-    /* ipv4 (ipv6 not supported in Phase 0) */
+    /* exactly one of ipv4 / ipv6 */
     const pw_yaml_node *v4 = pw_yaml_map_get(m, "ipv4");
     const pw_yaml_node *v6 = pw_yaml_map_get(m, "ipv6");
-    if (v6) {
-        diag_set(diag, PW_E_NOT_IMPLEMENTED, path, "ipv6 flows are not yet supported");
-        return PW_E_NOT_IMPLEMENTED;
+    if (v4 && v6) {
+        diag_set(diag, PW_E_INVAL, path, "set exactly one of ipv4 / ipv6"); return PW_E_INVAL;
     }
-    if (!v4) {
-        diag_set(diag, PW_E_MISSING_FIELD, path, "flow requires ipv4 block");
+    if (!v4 && !v6) {
+        diag_set(diag, PW_E_MISSING_FIELD, path, "flow requires an ipv4 or ipv6 block");
         return PW_E_MISSING_FIELD;
     }
-    char v4p[96]; snprintf(v4p, sizeof(v4p), "%s.ipv4", path);
-    REQ_MAP(v4, v4p);
-    if ((r = get_scalar(v4, "src", v4p, true, &s, diag)) != PW_OK) return r;
-    if (!pw_parse_ipv4(s, &f->ipv4.src)) {
-        diag_set(diag, PW_E_PARSE, v4p, "src must be IPv4 address"); return PW_E_PARSE;
+    if (v6) {
+        char v6p[96]; snprintf(v6p, sizeof(v6p), "%s.ipv6", path);
+        REQ_MAP(v6, v6p);
+        if ((r = get_scalar(v6, "src", v6p, true, &s, diag)) != PW_OK) return r;
+        if (!pw_parse_ipv6(s, f->ipv6.src)) {
+            diag_set(diag, PW_E_PARSE, v6p, "src must be an IPv6 address"); return PW_E_PARSE;
+        }
+        if ((r = get_scalar(v6, "dst", v6p, true, &s, diag)) != PW_OK) return r;
+        if (!pw_parse_ipv6(s, f->ipv6.dst)) {
+            diag_set(diag, PW_E_PARSE, v6p, "dst must be an IPv6 address"); return PW_E_PARSE;
+        }
+        f->ipv6.hop_limit = 64;
+        if ((r = get_scalar(v6, "hop_limit", v6p, false, &s, diag)) != PW_OK) return r;
+        if (s && !pw_parse_u8(s, &f->ipv6.hop_limit)) {
+            diag_set(diag, PW_E_PARSE, v6p, "hop_limit"); return PW_E_PARSE;
+        }
+        f->ipv6.present = true;
+    } else {
+        char v4p[96]; snprintf(v4p, sizeof(v4p), "%s.ipv4", path);
+        REQ_MAP(v4, v4p);
+        if ((r = get_scalar(v4, "src", v4p, true, &s, diag)) != PW_OK) return r;
+        if (!pw_parse_ipv4(s, &f->ipv4.src)) {
+            diag_set(diag, PW_E_PARSE, v4p, "src must be IPv4 address"); return PW_E_PARSE;
+        }
+        if ((r = get_scalar(v4, "dst", v4p, true, &s, diag)) != PW_OK) return r;
+        if (!pw_parse_ipv4(s, &f->ipv4.dst)) {
+            diag_set(diag, PW_E_PARSE, v4p, "dst must be IPv4 address"); return PW_E_PARSE;
+        }
+        if ((r = get_scalar(v4, "ttl", v4p, false, &s, diag)) != PW_OK) return r;
+        f->ipv4.ttl = 64;
+        if (s && !pw_parse_u8(s, &f->ipv4.ttl)) { diag_set(diag, PW_E_PARSE, v4p, "ttl"); return PW_E_PARSE; }
+        if ((r = get_scalar(v4, "dscp", v4p, false, &s, diag)) != PW_OK) return r;
+        if (s && (!pw_parse_u8(s, &f->ipv4.dscp) || f->ipv4.dscp > 63)) {
+            diag_set(diag, PW_E_OUT_OF_RANGE, v4p, "dscp 0..63"); return PW_E_OUT_OF_RANGE;
+        }
+        f->ipv4.present = true;
     }
-    if ((r = get_scalar(v4, "dst", v4p, true, &s, diag)) != PW_OK) return r;
-    if (!pw_parse_ipv4(s, &f->ipv4.dst)) {
-        diag_set(diag, PW_E_PARSE, v4p, "dst must be IPv4 address"); return PW_E_PARSE;
-    }
-    if ((r = get_scalar(v4, "ttl", v4p, false, &s, diag)) != PW_OK) return r;
-    f->ipv4.ttl = 64;
-    if (s && !pw_parse_u8(s, &f->ipv4.ttl)) { diag_set(diag, PW_E_PARSE, v4p, "ttl"); return PW_E_PARSE; }
-    if ((r = get_scalar(v4, "dscp", v4p, false, &s, diag)) != PW_OK) return r;
-    if (s && (!pw_parse_u8(s, &f->ipv4.dscp) || f->ipv4.dscp > 63)) {
-        diag_set(diag, PW_E_OUT_OF_RANGE, v4p, "dscp 0..63"); return PW_E_OUT_OF_RANGE;
-    }
-    f->ipv4.present = true;
 
     /* udp */
     const pw_yaml_node *udp = pw_yaml_map_get(m, "udp");

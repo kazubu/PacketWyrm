@@ -196,7 +196,7 @@ module pwfpga_top_phase3_board (
         .s_axis_rx_tdata(dprx_d), .s_axis_rx_tkeep(dprx_k), .s_axis_rx_tvalid(dprx_v),
         .s_axis_rx_tready(dprx_r), .s_axis_rx_tlast(dprx_l),
         .m_axis_tx_tdata(dptx_d), .m_axis_tx_tkeep(dptx_k), .m_axis_tx_tvalid(dptx_v),
-        .m_axis_tx_tready(dptx_r), .m_axis_tx_tlast(dptx_l),
+        .m_axis_tx_tready(dptx_r), .m_axis_tx_tlast(dptx_l), .m_axis_tx_tuser(dptx_u),
         .timestamp_i(ts),
         .spi_sck_o(spi_sck), .spi_cs_n_o(spi_cs_n), .spi_mosi_o(spi_mosi), .spi_miso_i(spi_miso),
         .icap_csib_o(icap_csib), .icap_rdwrb_o(icap_rdwrb), .icap_i_o(icap_i)
@@ -253,10 +253,10 @@ module pwfpga_top_phase3_board (
         .USRDONETS (1'b1)
     );
 
-    // data-plane TX has no error/tuser input on this core; tie off CDC's.
-    for (genvar p = 0; p < 2; p++) begin : g_txu
-        assign dptx_u[p] = 1'b0;
-    end
+    // dptx_u carries the data plane's "generator test frame" marker (driven by
+    // the egress arbiter's sel_gen), CDC'd to each MAC TX clock and consumed by
+    // pw_ts_insert below to gate egress timestamping + the IPv6 UDP csum fixup.
+    // It is NOT the MAC's tx-error tuser -- pw_ts_insert drives m_tuser=0.
 
     // --- LEDs ---------------------------------------------------------------
     pw_heartbeat #(.CLK_HZ(100_000_000), .RATE_HZ(1)) u_hb (.clk(clk_100mhz), .rst_n(rst_n_100), .led_o(led_hb));
