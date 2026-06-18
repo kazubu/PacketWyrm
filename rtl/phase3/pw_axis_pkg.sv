@@ -66,6 +66,11 @@ package pw_axis_pkg;
         logic [1:0]  dip_mod;   logic [31:0] dip_mask;
         logic [1:0]  sp_mod;    logic [15:0] sp_mask;
         logic [1:0]  dp_mod;    logic [15:0] dp_mask;
+        // MAC / VLAN modifiers (same scheme; not in any checksum -- the
+        // generator just rewrites the Ethernet header bytes).
+        logic [1:0]  smac_mod;  logic [47:0] smac_mask;
+        logic [1:0]  dmac_mod;  logic [47:0] dmac_mask;
+        logic [1:0]  vlan_mod;  logic [15:0] vlan_mask;   // low 12 bits used
         // IPv6: when is_v6, the slot emits an IPv6/UDP frame (0x86DD, 40-byte
         // header, correct non-zero UDP checksum) using these addresses.
         logic         is_v6;

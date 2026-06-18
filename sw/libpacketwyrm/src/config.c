@@ -298,8 +298,8 @@ static pw_status parse_field_mod(const pw_yaml_node *parent, const char *key,
         else { diag_set(diag, PW_E_PARSE, p, "mode must be static|increment|random"); return PW_E_PARSE; }
     }
     if ((r = get_scalar(n, "mask", p, false, &s, diag)) != PW_OK) return r;
-    if (s && !pw_parse_u32(s, &fm->mask)) {
-        diag_set(diag, PW_E_PARSE, p, "mask must be an unsigned (hex/dec) value"); return PW_E_PARSE;
+    if (s && (!pw_parse_u64(s, &fm->mask) || fm->mask > 0xFFFFFFFFFFFFull)) {
+        diag_set(diag, PW_E_PARSE, p, "mask must be an unsigned (hex/dec) value <= 48 bits"); return PW_E_PARSE;
     }
     return PW_OK;
 }
@@ -500,6 +500,9 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
         if ((r = parse_field_mod(mods, dst_key, xp, &f->mod.dst_ipv4, diag)) != PW_OK) return r;
         if ((r = parse_field_mod(mods, "udp_src",  xp, &f->mod.udp_src,  diag)) != PW_OK) return r;
         if ((r = parse_field_mod(mods, "udp_dst",  xp, &f->mod.udp_dst,  diag)) != PW_OK) return r;
+        if ((r = parse_field_mod(mods, "src_mac",  xp, &f->mod.src_mac,  diag)) != PW_OK) return r;
+        if ((r = parse_field_mod(mods, "dst_mac",  xp, &f->mod.dst_mac,  diag)) != PW_OK) return r;
+        if ((r = parse_field_mod(mods, "vlan",     xp, &f->mod.vlan,     diag)) != PW_OK) return r;
     }
 
     return PW_OK;

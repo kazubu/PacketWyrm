@@ -207,6 +207,17 @@ struct pwfpga_flow_config {
      * These push the row past 128 B, so PWFPGA_FLOW_STRIDE is 256. */
     uint8_t  ipv6_src[16];       /* bytes 108..123 */
     uint8_t  ipv6_dst[16];       /* bytes 124..139 */
+
+    /* MAC / VLAN field modifiers (same scheme as the address/port modifiers
+     * above). MAC masks are 6 bytes, MSB-first (byte 0 = address bits 47..40),
+     * matching src_mac/dst_mac. VLAN mask is the low 12 bits. These fields are
+     * not in any checksum, so the generator just rewrites the header bytes. */
+    uint8_t  src_mac_mod;        /* byte 140 */
+    uint8_t  src_mac_mask[6];    /* bytes 141..146 */
+    uint8_t  dst_mac_mod;        /* byte 147 */
+    uint8_t  dst_mac_mask[6];    /* bytes 148..153 */
+    uint8_t  vlan_mod;           /* byte 154 */
+    uint16_t vlan_mask;          /* bytes 155..156 (low 12 bits) */
 } __attribute__((packed));
 
 enum pwfpga_field_mod {

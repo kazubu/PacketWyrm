@@ -181,6 +181,16 @@ module pw_flow_gen_multi #(
         rot = (mode == 2'd2) ? scramble(seq[31:0])>>3 : seq[15:0];
         return (mode == 2'd0) ? base : ((base & ~mask) | (rot & mask));
     endfunction
+    // 48-bit field modifier for the MAC addresses (random uses two scrambled
+    // seq halves to fill 48 bits).
+    function automatic logic [47:0] mod48(input logic [1:0] mode, input logic [47:0] base,
+                                          input logic [47:0] mask, input logic [63:0] seq);
+        logic [47:0] rot;
+        logic [63:0] rnd;
+        rnd = {scramble(seq[63:32]), scramble(seq[31:0])};
+        rot = (mode == 2'd2) ? rnd[47:0] : seq[47:0];
+        return (mode == 2'd0) ? base : ((base & ~mask) | (rot & mask));
+    endfunction
     // IPv4 header checksum over the (mostly constant) header with the
     // effective src/dst addresses, the DSCP (TOS byte) and the TTL.
     // Constants: ver/ihl=0x45, flags/frag=0x4000, proto=0x11 (UDP); id and
@@ -277,10 +287,20 @@ module pw_flow_gen_multi #(
 
     logic [31:0]  pc_sip, pc_dip;
     logic [127:0] pc_v6src, pc_v6dst;
+    logic [47:0]  pc_smac, pc_dmac;
+    logic [11:0]  pc_vlan;
     logic [15:0]  pc_sp, pc_dp, pc_csum, pc_ucsum;
     always_comb begin
+        logic [15:0] vlan16;
         pc_sip   = mod32(row_l.sip_mod, row_l.src_ipv4, row_l.sip_mask, seq_l);
         pc_dip   = mod32(row_l.dip_mod, row_l.dst_ipv4, row_l.dip_mask, seq_l);
+        // MAC / VLAN modifiers (Ethernet header only; not in any checksum).
+        pc_smac  = mod48(row_l.smac_mod, row_l.src_mac, row_l.smac_mask, seq_l);
+        pc_dmac  = mod48(row_l.dmac_mod, row_l.dst_mac, row_l.dmac_mask, seq_l);
+        // (Vivado synth rejects slicing a function-call result directly, so
+        // assign to a temp first.)
+        vlan16   = mod16(row_l.vlan_mod, {4'b0, row_l.vlan_id}, row_l.vlan_mask, seq_l);
+        pc_vlan  = vlan16[11:0];
         // IPv6 address modifiers apply to the low 32 bits (host/interface-ID
         // portion); the upper 96 bits are static. Reuses the same modifier
         // fields as the IPv4 src/dst (a flow is either v4 or v6).
@@ -301,18 +321,22 @@ module pw_flow_gen_multi #(
     logic [63:0]      seq_qq;
     logic [31:0]      eff_sip_q, eff_dip_q;
     logic [127:0]     eff_v6src_q, eff_v6dst_q;
+    logic [47:0]      eff_smac_q, eff_dmac_q;
+    logic [11:0]      eff_vlan_q;
     logic [15:0]      eff_sp_q, eff_dp_q, csum_q, ucsum_q;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             pick_qq <= '0; pick_valid_qq <= 1'b0; row_qq <= '0; seq_qq <= '0;
             eff_sip_q <= '0; eff_dip_q <= '0; eff_sp_q <= '0; eff_dp_q <= '0;
             eff_v6src_q <= '0; eff_v6dst_q <= '0;
+            eff_smac_q <= '0; eff_dmac_q <= '0; eff_vlan_q <= '0;
             csum_q    <= '0; ucsum_q  <= '0;
         end else begin
             pick_qq       <= pick_l;
             pick_valid_qq <= pvalid_l;
             row_qq        <= row_l;
             seq_qq        <= seq_l;
+            eff_smac_q <= pc_smac; eff_dmac_q <= pc_dmac; eff_vlan_q <= pc_vlan;
             eff_sip_q <= pc_sip;  eff_dip_q <= pc_dip;
             eff_v6src_q <= pc_v6src; eff_v6dst_q <= pc_v6dst;
             eff_sp_q  <= pc_sp;   eff_dp_q  <= pc_dp;
@@ -326,20 +350,22 @@ module pw_flow_gen_multi #(
     task automatic build(input pw_flow_row_t r, input logic [63:0] seq, input logic [63:0] ts,
                          input logic [31:0] eff_sip, input logic [31:0] eff_dip,
                          input logic [127:0] eff_v6src, input logic [127:0] eff_v6dst,
+                         input logic [47:0] eff_smac, input logic [47:0] eff_dmac,
+                         input logic [11:0] eff_vlan,
                          input logic [15:0] eff_sp,  input logic [15:0] eff_dp,
                          input logic [15:0] csum,    input logic [15:0] ucsum);
         int off, tl, total_len;
         logic [7:0] tos;
         tos = {r.dscp[5:0], 2'b00};        // IPv4 TOS / IPv6 TC byte (DSCP<<2, ECN 0)
         for (int i = 0; i < HDR_MAX_BYTES; i++) fb[i] <= 8'h00;
-        fb[0]<=r.dst_mac[47:40]; fb[1]<=r.dst_mac[39:32]; fb[2]<=r.dst_mac[31:24];
-        fb[3]<=r.dst_mac[23:16]; fb[4]<=r.dst_mac[15:8];  fb[5]<=r.dst_mac[7:0];
-        fb[6]<=r.src_mac[47:40]; fb[7]<=r.src_mac[39:32]; fb[8]<=r.src_mac[31:24];
-        fb[9]<=r.src_mac[23:16]; fb[10]<=r.src_mac[15:8]; fb[11]<=r.src_mac[7:0];
+        fb[0]<=eff_dmac[47:40]; fb[1]<=eff_dmac[39:32]; fb[2]<=eff_dmac[31:24];
+        fb[3]<=eff_dmac[23:16]; fb[4]<=eff_dmac[15:8];  fb[5]<=eff_dmac[7:0];
+        fb[6]<=eff_smac[47:40]; fb[7]<=eff_smac[39:32]; fb[8]<=eff_smac[31:24];
+        fb[9]<=eff_smac[23:16]; fb[10]<=eff_smac[15:8]; fb[11]<=eff_smac[7:0];
         off = 12;
         if (r.vlan_en) begin
             fb[off]<=8'h81; fb[off+1]<=8'h00;
-            fb[off+2]<={4'h0,r.vlan_id[11:8]}; fb[off+3]<=r.vlan_id[7:0];
+            fb[off+2]<={4'h0,eff_vlan[11:8]}; fb[off+3]<=eff_vlan[7:0];
             off += 4;
         end
         tl = 8 + FRAME_LEN_PAYLOAD;        // UDP length, common to v4/v6
@@ -421,6 +447,7 @@ module pw_flow_gen_multi #(
                     automatic logic [31:0] accv = (acc > {1'b0, cap}) ? cap : acc[31:0];
                     build(row_qq, seq_qq, timestamp_i,
                           eff_sip_q, eff_dip_q, eff_v6src_q, eff_v6dst_q,
+                          eff_smac_q, eff_dmac_q, eff_vlan_q,
                           eff_sp_q, eff_dp_q, csum_q, ucsum_q);
                     sel      <= pick_qq;
                     active   <= 1'b1;

@@ -38,7 +38,8 @@ Module notes: `pw_parser_axis` is pipelined (2-stage key extract);
 is BRAM-backed (reset-less write + registered read-ahead drain) — freed
 ~24% FF / ~14% LUT vs the former register array. `pw_flow_gen_multi`
 applies per-field modifiers (static/increment/random + bitmask on
-src/dst IPv4 + UDP ports, driven by the slot sequence so the DUT sees
+src/dst IPv4 (or IPv6 low 32 bits) + UDP ports + src/dst MAC (48-bit) +
+VLAN ID, driven by the slot sequence so the DUT sees
 many flows while the fixed test header keeps measurement intact), emits
 a correct IPv4 header checksum, and can emit IPv6/UDP frames (0x86DD,
 40-byte header) for IPv6 flow rows (the flow-table row stride is 256 B to

@@ -96,6 +96,10 @@ module tb_flow_gen_multi;
     logic [7:0] cap6 [0:127]; int cap6_n = 0; logic cap6_done = 0;
     int v6_seen = 0;
     logic [255:0] v6_dlo_seen = '0; int v6_dlo_distinct = 0; logic v6_dhi_const = 1'b1;
+    // MAC modifier (IPv4 frames): src MAC low byte @11 rotates, byte @10 fixed.
+    logic [255:0] smac_lo_seen = '0; int smac_lo_distinct = 0; logic smac_hi_const = 1'b1;
+    // VLAN modifier (VLAN-tagged frames): VID low byte @15 rotates.
+    logic [255:0] vid_lo_seen = '0; int vid_lo_distinct = 0;
     always_ff @(posedge clk) begin
         if (rst_n && tv) begin
             for (int k = 0; k < 8; k++) if (tk[k]) begin
@@ -114,6 +118,19 @@ module tb_flow_gen_multi;
                         v6_dlo_seen[fbuf[53]] = 1'b1; v6_dlo_distinct++;
                     end
                     if (fbuf[52] != 8'h00) v6_dhi_const = 1'b0;   // dst[...:8] fixed
+                end
+                // IPv4 (untagged) frame: track src MAC modifier (bytes 6..11)
+                if (fb_n >= 34 && fbuf[12] == 8'h08 && fbuf[13] == 8'h00) begin
+                    if (!smac_lo_seen[fbuf[11]]) begin
+                        smac_lo_seen[fbuf[11]] = 1'b1; smac_lo_distinct++;
+                    end
+                    if (fbuf[10] != 8'h00) smac_hi_const = 1'b0;  // src_mac[...:8] fixed
+                end
+                // VLAN-tagged frame: track VLAN-ID modifier (TCI low byte @15)
+                if (fb_n >= 18 && fbuf[12] == 8'h81 && fbuf[13] == 8'h00) begin
+                    if (!vid_lo_seen[fbuf[15]]) begin
+                        vid_lo_seen[fbuf[15]] = 1'b1; vid_lo_distinct++;
+                    end
                 end
                 fb_n = 0;
             end
@@ -157,6 +174,13 @@ module tb_flow_gen_multi;
         // dst-IP field modifier on flow_id 1: rotate the low 10 bits.
         f_rows[0].dst_ipv4=32'h0A000200; f_rows[0].dip_mod=2'd1; f_rows[0].dip_mask=32'h000003FF;
         f_rows[0].dscp=8'd10;   // IPv4 TOS = 0x28; validated via the header checksum
+        // src-MAC modifier: rotate the low byte (src_mac base ...:00:01, byte 10 = 0x00).
+        f_rows[0].smac_mod=2'd1; f_rows[0].smac_mask=48'h0000_0000_00FF;
+        // slot 1: VLAN-tagged IPv4 flow (flow_id 5) with a VLAN-ID modifier.
+        f_rows[1].valid=1; f_rows[1].egress=0; f_rows[1].flow_id=32'd5;
+        f_rows[1].tokens_fp=32'h00200000;
+        f_rows[1].vlan_en=1'b1; f_rows[1].vlan_id=12'h064;
+        f_rows[1].vlan_mod=2'd1; f_rows[1].vlan_mask=16'h00FF;
         // slot 2: IPv6 flow (flow_id 3) -- exercises the IPv6 frame path + UDP csum.
         f_rows[2].valid=1; f_rows[2].egress=0; f_rows[2].flow_id=32'd3;
         f_rows[2].tokens_fp=32'h00200000;
@@ -194,6 +218,10 @@ module tb_flow_gen_multi;
         chk("IPv6 hop limit emitted (64)", cap6[21] == 8'd64);
         chk("IPv6 dst-addr modifier rotates", v6_dlo_distinct >= 4);
         chk("IPv6 dst-addr modifier keeps high bits", v6_dhi_const);
+        // MAC modifier (slot 0 src MAC low byte) + VLAN modifier (slot 1 VID).
+        chk("src-MAC modifier rotates low byte", smac_lo_distinct >= 4);
+        chk("src-MAC modifier keeps high bytes", smac_hi_const);
+        chk("VLAN-ID modifier rotates", vid_lo_distinct >= 4);
         $display("flow_gen_multi: fid1=%0d fid3=%0d (%0d pass, %0d fail)", seen_a, seen_b, g_pass, g_fail);
         if (g_fail == 0) $display("ALL FLOW_GEN_MULTI SCENARIOS PASS");
         else $display("FAILED with %0d error(s)", g_fail);

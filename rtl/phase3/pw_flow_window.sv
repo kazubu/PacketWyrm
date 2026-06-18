@@ -188,6 +188,17 @@ module pw_flow_window #(
             flow_rows_c[r].dp_mod    = row[105*8 +: 2];
             flow_rows_c[r].dp_mask   = {row[107*8 +: 8], row[106*8 +: 8]};
 
+            // MAC / VLAN modifiers (bytes 140..156). MAC masks are MSB-first
+            // (byte 141 = bits 47..40), matching the src/dst MAC byte order.
+            flow_rows_c[r].smac_mod  = row[140*8 +: 2];
+            flow_rows_c[r].smac_mask = {row[141*8 +: 8], row[142*8 +: 8], row[143*8 +: 8],
+                                        row[144*8 +: 8], row[145*8 +: 8], row[146*8 +: 8]};
+            flow_rows_c[r].dmac_mod  = row[147*8 +: 2];
+            flow_rows_c[r].dmac_mask = {row[148*8 +: 8], row[149*8 +: 8], row[150*8 +: 8],
+                                        row[151*8 +: 8], row[152*8 +: 8], row[153*8 +: 8]};
+            flow_rows_c[r].vlan_mod  = row[154*8 +: 2];
+            flow_rows_c[r].vlan_mask = {row[156*8 +: 8], row[155*8 +: 8]};
+
             // IPv6: ip_version (byte 30) == 6 -> emit an IPv6 frame using the
             // 16-byte addresses at bytes 108..139 (network order, byte 108 = MSB).
             flow_rows_c[r].is_v6     = (row[30*8 +: 8] == 8'd6);
