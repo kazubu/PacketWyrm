@@ -362,9 +362,10 @@ static void test_ipv6_flow_compiles(void) {
         "    tx_global_port: 0\n"
         "    rx_global_port: 1\n"
         "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
-        "    ipv6: { src: \"2001:db8::1\", dst: \"2001:db8::2\", hop_limit: 64 }\n"
+        "    ipv6: { src: \"2001:db8::1\", dst: \"2001:db8::2\", hop_limit: 64, dscp: 46 }\n"
         "    udp:  { src_port: 49152, dst_port: 50001 }\n"
-        "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n";
+        "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
+        "    modifiers: { dst_ipv6: { mode: increment, mask: 0x000000ff } }\n";
     struct pw_config *cfg = pw_config_new();
     struct pw_diag d = {0};
     PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
@@ -374,6 +375,10 @@ static void test_ipv6_flow_compiles(void) {
     PW_ASSERT_EQ(cfg->flows[0].ipv6.src[1], 0x01);
     PW_ASSERT_EQ(cfg->flows[0].ipv6.dst[15], 0x02);
     PW_ASSERT_EQ(cfg->flows[0].ipv6.hop_limit, 64);
+    PW_ASSERT_EQ(cfg->flows[0].ipv6.dscp, 46);
+    /* dst_ipv6 modifier populates the generic address-modifier slot */
+    PW_ASSERT_EQ(cfg->flows[0].mod.dst_ipv4.mode, PWFPGA_FIELD_INCREMENT);
+    PW_ASSERT_EQ(cfg->flows[0].mod.dst_ipv4.mask, 0xffu);
     PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
     struct pw_program *prog = pw_program_new();
     PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
@@ -381,6 +386,9 @@ static void test_ipv6_flow_compiles(void) {
     PW_ASSERT_EQ(fr->ip_version, 6);
     PW_ASSERT_EQ(fr->ipv6_src[0], 0x20);
     PW_ASSERT_EQ(fr->ipv6_dst[15], 0x02);
+    PW_ASSERT_EQ(fr->dscp, 46);                       /* IPv6 traffic class */
+    PW_ASSERT_EQ(fr->dst_ipv4_mod, PWFPGA_FIELD_INCREMENT);
+    PW_ASSERT_EQ(fr->dst_ipv4_mask, 0xffu);           /* applied to v6 low 32b */
     pw_program_free(prog);
     pw_config_free(cfg);
 }

@@ -90,10 +90,12 @@ module tb_flow_gen_multi;
         return (s[15:0] == 16'hFFFF);
     endfunction
 
-    // Capture the first IPv6 frame (ethertype 0x86DD) for UDP-checksum check.
+    // Capture the first IPv6 frame (ethertype 0x86DD) for UDP-checksum check,
+    // and track the IPv6 dst low byte (byte 53) to verify the address modifier.
     logic [7:0] fbuf [0:127]; int fb_n = 0;
     logic [7:0] cap6 [0:127]; int cap6_n = 0; logic cap6_done = 0;
     int v6_seen = 0;
+    logic [255:0] v6_dlo_seen = '0; int v6_dlo_distinct = 0; logic v6_dhi_const = 1'b1;
     always_ff @(posedge clk) begin
         if (rst_n && tv) begin
             for (int k = 0; k < 8; k++) if (tk[k]) begin
@@ -107,6 +109,11 @@ module tb_flow_gen_multi;
                         for (int i = 0; i < 128; i++) cap6[i] = fbuf[i];
                         cap6_n = fb_n; cap6_done <= 1'b1;
                     end
+                    // dst addr @38..53; low byte 53 rotates, byte 52 stays fixed
+                    if (!v6_dlo_seen[fbuf[53]]) begin
+                        v6_dlo_seen[fbuf[53]] = 1'b1; v6_dlo_distinct++;
+                    end
+                    if (fbuf[52] != 8'h00) v6_dhi_const = 1'b0;   // dst[...:8] fixed
                 end
                 fb_n = 0;
             end
@@ -142,18 +149,24 @@ module tb_flow_gen_multi;
             f_rows[s].dst_mac = 48'hFF_FF_FF_FF_FF_FF;
             f_rows[s].src_ipv4 = 32'h0A000001; f_rows[s].dst_ipv4 = 32'h0A000002;
             f_rows[s].udp_sp = 16'd4000; f_rows[s].udp_dp = 16'd4001;
+            f_rows[s].ttl = 8'd64;
         end
         // slot 0: flow_id 1, slot 2: flow_id 3 -- both valid, egress 0, same rate.
         f_rows[0].valid=1; f_rows[0].egress=0; f_rows[0].flow_id=32'd1;
         f_rows[0].tokens_fp=32'h00200000; f_rows[0].src_ipv4=32'h0A000001;
         // dst-IP field modifier on flow_id 1: rotate the low 10 bits.
         f_rows[0].dst_ipv4=32'h0A000200; f_rows[0].dip_mod=2'd1; f_rows[0].dip_mask=32'h000003FF;
+        f_rows[0].dscp=8'd10;   // IPv4 TOS = 0x28; validated via the header checksum
         // slot 2: IPv6 flow (flow_id 3) -- exercises the IPv6 frame path + UDP csum.
         f_rows[2].valid=1; f_rows[2].egress=0; f_rows[2].flow_id=32'd3;
         f_rows[2].tokens_fp=32'h00200000;
         f_rows[2].is_v6=1'b1;
         f_rows[2].ipv6_src=128'h2001_0db8_0000_0000_0000_0000_0000_0001;
         f_rows[2].ipv6_dst=128'h2001_0db8_0000_0000_0000_0000_0000_0002;
+        // IPv6 dst-address modifier: rotate the low 8 bits (host portion).
+        f_rows[2].dip_mod=2'd1; f_rows[2].dip_mask=32'h000000FF;
+        // DSCP 46 (EF) -> IPv6 traffic class 0xB8 (byte0 0x6B, byte1 0x80).
+        f_rows[2].dscp=8'd46;
 
         repeat (4) @(posedge clk); rst_n = 1;
         repeat (3000) @(posedge clk);
@@ -170,10 +183,17 @@ module tb_flow_gen_multi;
         chk("dst-ip modifier keeps high bits", dip_hi_const);
         chk("captured first frame", cap_done && cap_n >= 34);
         chk("IPv4 header checksum valid", ip_csum_ok());
+        chk("IPv4 TOS = DSCP<<2", cap[15] == 8'h28);   // dscp 10 -> 0x28
+        chk("IPv4 TTL emitted (64)", cap[22] == 8'd64);
         // IPv6 flow (flow_id 3 / slot 2): frames emitted as IPv6 + valid UDP csum.
         chk("IPv6 frames emitted", v6_seen >= 4);
         chk("captured IPv6 frame (94B)", cap6_done && cap6_n == 94);
         chk("IPv6 UDP checksum valid", udp6_csum_ok());
+        // IPv4/IPv6 parity: IPv6 traffic class + hop limit + address modifier.
+        chk("IPv6 traffic class = DSCP<<2", cap6[14] == 8'h6B && cap6[15] == 8'h80);
+        chk("IPv6 hop limit emitted (64)", cap6[21] == 8'd64);
+        chk("IPv6 dst-addr modifier rotates", v6_dlo_distinct >= 4);
+        chk("IPv6 dst-addr modifier keeps high bits", v6_dhi_const);
         $display("flow_gen_multi: fid1=%0d fid3=%0d (%0d pass, %0d fail)", seen_a, seen_b, g_pass, g_fail);
         if (g_fail == 0) $display("ALL FLOW_GEN_MULTI SCENARIOS PASS");
         else $display("FAILED with %0d error(s)", g_fail);

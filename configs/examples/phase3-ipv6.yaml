@@ -31,6 +31,7 @@ flows:
       src: "2001:db8::1"
       dst: "2001:db8::2"
       hop_limit: 64
+      dscp: 46                   # EF -> IPv6 traffic class (parity with IPv4 dscp)
     udp:
       src_port: 49152
       dst_port: 50001
@@ -44,3 +45,8 @@ flows:
       loss: true
       latency: true
       jitter: true
+    modifiers:
+      # IPv6 address modifier: rotate the low 8 bits of the dst address (256
+      # apparent hosts) for DUT hashing / ECMP testing -- the UDP checksum is
+      # recomputed in hardware, the test header is untouched.
+      dst_ipv6: { mode: increment, mask: 0x000000ff }
