@@ -80,11 +80,14 @@ sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
 
 Timing: the full feature stack **including IPv6 + IPv4/IPv6 parity** (DSCP/
 traffic-class, TTL/hop-limit, IPv6 address modifiers) closes at **WNS
-+0.037 ns @156.25 MHz** — thin (parity added ~0.08 ns: the IPv6 address
-modifier feeds the UDP checksum, and the IPv4 checksum now covers TOS+TTL).
-Watch this closely before adding more to the generator's checksum cone.
-The earlier IPv6-only stack closed at +0.116 ns (LUT 75% / FF 60% / BRAM
-16% on the KU3P). IPv6
++0.167 ns @156.25 MHz** (LUT ~75% / FF 60% / BRAM 16% on the KU3P). The
+parity round had thinned it to +0.037; a `pw_ts_insert` optimization (pre-sum
+the tx_ts words at SOF + register the csum lane/beat so the egress
+csum-finalize no longer feeds the MAC CRC through a deep adder) recovered it
+to +0.167. The worst path is now the generator's `udp6_csum` (`seq_l →
+ucsum_q`); further recovery would mean pipelining that adder (diminishing
+returns). Watch it before adding to the generator's checksum cone. The
+earlier IPv6-only stack closed at +0.116. IPv6
 (256-byte flow rows + the mandatory IPv6 UDP checksum) cost ~0.83 ns and
 was recovered without cutting flows/scale by, in order of impact: (1) a
 **row-latch split** in `pw_flow_gen_multi` — the 32:1 mux of the wide flow

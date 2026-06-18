@@ -70,6 +70,9 @@ module pw_ts_insert #(
     logic [7:0]  mb [4];               // captured magic bytes
     logic        magic_ok;
     logic [63:0] ts_lat;               // departure ts latched at SOF
+    logic [18:0] ts_addend;            // sum of the 4 tx_ts 16-bit words (SOF)
+    logic [11:0] csum_beat_q;          // beat carrying the IPv6 UDP csum field
+    logic [3:0]  csum_lane_q;          // its byte lane within that beat
 
     wire        acc       = s_tvalid && s_tready;
     wire [11:0] base      = {beat[8:0], 3'b000};        // beat*8 = first byte index of this beat
@@ -95,18 +98,18 @@ module pw_ts_insert #(
 
     // ---- finalized IPv6 UDP checksum: partial (from the stream) + tx_ts ----
     // c0 = generator's partial checksum (raw ~sum); ~c0 == the partial sum.
-    // Add the four 16-bit tx_ts words, fold the carries, complement, 0->0xFFFF.
-    function automatic logic [15:0] finalize_csum(input logic [15:0] c0,
-                                                  input logic [63:0] ts);
+    // The four tx_ts 16-bit words are pre-summed once at SOF (ts_addend, see
+    // below) so this is a single add + folds on the (MAC-CRC-critical) data
+    // path instead of a 5-term tree.
+    function automatic logic [15:0] finalize_csum(input logic [15:0]  c0,
+                                                  input logic [18:0] addend);
         logic [19:0] s;
         logic [15:0] f;
-        s = {4'b0, ~c0}
-          + {4'b0, ts[63:48]} + {4'b0, ts[47:32]}
-          + {4'b0, ts[31:16]} + {4'b0, ts[15:0]};
-        s = {4'b0, s[15:0]} + {16'b0, s[19:16]};        // fold
-        s = {4'b0, s[15:0]} + {16'b0, s[19:16]};        // fold again
+        s = {4'b0, ~c0} + {1'b0, addend};                // ~c0 + sum(tx_ts words)
+        s = {4'b0, s[15:0]} + {16'b0, s[19:16]};         // fold
+        s = {4'b0, s[15:0]} + {16'b0, s[19:16]};         // fold again
         f = ~s[15:0];
-        return (f == 16'h0000) ? 16'hFFFF : f;          // RFC 768
+        return (f == 16'h0000) ? 16'hFFFF : f;           // RFC 768
     endfunction
 
     // ---- data: overwrite tx_ts (matched) + IPv6 UDP csum (marked gen) ----
@@ -114,23 +117,31 @@ module pw_ts_insert #(
         logic [15:0] cnew;
         logic [11:0] bi;
         logic [5:0]  sel;
-        int          lo;
+        logic [7:0]  c0_hi, c0_lo;
+        logic        csum_here;
         m_tdata = s_tdata;
-        // The 2-byte UDP csum field is 16-bit aligned within one beat (offset
-        // 60 or 64): read the generator's partial value and finalize it once.
-        lo   = (csum_off >= base) ? int'(csum_off - base) : 0;
-        cnew = 16'h0;
-        if (fix_csum && csum_off >= base && (csum_off + 12'd1) < base + 12'(DATA_W/8))
-            cnew = finalize_csum({s_tdata[lo*8 +: 8], s_tdata[(lo+1)*8 +: 8]}, ts_lat);
+        // The 2-byte UDP csum field sits at a registered lane within one
+        // registered beat (csum_beat_q / csum_lane_q): read the generator's
+        // partial value via constant-index lane compares (the select is the
+        // registered lane -- no beat-derived arithmetic on this MAC-CRC-
+        // critical path) and finalize it with the pre-summed tx_ts addend
+        // (a single add + folds).
+        csum_here = fix_csum && (beat == csum_beat_q);
+        c0_hi = 8'h0; c0_lo = 8'h0;
+        for (int l = 0; l < DATA_W/8; l++) begin
+            if (l[3:0] == csum_lane_q)          c0_hi = s_tdata[l*8 +: 8];
+            if (l[3:0] == csum_lane_q + 4'd1)   c0_lo = s_tdata[l*8 +: 8];
+        end
+        cnew = finalize_csum({c0_hi, c0_lo}, ts_addend);
         for (int l = 0; l < DATA_W/8; l++) begin
             bi  = base + 12'(l);
             sel = 6'((7 - (bi - ts_off)) * 8);
             // tx_ts overwrite (big-endian 8 bytes at ts_off)
             if (stamp_ok && bi >= ts_off && bi < ts_off + 12'd8)
                 m_tdata[l*8 +: 8] = ts_lat[sel +: 8];
-            // IPv6 UDP checksum overwrite (2 bytes at csum_off, big-endian)
-            if (fix_csum && bi == csum_off)          m_tdata[l*8 +: 8] = cnew[15:8];
-            if (fix_csum && bi == csum_off + 12'd1)  m_tdata[l*8 +: 8] = cnew[7:0];
+            // IPv6 UDP checksum overwrite (2 bytes at the registered lane)
+            if (csum_here && l[3:0] == csum_lane_q)          m_tdata[l*8 +: 8] = cnew[15:8];
+            if (csum_here && l[3:0] == csum_lane_q + 4'd1)   m_tdata[l*8 +: 8] = cnew[7:0];
         end
     end
 
@@ -138,11 +149,20 @@ module pw_ts_insert #(
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             beat <= '0; vlan_q <= 1'b0; is_v6_q <= 1'b0; is_gen <= 1'b0;
-            magic_ok <= 1'b0; ts_lat <= '0;
+            magic_ok <= 1'b0; ts_lat <= '0; ts_addend <= '0;
+            csum_beat_q <= 12'd7; csum_lane_q <= 4'd4;
             for (int k = 0; k < 4; k++) mb[k] <= 8'h0;
         end else if (acc) begin
+            // csum field offset (60 / 64 with VLAN) split into beat + lane,
+            // registered so the data path uses a constant lane (vlan_q is
+            // stable from beat 1, long before the csum beat ~7/8).
+            csum_beat_q <= (12'd60 + (vlan_q ? 12'd4 : 12'd0)) >> 3;
+            csum_lane_q <= 4'((12'd60 + (vlan_q ? 12'd4 : 12'd0)) & 12'd7);
             if (beat == 12'd0) begin
                 ts_lat   <= ts_now;     // departure time of this frame
+                // pre-sum the 4 tx_ts 16-bit words for the csum finalize
+                ts_addend <= {3'b0, ts_now[63:48]} + {3'b0, ts_now[47:32]}
+                           + {3'b0, ts_now[31:16]} + {3'b0, ts_now[15:0]};
                 vlan_q   <= 1'b0;
                 is_v6_q  <= 1'b0;
                 is_gen   <= s_tuser;    // generator (test) frame marker
