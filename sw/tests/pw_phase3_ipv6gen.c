@@ -81,6 +81,12 @@ int main(int argc, char **argv) {
       unsigned nf = info.num_local_flows ? info.num_local_flows : 8;
       for (unsigned r=0;r<nc;r++) o->classifier_write(be.ctx,r,&zc);
       for (unsigned r=0;r<nf;r++) o->flow_write(be.ctx,r,&zf); }
+    /* Data-plane soft reset clears the gen/SAF/arbiters so a previous test's
+     * in-flight traffic does not pollute the punt path; then drain any frame
+     * already sitting in the punt window. */
+    if (o->write32) o->write32(be.ctx, PWFPGA_REG_DP_RESET, 1);
+    { uint8_t tmp[2048]; uint32_t l; for (int i = 0; i < 256; i++)
+        if (o->slow_path_rx(be.ctx, tmp, sizeof tmp, &l) <= 0) break; }
 
     struct pwfpga_classifier_entry pe = {0};
     pe.key.ingress_local_port = 1; pe.mask.ingress_local_port = 0xFF;

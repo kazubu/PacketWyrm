@@ -100,10 +100,19 @@ static pw_status compile_one_flow(struct pw_program *out,
     tx_row.udp_src_port = f->udp.src_port;
     tx_row.udp_dst_port = f->udp.dst_port;
     /* Per-field modifiers (DUT-facing flow diversification). */
-    tx_row.src_ipv4_mod  = f->mod.src_ipv4.mode; tx_row.src_ipv4_mask = f->mod.src_ipv4.mask;
-    tx_row.dst_ipv4_mod  = f->mod.dst_ipv4.mode; tx_row.dst_ipv4_mask = f->mod.dst_ipv4.mask;
+    tx_row.src_ipv4_mod  = f->mod.src_ipv4.mode; tx_row.src_ipv4_mask = (uint32_t)f->mod.src_ipv4.mask;
+    tx_row.dst_ipv4_mod  = f->mod.dst_ipv4.mode; tx_row.dst_ipv4_mask = (uint32_t)f->mod.dst_ipv4.mask;
     tx_row.udp_src_mod   = f->mod.udp_src.mode;  tx_row.udp_src_mask  = (uint16_t)f->mod.udp_src.mask;
     tx_row.udp_dst_mod   = f->mod.udp_dst.mode;  tx_row.udp_dst_mask  = (uint16_t)f->mod.udp_dst.mask;
+    /* MAC masks are 6 bytes, MSB-first (byte 0 = address bits 47..40). */
+    tx_row.src_mac_mod = f->mod.src_mac.mode;
+    tx_row.dst_mac_mod = f->mod.dst_mac.mode;
+    for (int i = 0; i < 6; i++) {
+        tx_row.src_mac_mask[i] = (uint8_t)(f->mod.src_mac.mask >> (8 * (5 - i)));
+        tx_row.dst_mac_mask[i] = (uint8_t)(f->mod.dst_mac.mask >> (8 * (5 - i)));
+    }
+    tx_row.vlan_mod  = f->mod.vlan.mode;
+    tx_row.vlan_mask = (uint16_t)(f->mod.vlan.mask & 0x0FFF);
     if (f->traffic.frame_len_fixed_set) {
         tx_row.frame_len_min = f->traffic.frame_len_fixed;
         tx_row.frame_len_max = f->traffic.frame_len_fixed;

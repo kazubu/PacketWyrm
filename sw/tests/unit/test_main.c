@@ -329,7 +329,9 @@ static void test_flow_field_modifiers(void) {
         "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
         "    modifiers:\n"
         "      dst_ipv4: { mode: increment, mask: 0x000003ff }\n"
-        "      udp_src:  { mode: random,    mask: 0xffff }\n";
+        "      udp_src:  { mode: random,    mask: 0xffff }\n"
+        "      src_mac:  { mode: increment, mask: 0x0000000000ff }\n"
+        "      vlan:     { mode: random,    mask: 0x0ff }\n";
     struct pw_config *cfg = pw_config_new();
     struct pw_diag d = {0};
     PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
@@ -337,6 +339,8 @@ static void test_flow_field_modifiers(void) {
     PW_ASSERT_EQ(cfg->flows[0].mod.dst_ipv4.mask, 0x3ff);
     PW_ASSERT_EQ(cfg->flows[0].mod.udp_src.mode, 2);
     PW_ASSERT_EQ(cfg->flows[0].mod.src_ipv4.mode, 0);   /* absent -> static */
+    PW_ASSERT_EQ(cfg->flows[0].mod.src_mac.mode, 1);
+    PW_ASSERT_EQ(cfg->flows[0].mod.vlan.mode, 2);
     PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
     struct pw_program *prog = pw_program_new();
     PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
@@ -346,6 +350,12 @@ static void test_flow_field_modifiers(void) {
     PW_ASSERT_EQ(fr->udp_src_mod, 2);
     PW_ASSERT_EQ(fr->udp_src_mask, 0xffff);
     PW_ASSERT_EQ(fr->src_ipv4_mod, 0);
+    /* MAC mask is MSB-first: low byte (bits 7..0) lands in mask[5] */
+    PW_ASSERT_EQ(fr->src_mac_mod, 1);
+    PW_ASSERT_EQ(fr->src_mac_mask[5], 0xff);
+    PW_ASSERT_EQ(fr->src_mac_mask[0], 0x00);
+    PW_ASSERT_EQ(fr->vlan_mod, 2);
+    PW_ASSERT_EQ(fr->vlan_mask, 0x0ff);
     pw_program_free(prog);
     pw_config_free(cfg);
 }

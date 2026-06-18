@@ -9,6 +9,15 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **MAC / VLAN field modifiers** — extends the generator's field-modifier
+    scheme to `src_mac` / `dst_mac` (48-bit mask) and `vlan` (low 12 bits),
+    same `mode` (static/increment/random) + `mask` syntax as the address/port
+    modifiers. These only rewrite the Ethernet header (not in any checksum),
+    so they sit off the dp_clk checksum-critical path. Wire row gained the
+    MAC/VLAN modifier fields at bytes 140..156 (256 B stride unchanged);
+    `pw_field_mod.mask` widened to 64-bit to carry the 48-bit MAC mask.
+    `sim_fgm` checks src-MAC and VLAN-ID rotation; unit test covers the
+    config → wire mapping (MSB-first MAC mask, 12-bit VLAN mask).
   - **IPv4/IPv6 generator feature parity** — IPv6 flows gained the features
     previously IPv4-only: (1) **address field modifiers** — `src_ipv6` /
     `dst_ipv6` (YAML, same syntax as the v4 keys) rotate the low 32 bits of

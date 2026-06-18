@@ -109,14 +109,17 @@ struct pw_flow_meas {
  * 2=random (matches enum pwfpga_field_mod). mask=0 / mode static = off. */
 struct pw_field_mod {
     uint8_t  mode;
-    uint32_t mask;
+    uint64_t mask;     /* up to 48 bits (MAC); IPv4 uses low 32, ports low 16 */
 };
 
 struct pw_flow_modifiers {
-    struct pw_field_mod src_ipv4;
-    struct pw_field_mod dst_ipv4;
+    struct pw_field_mod src_ipv4;   /* or src_ipv6 (low 32 bits) */
+    struct pw_field_mod dst_ipv4;   /* or dst_ipv6 (low 32 bits) */
     struct pw_field_mod udp_src;
     struct pw_field_mod udp_dst;
+    struct pw_field_mod src_mac;    /* 48-bit mask */
+    struct pw_field_mod dst_mac;    /* 48-bit mask */
+    struct pw_field_mod vlan;       /* low 12 bits */
 };
 
 struct pw_flow {

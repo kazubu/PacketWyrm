@@ -54,14 +54,14 @@ sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
    Deferred by the user ("RX side is fine for now").
 2. **Multi-card** — cross-card flows, multi-card orchestration. Needs a
    second card on the bench.
-3. **Field modifiers — extend** (v1 + IPv6 done): generator field modifiers
-   (inc/random/mask) on `src/dst_ipv4` (or `src/dst_ipv6`, low 32 bits) +
-   `udp_src/dst`, test header kept fixed, correct IPv4/IPv6 checksum.
-   Extensions: MAC/VLAN modifiers (same scheme, mechanical); full 128-bit
-   IPv6-address rotation (v1 rotates the low 32 bits); independent per-field
-   rotation (cross-product rather than the current shared-sequence,
-   correlated rotation); classifier partial-field bitmask (so a rotated
-   field can still be a measurement key).
+3. **Field modifiers — extend** (v1 + IPv6 + MAC/VLAN done): generator field
+   modifiers (inc/random/mask) on `src/dst_ipv4` (or `src/dst_ipv6`, low 32
+   bits) + `udp_src/dst` + `src/dst_mac` (48-bit) + `vlan` (12-bit), test
+   header kept fixed, correct IPv4/IPv6 checksum. Remaining extensions: full
+   128-bit IPv6-address rotation (v1 rotates the low 32 bits; user said not
+   needed); independent per-field rotation (cross-product rather than the
+   current shared-sequence, correlated rotation); classifier partial-field
+   bitmask (so a rotated field can still be a measurement key).
 4. **IPv6 — at full generator parity** (done): generation + egress HW
    timestamping + UDP checksum, DSCP/traffic-class, TTL/hop-limit, and
    src/dst address field modifiers all work for IPv6 (YAML `ipv6:` block,
@@ -78,16 +78,16 @@ sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
 4. **Minor**: the `CAPABILITIES` parameter advertises `0x6C` (the
    currently-flashed build reports it).
 
-Timing: the full feature stack **including IPv6 + IPv4/IPv6 parity** (DSCP/
-traffic-class, TTL/hop-limit, IPv6 address modifiers) closes at **WNS
-+0.167 ns @156.25 MHz** (LUT ~75% / FF 60% / BRAM 16% on the KU3P). The
+Timing: the full feature stack **including IPv6 + IPv4/IPv6 parity + MAC/VLAN
+modifiers** (DSCP/traffic-class, TTL/hop-limit, address modifiers) closes at
+**WNS +0.066 ns @156.25 MHz** (LUT ~75% / FF 60% / BRAM 16% on the KU3P). The
 parity round had thinned it to +0.037; a `pw_ts_insert` optimization (pre-sum
 the tx_ts words at SOF + register the csum lane/beat so the egress
 csum-finalize no longer feeds the MAC CRC through a deep adder) recovered it
-to +0.167. The worst path is now the generator's `udp6_csum` (`seq_l →
-ucsum_q`); further recovery would mean pipelining that adder (diminishing
-returns). Watch it before adding to the generator's checksum cone. The
-earlier IPv6-only stack closed at +0.116. IPv6
+to +0.167. Adding the MAC/VLAN field modifiers (eth-header only, off the
+checksum cone, but ~110 bits of mask + mod48 logic at LUT ~75%) tightened it
+to **+0.066** via congestion — still positive. Watch it before adding to the
+generator. The earlier IPv6-only stack closed at +0.116. IPv6
 (256-byte flow rows + the mandatory IPv6 UDP checksum) cost ~0.83 ns and
 was recovered without cutting flows/scale by, in order of impact: (1) a
 **row-latch split** in `pw_flow_gen_multi` — the 32:1 mux of the wide flow

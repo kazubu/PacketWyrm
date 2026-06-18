@@ -145,6 +145,9 @@ flows:
       #   dst_ipv6: { mode: increment, mask: 0x000000ff }
       udp_src:  { mode: increment, mask: 0xffff }
       udp_dst:  { mode: static }     # (default; same as omitting)
+      src_mac:  { mode: increment, mask: 0x0000000000ff }  # 48-bit mask
+      dst_mac:  { mode: random,    mask: 0x00000000ffff }
+      vlan:     { mode: increment, mask: 0x0ff }           # low 12 bits (VLAN ID)
 ```
 
 `modifiers` vary the **masked bits** of a header field per emitted frame
@@ -166,9 +169,11 @@ there is no extra per-slot state. Notes:
   count (`NUM_FLOWS`); aggregate loss/latency across the diversified
   traffic is unaffected.
 - Covers `src_ipv4` / `dst_ipv4` (or `src_ipv6` / `dst_ipv6`, low 32 bits) /
-  `udp_src` / `udp_dst`; all rotate off the same sequence (correlated, not a
-  full cross-product). MAC / VLAN modifiers and full 128-bit IPv6 rotation
-  are mechanical extensions of the same scheme.
+  `udp_src` / `udp_dst` / `src_mac` / `dst_mac` (48-bit mask) / `vlan` (low 12
+  bits). MAC / VLAN modifiers only rewrite the Ethernet header (not in any
+  checksum). All rotate off the same sequence (correlated, not a full
+  cross-product). Full 128-bit IPv6-address rotation is a mechanical
+  extension of the same scheme.
 
 Constraints:
 
