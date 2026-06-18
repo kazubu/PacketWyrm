@@ -15,6 +15,11 @@ fpga/as02mc04/*.jou
 fpga/as02mc04/*.backup.jou
 fpga/as02mc04/vivado_*.out
 fpga/as02mc04/*.str
+# Vivado batch run logs (synth/impl/boot/flash consoles)
+fpga/as02mc04/*.console
+# Vivado journals written to the repo root when run from there
+/vivado*.jou
+/vivado*.backup.jou
 sim/sim_build/
 sim/work/
 *.log
