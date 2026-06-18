@@ -66,20 +66,30 @@ module pw_classifier #(
                                   (key_i.l3_proto      == e.key.l3_proto);
             assign m_ipsrc     = ~e.mask.match_ipv4_src  |
                                   (key_i.ipv4_src      == e.key.ipv4_src);
-            assign m_ipdst     = ~e.mask.match_ipv4_dst  |
-                                  (key_i.ipv4_dst      == e.key.ipv4_dst);
+            // Bitwise (TCAM) masked compare for the dst IPv4 address. Use the
+            // bit-mask when set; else fall back to the boolean match flag
+            // (full mask) so callers that set the table struct directly with
+            // only the boolean (e.g. tb_data_plane) keep exact-match behaviour.
+            logic [31:0] ipdst_m;
+            logic [15:0] l4dst_m, udst_m;
+            assign ipdst_m = (e.mask.ipv4_dst_bits != 32'h0) ? e.mask.ipv4_dst_bits
+                             : (e.mask.match_ipv4_dst ? 32'hFFFFFFFF : 32'h0);
+            assign l4dst_m = (e.mask.l4_dst_bits != 16'h0) ? e.mask.l4_dst_bits
+                             : (e.mask.match_l4_dst ? 16'hFFFF : 16'h0);
+            assign udst_m  = (e.mask.l4_dst_bits != 16'h0) ? e.mask.l4_dst_bits
+                             : (e.mask.match_udp_dst ? 16'hFFFF : 16'h0);
+            assign m_ipdst     = (key_i.ipv4_dst & ipdst_m) == (e.key.ipv4_dst & ipdst_m);
             assign m_v6src     = ~e.mask.match_ipv6_src  |
                                   (key_i.ipv6_src      == e.key.ipv6_src);
             assign m_v6dst     = ~e.mask.match_ipv6_dst  |
                                   (key_i.ipv6_dst      == e.key.ipv6_dst);
             assign m_l4src     = ~e.mask.match_l4_src    |
                                   (key_i.l4_src        == e.key.l4_src);
-            assign m_l4dst     = ~e.mask.match_l4_dst    |
-                                  (key_i.l4_dst        == e.key.l4_dst);
+            // dst port (l4_dst == udp_dst alias): bitwise masked compare.
+            assign m_l4dst     = (key_i.l4_dst & l4dst_m) == (e.key.l4_dst & l4dst_m);
             assign m_usrc      = ~e.mask.match_udp_src   |
                                   (key_i.udp_src       == e.key.udp_src);
-            assign m_udst      = ~e.mask.match_udp_dst   |
-                                  (key_i.udp_dst       == e.key.udp_dst);
+            assign m_udst      = (key_i.udp_dst & udst_m) == (e.key.udp_dst & udst_m);
             assign m_test      = ~e.mask.match_is_test   | key_i.is_test;
             assign m_arp       = ~e.mask.match_is_arp    | key_i.is_arp;
             assign m_ipv4_class= ~e.mask.match_is_ipv4   | key_i.is_ipv4;

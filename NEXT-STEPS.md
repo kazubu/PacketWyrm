@@ -60,8 +60,10 @@ sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
    header kept fixed, correct IPv4/IPv6 checksum. Remaining extensions: full
    128-bit IPv6-address rotation (v1 rotates the low 32 bits; user said not
    needed); independent per-field rotation (cross-product rather than the
-   current shared-sequence, correlated rotation); classifier partial-field
-   bitmask (so a rotated field can still be a measurement key).
+   current shared-sequence, correlated rotation). **Classifier partial-field
+   bitmask is DONE** for dst port + dst IPv4 (bitwise TCAM match + YAML
+   `match:` + modifier auto-relax); extending it to other fields / IPv6
+   address (needs the 256-B classifier row) is mechanical.
 4. **IPv6 — at full generator parity** (done): generation + egress HW
    timestamping + UDP checksum, DSCP/traffic-class, TTL/hop-limit, and
    src/dst address field modifiers all work for IPv6 (YAML `ipv6:` block,
@@ -78,9 +80,14 @@ sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
 4. **Minor**: the `CAPABILITIES` parameter advertises `0x6C` (the
    currently-flashed build reports it).
 
-Timing: the full feature stack **including IPv6 + IPv4/IPv6 parity + MAC/VLAN
-modifiers** (DSCP/traffic-class, TTL/hop-limit, address modifiers) closes at
-**WNS +0.066 ns @156.25 MHz** (LUT ~75% / FF 60% / BRAM 16% on the KU3P). The
+Timing: **the classifier bitwise-mask build sits at post-route WNS +0.000 ns**
+(meets, but ZERO margin — recover before relying on it; the limiter is still
+the generator `udp6_csum`, route-dominated, pushed to the edge by the
+accumulated congestion of IPv6 + parity + MAC/VLAN + classifier-mask at LUT
+~75%). **TODO before merging `phase3-classifier-mask` to main: a margin-
+recovery build** (split `udp6_csum` into a 2-stage pipeline, or shed
+classifier/generator congestion). The prior MAC/VLAN build closed at +0.066;
+the IPv6/parity stack closed at WNS +0.066 ns @156.25 MHz. The
 parity round had thinned it to +0.037; a `pw_ts_insert` optimization (pre-sum
 the tx_ts words at SOF + register the csum lane/beat so the egress
 csum-finalize no longer feeds the MAC CRC through a deep adder) recovered it

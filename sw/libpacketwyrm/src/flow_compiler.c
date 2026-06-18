@@ -155,8 +155,12 @@ static pw_status compile_one_flow(struct pw_program *out,
     tx_row.insert_sequence = f->traffic.insert_sequence ? 1 : 0;
     tx_row.insert_timestamp = f->traffic.insert_timestamp ? 1 : 0;
     tx_row.tx_enable = 1;
-    tx_row.rx_check_enable = same_card ? 1 : 0;
+    /* Background (load) flows generate TX only -- no RX check, no classifier. */
+    tx_row.rx_check_enable = (same_card && !f->background) ? 1 : 0;
     if ((r = append_flow(tx_cp, &tx_row)) != PW_OK) return r;
+
+    if (f->background)
+        return PW_OK;   /* no RX flow row, no classifier entry (frees a slot) */
 
     /* RX flow row for cross-card */
     if (!same_card) {
@@ -167,6 +171,17 @@ static pw_status compile_one_flow(struct pw_program *out,
         rx_row.rx_check_enable = 1;
         if ((r = append_flow(rx_cp, &rx_row)) != PW_OK) return r;
     }
+
+    /* Effective classifier match masks: start from the configured match mask
+     * (default full), then drop the bits any active modifier rotates so the
+     * RX rule still matches the fixed part of a modified field. Requires the
+     * bitwise-masked classifier (pw_classifier); 0xFFFF/0 behave as before. */
+    uint16_t udp_dst_mask = f->match_udp_dst_mask;
+    if (f->mod.udp_dst.mode != PWFPGA_FIELD_STATIC)
+        udp_dst_mask &= (uint16_t)~f->mod.udp_dst.mask;
+    uint32_t ipv4_dst_mask = f->match_ipv4_dst_mask;
+    if (f->mod.dst_ipv4.mode != PWFPGA_FIELD_STATIC)
+        ipv4_dst_mask &= ~(uint32_t)f->mod.dst_ipv4.mask;
 
     /* RX classifier row */
     struct pwfpga_classifier_entry ce = {0};
@@ -182,10 +197,10 @@ static pw_status compile_one_flow(struct pw_program *out,
         ce.mask.vlan_id = 0x0FFF;
     }
     ce.key.udp_dst_port = f->udp.dst_port;
-    ce.mask.udp_dst_port = 0xFFFF;
+    ce.mask.udp_dst_port = udp_dst_mask;
     if (!f->ipv6.present) {
         ce.key.ipv4_dst = f->ipv4.dst;
-        ce.mask.ipv4_dst = 0xFFFFFFFFu;
+        ce.mask.ipv4_dst = ipv4_dst_mask;
         ce.key.ip_version = 4;
         ce.mask.ip_version = 0xff;
     } else {

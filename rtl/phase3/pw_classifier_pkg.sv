@@ -68,6 +68,14 @@ package pw_classifier_pkg;
         logic         match_l4_dst;
         logic         match_udp_src;   // legacy aliases of match_l4_*
         logic         match_udp_dst;
+        // Bitwise (TCAM-style) masks for the dst port + dst IPv4 address: a 1
+        // bit means "this bit must match", 0 = ignore. 0xFFFF / 0xFFFFFFFF give
+        // exact match (back-compatible with the boolean match_* flags); a
+        // partial mask lets a modifier rotate the unmatched bits, or classifies
+        // arbitrary-payload traffic by part of a field. (l4_dst and udp_dst are
+        // aliases of the same value, so both compares use l4_dst_bits.)
+        logic [15:0]  l4_dst_bits;
+        logic [31:0]  ipv4_dst_bits;
         logic         match_is_test;
         logic         match_is_arp;
         logic         match_is_ipv4;

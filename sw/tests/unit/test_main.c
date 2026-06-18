@@ -403,6 +403,58 @@ static void test_ipv6_flow_compiles(void) {
     pw_config_free(cfg);
 }
 
+static void test_background_and_match_mask(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n"
+        "  - id: 0\n"
+        "    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "flows:\n"
+        "  - id: 1\n"                       /* measured + udp_dst modifier -> auto-relax */
+        "    tx_global_port: 0\n"
+        "    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv4: { src: \"192.0.2.1\", dst: \"192.0.2.2\" }\n"
+        "    udp:  { src_port: 49152, dst_port: 50001 }\n"
+        "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
+        "    modifiers: { udp_dst: { mode: increment, mask: 0x00ff } }\n"
+        "  - id: 2\n"                       /* explicit partial match mask */
+        "    tx_global_port: 0\n"
+        "    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:03\", dst_mac: \"02:a5:02:00:00:04\" }\n"
+        "    ipv4: { src: \"192.0.2.3\", dst: \"192.0.2.4\" }\n"
+        "    udp:  { src_port: 49152, dst_port: 6000 }\n"
+        "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
+        "    match: { udp_dst: 0xff00 }\n"
+        "  - id: 3\n"                       /* background: TX only, no classifier */
+        "    tx_global_port: 0\n"
+        "    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:05\", dst_mac: \"02:a5:02:00:00:06\" }\n"
+        "    ipv4: { src: \"192.0.2.5\", dst: \"192.0.2.6\" }\n"
+        "    udp:  { src_port: 49152, dst_port: 7000 }\n"
+        "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
+        "    background: true\n";
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    PW_ASSERT(cfg->flows[2].background);
+    PW_ASSERT_EQ(cfg->flows[1].match_udp_dst_mask, 0xff00);
+    PW_ASSERT_EQ(cfg->flows[0].match_udp_dst_mask, 0xffff);   /* default full */
+    PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
+    /* 3 TX flow rows, but only 2 classifier rules (background flow has none). */
+    PW_ASSERT_EQ(prog->per_card[0].n_flow_rows, 3);
+    PW_ASSERT_EQ(prog->per_card[0].n_classifier_rows, 2);
+    /* flow 1: udp_dst modifier (mask 0x00ff) auto-relaxes the match mask. */
+    PW_ASSERT_EQ(prog->per_card[0].classifier_rows[0].mask.udp_dst_port, 0xff00);
+    /* flow 2: explicit partial match mask. */
+    PW_ASSERT_EQ(prog->per_card[0].classifier_rows[1].mask.udp_dst_port, 0xff00);
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
 static void test_reject_cross_card_forward(void) {
     const char *yaml =
         "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
@@ -935,6 +987,7 @@ int main(void) {
         { "ipv6_flow_compiles", test_ipv6_flow_compiles },
         { "reject_cross_card_forward", test_reject_cross_card_forward },
         { "flow_field_modifiers", test_flow_field_modifiers },
+        { "background_and_match_mask", test_background_and_match_mask },
         { "fake_backend", test_fake_backend },
         { "bar_backend_path", test_bar_backend_path },
         { "bar_backend_window_writes", test_bar_backend_window_writes },

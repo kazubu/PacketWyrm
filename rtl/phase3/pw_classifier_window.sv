@@ -121,6 +121,11 @@ module pw_classifier_window #(
             cls_table_o[r].mask.match_ipv4_dst     =
                 |{row[(mo+19)*8 +: 8], row[(mo+18)*8 +: 8],
                   row[(mo+17)*8 +: 8], row[(mo+16)*8 +: 8]};
+            // Bitwise masks (pass-through, NOT OR-reduced) for the dst port and
+            // dst IPv4 address -- used by the masked compare in pw_classifier.
+            cls_table_o[r].mask.l4_dst_bits   = {row[(mo+11)*8 +: 8], row[(mo+10)*8 +: 8]};
+            cls_table_o[r].mask.ipv4_dst_bits = {row[(mo+19)*8 +: 8], row[(mo+18)*8 +: 8],
+                                                 row[(mo+17)*8 +: 8], row[(mo+16)*8 +: 8]};
             cls_table_o[r].mask.match_is_test      =
                 |{row[(mo+35)*8 +: 8], row[(mo+34)*8 +: 8],
                   row[(mo+33)*8 +: 8], row[(mo+32)*8 +: 8]};

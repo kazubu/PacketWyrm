@@ -1,0 +1,57 @@
+# Phase 3: classifier partial-field match + background flow, over the DAC loop.
+#
+#   flow 1 (id 1): p0 -> p1, udp 50001, with a udp_dst MODIFIER (rotate low
+#                  byte). The compiler auto-relaxes the RX classifier to match
+#                  only the high byte of udp_dst, so the rotating return frames
+#                  still classify -> loss must stay 0. (With exact-match this
+#                  would misclassify and show loss.)
+#   flow 2 (id 2): p1 -> p0, udp 50002, normal measured flow.
+#   flow 9 (id 9): p0 -> p1, BACKGROUND load -- TX only, no classifier rule,
+#                  not measured (does not consume a classifier entry).
+
+system:
+  name: "pw-phase3-clsmask"
+  mode: "multi-card"
+  default_speed: "10g"
+  control_socket: "/tmp/pw-phase3.sock"
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+flows:
+  - id: 1
+    name: "p0-mod-udpdst"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2:   { src_mac: "02:a5:02:00:00:01", dst_mac: "02:a5:02:00:00:02" }
+    ipv4: { src: "192.0.2.1", dst: "192.0.2.2" }
+    udp:  { src_port: 49152, dst_port: 50001 }
+    traffic: { frame_len: 512, rate_bps: 1000000000, burst_size: 4,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+    modifiers: { udp_dst: { mode: increment, mask: 0x00ff } }   # rotate low byte
+  - id: 2
+    name: "p1-normal"
+    tx_global_port: 1
+    rx_global_port: 0
+    l2:   { src_mac: "02:a5:02:00:00:03", dst_mac: "02:a5:02:00:00:04" }
+    ipv4: { src: "198.51.100.1", dst: "198.51.100.2" }
+    udp:  { src_port: 49152, dst_port: 50002 }
+    traffic: { frame_len: 512, rate_bps: 1000000000, burst_size: 4,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 9
+    name: "p0-background"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2:   { src_mac: "02:a5:02:00:00:09", dst_mac: "02:a5:02:00:00:0a" }
+    ipv4: { src: "192.0.2.9", dst: "192.0.2.10" }
+    udp:  { src_port: 49152, dst_port: 50009 }
+    traffic: { frame_len: 256, rate_bps: 500000000, burst_size: 1,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    background: true
