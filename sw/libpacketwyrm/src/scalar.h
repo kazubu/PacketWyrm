@@ -20,4 +20,7 @@ bool pw_parse_mac(const char *s, uint8_t out[6]);
  * the high byte is the first octet. */
 bool pw_parse_ipv4(const char *s, uint32_t *out);
 
+/* "2001:db8::1" -> 16 bytes in network order. */
+bool pw_parse_ipv6(const char *s, uint8_t out[16]);
+
 #endif

@@ -80,12 +80,16 @@ module pw_flow_window #(
 
     // Full decoded flow table (one entry per row) for the multi-flow
     // generator, which round-robins all rows whose egress matches its port.
+    // Registered (see flow_rows_c below): the 256-byte rows fan out widely
+    // into the generators, so the decode terminates at a register instead of
+    // feeding combinationally into build(); a commit takes effect one cycle
+    // later (harmless -- the table is otherwise static).
     output pw_flow_row_t                  flow_rows_o [DEPTH],
 
     output logic                          commit_pulse_o
 );
 
-    localparam int ROW_BYTES = 128;
+    localparam int ROW_BYTES = 256;   // 256 (was 128): IPv6 addresses (bytes 108..139)
 
     logic [DEPTH-1:0][ROW_BYTES*8-1:0] live_rows;
 
@@ -120,6 +124,9 @@ module pw_flow_window #(
     logic [31:0]                row_tokens_fp  [DEPTH];
     logic [15:0]                row_burst      [DEPTH];
 
+    // Combinational decode; registered into flow_rows_o below.
+    pw_flow_row_t               flow_rows_c    [DEPTH];
+
     always_comb begin
         for (int r = 0; r < DEPTH; r++) begin
             logic [ROW_BYTES*8-1:0] row;
@@ -151,34 +158,55 @@ module pw_flow_window #(
 
             // Full row descriptor for the multi-flow generator. flow_id is
             // the wire global_flow_id at byte offset 2 (LE u32).
-            flow_rows_o[r].valid     = row[0*8 +: 8] & row[90*8 +: 8];  // enable && tx_enable (bit 0)
-            flow_rows_o[r].egress    = row_egress[r][3:0];
-            flow_rows_o[r].flow_id   = {row[5*8 +: 8], row[4*8 +: 8],
+            flow_rows_c[r].valid     = row[0*8 +: 8] & row[90*8 +: 8];  // enable && tx_enable (bit 0)
+            flow_rows_c[r].egress    = row_egress[r][3:0];
+            flow_rows_c[r].flow_id   = {row[5*8 +: 8], row[4*8 +: 8],
                                         row[3*8 +: 8], row[2*8 +: 8]};
-            flow_rows_o[r].tokens_fp = row_tokens_fp[r];
-            flow_rows_o[r].burst     = row_burst[r];
-            flow_rows_o[r].src_mac   = row_src_mac[r];
-            flow_rows_o[r].dst_mac   = row_dst_mac[r];
-            flow_rows_o[r].vlan_en   = row_vlan_en[r];
-            flow_rows_o[r].vlan_id   = row_vlan_id[r];
-            flow_rows_o[r].src_ipv4  = row_src_ip[r];
-            flow_rows_o[r].dst_ipv4  = row_dst_ip[r];
-            flow_rows_o[r].udp_sp    = row_udp_sp[r];
-            flow_rows_o[r].udp_dp    = row_udp_dp[r];
+            flow_rows_c[r].tokens_fp = row_tokens_fp[r];
+            flow_rows_c[r].burst     = row_burst[r];
+            flow_rows_c[r].src_mac   = row_src_mac[r];
+            flow_rows_c[r].dst_mac   = row_dst_mac[r];
+            flow_rows_c[r].vlan_en   = row_vlan_en[r];
+            flow_rows_c[r].vlan_id   = row_vlan_id[r];
+            flow_rows_c[r].src_ipv4  = row_src_ip[r];
+            flow_rows_c[r].dst_ipv4  = row_dst_ip[r];
+            flow_rows_c[r].udp_sp    = row_udp_sp[r];
+            flow_rows_c[r].udp_dp    = row_udp_dp[r];
 
             // Per-field modifiers (wire bytes 92+, just past the packed C
             // struct's rx_check_enable @91). mode in low 2 bits.
-            flow_rows_o[r].sip_mod   = row[92*8 +: 2];
-            flow_rows_o[r].sip_mask  = {row[96*8 +: 8], row[95*8 +: 8],
+            flow_rows_c[r].sip_mod   = row[92*8 +: 2];
+            flow_rows_c[r].sip_mask  = {row[96*8 +: 8], row[95*8 +: 8],
                                         row[94*8 +: 8], row[93*8 +: 8]};
-            flow_rows_o[r].dip_mod   = row[97*8 +: 2];
-            flow_rows_o[r].dip_mask  = {row[101*8 +: 8], row[100*8 +: 8],
+            flow_rows_c[r].dip_mod   = row[97*8 +: 2];
+            flow_rows_c[r].dip_mask  = {row[101*8 +: 8], row[100*8 +: 8],
                                         row[99*8 +: 8], row[98*8 +: 8]};
-            flow_rows_o[r].sp_mod    = row[102*8 +: 2];
-            flow_rows_o[r].sp_mask   = {row[104*8 +: 8], row[103*8 +: 8]};
-            flow_rows_o[r].dp_mod    = row[105*8 +: 2];
-            flow_rows_o[r].dp_mask   = {row[107*8 +: 8], row[106*8 +: 8]};
+            flow_rows_c[r].sp_mod    = row[102*8 +: 2];
+            flow_rows_c[r].sp_mask   = {row[104*8 +: 8], row[103*8 +: 8]};
+            flow_rows_c[r].dp_mod    = row[105*8 +: 2];
+            flow_rows_c[r].dp_mask   = {row[107*8 +: 8], row[106*8 +: 8]};
+
+            // IPv6: ip_version (byte 30) == 6 -> emit an IPv6 frame using the
+            // 16-byte addresses at bytes 108..139 (network order, byte 108 = MSB).
+            flow_rows_c[r].is_v6     = (row[30*8 +: 8] == 8'd6);
+            flow_rows_c[r].ipv6_src  = '0;
+            flow_rows_c[r].ipv6_dst  = '0;
+            for (int b = 0; b < 16; b++) begin
+                flow_rows_c[r].ipv6_src[127 - b*8 -: 8] = row[(108+b)*8 +: 8];
+                flow_rows_c[r].ipv6_dst[127 - b*8 -: 8] = row[(124+b)*8 +: 8];
+            end
         end
+    end
+
+    // Register the decoded rows: breaks the wide live_rows -> decode ->
+    // generator build() combinational path (the dominant fan-out once rows
+    // are 256 B). The table is static except on commit, so the extra cycle of
+    // latency only delays a freshly committed table by one clock.
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            for (int r = 0; r < DEPTH; r++) flow_rows_o[r] <= '0;
+        else
+            for (int r = 0; r < DEPTH; r++) flow_rows_o[r] <= flow_rows_c[r];
     end
 
     // Select the lowest-indexed enabled row per egress port.

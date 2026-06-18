@@ -1,0 +1,85 @@
+# Phase 3 hardware: four concurrent TEST_RX flows over the SFP+ DAC loopback,
+# two generated per egress port -- exercises the multi-flow generator
+# (pw_flow_gen_multi round-robins both flows on each port).
+#
+#   flow 1 (id 1): p0 -> p1, udp 50001
+#   flow 3 (id 3): p0 -> p1, udp 50003   (2nd flow on egress 0)
+#   flow 2 (id 2): p1 -> p0, udp 50002
+#   flow 4 (id 4): p1 -> p0, udp 50004   (2nd flow on egress 1)
+#
+# Distinct udp_dst per flow so the classifier separates them unambiguously.
+# Fits the 8/8/16 bitstream (4 classifier rows, 4 flow rows).
+
+system:
+  name: "pw-phase3-multiflow"
+  mode: "multi-card"
+  default_speed: "10g"
+  control_socket: "/tmp/pw-phase3.sock"
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+logical_interfaces:
+  - id: 1000
+    global_port: 0
+    vlan: 100
+    mac: "02:a5:02:00:00:64"
+    mtu: 9000
+    punt: { arp: false, ipv6_nd: false, lldp: false, icmp: false, bgp: false, ospf: false }
+  - id: 1001
+    global_port: 1
+    vlan: 101
+    mac: "02:a5:02:00:00:65"
+    mtu: 9000
+    punt: { arp: false, ipv6_nd: false, lldp: false, icmp: false, bgp: false, ospf: false }
+
+flows:
+  - id: 1
+    name: "p0-f1"
+    tx_global_port: 0
+    rx_global_port: 1
+    logical_if_id: 1000
+    l2:   { src_mac: "02:a5:02:00:00:01", dst_mac: "02:a5:02:00:00:02" }
+    ipv4: { src: "192.0.2.1", dst: "192.0.2.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50001 }
+    traffic: { frame_len: 512, rate_bps: 1000000000, burst_size: 4,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 3
+    name: "p0-f3"
+    tx_global_port: 0
+    rx_global_port: 1
+    logical_if_id: 1000
+    l2:   { src_mac: "02:a5:02:00:00:01", dst_mac: "02:a5:02:00:00:02" }
+    ipv4: { src: "192.0.2.1", dst: "192.0.2.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50003 }
+    traffic: { frame_len: 512, rate_bps: 1000000000, burst_size: 4,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 2
+    name: "p1-f2"
+    tx_global_port: 1
+    rx_global_port: 0
+    logical_if_id: 1001
+    l2:   { src_mac: "02:a5:02:00:00:03", dst_mac: "02:a5:02:00:00:04" }
+    ipv4: { src: "198.51.100.1", dst: "198.51.100.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50002 }
+    traffic: { frame_len: 512, rate_bps: 1000000000, burst_size: 4,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 4
+    name: "p1-f4"
+    tx_global_port: 1
+    rx_global_port: 0
+    logical_if_id: 1001
+    l2:   { src_mac: "02:a5:02:00:00:03", dst_mac: "02:a5:02:00:00:04" }
+    ipv4: { src: "198.51.100.1", dst: "198.51.100.2", ttl: 64, dscp: 0 }
+    udp:  { src_port: 49152, dst_port: 50004 }
+    traffic: { frame_len: 512, rate_bps: 1000000000, burst_size: 4,
+               payload: "increment", insert_sequence: true, insert_timestamp: true }
+    measurements: { loss: true, latency: true, jitter: true }

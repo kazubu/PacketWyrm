@@ -350,6 +350,41 @@ static void test_flow_field_modifiers(void) {
     pw_config_free(cfg);
 }
 
+static void test_ipv6_flow_compiles(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n"
+        "  - id: 0\n"
+        "    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "flows:\n"
+        "  - id: 1\n"
+        "    tx_global_port: 0\n"
+        "    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv6: { src: \"2001:db8::1\", dst: \"2001:db8::2\", hop_limit: 64 }\n"
+        "    udp:  { src_port: 49152, dst_port: 50001 }\n"
+        "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n";
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    PW_ASSERT(cfg->flows[0].ipv6.present);
+    PW_ASSERT(!cfg->flows[0].ipv4.present);
+    PW_ASSERT_EQ(cfg->flows[0].ipv6.src[0], 0x20);
+    PW_ASSERT_EQ(cfg->flows[0].ipv6.src[1], 0x01);
+    PW_ASSERT_EQ(cfg->flows[0].ipv6.dst[15], 0x02);
+    PW_ASSERT_EQ(cfg->flows[0].ipv6.hop_limit, 64);
+    PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
+    const struct pwfpga_flow_config *fr = &prog->per_card[0].flow_rows[0];
+    PW_ASSERT_EQ(fr->ip_version, 6);
+    PW_ASSERT_EQ(fr->ipv6_src[0], 0x20);
+    PW_ASSERT_EQ(fr->ipv6_dst[15], 0x02);
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
 static void test_reject_cross_card_forward(void) {
     const char *yaml =
         "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
@@ -879,6 +914,7 @@ int main(void) {
         { "resolve_port_multi_card", test_resolve_port_multi_card },
         { "cross_card_flow_compiles", test_cross_card_flow_compiles },
         { "forward_rule_compiles", test_forward_rule_compiles },
+        { "ipv6_flow_compiles", test_ipv6_flow_compiles },
         { "reject_cross_card_forward", test_reject_cross_card_forward },
         { "flow_field_modifiers", test_flow_field_modifiers },
         { "fake_backend", test_fake_backend },

@@ -64,6 +64,13 @@ struct pw_flow_ipv4 {
     uint8_t  dscp;
 };
 
+struct pw_flow_ipv6 {
+    bool     present;
+    uint8_t  src[16];     /* network order */
+    uint8_t  dst[16];
+    uint8_t  hop_limit;   /* optional, default 64 */
+};
+
 struct pw_flow_udp {
     uint16_t src_port;
     uint16_t dst_port;
@@ -120,7 +127,7 @@ struct pw_flow {
 
     struct pw_flow_l2      l2;
     struct pw_flow_ipv4    ipv4;
-    /* IPv6 omitted in Phase 0 (validator can be extended later). */
+    struct pw_flow_ipv6    ipv6;        /* set exactly one of ipv4 / ipv6 */
     struct pw_flow_udp     udp;
     struct pw_flow_traffic traffic;
     struct pw_flow_meas    meas;

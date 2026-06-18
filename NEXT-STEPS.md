@@ -61,14 +61,33 @@ sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
    rather than the current shared-sequence, correlated rotation);
    classifier partial-field bitmask (so a rotated field can still be a
    measurement key).
+4. **IPv6 — extend** (generation + egress timestamping done): IPv6/UDP
+   test flows generate with a correct UDP checksum (YAML `ipv6:` block);
+   egress HW timestamping works for IPv6 too (`pw_ts_insert` detects the
+   family, stamps tx_ts @82 and finalizes the UDP checksum by folding the
+   departure stamp into the generator's partial sum). Extensions:
+   IPv6-address field modifiers (128-bit); IPv6 in the wide-bus legacy sim
+   if needed; classifier IPv6-address matching (the wire match key has no
+   IPv6 addr yet — TEST_RX keys on udp_dst + magic + flow_id, which
+   suffices).
 4. **Minor**: the `CAPABILITIES` parameter advertises `0x6C` (the
    currently-flashed build reports it).
 
-Timing: the full feature stack now closes at **WNS +0.198 ns @156.25 MHz**
-(was a razor-thin +0.005; BRAM-backing the SAF freed ~24% FF / ~14% LUT
-and de-congested the route-dominated paths). Comfortable margin, but still
-watch it when adding to the `dp_clk` data plane — the parser pipelining
-and SAF BRAM-backing were the levers used to get here.
+Timing: the full feature stack **including IPv6** now closes at **WNS
++0.116 ns @156.25 MHz** (LUT 75% / FF 60% / BRAM 16% on the KU3P). IPv6
+(256-byte flow rows + the mandatory IPv6 UDP checksum) cost ~0.83 ns and
+was recovered without cutting flows/scale by, in order of impact: (1) a
+**row-latch split** in `pw_flow_gen_multi` — the 32:1 mux of the wide flow
+rows was fused with the checksum logic in one cycle (route-bound,
+~-0.6 ns); isolating the mux into its own register so it drives only a
+register, and feeding the checksum from that compact local latch, was the
+decisive fix; (2) a **checksum/field precompute** stage (off the
+registered `pick_q`, NOT the combinational pick); (3) **registering the
+flow-table decode** (`pw_flow_window`). The margin is thin again — watch
+it when adding to the `dp_clk` data plane. Note: timing must be read
+**post-route** (`report_timing` on the routed dcp); the post-*place*
+estimate ran ~0.5 ns optimistic during this work, and the project tcl has
+no timing gate, so `write_bitstream` completing does NOT imply closure.
 
 ## Test surface
 

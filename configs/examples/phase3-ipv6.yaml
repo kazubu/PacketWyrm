@@ -1,0 +1,46 @@
+# Phase 3 IPv6 test flow: generate IPv6/UDP traffic over the SFP+ DAC loop.
+#
+# A single IPv6 test flow (p0 -> DAC -> p1). The generator emits a 40-byte
+# IPv6 header (ethertype 0x86DD) + UDP with a correct, non-zero UDP checksum
+# (mandatory for IPv6), carrying the same test header (magic/flow_id/seq/ts)
+# the RX checker uses for loss/latency. Set exactly one of ipv4 / ipv6.
+
+system:
+  name: "pw-phase3-ipv6"
+  mode: "multi-card"
+  default_speed: "10g"
+  control_socket: "/tmp/pw-phase3.sock"
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+flows:
+  - id: 1
+    name: "ipv6-loopback"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2:
+      src_mac: "02:a5:02:00:00:01"
+      dst_mac: "02:a5:02:00:00:02"
+    ipv6:
+      src: "2001:db8::1"
+      dst: "2001:db8::2"
+      hop_limit: 64
+    udp:
+      src_port: 49152
+      dst_port: 50001
+    traffic:
+      frame_len: 512
+      rate_bps: 1000000000
+      payload: "increment"
+      insert_sequence: true
+      insert_timestamp: true
+    measurements:
+      loss: true
+      latency: true
+      jitter: true

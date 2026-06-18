@@ -104,6 +104,17 @@ flows:
       ttl: 64                      # optional, default 64
       dscp: 0                      # optional
 
+    # ipv6:                        # ... or an IPv6 block (mutually exclusive)
+    #   src: "2001:db8::1"
+    #   dst: "2001:db8::2"
+    #   hop_limit: 64              # optional, default 64
+    # An ipv6 flow is emitted as a 40-byte IPv6 header (ethertype 0x86DD) +
+    # UDP with a correct, non-zero UDP checksum: the generator emits a
+    # partial checksum (minus tx_timestamp) and the egress stamper folds the
+    # departure timestamp into it, so IPv6 flows get the same DUT-accurate
+    # egress timestamping as IPv4. The test header is unchanged, so
+    # loss/latency measurement is identical.
+
     udp:
       src_port: 49152
       dst_port: 50001
@@ -159,9 +170,10 @@ Constraints:
 - `id` unique.
 - `tx_global_port` and `rx_global_port` must exist.
 - `logical_if_id`, if set, must exist.
-- Exactly one of `ipv4` / `ipv6` (Phase 0&ndash;3 implement IPv4 only;
-  validator may accept `ipv6` blocks but feature flag them as
-  not-yet-supported).
+- Exactly one of `ipv4` / `ipv6` must be set (both implemented:
+  IPv4 emits a correct IPv4 header checksum; IPv6 emits a 40-byte header
+  + a correct non-zero UDP checksum). Field modifiers (`modifiers:`)
+  apply to IPv4 src/dst + UDP ports only in v1.
 - Exactly one of `traffic.rate_bps` / `traffic.rate_pps`.
 - Exactly one of `traffic.frame_len` and the
   `frame_len_min/max/step` triple.

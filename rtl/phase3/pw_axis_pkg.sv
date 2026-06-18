@@ -60,6 +60,12 @@ package pw_axis_pkg;
         logic [1:0]  dip_mod;   logic [31:0] dip_mask;
         logic [1:0]  sp_mod;    logic [15:0] sp_mask;
         logic [1:0]  dp_mod;    logic [15:0] dp_mask;
+        // IPv6: when is_v6, the slot emits an IPv6/UDP frame (0x86DD, 40-byte
+        // header, correct non-zero UDP checksum) using these addresses. The
+        // IPv4 field modifiers above are not applied to IPv6 frames in v1.
+        logic         is_v6;
+        logic [127:0] ipv6_src;
+        logic [127:0] ipv6_dst;
     } pw_flow_row_t;
 
 endpackage : pw_axis_pkg

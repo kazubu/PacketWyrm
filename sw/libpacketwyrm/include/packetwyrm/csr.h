@@ -201,6 +201,12 @@ struct pwfpga_flow_config {
     uint16_t udp_src_mask;       /* bytes 103..104 */
     uint8_t  udp_dst_mod;        /* byte 105 */
     uint16_t udp_dst_mask;       /* bytes 106..107 */
+
+    /* IPv6 addresses (used when ip_version == 6; the row is then emitted as
+     * an IPv6/UDP frame with a correct UDP checksum). Network byte order.
+     * These push the row past 128 B, so PWFPGA_FLOW_STRIDE is 256. */
+    uint8_t  ipv6_src[16];       /* bytes 108..123 */
+    uint8_t  ipv6_dst[16];       /* bytes 124..139 */
 } __attribute__((packed));
 
 enum pwfpga_field_mod {
@@ -262,7 +268,7 @@ struct pwfpga_dma_cpl {
  *     flow[N] base:   PWFPGA_WIN_HISTOGRAM + N * PWFPGA_FLOW_HIST_STRIDE
  */
 #define PWFPGA_CLASSIFIER_STRIDE       128u
-#define PWFPGA_FLOW_STRIDE             128u
+#define PWFPGA_FLOW_STRIDE             256u   /* 256 (was 128): IPv6 addrs push the row past 128 B */
 #define PWFPGA_PORT_STATS_STRIDE       128u
 #define PWFPGA_FLOW_STATS_STRIDE       128u
 #define PWFPGA_FLOW_HIST_STRIDE        128u   /* 16 * 8 bytes = 16 buckets */

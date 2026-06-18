@@ -35,6 +35,47 @@ For where work is going next, see `NEXT-STEPS.md`.
   - **Timing margin recovered** — pipelined `pw_parser_axis` key extract
     into two stages; WNS +0.003 → +0.020 ns at 156.25 MHz, HW-revalidated
     at loss=0.
+  - **IPv6 test-flow generation** — the generator now emits IPv6/UDP
+    frames (ethertype 0x86DD, 40-byte header) with a correct, non-zero
+    UDP checksum (IPv6 mandates it). The generator computes a *partial*
+    checksum (IPv6 pseudo-header + UDP + payload, **minus** the
+    tx_timestamp) and `pw_ts_insert` folds the egress departure stamp into
+    it at the MAC, yielding the final valid checksum on the wire — so IPv6
+    flows get the same DUT-accurate egress timestamping as IPv4 (see
+    below). Selected per flow via a YAML `ipv6: {src,dst,hop_limit}` block
+    (mutually exclusive with `ipv4:`); the flow-table row stride grew
+    128→256 B to carry the 16-byte addresses. The test header is unchanged
+    so RX loss/latency is identical. Example
+    `configs/examples/phase3-ipv6.yaml`; `sim_fgm` checks the IPv6 partial
+    checksum, `sim_tsi` checks the egress finalization + a forwarded
+    IPv6/UDP frame left untouched; HW tool `pw_phase3_ipv6gen`. (Field
+    modifiers remain IPv4-only in v1; IPv6-address modifiers are a
+    follow-up.)
+  - **IPv6 egress hardware timestamping + UDP-checksum fixup** —
+    `pw_ts_insert` now detects the L3 family and overwrites tx_timestamp at
+    the correct IPv6 offset (byte 82, +4 VLAN), and finalizes the IPv6 UDP
+    checksum by adding the four departure-stamp words to the generator's
+    partial sum (RFC 768 `0→0xFFFF`). One-pass, no buffering: the csum
+    field (@60) precedes tx_ts, so only the new (SOF-latched) stamp is
+    needed. Gated by a "generator test frame" marker the egress arbiter
+    raises (`sel_gen`), carried as AXIS `tuser` through the MAC-TX CDC, so
+    forwarded / injected IPv6/UDP traffic is never rewritten; the marker is
+    consumed in the stamper (MAC sees `m_tuser=0`).
+  - **Timing: registered flow-table decode + generator checksum
+    precompute** — recovering the margin the 256-byte rows + IPv6 checksum
+    cost, without cutting flows/scale. (1) `pw_flow_window` registers the
+    decoded `flow_rows_o`; with 256-byte rows the decode fan-out into the
+    generators was a dominant `dp_clk` path (commit lands one cycle later,
+    harmless). (2) `pw_flow_gen_multi` precomputes the modifier-applied
+    header fields + IPv4/IPv6 checksums one stage ahead, registered
+    alongside the round-robin `pick` (same 1-cycle staleness, so they align
+    with the built row), so the frame-build cycle only lays out bytes
+    instead of running mod32/scramble + the checksum adders. Made possible
+    by excluding the live tx_timestamp from the IPv6 checksum (it is folded
+    in at egress), which makes the whole checksum pick-stable. (3) The IPv6
+    UDP checksum is summed as a single multi-term expression rather than
+    sequential `+=`, so synthesis maps it to a balanced adder tree instead
+    of a deep carry chain — this cone was the dp_clk-critical path.
   - **Generator field modifiers + correct IPv4 checksum** — per-field
     modifiers (`static` / `increment` / `random` with a bitmask) on
     `src_ipv4` / `dst_ipv4` / `udp_src` / `udp_dst` rotate the masked bits

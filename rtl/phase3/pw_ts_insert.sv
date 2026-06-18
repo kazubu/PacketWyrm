@@ -9,13 +9,34 @@
 // added a per-flow queuing offset; stamping here removes it.)
 //
 // Pass-through (no added latency / no backpressure): handshake and all
-// bytes flow straight through; only the tx_ts bytes of a matched test
-// packet are muxed to the latched departure timestamp.
+// bytes flow straight through; only the tx_ts bytes (and, for IPv6, the
+// UDP checksum) of a matched test packet are muxed.
 //
 // Frame layout (little-endian AXIS, byte k in tdata[8k +: 8]); matches
-// pw_flow_gen_multi: eth(12) [+VLAN 4] ethertype(2) IPv4(20) UDP(8) then
-// the 28-byte test header { magic(4) ver(4) flow_id(4) seq(8) ts(8) }.
-//   magic at byte 42 (+4 if VLAN); tx_ts at byte 62 (+4 if VLAN), big-endian.
+// pw_flow_gen_multi: eth(12) [+VLAN 4] ethertype(2) L3 UDP(8) then the
+// 28-byte test header { magic(4) ver(4) flow_id(4) seq(8) ts(8) }.
+//   IPv4 (ethertype 0x0800, 20-byte hdr): magic@42 tx_ts@62 (+4 if VLAN).
+//   IPv6 (ethertype 0x86DD, 40-byte hdr): magic@62 tx_ts@82 (+4 if VLAN),
+//        UDP checksum @60 (+4 if VLAN).
+//
+// IPv4 UDP checksum is 0 (disabled) so overwriting tx_ts needs no fixup.
+// IPv6 mandates a non-zero UDP checksum *covering* tx_ts, so overwriting
+// tx_ts invalidates it. The generator emits a PARTIAL checksum that omits
+// tx_ts (raw ~sum, no 0xFFFF rule -- see pw_flow_gen_multi::udp6_csum); we
+// fold the departure tx_ts into it here, producing the final valid
+// checksum. This works in one pass because the csum field (byte 60) leaves
+// before tx_ts (byte 82): we never need the *old* tx_ts, only add the new
+// (SOF-latched) one. The 0xFFFF (RFC 768) rule is applied here.
+//
+// Which frames to rewrite: the egress arbiter marks generator (test)
+// frames with tuser=1 (s_tuser), CDC'd in alongside the data. We gate on
+// the SOF-latched marker so forwarded / injected frames -- including
+// genuine IPv6/UDP DUT traffic, whose checksum we must not corrupt and
+// which streams its csum field before any magic we could test -- are left
+// untouched. (The IPv4 tx_ts path additionally keys on the magic, as
+// before, since its field follows the magic and that path is unchanged.)
+// NOTE: s_tuser here is our marker, NOT the MAC's tx-error tuser; we drive
+// m_tuser=0 (what the MAC saw before this marker existed).
 
 `default_nettype none
 
@@ -31,7 +52,7 @@ module pw_ts_insert #(
     input  wire                    s_tvalid,
     output wire                    s_tready,
     input  wire                    s_tlast,
-    input  wire                    s_tuser,
+    input  wire                    s_tuser,   // 1 = generator test frame (marker)
 
     output logic [DATA_W-1:0]      m_tdata,
     output logic [DATA_W/8-1:0]    m_tkeep,
@@ -44,46 +65,97 @@ module pw_ts_insert #(
 
     logic [11:0] beat;                 // beat index within frame
     logic        vlan_q;
+    logic        is_v6_q;
+    logic        is_gen;               // SOF-latched s_tuser (test frame)
     logic [7:0]  mb [4];               // captured magic bytes
     logic        magic_ok;
     logic [63:0] ts_lat;               // departure ts latched at SOF
 
     wire        acc       = s_tvalid && s_tready;
     wire [11:0] base      = {beat[8:0], 3'b000};        // beat*8 = first byte index of this beat
-    wire [11:0] magic_off = 12'd42 + (vlan_q ? 12'd4 : 12'd0);
-    wire [11:0] ts_off    = 12'd62 + (vlan_q ? 12'd4 : 12'd0);
+    // Field offsets depend on VLAN and L3 family.
+    wire [11:0] vl        = vlan_q ? 12'd4 : 12'd0;
+    wire [11:0] magic_off = 12'd42 + vl + (is_v6_q ? 12'd20 : 12'd0);
+    wire [11:0] ts_off    = magic_off + 12'd20;         // 62 / 82 (+4 VLAN)
+    wire [11:0] csum_off  = 12'd60 + vl;                // IPv6 UDP csum (+4 VLAN)
+
+    // Stamp the tx_ts: IPv4 keys on the magic (its field follows the magic,
+    // unchanged path); IPv6 keys on the generator marker (the csum fixup must
+    // anyway run before the magic streams, so both use the SOF marker there).
+    wire stamp_ok = is_v6_q ? is_gen : magic_ok;
+    // IPv6 UDP checksum fixup runs only for marked generator frames.
+    wire fix_csum = is_v6_q && is_gen;
 
     // ---- pass-through handshake + sideband ----
     assign s_tready = m_tready;
     assign m_tvalid = s_tvalid;
     assign m_tlast  = s_tlast;
     assign m_tkeep  = s_tkeep;
-    assign m_tuser  = s_tuser;
+    assign m_tuser  = 1'b0;             // marker consumed here; MAC sees no tx-error
 
-    // ---- data: overwrite the tx_ts bytes of a matched test packet ----
+    // ---- finalized IPv6 UDP checksum: partial (from the stream) + tx_ts ----
+    // c0 = generator's partial checksum (raw ~sum); ~c0 == the partial sum.
+    // Add the four 16-bit tx_ts words, fold the carries, complement, 0->0xFFFF.
+    function automatic logic [15:0] finalize_csum(input logic [15:0] c0,
+                                                  input logic [63:0] ts);
+        logic [19:0] s;
+        logic [15:0] f;
+        s = {4'b0, ~c0}
+          + {4'b0, ts[63:48]} + {4'b0, ts[47:32]}
+          + {4'b0, ts[31:16]} + {4'b0, ts[15:0]};
+        s = {4'b0, s[15:0]} + {16'b0, s[19:16]};        // fold
+        s = {4'b0, s[15:0]} + {16'b0, s[19:16]};        // fold again
+        f = ~s[15:0];
+        return (f == 16'h0000) ? 16'hFFFF : f;          // RFC 768
+    endfunction
+
+    // ---- data: overwrite tx_ts (matched) + IPv6 UDP csum (marked gen) ----
     always_comb begin
+        logic [15:0] cnew;
+        logic [11:0] bi;
+        logic [5:0]  sel;
+        int          lo;
         m_tdata = s_tdata;
+        // The 2-byte UDP csum field is 16-bit aligned within one beat (offset
+        // 60 or 64): read the generator's partial value and finalize it once.
+        lo   = (csum_off >= base) ? int'(csum_off - base) : 0;
+        cnew = 16'h0;
+        if (fix_csum && csum_off >= base && (csum_off + 12'd1) < base + 12'(DATA_W/8))
+            cnew = finalize_csum({s_tdata[lo*8 +: 8], s_tdata[(lo+1)*8 +: 8]}, ts_lat);
         for (int l = 0; l < DATA_W/8; l++) begin
-            automatic logic [11:0] bi  = base + 12'(l);
-            automatic logic [5:0]  sel = 6'((7 - (bi - ts_off)) * 8);  // bit offset, big-endian
-            if (magic_ok && bi >= ts_off && bi < ts_off + 12'd8)
+            bi  = base + 12'(l);
+            sel = 6'((7 - (bi - ts_off)) * 8);
+            // tx_ts overwrite (big-endian 8 bytes at ts_off)
+            if (stamp_ok && bi >= ts_off && bi < ts_off + 12'd8)
                 m_tdata[l*8 +: 8] = ts_lat[sel +: 8];
+            // IPv6 UDP checksum overwrite (2 bytes at csum_off, big-endian)
+            if (fix_csum && bi == csum_off)          m_tdata[l*8 +: 8] = cnew[15:8];
+            if (fix_csum && bi == csum_off + 12'd1)  m_tdata[l*8 +: 8] = cnew[7:0];
         end
     end
 
-    // ---- per-beat tracking: SOF latch, VLAN, magic capture, magic_ok ----
+    // ---- per-beat tracking: SOF latch, VLAN/v6 detect, magic, marker ----
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            beat <= '0; vlan_q <= 1'b0; magic_ok <= 1'b0; ts_lat <= '0;
+            beat <= '0; vlan_q <= 1'b0; is_v6_q <= 1'b0; is_gen <= 1'b0;
+            magic_ok <= 1'b0; ts_lat <= '0;
             for (int k = 0; k < 4; k++) mb[k] <= 8'h0;
         end else if (acc) begin
             if (beat == 12'd0) begin
                 ts_lat   <= ts_now;     // departure time of this frame
                 vlan_q   <= 1'b0;
+                is_v6_q  <= 1'b0;
+                is_gen   <= s_tuser;    // generator (test) frame marker
                 magic_ok <= 1'b0;
             end
-            if (beat == 12'd1)          // ethertype/VLAN tag at bytes 12-13
-                vlan_q <= (s_tdata[39:32] == 8'h81 && s_tdata[47:40] == 8'h00);
+            if (beat == 12'd1) begin    // outer ethertype / VLAN tag at bytes 12-13
+                automatic logic is_vlan = (s_tdata[39:32] == 8'h81 && s_tdata[47:40] == 8'h00);
+                vlan_q <= is_vlan;
+                if (!is_vlan)           // untagged: ethertype here decides IPv6
+                    is_v6_q <= (s_tdata[39:32] == 8'h86 && s_tdata[47:40] == 8'hDD);
+            end
+            if (beat == 12'd2 && vlan_q) // tagged: inner ethertype at bytes 16-17
+                is_v6_q <= (s_tdata[7:0] == 8'h86 && s_tdata[15:8] == 8'hDD);
 
             // capture the 4 magic bytes as they stream past
             for (int l = 0; l < DATA_W/8; l++) begin
