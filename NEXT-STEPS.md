@@ -80,14 +80,15 @@ sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
 4. **Minor**: the `CAPABILITIES` parameter advertises `0x6C` (the
    currently-flashed build reports it).
 
-Timing: **the classifier bitwise-mask build sits at post-route WNS +0.000 ns**
-(meets, but ZERO margin — recover before relying on it; the limiter is still
-the generator `udp6_csum`, route-dominated, pushed to the edge by the
-accumulated congestion of IPv6 + parity + MAC/VLAN + classifier-mask at LUT
-~75%). **TODO before merging `phase3-classifier-mask` to main: a margin-
-recovery build** (split `udp6_csum` into a 2-stage pipeline, or shed
-classifier/generator congestion). The prior MAC/VLAN build closed at +0.066;
-the IPv6/parity stack closed at WNS +0.066 ns @156.25 MHz. The
+Timing: the full feature stack (IPv6 + IPv4/IPv6 parity + MAC/VLAN modifiers +
+background flows + bitwise classifier masking) closes at **post-route WNS
++0.114 ns @156.25 MHz** (LUT ~75% / FF 60% / BRAM 16% on the KU3P). The
+classifier-mask build first landed at a razor-thin +0.000; **margin was
+recovered by splitting the generator `udp6_csum` into a 2-stage pipeline** (two
+~15-term half-sums registered between the precompute stages, final fold in
+build() -- halves the per-stage adder depth and drops a register mid-route on
+the route-dominated path that had been the perennial limiter). The MAC/VLAN
+build closed at +0.066; the IPv6/parity stack at +0.066. The
 parity round had thinned it to +0.037; a `pw_ts_insert` optimization (pre-sum
 the tx_ts words at SOF + register the csum lane/beat so the egress
 csum-finalize no longer feeds the MAC CRC through a deep adder) recovered it

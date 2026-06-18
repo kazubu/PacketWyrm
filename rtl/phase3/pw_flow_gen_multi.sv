@@ -222,35 +222,37 @@ module pw_flow_gen_multi #(
     // old one. We therefore emit the raw one's-complement (~s, no 0xFFFF rule)
     // so that ~csum == s exactly for the stamper to extend. Per-flow constant
     // apart from seq (which the stamper does not touch).
-    function automatic logic [15:0] udp6_csum(
-            input logic [127:0] src, input logic [127:0] dst,
-            input logic [15:0] sport, input logic [15:0] dport, input logic [15:0] ulen,
-            input logic [31:0] flow_id, input logic [63:0] seq);
-        logic [31:0] s;
-        // Single balanced-tree sum (NOT sequential `+=`): synthesis maps one
-        // multi-term `+` expression to an adder TREE, whereas separate `+=`
-        // statements become a long carry CHAIN. This cone is the dp_clk-
-        // critical path (the deepest in the data plane), so the tree depth
-        // matters. One's-complement addition is associative/commutative, so
-        // the folded result is identical. ~30 16-bit terms: IPv6 pseudo-header
-        // (src + dst + upper-layer length + next-header) + UDP header + the
-        // test-header payload (magic / ver / flow_id / seq) -- but NOT the
-        // tx_timestamp, which pw_ts_insert folds in at egress.
-        s = {16'b0, src[127:112]} + {16'b0, src[111:96]} + {16'b0, src[95:80]}
-          + {16'b0, src[79:64]}   + {16'b0, src[63:48]}  + {16'b0, src[47:32]}
-          + {16'b0, src[31:16]}   + {16'b0, src[15:0]}
-          + {16'b0, dst[127:112]} + {16'b0, dst[111:96]} + {16'b0, dst[95:80]}
-          + {16'b0, dst[79:64]}   + {16'b0, dst[63:48]}  + {16'b0, dst[47:32]}
-          + {16'b0, dst[31:16]}   + {16'b0, dst[15:0]}
-          + {16'b0, ulen} + 32'h0000_0011                  // pseudo-hdr: ulen + next-header 17
-          + {16'b0, sport} + {16'b0, dport} + {16'b0, ulen}            // UDP hdr (csum 0)
-          + {16'b0, PW_TEST_HDR_MAGIC[31:16]} + {16'b0, PW_TEST_HDR_MAGIC[15:0]}
-          + 32'h0000_0001                                  // version=0x0001, reserved=0
-          + {16'b0, flow_id[31:16]} + {16'b0, flow_id[15:0]}
-          + {16'b0, seq[63:48]} + {16'b0, seq[47:32]} + {16'b0, seq[31:16]} + {16'b0, seq[15:0]};
-        s = {16'b0, s[31:16]} + {16'b0, s[15:0]};
-        s = {16'b0, s[31:16]} + {16'b0, s[15:0]};
-        return ~s[15:0];               // raw partial; stamper finalizes
+    // The IPv6 UDP partial checksum is split into TWO half-sums computed in
+    // parallel, registered between the generator's two precompute stages, and
+    // combined (a cheap add + fold) in build(). Fused, the ~30-term sum was the
+    // dp_clk-critical path; splitting it roughly halves the per-stage adder
+    // depth AND puts a register mid-route. Each half is a single multi-term `+`
+    // expression so synthesis builds an adder tree (not a carry chain). Max:
+    // psum_a = 16 words <= 0xFFFF0, psum_b = 14 words <= 0xDFFF2 -> both fit 20b.
+    function automatic logic [19:0] udp6_psum_a(input logic [127:0] src, input logic [127:0] dst);
+        return {4'b0, src[127:112]} + {4'b0, src[111:96]} + {4'b0, src[95:80]} + {4'b0, src[79:64]}
+             + {4'b0, src[63:48]}  + {4'b0, src[47:32]}  + {4'b0, src[31:16]} + {4'b0, src[15:0]}
+             + {4'b0, dst[127:112]} + {4'b0, dst[111:96]} + {4'b0, dst[95:80]} + {4'b0, dst[79:64]}
+             + {4'b0, dst[63:48]}  + {4'b0, dst[47:32]}  + {4'b0, dst[31:16]} + {4'b0, dst[15:0]};
+    endfunction
+    function automatic logic [19:0] udp6_psum_b(input logic [15:0] sport, input logic [15:0] dport,
+                                                input logic [15:0] ulen, input logic [31:0] flow_id,
+                                                input logic [63:0] seq);
+        return {4'b0, ulen} + 20'h0_0011                   // pseudo-hdr: ulen + next-header 17
+             + {4'b0, sport} + {4'b0, dport} + {4'b0, ulen}            // UDP hdr (csum 0)
+             + {4'b0, PW_TEST_HDR_MAGIC[31:16]} + {4'b0, PW_TEST_HDR_MAGIC[15:0]}
+             + 20'h0_0001                                  // version=0x0001, reserved=0
+             + {4'b0, flow_id[31:16]} + {4'b0, flow_id[15:0]}
+             + {4'b0, seq[63:48]} + {4'b0, seq[47:32]} + {4'b0, seq[31:16]} + {4'b0, seq[15:0]};
+    endfunction
+    // Combine the two registered half-sums into the raw one's-complement partial
+    // (no 0xFFFF rule; pw_ts_insert folds in tx_ts and finalizes at egress).
+    function automatic logic [15:0] udp6_fold(input logic [19:0] psa, input logic [19:0] psb);
+        logic [20:0] s;
+        s = {1'b0, psa} + {1'b0, psb};
+        s = {5'b0, s[15:0]} + {16'b0, s[20:16]};
+        s = {5'b0, s[15:0]} + {16'b0, s[20:16]};
+        return ~s[15:0];
     endfunction
 
     // --- precompute pipeline (two stages after the registered pick_q) -------
@@ -289,7 +291,8 @@ module pw_flow_gen_multi #(
     logic [127:0] pc_v6src, pc_v6dst;
     logic [47:0]  pc_smac, pc_dmac;
     logic [11:0]  pc_vlan;
-    logic [15:0]  pc_sp, pc_dp, pc_csum, pc_ucsum;
+    logic [15:0]  pc_sp, pc_dp, pc_csum;
+    logic [19:0]  pc_psa, pc_psb;       // IPv6 UDP csum half-sums (folded in build)
     always_comb begin
         logic [15:0] vlan16;
         pc_sip   = mod32(row_l.sip_mod, row_l.src_ipv4, row_l.sip_mask, seq_l);
@@ -310,8 +313,8 @@ module pw_flow_gen_multi #(
         pc_dp    = mod16(row_l.dp_mod,  row_l.udp_dp,   row_l.dp_mask,  seq_l);
         pc_csum  = ip_csum16(16'(20 + 8 + FRAME_LEN_PAYLOAD), pc_sip, pc_dip,
                              row_l.dscp, row_l.ttl);
-        pc_ucsum = udp6_csum(pc_v6src, pc_v6dst, pc_sp, pc_dp,
-                             16'(8 + FRAME_LEN_PAYLOAD), row_l.flow_id, seq_l);
+        pc_psa   = udp6_psum_a(pc_v6src, pc_v6dst);
+        pc_psb   = udp6_psum_b(pc_sp, pc_dp, 16'(8 + FRAME_LEN_PAYLOAD), row_l.flow_id, seq_l);
     end
 
     // Stage B latch (consumed by build): picked row + seq + precomputed fields.
@@ -323,14 +326,15 @@ module pw_flow_gen_multi #(
     logic [127:0]     eff_v6src_q, eff_v6dst_q;
     logic [47:0]      eff_smac_q, eff_dmac_q;
     logic [11:0]      eff_vlan_q;
-    logic [15:0]      eff_sp_q, eff_dp_q, csum_q, ucsum_q;
+    logic [15:0]      eff_sp_q, eff_dp_q, csum_q;
+    logic [19:0]      psa_q, psb_q;       // IPv6 UDP csum half-sums; folded in build()
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             pick_qq <= '0; pick_valid_qq <= 1'b0; row_qq <= '0; seq_qq <= '0;
             eff_sip_q <= '0; eff_dip_q <= '0; eff_sp_q <= '0; eff_dp_q <= '0;
             eff_v6src_q <= '0; eff_v6dst_q <= '0;
             eff_smac_q <= '0; eff_dmac_q <= '0; eff_vlan_q <= '0;
-            csum_q    <= '0; ucsum_q  <= '0;
+            csum_q    <= '0; psa_q <= '0; psb_q <= '0;
         end else begin
             pick_qq       <= pick_l;
             pick_valid_qq <= pvalid_l;
@@ -340,7 +344,7 @@ module pw_flow_gen_multi #(
             eff_sip_q <= pc_sip;  eff_dip_q <= pc_dip;
             eff_v6src_q <= pc_v6src; eff_v6dst_q <= pc_v6dst;
             eff_sp_q  <= pc_sp;   eff_dp_q  <= pc_dp;
-            csum_q    <= pc_csum; ucsum_q   <= pc_ucsum;
+            csum_q    <= pc_csum; psa_q <= pc_psa; psb_q <= pc_psb;
         end
     end
 
@@ -353,10 +357,15 @@ module pw_flow_gen_multi #(
                          input logic [47:0] eff_smac, input logic [47:0] eff_dmac,
                          input logic [11:0] eff_vlan,
                          input logic [15:0] eff_sp,  input logic [15:0] eff_dp,
-                         input logic [15:0] csum,    input logic [15:0] ucsum);
+                         input logic [15:0] csum,
+                         input logic [19:0] psa,     input logic [19:0] psb);
         int off, tl, total_len;
-        logic [7:0] tos;
-        tos = {r.dscp[5:0], 2'b00};        // IPv4 TOS / IPv6 TC byte (DSCP<<2, ECN 0)
+        logic [7:0]  tos;
+        logic [15:0] ucsum;
+        tos   = {r.dscp[5:0], 2'b00};      // IPv4 TOS / IPv6 TC byte (DSCP<<2, ECN 0)
+        // Combine the two registered IPv6 UDP-csum half-sums (cheap; the deep
+        // adder is upstream, split across the precompute stages).
+        ucsum = udp6_fold(psa, psb);
         for (int i = 0; i < HDR_MAX_BYTES; i++) fb[i] <= 8'h00;
         fb[0]<=eff_dmac[47:40]; fb[1]<=eff_dmac[39:32]; fb[2]<=eff_dmac[31:24];
         fb[3]<=eff_dmac[23:16]; fb[4]<=eff_dmac[15:8];  fb[5]<=eff_dmac[7:0];
@@ -448,7 +457,7 @@ module pw_flow_gen_multi #(
                     build(row_qq, seq_qq, timestamp_i,
                           eff_sip_q, eff_dip_q, eff_v6src_q, eff_v6dst_q,
                           eff_smac_q, eff_dmac_q, eff_vlan_q,
-                          eff_sp_q, eff_dp_q, csum_q, ucsum_q);
+                          eff_sp_q, eff_dp_q, csum_q, psa_q, psb_q);
                     sel      <= pick_qq;
                     active   <= 1'b1;
                     byte_off <= '0;
