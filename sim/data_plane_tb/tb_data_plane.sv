@@ -768,6 +768,32 @@ module tb_data_plane;
         cls_table[1].enable = 1'b0;
         @(posedge clk);
 
+        // -------- scenario 12b: partial-field (bitwise) port match --------
+        // l4_dst_bits = 0xFF00 matches only the high byte of the dst port, so
+        // a modifier could rotate the low byte while the rule still matches.
+        scenario = "partial_port";
+        reset_tx_seen();
+        cls_table[0].enable            = 1'b1;
+        cls_table[0].action            = PW_ACT_PUNT_TO_HOST;
+        cls_table[0].priority_         = 8'd10;
+        cls_table[0].mask              = '0;
+        cls_table[0].mask.match_is_tcp = 1'b1;
+        cls_table[0].mask.l4_dst_bits  = 16'hFF00;   // high byte only
+        cls_table[0].key.l4_dst        = 16'h5000;   // l4_dst / udp_dst are
+        cls_table[0].key.udp_dst       = 16'h5000;   // aliases -> set both
+        @(posedge clk);
+        rx_frame[0] = make_tcp(0, 16'h5077);         // high byte 0x50 matches
+        rx_valid[0] = 1'b1; @(posedge clk); @(posedge clk);
+        check_eq("partial port match (low byte ignored)", punt_valid ? 1 : 0, 1);
+        rx_valid[0] = 1'b0; rx_frame[0] = pw_frame_zero();
+        @(posedge clk); @(posedge clk);
+        rx_frame[0] = make_tcp(0, 16'h6077);         // high byte 0x60 differs
+        rx_valid[0] = 1'b1; @(posedge clk); @(posedge clk);
+        check_eq("partial port non-match", punt_valid ? 1 : 0, 0);
+        rx_valid[0] = 1'b0; rx_frame[0] = pw_frame_zero();
+        cls_table[0].enable = 1'b0;
+        @(posedge clk);
+
         // ---------------- scenario 13: IPv6 TEST_RX ----------------
         scenario = "ipv6";
         cls_table[6].enable             = 1'b1;

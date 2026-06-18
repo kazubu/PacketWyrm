@@ -137,6 +137,22 @@ flows:
       # Cross-card flows must set latency:false and jitter:false.
       # The daemon refuses the config otherwise.
 
+    background: false                # optional, default false. true = TX-only
+                                     # load traffic: the flow generates but gets
+                                     # NO RX classifier rule and is not measured.
+                                     # Background flows don't consume a classifier
+                                     # entry, so a config can run more generator
+                                     # flows (up to the HW slot count) than the
+                                     # classifier capacity (e.g. 32 gen / 16 meas).
+
+    match:                           # optional: narrow the RX classifier match
+      udp_dst: 0xff00                # bitwise mask (1 = bit must match); default
+      ipv4_dst: 0xffffff00           # full match. Lets the rule classify on part
+                                     # of a field so a modifier can rotate the
+                                     # rest, or classify arbitrary-payload traffic
+                                     # by header bits. A modifier on a matched
+                                     # field also auto-relaxes its mask.
+
     modifiers:                       # optional: per-field "field modifiers"
       dst_ipv4: { mode: increment, mask: 0x000003ff }  # rotate low 10 bits -> 1024 flows
       src_ipv4: { mode: random,    mask: 0x0000ffff }

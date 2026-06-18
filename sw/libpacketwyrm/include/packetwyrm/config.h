@@ -136,6 +136,22 @@ struct pw_flow {
     struct pw_flow_traffic traffic;
     struct pw_flow_meas    meas;
     struct pw_flow_modifiers mod;
+
+    /* Background (load) traffic: generate TX only, no RX classifier rule and
+     * no loss/latency measurement. Lets a config run more generator flows than
+     * the classifier capacity (e.g. 32 gen slots, <=16 measured) -- the
+     * unmeasured background flows do not consume a classifier entry. */
+    bool background;
+
+    /* Per-field classifier match masks (BITWISE: a 1 bit means "this bit must
+     * match"). The TEST_RX rule defaults to a full match on udp_dst / ipv4_dst;
+     * the parser sets these to all-ones and a `match:` block can narrow them so
+     * the RX rule matches only part of a field -- letting a modifier rotate the
+     * rest, or classifying arbitrary-payload traffic by header bits. A modifier
+     * on a matched field also auto-relaxes its mask (mask &= ~modifier_mask).
+     * mask 0 = wildcard (field ignored). */
+    uint16_t match_udp_dst_mask;     /* default 0xFFFF */
+    uint32_t match_ipv4_dst_mask;    /* default 0xFFFFFFFF */
 };
 
 /* Store-and-forward rule: relay frames matching the (optional) key from

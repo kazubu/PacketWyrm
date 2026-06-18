@@ -185,6 +185,12 @@ Output: a flat "header descriptor" with all extracted fields plus a
 - Priority-ordered linear table (Phase 1).
 - Each entry: match key + mask, action, priority,
   `local_flow_id`, `logical_if_id`, `egress_local_port`.
+- The dst port (`l4_dst`/`udp_dst`) and dst IPv4 address match **bitwise**
+  (TCAM-style): `(key & mask) == (rule_key & mask)`, so a partial mask
+  matches only part of a field — letting a generator modifier rotate the
+  unmatched bits, or classifying arbitrary-payload traffic by header bits.
+  An all-ones mask is exact match (back-compatible); 0 is wildcard. Other
+  fields remain boolean match/ignore.
 - Actions: `DROP`, `TEST_RX`, `PUNT_TO_HOST`, `MIRROR_TO_HOST`,
   `FORWARD_PORT`.
 - `FORWARD_PORT` uses `egress_local_port` (byte 92 of the wire row,

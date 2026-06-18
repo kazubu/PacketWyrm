@@ -505,6 +505,30 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
         if ((r = parse_field_mod(mods, "vlan",     xp, &f->mod.vlan,     diag)) != PW_OK) return r;
     }
 
+    /* Background (load) traffic: TX only, no classifier rule / measurement. */
+    if ((r = get_scalar(m, "background", path, false, &s, diag)) != PW_OK) return r;
+    if (s && !pw_parse_bool(s, &f->background)) {
+        diag_set(diag, PW_E_PARSE, path, "background must be true/false"); return PW_E_PARSE;
+    }
+
+    /* Classifier match masks: default to a full (exact) match; an optional
+     * `match:` block narrows them for partial-field classification. */
+    f->match_udp_dst_mask  = 0xFFFFu;
+    f->match_ipv4_dst_mask = 0xFFFFFFFFu;
+    const pw_yaml_node *mm = pw_yaml_map_get(m, "match");
+    if (mm) {
+        char mp[96]; snprintf(mp, sizeof(mp), "%s.match", path);
+        REQ_MAP(mm, mp);
+        if ((r = get_scalar(mm, "udp_dst", mp, false, &s, diag)) != PW_OK) return r;
+        if (s && !pw_parse_u16(s, &f->match_udp_dst_mask)) {
+            diag_set(diag, PW_E_PARSE, mp, "udp_dst mask must be 16-bit"); return PW_E_PARSE;
+        }
+        if ((r = get_scalar(mm, "ipv4_dst", mp, false, &s, diag)) != PW_OK) return r;
+        if (s && !pw_parse_u32(s, &f->match_ipv4_dst_mask)) {
+            diag_set(diag, PW_E_PARSE, mp, "ipv4_dst mask must be 32-bit"); return PW_E_PARSE;
+        }
+    }
+
     return PW_OK;
 }
 

@@ -9,6 +9,22 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Background (load) flows** — a flow can set `background: true` to generate
+    TX-only traffic with no RX classifier rule and no measurement. Background
+    flows don't consume a classifier entry, so a config can run more generator
+    flows than the classifier capacity (e.g. 32 gen slots / 16 measured). SW
+    only (the compiler emits the TX flow row but skips the TEST_RX rule).
+  - **Bitwise (TCAM-style) classifier matching on dst port + dst IPv4** — the
+    classifier compares `(key & mask) == (rule_key & mask)` for `l4_dst`/
+    `udp_dst` and `ipv4_dst`, so a rule can match only part of a field. Enables
+    using a generator modifier on a *classified* field (the rule matches the
+    fixed bits; the compiler auto-relaxes the mask to exclude the rotated bits)
+    and classifying arbitrary-payload traffic by header bits via a YAML
+    `match: { udp_dst, ipv4_dst }` block. All-ones mask = exact (back-compatible
+    with the prior boolean match); 0 = wildcard. The wire format is unchanged
+    (the per-entry mask already carried the bytes; the RTL stopped OR-reducing
+    them to a boolean). `sim` gains a partial-port match/non-match scenario;
+    unit test covers the compiler mask emission + auto-relax + background.
   - **MAC / VLAN field modifiers** — extends the generator's field-modifier
     scheme to `src_mac` / `dst_mac` (48-bit mask) and `vlan` (low 12 bits),
     same `mode` (static/increment/random) + `mask` syntax as the address/port
