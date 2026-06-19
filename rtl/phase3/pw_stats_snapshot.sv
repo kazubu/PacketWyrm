@@ -54,6 +54,10 @@ module pw_stats_snapshot #(
     input  wire                       trigger_i,
 
     input  wire [31:0]                port_drops_i [PORTS],
+    input  wire [47:0]                rx_frames_i  [PORTS],
+    input  wire [47:0]                rx_bytes_i   [PORTS],
+    input  wire [47:0]                tx_frames_i  [PORTS],
+    input  wire [47:0]                tx_bytes_i   [PORTS],
 
     input  wire [63:0]                flow_rx_i         [NUM_FLOWS],
     input  wire [63:0]                flow_lost_i       [NUM_FLOWS],
@@ -110,9 +114,14 @@ module pw_stats_snapshot #(
             for (int p = 0; p < PORTS; p++) begin
                 logic [PORT_STRIDE*8-1:0] pr;
                 pr = '0;
-                // rx_bad_frame is the closest match for drop counter,
-                // at offset 24 (third u64 in pw_port_stats).
-                pr = put_u32_port(pr, 24, port_drops_i[p]);
+                // pw_port_stats layout: rx_frames@0, rx_bytes@8, rx_fcs_error@16,
+                // rx_bad_frame@24 (we surface DROP here), ..., tx_frames@48,
+                // tx_bytes@56. Counters are 48-bit, zero-extended to u64.
+                pr = put_u64(pr,  0, {16'h0, rx_frames_i[p]});
+                pr = put_u64(pr,  8, {16'h0, rx_bytes_i[p]});
+                pr = put_u32_port(pr, 24, port_drops_i[p]);   // rx_bad_frame slot
+                pr = put_u64(pr, 48, {16'h0, tx_frames_i[p]});
+                pr = put_u64(pr, 56, {16'h0, tx_bytes_i[p]});
                 shadow_port[p] <= pr;
             end
             for (int f = 0; f < NUM_FLOWS; f++) begin

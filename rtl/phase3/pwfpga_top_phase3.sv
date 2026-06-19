@@ -92,6 +92,10 @@ module pwfpga_top_phase3 #(
     // Per-port and per-flow counters from the data plane back into
     // the CSR for snapshot exposure.
     logic [31:0] port_drops_w  [NUM_PORTS];
+    logic [47:0] rx_frames_w   [NUM_PORTS];
+    logic [47:0] rx_bytes_w    [NUM_PORTS];
+    logic [47:0] tx_frames_w   [NUM_PORTS];
+    logic [47:0] tx_bytes_w    [NUM_PORTS];
     logic [63:0] flow_rx_w        [NUM_FLOWS];
     logic [63:0] flow_lost_w      [NUM_FLOWS];
     logic [63:0] flow_dup_w       [NUM_FLOWS];
@@ -150,6 +154,10 @@ module pwfpga_top_phase3 #(
         .global_control_o    (),
         .error_status_set_i  (32'h0),
         .port_drops_i        (port_drops_w),
+        .rx_frames_i         (rx_frames_w),
+        .rx_bytes_i          (rx_bytes_w),
+        .tx_frames_i         (tx_frames_w),
+        .tx_bytes_i          (tx_bytes_w),
         .flow_rx_i           (flow_rx_w),
         .flow_lost_i         (flow_lost_w),
         .flow_dup_i          (flow_dup_w),
@@ -274,7 +282,11 @@ module pwfpga_top_phase3 #(
         .flow_samples      (flow_samples_w),
         .hist_rd_addr_i    (hist_rd_addr_w),
         .hist_rd_data_o    (hist_rd_data_w),
-        .port_drops_o      (port_drops_w)
+        .port_drops_o      (port_drops_w),
+        .rx_frames_o       (rx_frames_w),
+        .rx_bytes_o        (rx_bytes_w),
+        .tx_frames_o       (tx_frames_w),
+        .tx_bytes_o        (tx_bytes_w)
     );
 
 endmodule

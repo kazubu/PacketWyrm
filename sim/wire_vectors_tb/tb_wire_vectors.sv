@@ -38,6 +38,7 @@ module tb_wire_vectors;
     end
 
     logic [31:0] port_drops      [NUM_PORTS];
+    logic [47:0] ps_zero         [NUM_PORTS] = '{default: 48'd0};  // port stats not exercised here
     logic [63:0] flow_rx         [NUM_FLOWS];
     logic [63:0] flow_lost       [NUM_FLOWS];
     logic [63:0] flow_dup        [NUM_FLOWS];
@@ -101,6 +102,10 @@ module tb_wire_vectors;
         .global_control_o    (),
         .error_status_set_i  (32'h0),
         .port_drops_i        (port_drops),
+        .rx_frames_i         (ps_zero),
+        .rx_bytes_i          (ps_zero),
+        .tx_frames_i         (ps_zero),
+        .tx_bytes_i          (ps_zero),
         .flow_rx_i           (flow_rx),
         .flow_lost_i         (flow_lost),
         .flow_dup_i          (flow_dup),

@@ -27,7 +27,11 @@ module tb_stats_snapshot;
     localparam int OFF_SAMPLES     = 96;
 
     // pw_port_stats wire offsets
+    localparam int OFF_PORT_RXF    = 0;
+    localparam int OFF_PORT_RXB    = 8;
     localparam int OFF_PORT_BAD    = 24;
+    localparam int OFF_PORT_TXF    = 48;
+    localparam int OFF_PORT_TXB    = 56;
 
     logic clk = 1'b0;
     always #5 clk = ~clk;
@@ -35,6 +39,10 @@ module tb_stats_snapshot;
 
     logic trigger;
     logic [31:0] port_drops [PORTS];
+    logic [47:0] rx_frames_p [PORTS];
+    logic [47:0] rx_bytes_p  [PORTS];
+    logic [47:0] tx_frames_p [PORTS];
+    logic [47:0] tx_bytes_p  [PORTS];
     logic [63:0] flow_rx        [NUM_FLOWS];
     logic [63:0] flow_lost      [NUM_FLOWS];
     logic [63:0] flow_dup       [NUM_FLOWS];
@@ -59,6 +67,10 @@ module tb_stats_snapshot;
         .rst_n          (rst_n),
         .trigger_i      (trigger),
         .port_drops_i   (port_drops),
+        .rx_frames_i    (rx_frames_p),
+        .rx_bytes_i     (rx_bytes_p),
+        .tx_frames_i    (tx_frames_p),
+        .tx_bytes_i     (tx_bytes_p),
         .flow_rx_i      (flow_rx),
         .flow_lost_i    (flow_lost),
         .flow_dup_i     (flow_dup),
@@ -111,7 +123,10 @@ module tb_stats_snapshot;
     initial begin
         trigger = 1'b0;
         rd_addr = 16'h0;
-        for (int p = 0; p < PORTS; p++) port_drops[p] = '0;
+        for (int p = 0; p < PORTS; p++) begin
+            port_drops[p] = '0; rx_frames_p[p] = '0; rx_bytes_p[p] = '0;
+            tx_frames_p[p] = '0; tx_bytes_p[p] = '0;
+        end
         for (int f = 0; f < NUM_FLOWS; f++) begin
             flow_rx[f]        = '0;
             flow_lost[f]      = '0;
@@ -140,6 +155,8 @@ module tb_stats_snapshot;
         scenario = "snap";
         port_drops[0]    = 32'd17;
         port_drops[1]    = 32'd99;
+        rx_frames_p[0]   = 48'd1000; rx_bytes_p[0] = 48'd64000;
+        tx_frames_p[0]   = 48'd900;  tx_bytes_p[0] = 48'd57600;
 
         flow_rx[2]       = 64'd1234;
         flow_last_seq[2] = 64'd5000;
@@ -168,6 +185,10 @@ module tb_stats_snapshot;
             // Port 0 bad-frame slot at offset 24
             read_u32(0,           OFF_PORT_BAD, w);
             check_eq("port0 drops", w, 17);
+            read_u64(0, OFF_PORT_RXF, v); check_eq("port0 rx_frames", v, 1000);
+            read_u64(0, OFF_PORT_RXB, v); check_eq("port0 rx_bytes",  v, 64000);
+            read_u64(0, OFF_PORT_TXF, v); check_eq("port0 tx_frames", v, 900);
+            read_u64(0, OFF_PORT_TXB, v); check_eq("port0 tx_bytes",  v, 57600);
             read_u32(PORT_STRIDE, OFF_PORT_BAD, w);
             check_eq("port1 drops", w, 99);
 
