@@ -75,17 +75,11 @@ module tb_flow_window;
         .commit_pulse_o (cls_commit)
     );
 
-    logic [PORTS-1:0]              gen_en_w;
-    logic [PORTS-1:0] [31:0]       gen_tok_w;
-    logic [PORTS-1:0] [15:0]       gen_burst_w;
-    logic [PORTS-1:0] [47:0]       gen_smac_w;
-    logic [PORTS-1:0] [47:0]       gen_dmac_w;
-    logic [PORTS-1:0]              gen_vlan_en_w;
-    logic [PORTS-1:0] [11:0]       gen_vlan_id_w;
-    logic [PORTS-1:0] [31:0]       gen_sip_w;
-    logic [PORTS-1:0] [31:0]       gen_dip_w;
-    logic [PORTS-1:0] [15:0]       gen_usp_w;
-    logic [PORTS-1:0] [15:0]       gen_udp_w;
+    // pw_flow_window no longer exports the legacy per-port gen_*_o selection
+    // (the streaming data plane consumes flow_rows_o directly). This tb still
+    // drives the legacy wide-bus pw_data_plane, so it reproduces the selection
+    // (lowest-indexed enabled row per egress port) here from flow_rows_o.
+    pw_flow_row_t flow_rows_w [FLOWS];
 
     pw_flow_window #(
         .ADDR_W        (ADDR_W),
@@ -98,22 +92,12 @@ module tb_flow_window;
         .wr_en          (wr_en),
         .wr_addr        (wr_addr),
         .wr_data        (wr_data),
-        .gen_enable_o    (gen_en_w),
-        .gen_tokens_fp_o (gen_tok_w),
-        .gen_burst_o     (gen_burst_w),
-        .gen_src_mac_o   (gen_smac_w),
-        .gen_dst_mac_o   (gen_dmac_w),
-        .gen_vlan_en_o   (gen_vlan_en_w),
-        .gen_vlan_id_o   (gen_vlan_id_w),
-        .gen_src_ip_o    (gen_sip_w),
-        .gen_dst_ip_o    (gen_dip_w),
-        .gen_udp_sp_o    (gen_usp_w),
-        .gen_udp_dp_o    (gen_udp_w),
-        .flow_rows_o     (),
+        .flow_rows_o     (flow_rows_w),
         .commit_pulse_o  (flow_commit)
     );
 
-    // Unpack to the data plane's unpacked arrays.
+    // The data plane's unpacked per-port generator inputs, selected from the
+    // decoded flow table (mirrors the old flow_window selection logic).
     logic        gen_en      [PORTS];
     logic [31:0] gen_tok     [PORTS];
     logic [15:0] gen_burst   [PORTS];
@@ -128,17 +112,26 @@ module tb_flow_window;
 
     always_comb begin
         for (int p = 0; p < PORTS; p++) begin
-            gen_en[p]      = gen_en_w[p];
-            gen_tok[p]     = gen_tok_w[p];
-            gen_burst[p]   = gen_burst_w[p];
-            gen_smac[p]    = gen_smac_w[p];
-            gen_dmac[p]    = gen_dmac_w[p];
-            gen_vlan_en[p] = gen_vlan_en_w[p];
-            gen_vlan_id[p] = gen_vlan_id_w[p];
-            gen_sip[p]     = gen_sip_w[p];
-            gen_dip[p]     = gen_dip_w[p];
-            gen_usp[p]     = gen_usp_w[p];
-            gen_udp[p]     = gen_udp_w[p];
+            gen_en[p]      = 1'b0; gen_tok[p]   = '0; gen_burst[p]   = '0;
+            gen_smac[p]    = '0;   gen_dmac[p]  = '0; gen_vlan_en[p] = 1'b0;
+            gen_vlan_id[p] = '0;   gen_sip[p]   = '0; gen_dip[p]     = '0;
+            gen_usp[p]     = '0;   gen_udp[p]   = '0;
+        end
+        for (int r = 0; r < FLOWS; r++) begin
+            automatic int ep = int'(flow_rows_w[r].egress);
+            if (flow_rows_w[r].valid && ep >= 0 && ep < PORTS && !gen_en[ep]) begin
+                gen_en[ep]      = 1'b1;
+                gen_tok[ep]     = flow_rows_w[r].tokens_fp;
+                gen_burst[ep]   = flow_rows_w[r].burst;
+                gen_smac[ep]    = flow_rows_w[r].src_mac;
+                gen_dmac[ep]    = flow_rows_w[r].dst_mac;
+                gen_vlan_en[ep] = flow_rows_w[r].vlan_en;
+                gen_vlan_id[ep] = flow_rows_w[r].vlan_id;
+                gen_sip[ep]     = flow_rows_w[r].src_ipv4;
+                gen_dip[ep]     = flow_rows_w[r].dst_ipv4;
+                gen_usp[ep]     = flow_rows_w[r].udp_sp;
+                gen_udp[ep]     = flow_rows_w[r].udp_dp;
+            end
         end
     end
 
@@ -352,7 +345,7 @@ module tb_flow_window;
             write_row(FLOW_WIN_BASE, 0, row);
         end
 
-        check_eq("pre-commit gen_en[0]", gen_en_w[0] ? 1 : 0, 0);
+        check_eq("pre-commit gen_en[0]", gen_en[0] ? 1 : 0, 0);
         check_eq("pre-commit flow_rx",   flow_rx[0], 0);
 
         // ---- commit ----------------------------------------------
@@ -360,16 +353,16 @@ module tb_flow_window;
         csr_write(FLOW_COMMIT_AD, 32'h1);
         @(posedge clk);
         @(posedge clk);
-        check_eq("post-commit gen_en[0]",   gen_en_w[0] ? 1 : 0, 1);
-        check_eq("post-commit gen_en[1]",   gen_en_w[1] ? 1 : 0, 0);
-        check_eq("post-commit tokens_fp",   gen_tok_w[0], 32'h00040000);
-        check_eq("post-commit burst",       gen_burst_w[0], 256);
-        check_eq("post-commit src_ip",      gen_sip_w[0], 32'hC000_0201);
-        check_eq("post-commit dst_ip",      gen_dip_w[0], 32'hC000_0202);
-        check_eq("post-commit udp_src",     gen_usp_w[0], 49152);
-        check_eq("post-commit udp_dst",     gen_udp_w[0], 50001);
-        check_eq("post-commit dmac",        gen_dmac_w[0], 48'h02_a5_02_00_00_02);
-        check_eq("post-commit smac",        gen_smac_w[0], 48'h02_a5_02_00_00_01);
+        check_eq("post-commit gen_en[0]",   gen_en[0] ? 1 : 0, 1);
+        check_eq("post-commit gen_en[1]",   gen_en[1] ? 1 : 0, 0);
+        check_eq("post-commit tokens_fp",   gen_tok[0], 32'h00040000);
+        check_eq("post-commit burst",       gen_burst[0], 256);
+        check_eq("post-commit src_ip",      gen_sip[0], 32'hC000_0201);
+        check_eq("post-commit dst_ip",      gen_dip[0], 32'hC000_0202);
+        check_eq("post-commit udp_src",     gen_usp[0], 49152);
+        check_eq("post-commit udp_dst",     gen_udp[0], 50001);
+        check_eq("post-commit dmac",        gen_dmac[0], 48'h02_a5_02_00_00_02);
+        check_eq("post-commit smac",        gen_smac[0], 48'h02_a5_02_00_00_01);
 
         // ---- external loopback ----------------------------------
         scenario = "loopback";
@@ -395,7 +388,7 @@ module tb_flow_window;
             csr_write(FLOW_COMMIT_AD, 32'h1);
             @(posedge clk);
             @(posedge clk);
-            check_eq("post-disable gen_en[0]", gen_en_w[0] ? 1 : 0, 0);
+            check_eq("post-disable gen_en[0]", gen_en[0] ? 1 : 0, 0);
             rx_before = flow_rx[0];
             // Run 200 cycles with no rx feed; counter should not grow.
             for (int n = 0; n < 200; n++) @(posedge clk);

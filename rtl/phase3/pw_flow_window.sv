@@ -66,18 +66,6 @@ module pw_flow_window #(
     input  wire [ADDR_W-1:0]     wr_addr,
     input  wire [31:0]           wr_data,
 
-    output logic [PORTS-1:0]              gen_enable_o,
-    output logic [PORTS-1:0] [31:0]       gen_tokens_fp_o,
-    output logic [PORTS-1:0] [15:0]       gen_burst_o,
-    output logic [PORTS-1:0] [47:0]       gen_src_mac_o,
-    output logic [PORTS-1:0] [47:0]       gen_dst_mac_o,
-    output logic [PORTS-1:0]              gen_vlan_en_o,
-    output logic [PORTS-1:0] [11:0]       gen_vlan_id_o,
-    output logic [PORTS-1:0] [31:0]       gen_src_ip_o,
-    output logic [PORTS-1:0] [31:0]       gen_dst_ip_o,
-    output logic [PORTS-1:0] [15:0]       gen_udp_sp_o,
-    output logic [PORTS-1:0] [15:0]       gen_udp_dp_o,
-
     // Full decoded flow table (one entry per row) for the multi-flow
     // generator, which round-robins all rows whose egress matches its port.
     // Registered (see flow_rows_c below): the 256-byte rows fan out widely
@@ -110,8 +98,6 @@ module pw_flow_window #(
     );
 
     // Per-row decoded fields.
-    logic                       row_enable     [DEPTH];
-    logic                       row_tx_enable  [DEPTH];
     logic [7:0]                 row_egress     [DEPTH];
     logic [47:0]                row_src_mac    [DEPTH];
     logic [47:0]                row_dst_mac    [DEPTH];
@@ -132,8 +118,6 @@ module pw_flow_window #(
             logic [ROW_BYTES*8-1:0] row;
             row = live_rows[r];
 
-            row_enable[r]    = row[0*8 +: 8];   // truncates to bit 0
-            row_tx_enable[r] = row[90*8 +: 8];  // truncates to bit 0
             row_egress[r]    = row[1*8 +: 8];
 
             row_dst_mac[r]   = {row[14*8 +: 8], row[15*8 +: 8], row[16*8 +: 8],
@@ -208,6 +192,31 @@ module pw_flow_window #(
                 flow_rows_c[r].ipv6_src[127 - b*8 -: 8] = row[(108+b)*8 +: 8];
                 flow_rows_c[r].ipv6_dst[127 - b*8 -: 8] = row[(124+b)*8 +: 8];
             end
+
+            // Encapsulation (wire bytes 157..201): outer L3 + tunnel header.
+            // encap_type @157, outer_ip_version @158 (0/4/6), rx_expect @159,
+            // outer_ttl @160, outer_dscp @161, outer_src/dst_ipv4 (LE u32) @162/166,
+            // outer_ipv6_src/dst (16B, byte 170/186 = MSB) @170/186.
+            flow_rows_c[r].encap_type = row[157*8 +: 2];
+            flow_rows_c[r].outer_v6   = (row[158*8 +: 8] == 8'd6);
+            flow_rows_c[r].rx_tunneled = row[159*8 +: 1];
+            flow_rows_c[r].outer_ttl  = row[160*8 +: 8];
+            flow_rows_c[r].outer_dscp = row[161*8 +: 8];
+            flow_rows_c[r].outer_src_ipv4 = {row[165*8 +: 8], row[164*8 +: 8],
+                                             row[163*8 +: 8], row[162*8 +: 8]};
+            flow_rows_c[r].outer_dst_ipv4 = {row[169*8 +: 8], row[168*8 +: 8],
+                                             row[167*8 +: 8], row[166*8 +: 8]};
+            flow_rows_c[r].outer_ipv6_src = '0;
+            flow_rows_c[r].outer_ipv6_dst = '0;
+            for (int b = 0; b < 16; b++) begin
+                flow_rows_c[r].outer_ipv6_src[127 - b*8 -: 8] = row[(170+b)*8 +: 8];
+                flow_rows_c[r].outer_ipv6_dst[127 - b*8 -: 8] = row[(186+b)*8 +: 8];
+            end
+            // EtherIP inner-Ethernet MAC: dst @202..207, src @208..213 (MSB-first).
+            flow_rows_c[r].inner_dst_mac = {row[202*8 +: 8], row[203*8 +: 8], row[204*8 +: 8],
+                                            row[205*8 +: 8], row[206*8 +: 8], row[207*8 +: 8]};
+            flow_rows_c[r].inner_src_mac = {row[208*8 +: 8], row[209*8 +: 8], row[210*8 +: 8],
+                                            row[211*8 +: 8], row[212*8 +: 8], row[213*8 +: 8]};
         end
     end
 
@@ -222,42 +231,9 @@ module pw_flow_window #(
             for (int r = 0; r < DEPTH; r++) flow_rows_o[r] <= flow_rows_c[r];
     end
 
-    // Select the lowest-indexed enabled row per egress port.
-    // A row contributes only if enable=1 AND tx_enable=1.
-    always_comb begin
-        for (int p = 0; p < PORTS; p++) begin
-            gen_enable_o[p]    = 1'b0;
-            gen_tokens_fp_o[p] = '0;
-            gen_burst_o[p]     = '0;
-            gen_src_mac_o[p]   = '0;
-            gen_dst_mac_o[p]   = '0;
-            gen_vlan_en_o[p]   = 1'b0;
-            gen_vlan_id_o[p]   = '0;
-            gen_src_ip_o[p]    = '0;
-            gen_dst_ip_o[p]    = '0;
-            gen_udp_sp_o[p]    = '0;
-            gen_udp_dp_o[p]    = '0;
-        end
-        for (int r = 0; r < DEPTH; r++) begin
-            int ep;
-            ep = int'(row_egress[r]);
-            if (row_enable[r] && row_tx_enable[r] && ep >= 0 && ep < PORTS) begin
-                if (!gen_enable_o[ep]) begin
-                    gen_enable_o[ep]    = 1'b1;
-                    gen_tokens_fp_o[ep] = row_tokens_fp[r];
-                    gen_burst_o[ep]     = row_burst[r];
-                    gen_src_mac_o[ep]   = row_src_mac[r];
-                    gen_dst_mac_o[ep]   = row_dst_mac[r];
-                    gen_vlan_en_o[ep]   = row_vlan_en[r];
-                    gen_vlan_id_o[ep]   = row_vlan_id[r];
-                    gen_src_ip_o[ep]    = row_src_ip[r];
-                    gen_dst_ip_o[ep]    = row_dst_ip[r];
-                    gen_udp_sp_o[ep]    = row_udp_sp[r];
-                    gen_udp_dp_o[ep]    = row_udp_dp[r];
-                end
-            end
-        end
-    end
+    // (The legacy per-port single-flow selection outputs gen_*_o were removed:
+    // the multi-flow generator consumes flow_rows_o directly, so that 32:1
+    // priority mux over every field was dead logic in the data plane.)
 
 endmodule
 

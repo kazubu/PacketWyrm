@@ -77,17 +77,6 @@ module tb_csr_full;
     logic [15:0] h_bkt  [1];
 
     pw_classifier_table_t          cls_table;
-    logic [NUM_PORTS-1:0]          gen_enable_w;
-    logic [NUM_PORTS-1:0] [31:0]   gen_tokens_w;
-    logic [NUM_PORTS-1:0] [15:0]   gen_burst_w;
-    logic [NUM_PORTS-1:0] [47:0]   gen_smac_w;
-    logic [NUM_PORTS-1:0] [47:0]   gen_dmac_w;
-    logic [NUM_PORTS-1:0]          gen_vlan_en_w;
-    logic [NUM_PORTS-1:0] [11:0]   gen_vlan_id_w;
-    logic [NUM_PORTS-1:0] [31:0]   gen_sip_w;
-    logic [NUM_PORTS-1:0] [31:0]   gen_dip_w;
-    logic [NUM_PORTS-1:0] [15:0]   gen_usp_w;
-    logic [NUM_PORTS-1:0] [15:0]   gen_udp_w;
 
     pw_csr_full #(
         .ADDR_W         (ADDR_W),
@@ -131,18 +120,9 @@ module tb_csr_full;
         .hist_rd_addr_o      (hist_rd_addr_w),
         .hist_rd_data_i      (hist_rd_data_w),
         .cls_table_o         (cls_table),
-        .gen_enable_o        (gen_enable_w),
-        .gen_tokens_fp_o     (gen_tokens_w),
-        .gen_burst_o         (gen_burst_w),
-        .gen_src_mac_o       (gen_smac_w),
-        .gen_dst_mac_o       (gen_dmac_w),
-        .gen_vlan_en_o       (gen_vlan_en_w),
-        .gen_vlan_id_o       (gen_vlan_id_w),
-        .gen_src_ip_o        (gen_sip_w),
-        .gen_dst_ip_o        (gen_dip_w),
-        .gen_udp_sp_o        (gen_usp_w),
-        .gen_udp_dp_o        (gen_udp_w),
-        .flow_rows_o         (),
+        .flow_wr_en_o        (),
+        .flow_wr_addr_o      (),
+        .flow_wr_data_o      (),
         .stats_clear_o       (),
         .dp_soft_rst_o       (),
         .spi_sck_o           (),

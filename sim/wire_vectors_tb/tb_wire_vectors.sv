@@ -12,6 +12,7 @@
 `default_nettype none
 
 import pw_classifier_pkg::*;
+import pw_axis_pkg::*;
 
 module tb_wire_vectors;
 
@@ -51,17 +52,24 @@ module tb_wire_vectors;
     logic [63:0] hist_rd_data_w = '0;
 
     pw_classifier_table_t          cls_table;
-    logic [NUM_PORTS-1:0]          gen_enable_w;
-    logic [NUM_PORTS-1:0] [31:0]   gen_tokens_w;
-    logic [NUM_PORTS-1:0] [15:0]   gen_burst_w;
-    logic [NUM_PORTS-1:0] [47:0]   gen_smac_w;
-    logic [NUM_PORTS-1:0] [47:0]   gen_dmac_w;
-    logic [NUM_PORTS-1:0]          gen_vlan_en_w;
-    logic [NUM_PORTS-1:0] [11:0]   gen_vlan_id_w;
-    logic [NUM_PORTS-1:0] [31:0]   gen_sip_w;
-    logic [NUM_PORTS-1:0] [31:0]   gen_dip_w;
-    logic [NUM_PORTS-1:0] [15:0]   gen_usp_w;
-    logic [NUM_PORTS-1:0] [15:0]   gen_udp_w;
+    // The flow table is BRAM-backed (in the data plane). Feed csr_full's flow
+    // write strobe into a flow_table_bram here so the C BAR image's flow-row
+    // bytes are still cross-checked against the RTL decode.
+    logic                          fwen;
+    logic [ADDR_W-1:0]             fwaddr;
+    logic [31:0]                   fwdata;
+    pw_flow_sched_t                ft_sched [NUM_FLOWS];
+    logic [$clog2(NUM_FLOWS)-1:0]  ft_rd_addr [NUM_PORTS];
+    pw_flow_row_t                  ft_rd_row  [NUM_PORTS];
+    pw_flow_table_bram #(
+        .ADDR_W(ADDR_W), .DEPTH(NUM_FLOWS), .PORTS(NUM_PORTS),
+        .WIN_BASE(16'h6000), .COMMIT_OFFSET(16'h3FFC)
+    ) u_ft (
+        .clk(clk), .rst_n(rst_n),
+        .wr_en(fwen), .wr_addr(fwaddr), .wr_data(fwdata),
+        .flow_sched_o(ft_sched), .rd_addr_i(ft_rd_addr), .rd_row_o(ft_rd_row),
+        .commit_pulse_o()
+    );
 
     pw_csr_full #(
         .ADDR_W         (ADDR_W),
@@ -105,18 +113,9 @@ module tb_wire_vectors;
         .hist_rd_addr_o      (),
         .hist_rd_data_i      (hist_rd_data_w),
         .cls_table_o         (cls_table),
-        .gen_enable_o        (gen_enable_w),
-        .gen_tokens_fp_o     (gen_tokens_w),
-        .gen_burst_o         (gen_burst_w),
-        .gen_src_mac_o       (gen_smac_w),
-        .gen_dst_mac_o       (gen_dmac_w),
-        .gen_vlan_en_o       (gen_vlan_en_w),
-        .gen_vlan_id_o       (gen_vlan_id_w),
-        .gen_src_ip_o        (gen_sip_w),
-        .gen_dst_ip_o        (gen_dip_w),
-        .gen_udp_sp_o        (gen_usp_w),
-        .gen_udp_dp_o        (gen_udp_w),
-        .flow_rows_o         (),
+        .flow_wr_en_o        (fwen),
+        .flow_wr_addr_o      (fwaddr),
+        .flow_wr_data_o      (fwdata),
         .stats_clear_o       (),
         .dp_soft_rst_o       (),
         .spi_sck_o           (),
@@ -227,18 +226,22 @@ module tb_wire_vectors;
         // Row 0 stayed untouched (all zero).
         check_eq("row0 enable",     cls_table[0].enable ? 1 : 0, 0);
 
-        // ---- verify flow window decoded into port 0 inputs ----
+        // ---- verify the C image's flow row decoded by the BRAM flow table ----
         scenario = "flow";
-        check_eq("gen_enable[0]",   gen_enable_w[0] ? 1 : 0, 1);
-        check_eq("gen_enable[1]",   gen_enable_w[1] ? 1 : 0, 0);
-        check_eq("tokens_per_tick", gen_tokens_w[0], 32'h00040000);
-        check_eq("burst",           gen_burst_w[0], 256);
-        check_eq("src_ip",          gen_sip_w[0], 32'hC000_0201);
-        check_eq("dst_ip",          gen_dip_w[0], 32'hC000_0202);
-        check_eq("udp_src",         gen_usp_w[0], 49152);
-        check_eq("udp_dst",         gen_udp_w[0], 50001);
-        check_eq("smac",            gen_smac_w[0], 48'h02_a5_02_00_00_01);
-        check_eq("dmac",            gen_dmac_w[0], 48'h02_a5_02_00_00_02);
+        // The vector programs flow row 0 on egress port 0 and commits; the BRAM
+        // table walks it in. Wait for the walk, then read row 0 via port 0.
+        ft_rd_addr[0] = '0; ft_rd_addr[1] = '0;
+        repeat (NUM_FLOWS + 4) @(posedge clk);
+        check_eq("flow0 valid",     ft_sched[0].valid ? 1 : 0, 1);
+        check_eq("flow0 egress",    ft_sched[0].egress, 0);
+        check_eq("tokens_per_tick", ft_sched[0].tokens_fp, 32'h00040000);
+        check_eq("cap (burst<<16)", ft_sched[0].cap, {16'd256, 16'h0});
+        check_eq("src_ip",          ft_rd_row[0].src_ipv4, 32'hC000_0201);
+        check_eq("dst_ip",          ft_rd_row[0].dst_ipv4, 32'hC000_0202);
+        check_eq("udp_src",         ft_rd_row[0].udp_sp, 49152);
+        check_eq("udp_dst",         ft_rd_row[0].udp_dp, 50001);
+        check_eq("smac",            ft_rd_row[0].src_mac, 48'h02_a5_02_00_00_01);
+        check_eq("dmac",            ft_rd_row[0].dst_mac, 48'h02_a5_02_00_00_02);
 
         if (errors == 0) begin
             $display("ALL WIRE VECTOR SCENARIOS PASS");

@@ -88,17 +88,6 @@ module pwfpga_top_phase3 #(
 
     // --- Data-plane <-> CSR_full wiring -------------------------
     pw_classifier_table_t          cls_table;
-    logic [NUM_PORTS-1:0]          gen_enable;
-    logic [NUM_PORTS-1:0] [31:0]   gen_tokens_fp;
-    logic [NUM_PORTS-1:0] [15:0]   gen_burst;
-    logic [NUM_PORTS-1:0] [47:0]   gen_src_mac;
-    logic [NUM_PORTS-1:0] [47:0]   gen_dst_mac;
-    logic [NUM_PORTS-1:0]          gen_vlan_en;
-    logic [NUM_PORTS-1:0] [11:0]   gen_vlan_id;
-    logic [NUM_PORTS-1:0] [31:0]   gen_src_ip;
-    logic [NUM_PORTS-1:0] [31:0]   gen_dst_ip;
-    logic [NUM_PORTS-1:0] [15:0]   gen_udp_sp;
-    logic [NUM_PORTS-1:0] [15:0]   gen_udp_dp;
 
     // Per-port and per-flow counters from the data plane back into
     // the CSR for snapshot exposure.
@@ -173,18 +162,9 @@ module pwfpga_top_phase3 #(
         .hist_rd_addr_o      (hist_rd_addr_w),
         .hist_rd_data_i      (hist_rd_data_w),
         .cls_table_o         (cls_table),
-        .gen_enable_o        (gen_enable),
-        .gen_tokens_fp_o     (gen_tokens_fp),
-        .gen_burst_o         (gen_burst),
-        .gen_src_mac_o       (gen_src_mac),
-        .gen_dst_mac_o       (gen_dst_mac),
-        .gen_vlan_en_o       (gen_vlan_en),
-        .gen_vlan_id_o       (gen_vlan_id),
-        .gen_src_ip_o        (gen_src_ip),
-        .gen_dst_ip_o        (gen_dst_ip),
-        .gen_udp_sp_o        (gen_udp_sp),
-        .gen_udp_dp_o        (gen_udp_dp),
-        .flow_rows_o         (flow_rows_w),
+        .flow_wr_en_o        (flow_wr_en_w),
+        .flow_wr_addr_o      (flow_wr_addr_w),
+        .flow_wr_data_o      (flow_wr_data_w),
         .stats_clear_o       (stats_clear_w),
         .dp_soft_rst_o       (dp_soft_rst_w),
         .spi_sck_o           (spi_sck_o),
@@ -240,7 +220,9 @@ module pwfpga_top_phase3 #(
     // --- Streaming data plane (MAC AXIS straight through) -------
     // The multi-flow generators take the full decoded flow table from the
     // CSR; each egress port's generator emits the rows targeting it.
-    pw_flow_row_t flow_rows_w [NUM_FLOWS];
+    logic              flow_wr_en_w;
+    logic [15:0]       flow_wr_addr_w;
+    logic [31:0]       flow_wr_data_w;
     logic         stats_clear_w;
     logic         dp_soft_rst_w;
 
@@ -278,7 +260,9 @@ module pwfpga_top_phase3 #(
         .s_axis_inj_tready (inj_tr_w),
         .s_axis_inj_tlast  (inj_tl_w),
         .s_axis_inj_egress (inj_eg_w),
-        .flow_rows_i       (flow_rows_w),
+        .flow_wr_en_i      (flow_wr_en_w),
+        .flow_wr_addr_i    (flow_wr_addr_w),
+        .flow_wr_data_i    (flow_wr_data_w),
         .flow_rx           (flow_rx_w),
         .flow_lost         (flow_lost_w),
         .flow_dup          (flow_dup_w),

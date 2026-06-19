@@ -304,6 +304,45 @@ static pw_status parse_field_mod(const pw_yaml_node *parent, const char *key,
     return PW_OK;
 }
 
+/* Parse an ipv4-or-ipv6 endpoint block (src/dst + ttl-or-hop_limit + dscp)
+ * found under `parent` (exactly one of ipv4 / ipv6). Used for the inner flow
+ * address and the outer (encap) address. */
+static pw_status parse_ip_endpoint(const pw_yaml_node *parent, const char *path,
+                                   struct pw_flow_ipv4 *v4o, struct pw_flow_ipv6 *v6o,
+                                   struct pw_diag *diag) {
+    const pw_yaml_node *v4 = pw_yaml_map_get(parent, "ipv4");
+    const pw_yaml_node *v6 = pw_yaml_map_get(parent, "ipv6");
+    const char *s; pw_status r;
+    if (v4 && v6) { diag_set(diag, PW_E_INVAL, path, "set exactly one of ipv4 / ipv6"); return PW_E_INVAL; }
+    if (!v4 && !v6) { diag_set(diag, PW_E_MISSING_FIELD, path, "requires an ipv4 or ipv6 block"); return PW_E_MISSING_FIELD; }
+    if (v6) {
+        char p[112]; snprintf(p, sizeof p, "%s.ipv6", path); REQ_MAP(v6, p);
+        if ((r = get_scalar(v6, "src", p, true, &s, diag)) != PW_OK) return r;
+        if (!pw_parse_ipv6(s, v6o->src)) { diag_set(diag, PW_E_PARSE, p, "src must be an IPv6 address"); return PW_E_PARSE; }
+        if ((r = get_scalar(v6, "dst", p, true, &s, diag)) != PW_OK) return r;
+        if (!pw_parse_ipv6(s, v6o->dst)) { diag_set(diag, PW_E_PARSE, p, "dst must be an IPv6 address"); return PW_E_PARSE; }
+        v6o->hop_limit = 64;
+        if ((r = get_scalar(v6, "hop_limit", p, false, &s, diag)) != PW_OK) return r;
+        if (s && !pw_parse_u8(s, &v6o->hop_limit)) { diag_set(diag, PW_E_PARSE, p, "hop_limit"); return PW_E_PARSE; }
+        if ((r = get_scalar(v6, "dscp", p, false, &s, diag)) != PW_OK) return r;
+        if (s && (!pw_parse_u8(s, &v6o->dscp) || v6o->dscp > 63)) { diag_set(diag, PW_E_OUT_OF_RANGE, p, "dscp 0..63"); return PW_E_OUT_OF_RANGE; }
+        v6o->present = true;
+    } else {
+        char p[112]; snprintf(p, sizeof p, "%s.ipv4", path); REQ_MAP(v4, p);
+        if ((r = get_scalar(v4, "src", p, true, &s, diag)) != PW_OK) return r;
+        if (!pw_parse_ipv4(s, &v4o->src)) { diag_set(diag, PW_E_PARSE, p, "src must be an IPv4 address"); return PW_E_PARSE; }
+        if ((r = get_scalar(v4, "dst", p, true, &s, diag)) != PW_OK) return r;
+        if (!pw_parse_ipv4(s, &v4o->dst)) { diag_set(diag, PW_E_PARSE, p, "dst must be an IPv4 address"); return PW_E_PARSE; }
+        v4o->ttl = 64;
+        if ((r = get_scalar(v4, "ttl", p, false, &s, diag)) != PW_OK) return r;
+        if (s && !pw_parse_u8(s, &v4o->ttl)) { diag_set(diag, PW_E_PARSE, p, "ttl"); return PW_E_PARSE; }
+        if ((r = get_scalar(v4, "dscp", p, false, &s, diag)) != PW_OK) return r;
+        if (s && (!pw_parse_u8(s, &v4o->dscp) || v4o->dscp > 63)) { diag_set(diag, PW_E_OUT_OF_RANGE, p, "dscp 0..63"); return PW_E_OUT_OF_RANGE; }
+        v4o->present = true;
+    }
+    return PW_OK;
+}
+
 static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
                             size_t idx, struct pw_diag *diag) {
     char path[64];
@@ -358,56 +397,41 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
         }
     }
 
-    /* exactly one of ipv4 / ipv6 */
-    const pw_yaml_node *v4 = pw_yaml_map_get(m, "ipv4");
-    const pw_yaml_node *v6 = pw_yaml_map_get(m, "ipv6");
-    if (v4 && v6) {
-        diag_set(diag, PW_E_INVAL, path, "set exactly one of ipv4 / ipv6"); return PW_E_INVAL;
+    /* inner address: exactly one of ipv4 / ipv6 (required) */
+    if ((r = parse_ip_endpoint(m, path, &f->ipv4, &f->ipv6, diag)) != PW_OK) return r;
+
+    /* encapsulation (optional): outer L3 + tunnel header */
+    const pw_yaml_node *enc = pw_yaml_map_get(m, "encap");
+    if (enc) {
+        char ep[96]; snprintf(ep, sizeof ep, "%s.encap", path);
+        REQ_MAP(enc, ep);
+        if ((r = get_scalar(enc, "type", ep, true, &s, diag)) != PW_OK) return r;
+        if      (!strcmp(s, "ipip"))    f->encap.type = PW_ENCAP_IPIP;
+        else if (!strcmp(s, "gre"))     f->encap.type = PW_ENCAP_GRE;
+        else if (!strcmp(s, "etherip")) f->encap.type = PW_ENCAP_ETHERIP;
+        else { diag_set(diag, PW_E_PARSE, ep, "type must be ipip|gre|etherip"); return PW_E_PARSE; }
+        const pw_yaml_node *outer = pw_yaml_map_get(enc, "outer");
+        if (!outer) { diag_set(diag, PW_E_MISSING_FIELD, ep, "encap requires an outer block"); return PW_E_MISSING_FIELD; }
+        char op[112]; snprintf(op, sizeof op, "%s.outer", ep); REQ_MAP(outer, op);
+        if ((r = parse_ip_endpoint(outer, op, &f->encap.outer_ipv4, &f->encap.outer_ipv6, diag)) != PW_OK) return r;
+        /* EtherIP: optional inner Ethernet MAC (defaults to the flow l2 MAC). */
+        const pw_yaml_node *il2 = pw_yaml_map_get(enc, "inner_l2");
+        if (il2) {
+            char ip[112]; snprintf(ip, sizeof ip, "%s.inner_l2", ep); REQ_MAP(il2, ip);
+            if ((r = get_scalar(il2, "src_mac", ip, true, &s, diag)) != PW_OK) return r;
+            if (!pw_parse_mac(s, f->encap.inner_src_mac)) { diag_set(diag, PW_E_PARSE, ip, "src_mac"); return PW_E_PARSE; }
+            if ((r = get_scalar(il2, "dst_mac", ip, true, &s, diag)) != PW_OK) return r;
+            if (!pw_parse_mac(s, f->encap.inner_dst_mac)) { diag_set(diag, PW_E_PARSE, ip, "dst_mac"); return PW_E_PARSE; }
+            f->encap.inner_mac_set = true;
+        }
+        f->encap.present = true;
     }
-    if (!v4 && !v6) {
-        diag_set(diag, PW_E_MISSING_FIELD, path, "flow requires an ipv4 or ipv6 block");
-        return PW_E_MISSING_FIELD;
-    }
-    if (v6) {
-        char v6p[96]; snprintf(v6p, sizeof(v6p), "%s.ipv6", path);
-        REQ_MAP(v6, v6p);
-        if ((r = get_scalar(v6, "src", v6p, true, &s, diag)) != PW_OK) return r;
-        if (!pw_parse_ipv6(s, f->ipv6.src)) {
-            diag_set(diag, PW_E_PARSE, v6p, "src must be an IPv6 address"); return PW_E_PARSE;
-        }
-        if ((r = get_scalar(v6, "dst", v6p, true, &s, diag)) != PW_OK) return r;
-        if (!pw_parse_ipv6(s, f->ipv6.dst)) {
-            diag_set(diag, PW_E_PARSE, v6p, "dst must be an IPv6 address"); return PW_E_PARSE;
-        }
-        f->ipv6.hop_limit = 64;
-        if ((r = get_scalar(v6, "hop_limit", v6p, false, &s, diag)) != PW_OK) return r;
-        if (s && !pw_parse_u8(s, &f->ipv6.hop_limit)) {
-            diag_set(diag, PW_E_PARSE, v6p, "hop_limit"); return PW_E_PARSE;
-        }
-        if ((r = get_scalar(v6, "dscp", v6p, false, &s, diag)) != PW_OK) return r;
-        if (s && (!pw_parse_u8(s, &f->ipv6.dscp) || f->ipv6.dscp > 63)) {
-            diag_set(diag, PW_E_OUT_OF_RANGE, v6p, "dscp 0..63"); return PW_E_OUT_OF_RANGE;
-        }
-        f->ipv6.present = true;
-    } else {
-        char v4p[96]; snprintf(v4p, sizeof(v4p), "%s.ipv4", path);
-        REQ_MAP(v4, v4p);
-        if ((r = get_scalar(v4, "src", v4p, true, &s, diag)) != PW_OK) return r;
-        if (!pw_parse_ipv4(s, &f->ipv4.src)) {
-            diag_set(diag, PW_E_PARSE, v4p, "src must be IPv4 address"); return PW_E_PARSE;
-        }
-        if ((r = get_scalar(v4, "dst", v4p, true, &s, diag)) != PW_OK) return r;
-        if (!pw_parse_ipv4(s, &f->ipv4.dst)) {
-            diag_set(diag, PW_E_PARSE, v4p, "dst must be IPv4 address"); return PW_E_PARSE;
-        }
-        if ((r = get_scalar(v4, "ttl", v4p, false, &s, diag)) != PW_OK) return r;
-        f->ipv4.ttl = 64;
-        if (s && !pw_parse_u8(s, &f->ipv4.ttl)) { diag_set(diag, PW_E_PARSE, v4p, "ttl"); return PW_E_PARSE; }
-        if ((r = get_scalar(v4, "dscp", v4p, false, &s, diag)) != PW_OK) return r;
-        if (s && (!pw_parse_u8(s, &f->ipv4.dscp) || f->ipv4.dscp > 63)) {
-            diag_set(diag, PW_E_OUT_OF_RANGE, v4p, "dscp 0..63"); return PW_E_OUT_OF_RANGE;
-        }
-        f->ipv4.present = true;
+    /* rx_expect: how the RX side receives a tunneled flow */
+    if ((r = get_scalar(m, "rx_expect", path, false, &s, diag)) != PW_OK) return r;
+    if (s) {
+        if      (!strcmp(s, "inner"))    f->rx_expect = PW_RX_INNER;
+        else if (!strcmp(s, "tunneled")) f->rx_expect = PW_RX_TUNNELED;
+        else { diag_set(diag, PW_E_PARSE, path, "rx_expect must be inner|tunneled"); return PW_E_PARSE; }
     }
 
     /* udp */

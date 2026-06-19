@@ -11,7 +11,10 @@
 import pw_classifier_pkg::*;
 
 module pw_parser_axis #(
-    parameter int HDR_BYTES = 100
+    // 160 captures the deepest inner test header we can decapsulate: VLAN +
+    // IPv6 outer (40) + EtherIP (2) + inner Ethernet (14) + IPv6 inner (40) +
+    // UDP (8) + 32-byte test header = 154 bytes.
+    parameter int HDR_BYTES = 160
 ) (
     input  wire           clk,
     input  wire           rst_n,
@@ -97,6 +100,14 @@ module pw_parser_axis #(
         automatic logic [15:0]   etype0;
         automatic int            l3_off, ip_hlen, udp_off, pay_off;
         automatic int            flen;
+        // Encapsulation descent: detect an outer tunnel (IPIP/GRE/EtherIP) and
+        // re-base the L3/L4 parse onto the inner frame so the classifier keys on
+        // the inner test flow. eff_off = inner L3 start; inner_v4/v6 = inner fam.
+        automatic logic          outer_v4, outer_v6, inner_v4, inner_v6;
+        automatic logic [7:0]    o_proto;
+        automatic logic [1:0]    enc;        // 0 none / 1 ipip / 2 gre / 3 etherip
+        automatic int            o_hlen, enc_hlen, eff_off;
+        automatic logic [15:0]   gre_pt, eip_et;
 
         if (!rst_n) begin
             keyA <= '0; validA <= 1'b0; test_eligA <= 1'b0; pay_offA <= '0;
@@ -127,46 +138,76 @@ module pw_parser_axis #(
                     l3_off       = 14;
                 end
 
-                k.is_arp  = (k.ethertype == ETHERTYPE_ARP);
-                k.is_ipv4 = (k.ethertype == ETHERTYPE_IPV4);
-                k.is_ipv6 = (k.ethertype == ETHERTYPE_IPV6);
+                k.is_arp = (k.ethertype == ETHERTYPE_ARP);
+                outer_v4 = (k.ethertype == ETHERTYPE_IPV4);
+                outer_v6 = (k.ethertype == ETHERTYPE_IPV6);
 
-                if (k.is_ipv6 && flen >= l3_off + 40) begin
-                    k.l3_proto = hdr[l3_off + 6];
-                    for (int i = 0; i < 16; i++) k.ipv6_src[127 - i*8 -: 8] = hdr[l3_off + 8 + i];
-                    for (int i = 0; i < 16; i++) k.ipv6_dst[127 - i*8 -: 8] = hdr[l3_off + 24 + i];
+                // ---- encapsulation descent (auto-decap to the inner frame) ----
+                // PacketWyrm's RX measures the inner test flow, so when the outer
+                // IP carries a recognized tunnel we re-base the L3/L4 parse onto
+                // the inner frame. Non-encap traffic keeps eff_off = l3_off and
+                // its outer family, so its parse is bit-for-bit unchanged.
+                o_proto = 8'h0; enc = 2'd0; o_hlen = 20; eff_off = l3_off;
+                inner_v4 = outer_v4; inner_v6 = outer_v6;
+                if (outer_v6 && flen >= l3_off + 40) begin o_proto = hdr[l3_off + 6]; o_hlen = 40; end
+                else if (outer_v4 && flen >= l3_off + 20) begin o_proto = hdr[l3_off + 9]; o_hlen = int'(hdr[l3_off][3:0]) * 4; end
+                case (o_proto)
+                    8'd4, 8'd41: enc = 2'd1;   // IPIP (v4-in / v6-in)
+                    8'd47:       enc = 2'd2;   // GRE
+                    8'd97:       enc = 2'd3;   // EtherIP
+                    default:     enc = 2'd0;
+                endcase
+                enc_hlen = (enc == 2'd2) ? 4 : (enc == 2'd3) ? 16 : 0;
+                if (enc != 2'd0 && (outer_v4 || outer_v6) && o_hlen >= 20) begin
+                    eff_off = l3_off + o_hlen + enc_hlen;
+                    gre_pt  = {hdr[l3_off + o_hlen + 2],  hdr[l3_off + o_hlen + 3]};
+                    eip_et  = {hdr[l3_off + o_hlen + 14], hdr[l3_off + o_hlen + 15]};
+                    unique case (enc)
+                        2'd1:    begin inner_v6 = (o_proto == 8'd41); inner_v4 = (o_proto == 8'd4); end
+                        2'd2:    begin inner_v4 = (gre_pt == ETHERTYPE_IPV4); inner_v6 = (gre_pt == ETHERTYPE_IPV6); end
+                        default: begin inner_v4 = (eip_et == ETHERTYPE_IPV4); inner_v6 = (eip_et == ETHERTYPE_IPV6); end
+                    endcase
+                end
+
+                // ---- inner (effective) L3/L4 parse, based at eff_off ----------
+                k.is_ipv4 = inner_v4;
+                k.is_ipv6 = inner_v6;
+                if (inner_v6 && flen >= eff_off + 40) begin
+                    k.l3_proto = hdr[eff_off + 6];
+                    for (int i = 0; i < 16; i++) k.ipv6_src[127 - i*8 -: 8] = hdr[eff_off + 8 + i];
+                    for (int i = 0; i < 16; i++) k.ipv6_dst[127 - i*8 -: 8] = hdr[eff_off + 24 + i];
                     k.is_tcp = (k.l3_proto == IPV4_PROTO_TCP);
                     k.is_udp = (k.l3_proto == IPV4_PROTO_UDP);
                     k.is_icmp6 = (k.l3_proto == IPV6_NH_ICMP6);
                     ip_hlen = 40;
-                    if ((k.is_udp || k.is_tcp) && flen >= l3_off + ip_hlen + 4) begin
-                        udp_off  = l3_off + ip_hlen;
+                    if ((k.is_udp || k.is_tcp) && flen >= eff_off + ip_hlen + 4) begin
+                        udp_off  = eff_off + ip_hlen;
                         k.l4_src = {hdr[udp_off], hdr[udp_off + 1]};
                         k.l4_dst = {hdr[udp_off + 2], hdr[udp_off + 3]};
                         k.udp_src = k.l4_src; k.udp_dst = k.l4_dst;
                     end
-                    if (k.is_udp && flen >= l3_off + ip_hlen + 8) begin
-                        pay_off = l3_off + ip_hlen + 8;
+                    if (k.is_udp && flen >= eff_off + ip_hlen + 8) begin
+                        pay_off = eff_off + ip_hlen + 8;
                         telig   = (flen >= pay_off + 32 && pay_off + 32 <= HDR_BYTES);
                     end
                     ok = 1'b1;
-                end else if (k.is_ipv4 && flen >= l3_off + 20) begin
-                    ip_hlen    = int'(hdr[l3_off][3:0]) * 4;
-                    k.l3_proto = hdr[l3_off + 9];
-                    k.ipv4_src = {hdr[l3_off + 12], hdr[l3_off + 13], hdr[l3_off + 14], hdr[l3_off + 15]};
-                    k.ipv4_dst = {hdr[l3_off + 16], hdr[l3_off + 17], hdr[l3_off + 18], hdr[l3_off + 19]};
+                end else if (inner_v4 && flen >= eff_off + 20) begin
+                    ip_hlen    = int'(hdr[eff_off][3:0]) * 4;
+                    k.l3_proto = hdr[eff_off + 9];
+                    k.ipv4_src = {hdr[eff_off + 12], hdr[eff_off + 13], hdr[eff_off + 14], hdr[eff_off + 15]};
+                    k.ipv4_dst = {hdr[eff_off + 16], hdr[eff_off + 17], hdr[eff_off + 18], hdr[eff_off + 19]};
                     k.is_icmp = (k.l3_proto == IPV4_PROTO_ICMP);
                     k.is_tcp  = (k.l3_proto == IPV4_PROTO_TCP);
                     k.is_udp  = (k.l3_proto == IPV4_PROTO_UDP);
                     k.is_ospf = (k.l3_proto == IPV4_PROTO_OSPF);
-                    if ((k.is_udp || k.is_tcp) && ip_hlen >= 20 && flen >= l3_off + ip_hlen + 4) begin
-                        udp_off  = l3_off + ip_hlen;
+                    if ((k.is_udp || k.is_tcp) && ip_hlen >= 20 && flen >= eff_off + ip_hlen + 4) begin
+                        udp_off  = eff_off + ip_hlen;
                         k.l4_src = {hdr[udp_off], hdr[udp_off + 1]};
                         k.l4_dst = {hdr[udp_off + 2], hdr[udp_off + 3]};
                         k.udp_src = k.l4_src; k.udp_dst = k.l4_dst;
                     end
-                    if (k.is_udp && ip_hlen >= 20 && flen >= l3_off + ip_hlen + 8) begin
-                        pay_off = l3_off + ip_hlen + 8;
+                    if (k.is_udp && ip_hlen >= 20 && flen >= eff_off + ip_hlen + 8) begin
+                        pay_off = eff_off + ip_hlen + 8;
                         telig   = (flen >= pay_off + 32 && pay_off + 32 <= HDR_BYTES);
                     end
                     ok = 1'b1;

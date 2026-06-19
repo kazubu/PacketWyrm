@@ -65,29 +65,68 @@ module pw_ts_insert #(
 
     logic [11:0] beat;                 // beat index within frame
     logic        vlan_q;
-    logic        is_v6_q;
+    logic        outer_v6_q;           // outer L3 family (= inner family if no encap)
+    logic        inner_v6_q;           // inner (test header) L3 family
     logic        is_gen;               // SOF-latched s_tuser (test frame)
     logic [7:0]  mb [4];               // captured magic bytes
     logic        magic_ok;
     logic [63:0] ts_lat;               // departure ts latched at SOF
     logic [18:0] ts_addend;            // sum of the 4 tx_ts 16-bit words (SOF)
-    logic [11:0] csum_beat_q;          // beat carrying the IPv6 UDP csum field
+    logic [11:0] csum_beat_q;          // beat carrying the inner UDP csum field
     logic [3:0]  csum_lane_q;          // its byte lane within that beat
+    logic [11:0] magic_off_q, ts_off_q;// registered inner-header offsets
+    // Encap decode: outer IP proto + the byte that selects the inner family
+    // (GRE protocol-type hi / EtherIP inner-Ethernet ethertype hi). Captured
+    // from the outer/tunnel header region, which streams well before the inner
+    // UDP csum and tx_ts -- so the derived offsets settle before they are used.
+    logic [7:0]  o_proto_q;            // outer IP protocol / next-header
+    logic [7:0]  gre_hi_q, eip_hi_q;   // inner-family selector bytes
 
-    wire        acc       = s_tvalid && s_tready;
-    wire [11:0] base      = {beat[8:0], 3'b000};        // beat*8 = first byte index of this beat
-    // Field offsets depend on VLAN and L3 family.
-    wire [11:0] vl        = vlan_q ? 12'd4 : 12'd0;
-    wire [11:0] magic_off = 12'd42 + vl + (is_v6_q ? 12'd20 : 12'd0);
-    wire [11:0] ts_off    = magic_off + 12'd20;         // 62 / 82 (+4 VLAN)
-    wire [11:0] csum_off  = 12'd60 + vl;                // IPv6 UDP csum (+4 VLAN)
+    // Tunnel kind from the outer IP protocol (matches pw_flow_gen_multi).
+    function automatic logic [1:0] enc_of_proto(input logic [7:0] p);
+        case (p)
+            8'd4, 8'd41: return 2'd1;   // IPIP (v4-in / v6-in)
+            8'd47:       return 2'd2;   // GRE
+            8'd97:       return 2'd3;   // EtherIP
+            default:     return 2'd0;   // none (e.g. UDP 17)
+        endcase
+    endfunction
+    function automatic logic [11:0] enc_hdr_len(input logic [1:0] et);
+        case (et) 2'd2: return 12'd4; 2'd3: return 12'd16; default: return 12'd0; endcase
+    endfunction
 
-    // Stamp the tx_ts: IPv4 keys on the magic (its field follows the magic,
-    // unchanged path); IPv6 keys on the generator marker (the csum fixup must
-    // anyway run before the magic streams, so both use the SOF marker there).
-    wire stamp_ok = is_v6_q ? is_gen : magic_ok;
-    // IPv6 UDP checksum fixup runs only for marked generator frames.
-    wire fix_csum = is_v6_q && is_gen;
+    wire        acc  = s_tvalid && s_tready;
+    wire [11:0] base = {beat[8:0], 3'b000};             // beat*8 = first byte of this beat
+    wire [11:0] vl   = vlan_q ? 12'd4 : 12'd0;
+    wire [11:0] o3   = 12'd14 + vl;                      // outer L3 start
+    // Tunnel kind + inner family decoded from the captured header bytes.
+    wire [1:0]  encap_c   = enc_of_proto(o_proto_q);
+    wire        inner_v6_c = (encap_c == 2'd0) ? outer_v6_q :
+                             (encap_c == 2'd1) ? (o_proto_q == 8'd41) :
+                             (encap_c == 2'd2) ? (gre_hi_q  == 8'h86) :
+                                                 (eip_hi_q  == 8'h86);
+    // Inner UDP header start: outer L3 [+ tunnel header + inner L3] (encap), or
+    // just the outer/only L3 (no encap). Inner magic/tx_ts/csum derive from it.
+    wire [11:0] inner_udp_c = (encap_c == 2'd0)
+            ? o3 + (outer_v6_q ? 12'd40 : 12'd20)
+            : o3 + (outer_v6_q ? 12'd40 : 12'd20)
+                 + enc_hdr_len(encap_c) + (inner_v6_c ? 12'd40 : 12'd20);
+    wire [11:0] magic_off_c = inner_udp_c + 12'd8;
+    wire [11:0] ts_off_c    = inner_udp_c + 12'd28;      // magic(4)+ver(4)+fid(4)+seq(8)
+    wire [11:0] csum_off_c   = inner_udp_c + 12'd6;       // UDP checksum field
+    // Capture positions (depend only on VLAN + outer family, both settled early).
+    wire [11:0] proto_pos = o3 + (outer_v6_q ? 12'd6  : 12'd9);
+    wire [11:0] enc_start = o3 + (outer_v6_q ? 12'd40 : 12'd20);
+    wire [11:0] gre_pos   = enc_start + 12'd2;           // GRE protocol-type hi
+    wire [11:0] eip_pos   = enc_start + 12'd14;          // EtherIP inner ethertype hi
+
+    wire [11:0] ts_off = ts_off_q;
+    // Stamp the tx_ts: v4 inner keys on the magic (its field follows the magic);
+    // v6 inner keys on the generator marker (the csum fixup must run before the
+    // magic streams, so it uses the SOF marker).
+    wire stamp_ok = inner_v6_q ? is_gen : magic_ok;
+    // Inner UDP checksum fixup runs only for marked v6-inner generator frames.
+    wire fix_csum = inner_v6_q && is_gen;
 
     // ---- pass-through handshake + sideband ----
     assign s_tready = m_tready;
@@ -145,46 +184,58 @@ module pw_ts_insert #(
         end
     end
 
-    // ---- per-beat tracking: SOF latch, VLAN/v6 detect, magic, marker ----
+    // ---- per-beat tracking: SOF latch, header decode, magic, marker ----
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            beat <= '0; vlan_q <= 1'b0; is_v6_q <= 1'b0; is_gen <= 1'b0;
-            magic_ok <= 1'b0; ts_lat <= '0; ts_addend <= '0;
+            beat <= '0; vlan_q <= 1'b0; outer_v6_q <= 1'b0; inner_v6_q <= 1'b0;
+            is_gen <= 1'b0; magic_ok <= 1'b0; ts_lat <= '0; ts_addend <= '0;
             csum_beat_q <= 12'd7; csum_lane_q <= 4'd4;
+            magic_off_q <= 12'd42; ts_off_q <= 12'd62;
+            o_proto_q <= 8'd17; gre_hi_q <= 8'h0; eip_hi_q <= 8'h0;
             for (int k = 0; k < 4; k++) mb[k] <= 8'h0;
         end else if (acc) begin
-            // csum field offset (60 / 64 with VLAN) split into beat + lane,
-            // registered so the data path uses a constant lane (vlan_q is
-            // stable from beat 1, long before the csum beat ~7/8).
-            csum_beat_q <= (12'd60 + (vlan_q ? 12'd4 : 12'd0)) >> 3;
-            csum_lane_q <= 4'((12'd60 + (vlan_q ? 12'd4 : 12'd0)) & 12'd7);
+            // Register the decoded inner-header offsets every beat (they settle
+            // once the outer/tunnel header has streamed, well before the inner
+            // csum/tx_ts beats), so the MAC-CRC data path reads stable values.
+            csum_beat_q <= csum_off_c >> 3;
+            csum_lane_q <= 4'(csum_off_c & 12'd7);
+            magic_off_q <= magic_off_c;
+            ts_off_q    <= ts_off_c;
+            inner_v6_q  <= inner_v6_c;
             if (beat == 12'd0) begin
                 ts_lat   <= ts_now;     // departure time of this frame
                 // pre-sum the 4 tx_ts 16-bit words for the csum finalize
                 ts_addend <= {3'b0, ts_now[63:48]} + {3'b0, ts_now[47:32]}
                            + {3'b0, ts_now[31:16]} + {3'b0, ts_now[15:0]};
-                vlan_q   <= 1'b0;
-                is_v6_q  <= 1'b0;
-                is_gen   <= s_tuser;    // generator (test) frame marker
-                magic_ok <= 1'b0;
+                vlan_q     <= 1'b0;
+                outer_v6_q <= 1'b0;
+                is_gen     <= s_tuser;  // generator (test) frame marker
+                magic_ok   <= 1'b0;
+                o_proto_q  <= 8'd17;    // default = no encap until proto captured
+                gre_hi_q   <= 8'h0;
+                eip_hi_q   <= 8'h0;
             end
             if (beat == 12'd1) begin    // outer ethertype / VLAN tag at bytes 12-13
                 automatic logic is_vlan = (s_tdata[39:32] == 8'h81 && s_tdata[47:40] == 8'h00);
                 vlan_q <= is_vlan;
-                if (!is_vlan)           // untagged: ethertype here decides IPv6
-                    is_v6_q <= (s_tdata[39:32] == 8'h86 && s_tdata[47:40] == 8'hDD);
+                if (!is_vlan)           // untagged: ethertype here decides outer IPv6
+                    outer_v6_q <= (s_tdata[39:32] == 8'h86 && s_tdata[47:40] == 8'hDD);
             end
-            if (beat == 12'd2 && vlan_q) // tagged: inner ethertype at bytes 16-17
-                is_v6_q <= (s_tdata[7:0] == 8'h86 && s_tdata[15:8] == 8'hDD);
+            if (beat == 12'd2 && vlan_q) // tagged: outer ethertype at bytes 16-17
+                outer_v6_q <= (s_tdata[7:0] == 8'h86 && s_tdata[15:8] == 8'hDD);
 
-            // capture the 4 magic bytes as they stream past
+            // Capture the outer IP proto + tunnel inner-family selector bytes,
+            // and the 4 magic bytes, by position as they stream past.
             for (int l = 0; l < DATA_W/8; l++) begin
                 automatic logic [11:0] bi = base + 12'(l);
+                if (bi == proto_pos) o_proto_q <= s_tdata[l*8 +: 8];
+                if (bi == gre_pos)   gre_hi_q  <= s_tdata[l*8 +: 8];
+                if (bi == eip_pos)   eip_hi_q  <= s_tdata[l*8 +: 8];
                 for (int k = 0; k < 4; k++)
-                    if (bi == magic_off + 12'(k)) mb[k] <= s_tdata[l*8 +: 8];
+                    if (bi == magic_off_q + 12'(k)) mb[k] <= s_tdata[l*8 +: 8];
             end
             // one beat after the magic's last byte, latch the verdict
-            if (beat == ((magic_off + 12'd3) >> 3) + 12'd1)
+            if (beat == ((magic_off_q + 12'd3) >> 3) + 12'd1)
                 magic_ok <= ({mb[0], mb[1], mb[2], mb[3]} == MAGIC);
 
             beat <= s_tlast ? 12'd0 : beat + 12'd1;

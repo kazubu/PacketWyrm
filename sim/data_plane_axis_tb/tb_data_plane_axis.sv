@@ -106,9 +106,16 @@ module tb_data_plane_axis;
         end
     end
 
-    // flow gen control: full flow table. Slot 0 drives egress 0 (flow_id 1),
-    // slot 1 drives egress 1 (flow_id 2); .valid toggles each generator.
+    // flow gen control: the flow table is BRAM-backed inside the data plane and
+    // programmed via the CSR write strobe + commit (commit_flows below encodes
+    // flow_rows[] back to wire bytes and walks them in). Slot 0 -> egress 0
+    // (flow_id 1), slot 1 -> egress 1 (flow_id 2); .valid toggles each generator.
     pw_flow_row_t flow_rows [FLOWS];
+    logic         flow_wr_en   = 1'b0;
+    logic [15:0]  flow_wr_addr = 16'h0;
+    logic [31:0]  flow_wr_data = 32'h0;
+    localparam logic [15:0] FBASE   = 16'h6000;          // FLOW_WIN_BASE
+    localparam logic [15:0] FCOMMIT = FBASE + 16'h3FFC;
 
     logic [63:0] flow_rx        [FLOWS];
     logic [63:0] flow_lost      [FLOWS];
@@ -159,7 +166,9 @@ module tb_data_plane_axis;
         .s_axis_inj_tready (txinj_tready),
         .s_axis_inj_tlast  (txinj_tlast),
         .s_axis_inj_egress (txinj_egress),
-        .flow_rows_i      (flow_rows),
+        .flow_wr_en_i     (flow_wr_en),
+        .flow_wr_addr_i   (flow_wr_addr),
+        .flow_wr_data_i   (flow_wr_data),
         .flow_rx          (flow_rx),
         .flow_lost        (flow_lost),
         .flow_dup         (flow_dup),
@@ -209,6 +218,61 @@ module tb_data_plane_axis;
         end else begin
             $display("[ ok %s] %s: %0d", scenario, what, got);
         end
+    endtask
+
+    // ----- flow-table programming: encode flow_rows[] to wire bytes and drive
+    // the CSR write strobe + commit (the BRAM table walks them in on commit).
+    task automatic csr_w(input logic [15:0] a, input logic [31:0] d);
+        @(posedge clk); flow_wr_en = 1'b1; flow_wr_addr = a; flow_wr_data = d;
+        @(posedge clk); flow_wr_en = 1'b0; flow_wr_addr = 16'h0; flow_wr_data = 32'h0;
+    endtask
+    task automatic prog_row(input int idx);
+        logic [7:0] rb [256];
+        logic [15:0] base;
+        for (int i = 0; i < 256; i++) rb[i] = 8'h0;
+        rb[0]  = flow_rows[idx].valid;          // enable = the on/off toggle
+        rb[90] = 8'd1;                           // tx_enable always on (valid = enable & tx_enable)
+        rb[1]  = {4'h0, flow_rows[idx].egress};
+        rb[2]=flow_rows[idx].flow_id[7:0];   rb[3]=flow_rows[idx].flow_id[15:8];
+        rb[4]=flow_rows[idx].flow_id[23:16]; rb[5]=flow_rows[idx].flow_id[31:24];
+        rb[14]=flow_rows[idx].dst_mac[47:40]; rb[15]=flow_rows[idx].dst_mac[39:32];
+        rb[16]=flow_rows[idx].dst_mac[31:24]; rb[17]=flow_rows[idx].dst_mac[23:16];
+        rb[18]=flow_rows[idx].dst_mac[15:8];  rb[19]=flow_rows[idx].dst_mac[7:0];
+        rb[20]=flow_rows[idx].src_mac[47:40]; rb[21]=flow_rows[idx].src_mac[39:32];
+        rb[22]=flow_rows[idx].src_mac[31:24]; rb[23]=flow_rows[idx].src_mac[23:16];
+        rb[24]=flow_rows[idx].src_mac[15:8];  rb[25]=flow_rows[idx].src_mac[7:0];
+        rb[26]={7'h0, flow_rows[idx].vlan_en};
+        rb[27]=flow_rows[idx].vlan_id[7:0];  rb[28]={4'h0, flow_rows[idx].vlan_id[11:8]};
+        rb[30]= flow_rows[idx].is_v6 ? 8'd6 : 8'd4;
+        rb[31]=flow_rows[idx].src_ipv4[7:0];  rb[32]=flow_rows[idx].src_ipv4[15:8];
+        rb[33]=flow_rows[idx].src_ipv4[23:16];rb[34]=flow_rows[idx].src_ipv4[31:24];
+        rb[35]=flow_rows[idx].dst_ipv4[7:0];  rb[36]=flow_rows[idx].dst_ipv4[15:8];
+        rb[37]=flow_rows[idx].dst_ipv4[23:16];rb[38]=flow_rows[idx].dst_ipv4[31:24];
+        rb[41]=flow_rows[idx].udp_sp[7:0];   rb[42]=flow_rows[idx].udp_sp[15:8];
+        rb[43]=flow_rows[idx].udp_dp[7:0];   rb[44]=flow_rows[idx].udp_dp[15:8];
+        rb[75]=flow_rows[idx].tokens_fp[7:0];   rb[76]=flow_rows[idx].tokens_fp[15:8];
+        rb[77]=flow_rows[idx].tokens_fp[23:16]; rb[78]=flow_rows[idx].tokens_fp[31:24];
+        rb[79]=flow_rows[idx].burst[7:0];    rb[80]=flow_rows[idx].burst[15:8];
+        base = FBASE + 16'(idx*256);
+        for (int w = 0; w < 64; w++)
+            csr_w(base + 16'(w*4), {rb[w*4+3], rb[w*4+2], rb[w*4+1], rb[w*4+0]});
+    endtask
+    // Re-stage slots 0/1 (the only ones this tb uses) and commit; wait for walk.
+    task automatic commit_flows();
+        prog_row(0); prog_row(1);
+        csr_w(FCOMMIT, 32'h1);
+        repeat (FLOWS + 4) @(posedge clk);
+    endtask
+    // Fast enable/disable: rewrite only word 0 (enable byte, preserving
+    // egress/flow_id) + commit. Used where the generation window must end
+    // promptly (a full commit_flows() write phase would keep the live table
+    // valid for ~128 extra cycles, inflating rate measurements).
+    task automatic set_enable(input int idx, input bit en);
+        csr_w(FBASE + 16'(idx*256),
+              {flow_rows[idx].flow_id[15:8], flow_rows[idx].flow_id[7:0],
+               {4'h0, flow_rows[idx].egress}, {7'h0, en}});
+        csr_w(FCOMMIT, 32'h1);
+        repeat (FLOWS + 4) @(posedge clk);
     endtask
 
     // ----- frame builder: Ethernet [/VLAN] / IPv4 / UDP / 32B test hdr
@@ -346,8 +410,10 @@ module tb_data_plane_axis;
 
         lb_en     = 1'b1;
         flow_rows[0].valid = 1'b1;
+        commit_flows();
         repeat (400) @(posedge clk);
         flow_rows[0].valid = 1'b0;
+        commit_flows();
         repeat (24) @(posedge clk);   // drain the last looped frame (keep lb_en) so
         lb_en     = 1'b0;             // dropping lb_en never cuts a partial frame
         repeat (4) @(posedge clk);
@@ -440,12 +506,15 @@ module tb_data_plane_axis;
         cls_table[4].key.test_flow_id   = 32'd1;   // gen[0]
         flow_rows[0].tokens_fp = 32'h00040000;  // 4.0 B/cyc
         flow_rows[0].burst     = 16'd256;
+        commit_flows();
         @(posedge clk);
 
         lb_en     = 1'b1;
         flow_rows[0].valid = 1'b1;
+        set_enable(0, 1'b1);          // fast enable (row already staged above)
         repeat (200) @(posedge clk);
         flow_rows[0].valid = 1'b0;
+        set_enable(0, 1'b0);          // fast disable -> generation stops promptly
         repeat (24) @(posedge clk);   // drain the last looped frame (keep lb_en) so
         lb_en     = 1'b0;             // dropping lb_en never cuts a partial frame
         repeat (4) @(posedge clk);
@@ -563,6 +632,7 @@ module tb_data_plane_axis;
         begin
             longint rx0_a, rx1_a, lost0_a, lost1_a;
             flow_rows[0].valid = 1'b1; flow_rows[1].valid = 1'b1;
+            commit_flows();
             lb_en = 1'b1; bidir_en = 1'b1;
             repeat (800) @(posedge clk);            // warm up
             rx0_a = flow_rx[0]; rx1_a = flow_rx[1];
@@ -572,6 +642,7 @@ module tb_data_plane_axis;
                      rx0_a, flow_rx[0], lost0_a, flow_lost[0],
                      rx1_a, flow_rx[1], lost1_a, flow_lost[1]);
             flow_rows[0].valid = 1'b0; flow_rows[1].valid = 1'b0;
+            commit_flows();
             lb_en = 1'b0; bidir_en = 1'b0;
             repeat (8) @(posedge clk);
 
@@ -606,6 +677,7 @@ module tb_data_plane_axis;
         scenario = "soft_rst";
         lb_en              = 1'b1;
         flow_rows[0].valid = 1'b1;
+        commit_flows();
         repeat (200) @(posedge clk);
         begin
             longint rx_before;
@@ -626,6 +698,7 @@ module tb_data_plane_axis;
             check_eq("soft_rst no loss after",   flow_lost[0], 0);
         end
         flow_rows[0].valid = 1'b0;
+        commit_flows();
         repeat (24) @(posedge clk);
         lb_en = 1'b0;
 

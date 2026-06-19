@@ -9,6 +9,24 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Encapsulated packet generation + RX decap (IPIP / GRE / EtherIP)** — a flow
+    can set `encap: { type, outer: {ipv4|ipv6} }` to wrap its inner IP/UDP/test
+    frame in a tunnel: IPIP (outer-IP proto 4/41), GRE (proto 47 + 4-byte GRE),
+    or EtherIP (proto 97 + 2-byte EtherIP + inner Ethernet, whose MAC is set by
+    an optional `encap.inner_l2` block or defaults to the flow MAC). The outer family is
+    independent of the inner — every v4/v6 inner × v4/v6 outer combination is
+    supported. The generator builds the full stack and the outer IPv4 header
+    checksum; egress timestamping rewrites the inner test header's tx_timestamp
+    and fixes up the inner UDP checksum at its (encap-dependent) deep offset; the
+    RX parser auto-decapsulates recognized tunnels and classifies on the inner
+    test flow. `rx_expect: inner|tunneled` records whether the DUT decapsulated
+    the return traffic. Full stack: config/wire/compiler, RTL (generator,
+    `pw_ts_insert`, `pw_parser_axis`, flow-window/row), sims (`sim_fge` byte-level
+    + gen→decap round-trip, `sim_tsi` deep-offset cases), and docs. To make room
+    on the fabric, `pw_flow_window`'s dead legacy per-port `gen_*_o` single-flow
+    selection (a 32:1 priority mux per field × egress port, unused since the
+    multi-flow generator consumes `flow_rows_o` directly) was removed, recovering
+    a block of LUTs.
   - **Background (load) flows** — a flow can set `background: true` to generate
     TX-only traffic with no RX classifier rule and no measurement. Background
     flows don't consume a classifier entry, so a config can run more generator

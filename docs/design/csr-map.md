@@ -192,9 +192,12 @@ The row stride grew from 128 B to **256 B** so each row can carry two
 L3 family from the row's `ip_version` (4 → 20-byte IPv4 header, ethertype
 0x0800; 6 → 40-byte IPv6 header, ethertype 0x86DD with a mandatory,
 non-zero UDP checksum). The row also carries per-field **modifier**
-descriptors (mode + 32-bit mask for `src/dst_ipv4` and `udp_src/dst`,
-decoded in `pw_flow_window.sv`); the exact byte offsets are the packed
-`struct pwfpga_flow_config` in `csr.h`.
+descriptors (mode + mask for `src/dst_ipv4` (or IPv6 low-32), `udp_src/dst`,
+`src/dst_mac` (48-bit) and `vlan`) and, optionally, an **encapsulation**
+block (bytes 157..213): `encap_type` (IPIP/GRE/EtherIP), `outer_ip_version`
++ outer L3 addresses / TTL / DSCP, `rx_expect`, and an EtherIP inner-Ethernet
+MAC. All of this is decoded in `pw_flow_window.sv`; the exact byte offsets are
+the packed `struct pwfpga_flow_config` in `csr.h` (authoritative).
 
 Commit register at:
 

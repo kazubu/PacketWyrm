@@ -32,7 +32,10 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
         +-- egress / punt arbiters
 ```
 
-Module notes: `pw_parser_axis` is pipelined (2-stage key extract);
+Module notes: `pw_parser_axis` is pipelined (2-stage key extract) and
+auto-decapsulates recognized tunnels (outer IP proto 4/41/47/97 →
+IPIP/GRE/EtherIP), re-basing the L3/L4 parse onto the inner frame so the
+classifier keys on the inner test flow (header capture grew to 160 B);
 `pw_classifier` uses RESULT_STAGES + a parallel priority winner;
 `pw_lat_histogram` replaced the FF histogram; `pw_frame_saf`
 is BRAM-backed (reset-less write + registered read-ahead drain) — freed
@@ -58,10 +61,24 @@ one stage ahead**, registered alongside the round-robin `pick` (identical
 cycle then only lays out bytes, keeping mod32/scramble + the checksum
 adders off the build path. (Excluding tx_timestamp from the IPv6 checksum
 is what makes it pick-stable and thus precomputable.)
+**Encapsulation:** a flow row can carry a tunnel (`encap_type` 1/2/3 =
+IPIP/GRE/EtherIP) with its own outer L3 (`outer_v6` + outer addrs/ttl/dscp,
+independent of the inner family). `build()` prepends the outer Ethernet/IP +
+tunnel header (GRE 4 B / EtherIP 2 B + a 14-byte inner Ethernet whose MAC
+comes from the row's dedicated inner-MAC field) ahead of the
+inner IP/UDP/test frame; the outer IPv4 header checksum is precomputed in
+parallel with the inner one (`ip_csum16_o`, tunnel proto in the protocol
+byte). `HDR_MAX_BYTES` grew to 176 to hold the deepest layout (v6-outer
+EtherIP v6-inner + VLAN = 154 B). The inner UDP checksum is unchanged (over
+the inner addresses), so egress timestamping still works at the deep offset.
 `pw_flow_window` **registers** the decoded flow table (`flow_rows_o`):
 the 256-byte rows fan out widely into the generators, so the decode
 terminates at a register rather than feeding `build()` combinationally — a
-commit lands one cycle later, which is harmless. The wide-bus
+commit lands one cycle later, which is harmless. (Its legacy per-port
+`gen_*_o` single-flow selection outputs — a 32:1 priority mux over every
+field × egress port — were removed: the multi-flow generator consumes
+`flow_rows_o` directly, so that selection was dead logic in the data plane;
+dropping it recovered a sizeable block of LUTs.) The wide-bus
 `pw_data_plane` / `pw_parser` / `pw_flow_gen` remain only for the legacy
 sim (`tb_data_plane`).
 
@@ -69,10 +86,13 @@ sim (`tb_data_plane`).
 generator test frame's tx_timestamp with the true departure time, so
 latency measures the DUT, not the tester's TX-FIFO queuing. It detects the
 L3 family (IPv4 0x0800 → tx_ts @62; IPv6 0x86DD → tx_ts @82; +4 if VLAN).
-For IPv6 it also **finalizes the UDP checksum**: it adds the four
-departure-stamp 16-bit words to the generator's partial checksum and
-writes the result to the UDP csum field (@60, +4 VLAN), applying the
-RFC 768 `0→0xFFFF` rule. This one-pass fixup works because the csum field
+For an **encapsulated** frame it decodes the outer IP proto (4/41/47/97) and
+tunnel header in-stream to find the *inner* test header's offset, registering
+it before the deep csum/tx_ts beats so the MAC-CRC data path still reads a
+stable lane. For IPv6 (inner) it also **finalizes the UDP checksum**: it adds
+the four departure-stamp 16-bit words to the generator's partial checksum and
+writes the result to the UDP csum field (@60 non-encap, +4 VLAN, or the inner
+offset for a tunnel), applying the RFC 768 `0→0xFFFF` rule. This one-pass fixup works because the csum field
 leaves before the tx_ts field, so only the (SOF-latched) *new* stamp is
 needed, never the old one. Which frames to rewrite is gated by a
 "generator test frame" marker the egress arbiter raises (`sel_gen`),

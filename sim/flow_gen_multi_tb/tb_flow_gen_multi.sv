@@ -18,9 +18,24 @@ module tb_flow_gen_multi;
 
     logic [63:0] td; logic [7:0] tk; logic tv, tl;
 
+    // Model the BRAM-backed flow table: compact scheduling array (comb) + a
+    // 1-cycle registered row read on the generator's rd_addr_o.
+    pw_flow_sched_t f_sched [SLOTS];
+    always_comb for (int s = 0; s < SLOTS; s++) begin
+        f_sched[s] = '0;
+        f_sched[s].valid     = f_rows[s].valid;
+        f_sched[s].egress    = f_rows[s].egress;
+        f_sched[s].tokens_fp = f_rows[s].tokens_fp;
+        f_sched[s].cap       = {f_rows[s].burst, 16'h0};
+        f_sched[s].cost      = {16'(pw_frame_bytes(f_rows[s], 32)), 16'h0};
+    end
+    logic [$clog2(SLOTS)-1:0] rd_addr;
+    pw_flow_row_t             rd_row;
+    always_ff @(posedge clk) rd_row <= f_rows[rd_addr];
+
     pw_flow_gen_multi #(.EGRESS_PORT(0), .NUM_SLOTS(SLOTS), .FRAME_LEN_PAYLOAD(32)) gen (
         .clk(clk), .rst_n(rst_n), .timestamp_i(ts),
-        .f_rows_i(f_rows),
+        .flow_sched_i(f_sched), .rd_addr_o(rd_addr), .rd_row_i(rd_row),
         .m_tdata(td), .m_tkeep(tk), .m_tvalid(tv), .m_tready(1'b1), .m_tlast(tl)
     );
 

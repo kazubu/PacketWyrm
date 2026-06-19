@@ -78,20 +78,12 @@ module pw_csr_full #(
 
     // Outputs to the data plane.
     output pw_classifier_table_t          cls_table_o,
-    output logic [NUM_PORTS-1:0]          gen_enable_o,
-    output logic [NUM_PORTS-1:0] [31:0]   gen_tokens_fp_o,
-    output logic [NUM_PORTS-1:0] [15:0]   gen_burst_o,
-    output logic [NUM_PORTS-1:0] [47:0]   gen_src_mac_o,
-    output logic [NUM_PORTS-1:0] [47:0]   gen_dst_mac_o,
-    output logic [NUM_PORTS-1:0]          gen_vlan_en_o,
-    output logic [NUM_PORTS-1:0] [11:0]   gen_vlan_id_o,
-    output logic [NUM_PORTS-1:0] [31:0]   gen_src_ip_o,
-    output logic [NUM_PORTS-1:0] [31:0]   gen_dst_ip_o,
-    output logic [NUM_PORTS-1:0] [15:0]   gen_udp_sp_o,
-    output logic [NUM_PORTS-1:0] [15:0]   gen_udp_dp_o,
 
-    // Full decoded flow table for the multi-flow generator.
-    output pw_flow_row_t                  flow_rows_o [NUM_FLOWS],
+    // Decoded CSR write strobe for the BRAM-backed flow table (now in
+    // pw_data_plane_axis). The flow window range is filtered there.
+    output logic                          flow_wr_en_o,
+    output logic [ADDR_W-1:0]             flow_wr_addr_o,
+    output logic [31:0]                   flow_wr_data_o,
 
     // Live latency-histogram read port into the data plane's BRAM
     // (pw_lat_histogram). Flat (flow*NUM_HIST_BINS+bucket) address out,
@@ -366,32 +358,12 @@ module pw_csr_full #(
         .commit_pulse_o ()
     );
 
-    pw_flow_window #(
-        .ADDR_W        (ADDR_W),
-        .PORTS         (NUM_PORTS),
-        .DEPTH         (NUM_FLOWS),
-        .WIN_BASE      (WIN_FLOW_BASE),
-        .COMMIT_OFFSET (COMMIT_OFF)
-    ) u_fw (
-        .clk             (s_axi_aclk),
-        .rst_n           (s_axi_aresetn),
-        .wr_en           (wr_en),
-        .wr_addr         (wr_addr),
-        .wr_data         (wr_data),
-        .gen_enable_o    (gen_enable_o),
-        .gen_tokens_fp_o (gen_tokens_fp_o),
-        .gen_burst_o     (gen_burst_o),
-        .gen_src_mac_o   (gen_src_mac_o),
-        .gen_dst_mac_o   (gen_dst_mac_o),
-        .gen_vlan_en_o   (gen_vlan_en_o),
-        .gen_vlan_id_o   (gen_vlan_id_o),
-        .gen_src_ip_o    (gen_src_ip_o),
-        .gen_dst_ip_o    (gen_dst_ip_o),
-        .gen_udp_sp_o    (gen_udp_sp_o),
-        .gen_udp_dp_o    (gen_udp_dp_o),
-        .flow_rows_o     (flow_rows_o),
-        .commit_pulse_o  ()
-    );
+    // The flow table itself is now BRAM-backed and lives in pw_data_plane_axis
+    // (co-located with the generators for the read path). Export the decoded
+    // CSR write strobe so the data plane's pw_flow_table_bram can stage it.
+    assign flow_wr_en_o   = wr_en;
+    assign flow_wr_addr_o = wr_addr;
+    assign flow_wr_data_o = wr_data;
 
     pw_stats_snapshot #(
         .PORTS    (NUM_PORTS),

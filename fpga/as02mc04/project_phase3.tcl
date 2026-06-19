@@ -77,6 +77,7 @@ set pw_srcs [list \
     "$repo_root/rtl/phase3/pw_stats_snapshot.sv" \
     "$repo_root/rtl/phase3/pw_classifier_window.sv" \
     "$repo_root/rtl/phase3/pw_flow_window.sv" \
+    "$repo_root/rtl/phase3/pw_flow_table_bram.sv" \
     "$repo_root/rtl/phase3/pw_spi_flash.sv" \
     "$repo_root/rtl/phase3/pw_punt_rx_window.sv" \
     "$repo_root/rtl/phase3/pw_inject_tx_window.sv" \
@@ -148,6 +149,13 @@ if {[lsearch $argv "impl"] >= 0} {
     # post-place estimate runs optimistic and there is no timing gate here.
     set_property STEPS.PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
     set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
+    # Timing-closure directives: the encap + BRAM-flow-table data plane is dense
+    # (~87% LUT) and the dp_clk floor is placement/congestion-dominated, so use
+    # the Explore directives for place / phys_opt / route to chase WNS harder.
+    set_property STEPS.PLACE_DESIGN.ARGS.DIRECTIVE Explore [get_runs impl_1]
+    set_property STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE Explore [get_runs impl_1]
+    set_property STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE Explore [get_runs impl_1]
+    set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE Explore [get_runs impl_1]
     launch_runs impl_1 -to_step write_bitstream -jobs 8
     wait_on_run impl_1
     puts "INFO: bitstream at $proj_dir/$proj_name.runs/impl_1/${top_module}.bit"

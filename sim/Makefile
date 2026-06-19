@@ -36,6 +36,8 @@ CSR_RTL := \
 DPA_RTL := \
     $(REPO)/rtl/phase3/pw_axis_pkg.sv \
     $(REPO)/rtl/phase3/pw_classifier_pkg.sv \
+    $(REPO)/rtl/shared/pw_csr_window.sv \
+    $(REPO)/rtl/phase3/pw_flow_table_bram.sv \
     $(REPO)/rtl/phase3/pw_parser_axis.sv \
     $(REPO)/rtl/phase3/pw_classifier.sv \
     $(REPO)/rtl/phase3/pw_test_rx_checker.sv \
@@ -74,6 +76,7 @@ FULL_RTL := \
     $(REPO)/rtl/phase3/pw_classifier_pkg.sv \
     $(REPO)/rtl/phase3/pw_classifier_window.sv \
     $(REPO)/rtl/phase3/pw_flow_window.sv \
+    $(REPO)/rtl/phase3/pw_flow_table_bram.sv \
     $(REPO)/rtl/phase3/pw_stats_snapshot.sv \
     $(REPO)/rtl/phase3/pw_lat_histogram.sv \
     $(REPO)/rtl/phase3/pw_spi_flash.sv \
@@ -88,6 +91,7 @@ TOP_RTL := \
     $(REPO)/rtl/phase3/pw_classifier_pkg.sv \
     $(REPO)/rtl/phase3/pw_classifier_window.sv \
     $(REPO)/rtl/phase3/pw_flow_window.sv \
+    $(REPO)/rtl/phase3/pw_flow_table_bram.sv \
     $(REPO)/rtl/phase3/pw_stats_snapshot.sv \
     $(REPO)/rtl/phase3/pw_lat_histogram.sv \
     $(REPO)/rtl/phase3/pw_spi_flash.sv \
@@ -129,7 +133,7 @@ VFLAGS := --binary -j 0 \
           -Wno-PINCONNECTEMPTY \
           --timing
 
-.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_full sim_fga sim_fgm sim_pax sim_saf sim_punt sim_inj sim_dpa sim_top sim_vec sim_all wave clean vectors
+.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_full sim_fga sim_fgm sim_fge sim_pax sim_saf sim_punt sim_inj sim_dpa sim_top sim_vec sim_all wave clean vectors
 
 sim: sim_build/data_plane
 	./sim_build/data_plane
@@ -160,6 +164,12 @@ sim_fga: sim_build/flow_gen_axis
 
 sim_fgm: sim_build/flow_gen_multi
 	./sim_build/flow_gen_multi
+
+sim_fge: sim_build/flow_gen_encap
+	./sim_build/flow_gen_encap
+
+sim_ftb: sim_build/flow_table_bram
+	./sim_build/flow_table_bram
 
 sim_pax: sim_build/parser_axis
 	./sim_build/parser_axis
@@ -195,7 +205,7 @@ vectors_clean:
 sim_vec: sim_build/wire_vectors $(VECTORS)
 	./sim_build/wire_vectors
 
-sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_icap sim_tsi sim_full sim_fga sim_fgm sim_pax sim_saf sim_punt sim_inj sim_dpa sim_top sim_vec
+sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_icap sim_tsi sim_full sim_fga sim_fgm sim_fge sim_pax sim_saf sim_punt sim_inj sim_dpa sim_top sim_vec
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
@@ -266,6 +276,12 @@ sim_build/flow_gen_axis: $(REPO)/rtl/phase3/pw_flow_gen_axis.sv flow_gen_axis_tb
 
 sim_build/flow_gen_multi: $(REPO)/rtl/phase3/pw_axis_pkg.sv $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_flow_gen_multi.sv $(REPO)/rtl/phase3/pw_parser_axis.sv flow_gen_multi_tb/tb_flow_gen_multi.sv
 	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Mdir sim_build --top-module tb_flow_gen_multi -o flow_gen_multi $(REPO)/rtl/phase3/pw_axis_pkg.sv $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_flow_gen_multi.sv $(REPO)/rtl/phase3/pw_parser_axis.sv flow_gen_multi_tb/tb_flow_gen_multi.sv
+
+sim_build/flow_gen_encap: $(REPO)/rtl/phase3/pw_axis_pkg.sv $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_flow_gen_multi.sv $(REPO)/rtl/phase3/pw_parser_axis.sv flow_gen_encap_tb/tb_flow_gen_encap.sv
+	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Mdir sim_build --top-module tb_flow_gen_encap -o flow_gen_encap $(REPO)/rtl/phase3/pw_axis_pkg.sv $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_flow_gen_multi.sv $(REPO)/rtl/phase3/pw_parser_axis.sv flow_gen_encap_tb/tb_flow_gen_encap.sv
+
+sim_build/flow_table_bram: $(REPO)/rtl/phase3/pw_axis_pkg.sv $(REPO)/rtl/shared/pw_csr_window.sv $(REPO)/rtl/phase3/pw_flow_table_bram.sv flow_table_bram_tb/tb_flow_table_bram.sv
+	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Mdir sim_build --top-module tb_flow_table_bram -o flow_table_bram $(REPO)/rtl/phase3/pw_axis_pkg.sv $(REPO)/rtl/shared/pw_csr_window.sv $(REPO)/rtl/phase3/pw_flow_table_bram.sv flow_table_bram_tb/tb_flow_table_bram.sv
 
 sim_build/frame_saf: $(REPO)/rtl/phase3/pw_frame_saf.sv $(TB_SAF)
 	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET \
