@@ -97,6 +97,27 @@ static pw_status compile_one_flow(struct pw_program *out,
         tx_row.ttl = f->ipv4.ttl;
         tx_row.dscp = f->ipv4.dscp;
     }
+    /* Encapsulation: outer L3 + tunnel header wrapping the inner frame. */
+    if (f->encap.present) {
+        tx_row.encap_type = f->encap.type;
+        tx_row.rx_expect  = f->rx_expect;
+        if (f->encap.outer_ipv6.present) {
+            tx_row.outer_ip_version = 6;
+            memcpy(tx_row.outer_ipv6_src, f->encap.outer_ipv6.src, 16);
+            memcpy(tx_row.outer_ipv6_dst, f->encap.outer_ipv6.dst, 16);
+            tx_row.outer_ttl  = f->encap.outer_ipv6.hop_limit;
+            tx_row.outer_dscp = f->encap.outer_ipv6.dscp;
+        } else {
+            tx_row.outer_ip_version = 4;
+            tx_row.outer_src_ipv4 = f->encap.outer_ipv4.src;
+            tx_row.outer_dst_ipv4 = f->encap.outer_ipv4.dst;
+            tx_row.outer_ttl  = f->encap.outer_ipv4.ttl;
+            tx_row.outer_dscp = f->encap.outer_ipv4.dscp;
+        }
+        /* EtherIP inner Ethernet MAC: explicit inner_l2, or reuse the flow MAC. */
+        mac_set(tx_row.inner_src_mac, f->encap.inner_mac_set ? f->encap.inner_src_mac : f->l2.src_mac);
+        mac_set(tx_row.inner_dst_mac, f->encap.inner_mac_set ? f->encap.inner_dst_mac : f->l2.dst_mac);
+    }
     tx_row.udp_src_port = f->udp.src_port;
     tx_row.udp_dst_port = f->udp.dst_port;
     /* Per-field modifiers (DUT-facing flow diversification). */

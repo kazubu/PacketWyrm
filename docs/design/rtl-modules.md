@@ -18,12 +18,16 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
 +-- ICAPE3     <- pw_icap_reboot                 in-band IPROG reload
 +-- pwfpga_top_phase3            board-agnostic core
     +-- pw_csr_full              AXI-Lite slave: identity + windows +
-    |   +-- pw_classifier_window /  pw_flow_window /  pw_stats_snapshot
+    |   +-- pw_classifier_window /  pw_stats_snapshot  (flow table moved to
+    |   |                            the data plane; csr_full just forwards the
+    |   |                            decoded flow-window write strobe)
     |   +-- pw_spi_flash         CSR SPI master (live config-flash access)
     |   +-- DP_RESET / REBOOT / STATS_CLEAR / SNAPSHOT triggers
     +-- pw_punt_rx_window        punt AXIS -> CSR-polled frame buffer (host RX)
     +-- pw_inject_tx_window      CSR frame buffer -> AXIS into egress (host TX)
     +-- pw_data_plane_axis       64-bit AXIS streaming data plane
+        +-- pw_flow_table_bram   BRAM flow table (commit-walk decode; per-port
+        |                        read port + compact scheduling FF array)
         +-- per ingress port: pw_parser_axis -> pw_classifier (RESULT_STAGES=2)
         |                      -> pw_frame_saf (store-and-forward)
         +-- per ingress port: pw_test_rx_checker (loss/dup/ooo/min/max/sum)
@@ -32,7 +36,10 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
         +-- egress / punt arbiters
 ```
 
-Module notes: `pw_parser_axis` is pipelined (2-stage key extract);
+Module notes: `pw_parser_axis` is pipelined (3-stage: L2+decap-descent / inner L3-L4 / test extract) and
+auto-decapsulates recognized tunnels (outer IP proto 4/41/47/97 →
+IPIP/GRE/EtherIP), re-basing the L3/L4 parse onto the inner frame so the
+classifier keys on the inner test flow (header capture grew to 160 B);
 `pw_classifier` uses RESULT_STAGES + a parallel priority winner;
 `pw_lat_histogram` replaced the FF histogram; `pw_frame_saf`
 is BRAM-backed (reset-less write + registered read-ahead drain) — freed
@@ -58,21 +65,46 @@ one stage ahead**, registered alongside the round-robin `pick` (identical
 cycle then only lays out bytes, keeping mod32/scramble + the checksum
 adders off the build path. (Excluding tx_timestamp from the IPv6 checksum
 is what makes it pick-stable and thus precomputable.)
-`pw_flow_window` **registers** the decoded flow table (`flow_rows_o`):
-the 256-byte rows fan out widely into the generators, so the decode
-terminates at a register rather than feeding `build()` combinationally — a
-commit lands one cycle later, which is harmless. The wide-bus
-`pw_data_plane` / `pw_parser` / `pw_flow_gen` remain only for the legacy
-sim (`tb_data_plane`).
+**Encapsulation:** a flow row can carry a tunnel (`encap_type` 1/2/3 =
+IPIP/GRE/EtherIP) with its own outer L3 (`outer_v6` + outer addrs/ttl/dscp,
+independent of the inner family). `build()` prepends the outer Ethernet/IP +
+tunnel header (GRE 4 B / EtherIP 2 B + a 14-byte inner Ethernet whose MAC
+comes from the row's dedicated inner-MAC field) ahead of the
+inner IP/UDP/test frame; the outer IPv4 header checksum is precomputed in
+parallel with the inner one (`ip_csum16_o`, tunnel proto in the protocol
+byte). `HDR_MAX_BYTES` grew to 176 to hold the deepest layout (v6-outer
+EtherIP v6-inner + VLAN = 154 B). The inner UDP checksum is unchanged (over
+the inner addresses), so egress timestamping still works at the deep offset.
+`pw_flow_table_bram` holds the flow table in **block RAM** (in the data
+plane, next to the generators). The old approach — a 32-wide registered
+`pw_flow_row_t` array (`flow_rows_o`) fanning out to both generators, each
+muxing the picked row 32:1 — was the routing wall once encap widened the row
+(~92% LUT, unroutable). Instead: the CSR shadow/commit is unchanged, but on
+commit a single decoder **walks** the committed rows (one per cycle) into a
+per-generator BRAM copy plus a compact per-slot scheduling FF array
+(`flow_sched`: valid/egress/tokens/cap/cost). Each generator schedules from
+`flow_sched` (all slots, every cycle) and reads only its **picked** row from
+BRAM (`rd_addr`→`rd_row`, 1-cycle, same latency the old register mux had). The
+decode happens once (not ×32 in parallel), the wide register array + fan-out
+are gone, and the 32:1 mux became a BRAM read — LUT 92%→87%, FF 78%→66%, +34
+RAMB36. (BRAM inference needs a flat bit-vector mem read into an internal reg;
+a struct-array mem or reading into the output port maps to FFs.) The legacy
+per-port `gen_*_o` single-flow selection was also removed (dead in the
+multi-flow data plane). The wide-bus `pw_data_plane` / `pw_parser` /
+`pw_flow_gen` and `pw_flow_window` remain only for the legacy sim
+(`tb_data_plane`, `tb_flow_window`).
 
 `pw_ts_insert` (per egress port, on the MAC TX clock) overwrites each
 generator test frame's tx_timestamp with the true departure time, so
 latency measures the DUT, not the tester's TX-FIFO queuing. It detects the
 L3 family (IPv4 0x0800 → tx_ts @62; IPv6 0x86DD → tx_ts @82; +4 if VLAN).
-For IPv6 it also **finalizes the UDP checksum**: it adds the four
-departure-stamp 16-bit words to the generator's partial checksum and
-writes the result to the UDP csum field (@60, +4 VLAN), applying the
-RFC 768 `0→0xFFFF` rule. This one-pass fixup works because the csum field
+For an **encapsulated** frame it decodes the outer IP proto (4/41/47/97) and
+tunnel header in-stream to find the *inner* test header's offset, registering
+it before the deep csum/tx_ts beats so the MAC-CRC data path still reads a
+stable lane. For IPv6 (inner) it also **finalizes the UDP checksum**: it adds
+the four departure-stamp 16-bit words to the generator's partial checksum and
+writes the result to the UDP csum field (@60 non-encap, +4 VLAN, or the inner
+offset for a tunnel), applying the RFC 768 `0→0xFFFF` rule. This one-pass fixup works because the csum field
 leaves before the tx_ts field, so only the (SOF-latched) *new* stamp is
 needed, never the old one. Which frames to rewrite is gated by a
 "generator test frame" marker the egress arbiter raises (`sel_gen`),

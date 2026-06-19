@@ -65,6 +65,10 @@ For the TX card, fill in `pwfpga_flow_config`:
 - Rate (`rate_bps` / `rate_pps`) + burst (`burst_size`,
   `burst_gap_ticks`).
 - `insert_sequence` and `insert_timestamp` default true.
+- If the flow sets `encap`, the row also carries the tunnel descriptor
+  (type + outer L3 + EtherIP inner MAC); the generator wraps the inner
+  frame and the egress stamper finds the inner test header at its deep
+  offset.
 
 ### 4. Build RX classifier row + RX flow row
 
@@ -83,6 +87,12 @@ Classifier match key (in priority order):
 
 Action: `TEST_RX`. Tags: `local_flow_id` (RX), `logical_if_id` (for
 diagnostics / tooling; not used for forwarding).
+
+The match key uses the flow's **inner** `udp.dst_port` / `ipv4.dst` even for
+an encapsulated flow: the RX parser auto-decapsulates a recognized tunnel
+(IPIP/GRE/EtherIP) and classifies on the inner frame, so the same key matches
+whether the DUT returns the bare inner frame (`rx_expect: inner`) or the
+tunneled frame (`rx_expect: tunneled`).
 
 RX flow row mirrors the TX configuration (so the FPGA knows the
 expected packet shape) but with the generator disabled

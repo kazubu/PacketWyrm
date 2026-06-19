@@ -218,7 +218,35 @@ struct pwfpga_flow_config {
     uint8_t  dst_mac_mask[6];    /* bytes 148..153 */
     uint8_t  vlan_mod;           /* byte 154 */
     uint16_t vlan_mask;          /* bytes 155..156 (low 12 bits) */
+
+    /* Encapsulation (optional): wrap the inner IP/UDP/test frame in an outer
+     * L3 + tunnel header. encap_type = enum pwfpga_encap_type; outer_ip_version
+     * 4 or 6 (0 = no encap). For EtherIP/GRE-transparent the inner Ethernet
+     * frame is emitted too. rx_expect = enum pwfpga_rx_expect. The outer
+     * address is read per outer_ip_version (v4 from outer_src/dst_ipv4, v6 from
+     * outer_ipv6_src/dst). These extend the 256-byte row (ends at byte 201). */
+    uint8_t  encap_type;         /* byte 157 */
+    uint8_t  outer_ip_version;   /* byte 158 (0 none / 4 / 6) */
+    uint8_t  rx_expect;          /* byte 159 */
+    uint8_t  outer_ttl;          /* byte 160 */
+    uint8_t  outer_dscp;         /* byte 161 */
+    uint32_t outer_src_ipv4;     /* bytes 162..165 */
+    uint32_t outer_dst_ipv4;     /* bytes 166..169 */
+    uint8_t  outer_ipv6_src[16]; /* bytes 170..185 */
+    uint8_t  outer_ipv6_dst[16]; /* bytes 186..201 */
+    /* EtherIP inner-Ethernet MAC (compiler fills from encap.inner_l2, or the
+     * flow l2 MAC when unset). dst then src, matching the main MAC fields. */
+    uint8_t  inner_dst_mac[6];   /* bytes 202..207 */
+    uint8_t  inner_src_mac[6];   /* bytes 208..213 */
 } __attribute__((packed));
+
+enum pwfpga_encap_type {
+    PWFPGA_ENCAP_NONE    = 0,
+    PWFPGA_ENCAP_IPIP    = 1,
+    PWFPGA_ENCAP_GRE     = 2,
+    PWFPGA_ENCAP_ETHERIP = 3,
+};
+enum pwfpga_rx_expect { PWFPGA_RX_INNER = 0, PWFPGA_RX_TUNNELED = 1 };
 
 enum pwfpga_field_mod {
     PWFPGA_FIELD_STATIC    = 0,

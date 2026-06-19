@@ -9,6 +9,33 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Encapsulated packet generation + RX decap (IPIP / GRE / EtherIP)** — a flow
+    can set `encap: { type, outer: {ipv4|ipv6} }` to wrap its inner IP/UDP/test
+    frame in a tunnel: IPIP (outer-IP proto 4/41), GRE (proto 47 + 4-byte GRE),
+    or EtherIP (proto 97 + 2-byte EtherIP + inner Ethernet, whose MAC is set by
+    an optional `encap.inner_l2` block or defaults to the flow MAC). The outer family is
+    independent of the inner — every v4/v6 inner × v4/v6 outer combination is
+    supported. The generator builds the full stack and the outer IPv4 header
+    checksum; egress timestamping rewrites the inner test header's tx_timestamp
+    and fixes up the inner UDP checksum at its (encap-dependent) deep offset; the
+    RX parser auto-decapsulates recognized tunnels and classifies on the inner
+    test flow. `rx_expect: inner|tunneled` records whether the DUT decapsulated
+    the return traffic. Full stack: config/wire/compiler, RTL (generator,
+    `pw_ts_insert`, `pw_parser_axis`, flow table/row), sims (`sim_fge` byte-level
+    + gen→decap round-trip, `sim_tsi` deep-offset cases, `sim_ftb`), and docs.
+    **Validated on HW** (KU3P, SFP+ DAC loopback): all four combos — IPIP v4/v4,
+    IPIP v6/v6, GRE v4-in-v6, EtherIP v4/v4 — run loss=0 at line rate, latency
+    70–82 ns, 0 drops (`configs/examples/phase3-encap{,-matrix}.yaml` via
+    `pw_phase3_loopback`).
+  - **BRAM-backed flow table** (`pw_flow_table_bram`) — to fit the encap-widened
+    data plane on the fabric: the 32-wide registered flow-row array + its fan-out
+    + the per-generator 32:1 row mux (the routing wall, ~92% LUT) were replaced
+    with a block-RAM table (decoded once via a commit walk into a per-generator
+    BRAM copy) + a compact per-slot scheduling FF array; the dead legacy
+    `gen_*_o` selection was removed. LUT 92%→87%, FF 78%→66%, +34 RAMB36. The
+    parser was split 2→3 stages (L2+decap-descent / inner L3-L4 / test extract)
+    and the quasi-static shadow→live commit paths multicycled, to recover dp_clk
+    margin. Host CSR/wire format unchanged.
   - **Background (load) flows** — a flow can set `background: true` to generate
     TX-only traffic with no RX classifier rule and no measurement. Background
     flows don't consume a classifier entry, so a config can run more generator

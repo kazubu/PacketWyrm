@@ -24,16 +24,22 @@ module pw_flow_gen_multi #(
     parameter int EGRESS_PORT       = 0,
     parameter int NUM_SLOTS         = 8,
     parameter int FRAME_LEN_PAYLOAD = 32,    // L4 payload bytes (>=32 = test hdr)
-    parameter int HDR_MAX_BYTES     = 112   // IPv6 (40) + VLAN (4) + UDP (8) + payload (32) + eth (14) = 98
+    parameter int HDR_MAX_BYTES     = 176   // worst case (v6-outer EtherIP v6-inner +VLAN):
+                                            // eth14 + vlan4 + v6_outer40 + etherip2 + inner_eth14
+                                            // + v6_inner40 + udp8 + payload32 = 154
 ) (
     input  wire           clk,
     input  wire           rst_n,
 
     input  wire [63:0]    timestamp_i,
 
-    // Decoded flow rows (full table); slots whose egress != EGRESS_PORT are
-    // ignored here (another port's generator drives them).
-    input  pw_flow_row_t  f_rows_i [NUM_SLOTS],
+    // Compact per-slot scheduling descriptors (all slots, every cycle): used
+    // for eligibility / round-robin / token buckets. The wide frame-content
+    // row is read from BRAM only for the picked slot (rd_addr_o -> rd_row_i,
+    // 1-cycle latency). Slots whose egress != EGRESS_PORT are ignored here.
+    input  pw_flow_sched_t flow_sched_i [NUM_SLOTS],
+    output logic [$clog2(NUM_SLOTS)-1:0] rd_addr_o,
+    input  pw_flow_row_t   rd_row_i,
 
     // 64-bit AXIS egress
     output logic [63:0]   m_tdata,
@@ -45,13 +51,32 @@ module pw_flow_gen_multi #(
     localparam logic [31:0] PW_TEST_HDR_MAGIC = 32'hA502_7E57;
     localparam int          SELW = $clog2(NUM_SLOTS);
 
-    function automatic int frame_bytes(input logic vlen, input logic v6);
-        return 14 + (vlen ? 4 : 0) + (v6 ? 40 : 20) + 8 + FRAME_LEN_PAYLOAD;
+    // Encapsulation header length (bytes added between the outer IP and the
+    // inner IP): IPIP=0 (bare inner IP), GRE=4, EtherIP=2 + a 14-byte inner
+    // Ethernet header = 16. encap_type: 0 none / 1 ipip / 2 gre / 3 etherip.
+    function automatic int encap_hdr_len(input logic [1:0] et);
+        case (et)
+            2'd2:    return 4;    // GRE: flags/ver(2) + protocol-type(2)
+            2'd3:    return 16;   // EtherIP(2) + inner Ethernet header(14)
+            default: return 0;    // IPIP / none
+        endcase
     endfunction
+    // Outer IP protocol number for an encap type carrying an inner v4/v6 IP.
+    function automatic logic [7:0] encap_proto(input logic [1:0] et, input logic inner_v6);
+        case (et)
+            2'd1:    return inner_v6 ? 8'd41 : 8'd4;   // IPIP: 4 (v4-in) / 41 (v6-in)
+            2'd2:    return 8'd47;                      // GRE
+            2'd3:    return 8'd97;                      // EtherIP
+            default: return 8'd17;                      // (unused) UDP
+        endcase
+    endfunction
+    // (The token cost = frame_bytes<<16 is now precomputed in the flow table
+    // and delivered via flow_sched_i[].cost, so the generator no longer
+    // computes frame_bytes -- only the build-time encap header lengths above.)
 
     // This slot belongs to this generator's egress port.
-    function automatic logic mine(input pw_flow_row_t r);
-        return r.valid && (r.egress == 4'(EGRESS_PORT));
+    function automatic logic mine(input pw_flow_sched_t s);
+        return s.valid && (s.egress == 4'(EGRESS_PORT));
     endfunction
 
     // Per-slot state.
@@ -86,9 +111,9 @@ module pw_flow_gen_multi #(
             end
         end else begin
             for (int s = 0; s < NUM_SLOTS; s++) begin
-                mine_q[s] <= mine(f_rows_i[s]);
-                cost_q[s] <= {16'(frame_bytes(f_rows_i[s].vlan_en, f_rows_i[s].is_v6)), 16'h0};
-                cap_q[s]  <= {f_rows_i[s].burst, 16'h0};
+                mine_q[s] <= mine(flow_sched_i[s]);
+                cost_q[s] <= flow_sched_i[s].cost;
+                cap_q[s]  <= flow_sched_i[s].cap;
             end
         end
     end
@@ -208,6 +233,23 @@ module pw_flow_gen_multi #(
         s = {16'b0, s[31:16]} + {16'b0, s[15:0]};
         return ~s[15:0];
     endfunction
+    // Outer IPv4 header checksum for an encap tunnel: same as ip_csum16 but the
+    // protocol byte is the tunnel proto (4/41/47/97), not UDP. The outer header
+    // carries fixed (non-modified) outer addresses, so this is pick-stable.
+    function automatic logic [15:0] ip_csum16_o(input logic [15:0] tot,
+                                                input logic [31:0] sip, input logic [31:0] dip,
+                                                input logic [7:0]  dscp, input logic [7:0] ttl,
+                                                input logic [7:0]  proto);
+        logic [31:0] s;
+        s = {16'b0, 8'h45, dscp[5:0], 2'b00}
+          + {16'b0, tot} + 32'h4000
+          + {16'b0, ttl, proto}
+          + {16'b0, sip[31:16]} + {16'b0, sip[15:0]}
+          + {16'b0, dip[31:16]} + {16'b0, dip[15:0]};
+        s = {16'b0, s[31:16]} + {16'b0, s[15:0]};
+        s = {16'b0, s[31:16]} + {16'b0, s[15:0]};
+        return ~s[15:0];
+    endfunction
 
     // IPv6 UDP *partial* checksum (the tx_timestamp is deliberately excluded).
     // Sums the IPv6 pseudo-header (src + dst + upper-layer length + next-
@@ -262,27 +304,29 @@ module pw_flow_gen_multi #(
     // the 32-way priority encoder into the checksum adders). The path is split
     // into two register stages because, fused, it was the dp_clk-critical path:
     //
-    //   Stage A (row latch): isolate the 32:1 mux of the wide (256-byte) flow
-    //   rows -- f_rows_i[pick_q] -- into its own register. The mux pulls from
-    //   the spread row array (route-heavy, ~4.3 ns), so it must drive ONLY a
-    //   register, with no logic after it, to close.
+    //   Stage A (row fetch): the picked slot's wide row comes from the flow-
+    //   table BRAM. rd_addr_o = pick_q drives the read; rd_row_i is the BRAM's
+    //   registered output (1-cycle latency, like the old f_rows_i[pick_q]
+    //   register mux), so row_l = rd_row_i is already isolated by the BRAM's
+    //   output register and aligns with the pick_l / seq_l registers below.
     //
     //   Stage B (checksum): mod32/scramble + the IPv4/IPv6 checksum adders read
-    //   the COMPACT local latch row_l (short routes) instead of the spread mux.
+    //   the BRAM output row_l.
     //
     // build() then consumes the stage-B registers and only lays out bytes. (B
     // excludes the live tx_timestamp from udp6_csum -- that is what makes the
     // whole checksum pick-stable and thus precomputable here.)
+    assign rd_addr_o = pick_q;             // flow-table BRAM read address
     logic [SELW-1:0]  pick_l;
     logic             pvalid_l;
-    pw_flow_row_t     row_l;
+    pw_flow_row_t     row_l;               // = rd_row_i (BRAM output); set in the
+                                           // precompute always_comb below.
     logic [63:0]      seq_l;
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin pick_l <= '0; pvalid_l <= 1'b0; row_l <= '0; seq_l <= '0; end
+        if (!rst_n) begin pick_l <= '0; pvalid_l <= 1'b0; seq_l <= '0; end
         else begin
             pick_l   <= pick_q;
             pvalid_l <= pick_valid_q;
-            row_l    <= f_rows_i[pick_q];      // the wide 32:1 mux, isolated
             seq_l    <= sequence_q[pick_q];
         end
     end
@@ -291,10 +335,12 @@ module pw_flow_gen_multi #(
     logic [127:0] pc_v6src, pc_v6dst;
     logic [47:0]  pc_smac, pc_dmac;
     logic [11:0]  pc_vlan;
-    logic [15:0]  pc_sp, pc_dp, pc_csum;
+    logic [15:0]  pc_sp, pc_dp, pc_csum, pc_ocsum;
     logic [19:0]  pc_psa, pc_psb;       // IPv6 UDP csum half-sums (folded in build)
     always_comb begin
         logic [15:0] vlan16;
+        logic [15:0] outer_tot;
+        row_l    = rd_row_i;       // picked row from the flow-table BRAM (Stage A)
         pc_sip   = mod32(row_l.sip_mod, row_l.src_ipv4, row_l.sip_mask, seq_l);
         pc_dip   = mod32(row_l.dip_mod, row_l.dst_ipv4, row_l.dip_mask, seq_l);
         // MAC / VLAN modifiers (Ethernet header only; not in any checksum).
@@ -315,6 +361,13 @@ module pw_flow_gen_multi #(
                              row_l.dscp, row_l.ttl);
         pc_psa   = udp6_psum_a(pc_v6src, pc_v6dst);
         pc_psb   = udp6_psum_b(pc_sp, pc_dp, 16'(8 + FRAME_LEN_PAYLOAD), row_l.flow_id, seq_l);
+        // Outer IPv4 header checksum (encap with a v4 outer). tot_len = outer
+        // header(20) + encap header + inner IP packet. Static outer addresses.
+        outer_tot = 16'(20 + encap_hdr_len(row_l.encap_type)
+                        + (row_l.is_v6 ? 40 : 20) + 8 + FRAME_LEN_PAYLOAD);
+        pc_ocsum = ip_csum16_o(outer_tot, row_l.outer_src_ipv4, row_l.outer_dst_ipv4,
+                               row_l.outer_dscp, row_l.outer_ttl,
+                               encap_proto(row_l.encap_type, row_l.is_v6));
     end
 
     // Stage B latch (consumed by build): picked row + seq + precomputed fields.
@@ -326,7 +379,7 @@ module pw_flow_gen_multi #(
     logic [127:0]     eff_v6src_q, eff_v6dst_q;
     logic [47:0]      eff_smac_q, eff_dmac_q;
     logic [11:0]      eff_vlan_q;
-    logic [15:0]      eff_sp_q, eff_dp_q, csum_q;
+    logic [15:0]      eff_sp_q, eff_dp_q, csum_q, ocsum_q;
     logic [19:0]      psa_q, psb_q;       // IPv6 UDP csum half-sums; folded in build()
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -334,7 +387,7 @@ module pw_flow_gen_multi #(
             eff_sip_q <= '0; eff_dip_q <= '0; eff_sp_q <= '0; eff_dp_q <= '0;
             eff_v6src_q <= '0; eff_v6dst_q <= '0;
             eff_smac_q <= '0; eff_dmac_q <= '0; eff_vlan_q <= '0;
-            csum_q    <= '0; psa_q <= '0; psb_q <= '0;
+            csum_q    <= '0; ocsum_q <= '0; psa_q <= '0; psb_q <= '0;
         end else begin
             pick_qq       <= pick_l;
             pick_valid_qq <= pvalid_l;
@@ -344,7 +397,7 @@ module pw_flow_gen_multi #(
             eff_sip_q <= pc_sip;  eff_dip_q <= pc_dip;
             eff_v6src_q <= pc_v6src; eff_v6dst_q <= pc_v6dst;
             eff_sp_q  <= pc_sp;   eff_dp_q  <= pc_dp;
-            csum_q    <= pc_csum; psa_q <= pc_psa; psb_q <= pc_psb;
+            csum_q    <= pc_csum; ocsum_q <= pc_ocsum; psa_q <= pc_psa; psb_q <= pc_psb;
         end
     end
 
@@ -357,16 +410,19 @@ module pw_flow_gen_multi #(
                          input logic [47:0] eff_smac, input logic [47:0] eff_dmac,
                          input logic [11:0] eff_vlan,
                          input logic [15:0] eff_sp,  input logic [15:0] eff_dp,
-                         input logic [15:0] csum,
+                         input logic [15:0] csum,    input logic [15:0] ocsum,
                          input logic [19:0] psa,     input logic [19:0] psb);
-        int off, tl, total_len;
-        logic [7:0]  tos;
-        logic [15:0] ucsum;
+        int off, tl, total_len, o_pl, o_tot;
+        logic [7:0]  tos, o_tos, o_proto;
+        logic [15:0] ucsum, inner_et;
         tos   = {r.dscp[5:0], 2'b00};      // IPv4 TOS / IPv6 TC byte (DSCP<<2, ECN 0)
         // Combine the two registered IPv6 UDP-csum half-sums (cheap; the deep
         // adder is upstream, split across the precompute stages).
         ucsum = udp6_fold(psa, psb);
+        inner_et = r.is_v6 ? 16'h86DD : 16'h0800;
         for (int i = 0; i < HDR_MAX_BYTES; i++) fb[i] <= 8'h00;
+        // Outer Ethernet (carries the flow's configured MAC/VLAN regardless of
+        // encapsulation; for EtherIP the inner Ethernet reuses the same MACs).
         fb[0]<=eff_dmac[47:40]; fb[1]<=eff_dmac[39:32]; fb[2]<=eff_dmac[31:24];
         fb[3]<=eff_dmac[23:16]; fb[4]<=eff_dmac[15:8];  fb[5]<=eff_dmac[7:0];
         fb[6]<=eff_smac[47:40]; fb[7]<=eff_smac[39:32]; fb[8]<=eff_smac[31:24];
@@ -377,9 +433,61 @@ module pw_flow_gen_multi #(
             fb[off+2]<={4'h0,eff_vlan[11:8]}; fb[off+3]<=eff_vlan[7:0];
             off += 4;
         end
-        tl = 8 + FRAME_LEN_PAYLOAD;        // UDP length, common to v4/v6
+        tl = 8 + FRAME_LEN_PAYLOAD;        // inner UDP length, common to v4/v6
+
+        // --- Encapsulation prefix: outer IP + tunnel header ----------------
+        if (r.encap_type != 2'd0) begin
+            o_proto = encap_proto(r.encap_type, r.is_v6);
+            o_tos   = {r.outer_dscp[5:0], 2'b00};
+            // Outer IP payload = tunnel header + inner IP packet.
+            o_pl    = encap_hdr_len(r.encap_type) + (r.is_v6 ? 40 : 20) + 8 + FRAME_LEN_PAYLOAD;
+            if (r.outer_v6) begin
+                fb[off]<=8'h86; fb[off+1]<=8'hDD; off += 2;    // ethertype IPv6 (outer)
+                fb[off+0]<={4'h6, o_tos[7:4]}; fb[off+1]<={o_tos[3:0], 4'h0};
+                fb[off+2]<=8'h00; fb[off+3]<=8'h00;            // flow label = 0
+                fb[off+4]<=o_pl[15:8]; fb[off+5]<=o_pl[7:0];   // payload length
+                fb[off+6]<=o_proto; fb[off+7]<=r.outer_ttl;    // next-header = tunnel proto
+                for (int b = 0; b < 16; b++) fb[off+8+b]  <= r.outer_ipv6_src[127 - b*8 -: 8];
+                for (int b = 0; b < 16; b++) fb[off+24+b] <= r.outer_ipv6_dst[127 - b*8 -: 8];
+                off += 40;
+            end else begin
+                fb[off]<=8'h08; fb[off+1]<=8'h00; off += 2;    // ethertype IPv4 (outer)
+                o_tot = 20 + o_pl;
+                fb[off+0]<=8'h45; fb[off+1]<=o_tos;
+                fb[off+2]<=o_tot[15:8]; fb[off+3]<=o_tot[7:0];
+                fb[off+4]<=8'h00; fb[off+5]<=8'h00; fb[off+6]<=8'h40; fb[off+7]<=8'h00;
+                fb[off+8]<=r.outer_ttl; fb[off+9]<=o_proto;
+                fb[off+10]<=ocsum[15:8]; fb[off+11]<=ocsum[7:0];
+                fb[off+12]<=r.outer_src_ipv4[31:24]; fb[off+13]<=r.outer_src_ipv4[23:16];
+                fb[off+14]<=r.outer_src_ipv4[15:8];  fb[off+15]<=r.outer_src_ipv4[7:0];
+                fb[off+16]<=r.outer_dst_ipv4[31:24]; fb[off+17]<=r.outer_dst_ipv4[23:16];
+                fb[off+18]<=r.outer_dst_ipv4[15:8];  fb[off+19]<=r.outer_dst_ipv4[7:0];
+                off += 20;
+            end
+            // Tunnel header.
+            if (r.encap_type == 2'd2) begin                    // GRE: 4 bytes
+                fb[off]<=8'h00; fb[off+1]<=8'h00;              // flags + version 0
+                fb[off+2]<=inner_et[15:8]; fb[off+3]<=inner_et[7:0];  // protocol-type
+                off += 4;
+            end else if (r.encap_type == 2'd3) begin           // EtherIP + inner Ethernet
+                fb[off]<=8'h30; fb[off+1]<=8'h00; off += 2;    // EtherIP version 3
+                // Inner Ethernet uses the row's dedicated inner MAC (the
+                // compiler fills it from encap.inner_l2, or the flow MAC).
+                fb[off+0]<=r.inner_dst_mac[47:40]; fb[off+1]<=r.inner_dst_mac[39:32]; fb[off+2]<=r.inner_dst_mac[31:24];
+                fb[off+3]<=r.inner_dst_mac[23:16]; fb[off+4]<=r.inner_dst_mac[15:8];  fb[off+5]<=r.inner_dst_mac[7:0];
+                fb[off+6]<=r.inner_src_mac[47:40]; fb[off+7]<=r.inner_src_mac[39:32]; fb[off+8]<=r.inner_src_mac[31:24];
+                fb[off+9]<=r.inner_src_mac[23:16]; fb[off+10]<=r.inner_src_mac[15:8]; fb[off+11]<=r.inner_src_mac[7:0];
+                fb[off+12]<=inner_et[15:8]; fb[off+13]<=inner_et[7:0];
+                off += 14;
+            end
+            // IPIP (1): bare inner IP follows directly (no inner ethertype).
+        end else begin
+            // No encap: the inner IP's ethertype goes on the outer Ethernet.
+            fb[off]<=inner_et[15:8]; fb[off+1]<=inner_et[7:0]; off += 2;
+        end
+
+        // --- Inner IP header (no ethertype: emitted above where needed) ----
         if (r.is_v6) begin
-            fb[off]<=8'h86; fb[off+1]<=8'hDD; off += 2;        // ethertype IPv6
             // 40-byte IPv6 header. TC (8b) spans byte0[3:0] + byte1[7:4];
             // flow label 0. tc = tos = dscp<<2.
             fb[off+0]<={4'h6, tos[7:4]}; fb[off+1]<={tos[3:0], 4'h0};
@@ -390,7 +498,6 @@ module pw_flow_gen_multi #(
             for (int b = 0; b < 16; b++) fb[off+24+b] <= eff_v6dst[127 - b*8 -: 8];
             off += 40;
         end else begin
-            fb[off]<=8'h08; fb[off+1]<=8'h00; off += 2;        // ethertype IPv4
             total_len = 20 + 8 + FRAME_LEN_PAYLOAD;
             fb[off+0]<=8'h45; fb[off+1]<=tos;                  // ver/ihl | TOS (DSCP)
             fb[off+2]<=total_len[15:8]; fb[off+3]<=total_len[7:0];
@@ -418,7 +525,10 @@ module pw_flow_gen_multi #(
         fb[off+16]<=seq[31:24]; fb[off+17]<=seq[23:16]; fb[off+18]<=seq[15:8];  fb[off+19]<=seq[7:0];
         fb[off+20]<=ts[63:56]; fb[off+21]<=ts[55:48]; fb[off+22]<=ts[47:40]; fb[off+23]<=ts[39:32];
         fb[off+24]<=ts[31:24]; fb[off+25]<=ts[23:16]; fb[off+26]<=ts[15:8];  fb[off+27]<=ts[7:0];
-        frame_len <= 12'(14 + (r.vlan_en ? 4 : 0) + (r.is_v6 ? 40 : 20) + 8 + FRAME_LEN_PAYLOAD);
+        // off now points at the inner test-header/payload (the UDP block above
+        // already advanced it past the 8-byte UDP header); total = + payload.
+        // This covers all encap layouts (outer IP + tunnel header already added).
+        frame_len <= 12'(off + FRAME_LEN_PAYLOAD);
     endtask
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -438,7 +548,7 @@ module pw_flow_gen_multi #(
                 if (!mine_q[s]) begin
                     tokens_q[s] <= '0;
                 end else begin
-                    sum = {1'b0, tokens_q[s]} + {1'b0, f_rows_i[s].tokens_fp};
+                    sum = {1'b0, tokens_q[s]} + {1'b0, flow_sched_i[s].tokens_fp};
                     if (sum > {1'b0, cap_q[s]}) sum = {1'b0, cap_q[s]};
                     tokens_q[s] <= sum[31:0];
                 end
@@ -457,7 +567,7 @@ module pw_flow_gen_multi #(
                     build(row_qq, seq_qq, timestamp_i,
                           eff_sip_q, eff_dip_q, eff_v6src_q, eff_v6dst_q,
                           eff_smac_q, eff_dmac_q, eff_vlan_q,
-                          eff_sp_q, eff_dp_q, csum_q, psa_q, psb_q);
+                          eff_sp_q, eff_dp_q, csum_q, ocsum_q, psa_q, psb_q);
                     sel      <= pick_qq;
                     active   <= 1'b1;
                     byte_off <= '0;

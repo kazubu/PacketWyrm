@@ -32,12 +32,12 @@ module tb_ts_insert;
         if (g !== 1'b1) begin $display("[FAIL] %s", w); errors++; end
     endtask
 
-    logic [7:0] fin  [96];
-    logic [7:0] fout [96];
+    logic [7:0] fin  [160];
+    logic [7:0] fout [160];
 
-    // Drive a 96-byte frame with a given SOF tuser, capture the output bytes.
-    task automatic run_frame(input logic [63:0] tsv, input bit tuser);
-        int beats = 12;   // 96 bytes / 8
+    // Drive an `nbeats`-beat frame with a given SOF tuser, capture the output.
+    task automatic run_frame_n(input logic [63:0] tsv, input bit tuser, input int nbeats);
+        int beats = nbeats;
         ts_now = tsv;
         m_tr   = 1'b1;
         // Drive inputs on negedge so the DUT's beat counter (incremented on
@@ -51,6 +51,9 @@ module tb_ts_insert;
         end
         @(negedge clk); s_tv = 1'b0; s_tl = 1'b0; s_tu = 1'b0;
         @(posedge clk);
+    endtask
+    task automatic run_frame(input logic [63:0] tsv, input bit tuser);
+        run_frame_n(tsv, tuser, 12);   // 96-byte frame
     endtask
 
     task automatic build_base(input bit vlan, input logic [31:0] magic);
@@ -99,19 +102,87 @@ module tb_ts_insert;
 
     // Validate the FULL UDP checksum over an output frame (incl the csum field
     // @60 and the now-stamped tx_ts @82): a valid frame folds to 0xFFFF.
-    function automatic logic full6_ok(input logic [7:0] f [96]);
+    function automatic logic full6_ok(input logic [7:0] f [160]);
+        return full6_ok_at(f, 54);   // non-encap IPv6: inner UDP @ byte 54
+    endfunction
+    // Generic full-csum check over a v6/UDP header whose UDP starts at `udp0`
+    // (v6 src @udp0-32, dst @udp0-16). Works for encapsulated inner v6 too.
+    function automatic logic full6_ok_at(input logic [7:0] f [160], input int udp0);
         logic [31:0] s; logic [15:0] ulen; s = 0;
-        ulen = {f[58], f[59]};
-        for (int w = 0; w < 8; w++) s += {f[22 + w*2], f[23 + w*2]};
-        for (int w = 0; w < 8; w++) s += {f[38 + w*2], f[39 + w*2]};
+        ulen = {f[udp0+4], f[udp0+5]};
+        for (int w = 0; w < 8; w++) s += {f[udp0-32 + w*2], f[udp0-31 + w*2]};  // src
+        for (int w = 0; w < 8; w++) s += {f[udp0-16 + w*2], f[udp0-15 + w*2]};  // dst
         s += {16'b0, ulen};
         s += 32'h0000_0011;
-        for (int w = 0; w < 4; w++) s += {f[54 + w*2], f[55 + w*2]};   // UDP hdr incl csum
-        for (int w = 0; w < 16; w++) s += {f[62 + w*2], f[63 + w*2]};  // full payload incl ts
+        for (int w = 0; w < 4; w++)  s += {f[udp0 + w*2], f[udp0+1 + w*2]};     // UDP hdr incl csum
+        for (int w = 0; w < 16; w++) s += {f[udp0+8 + w*2], f[udp0+9 + w*2]};   // payload incl ts
         s = (s & 32'hFFFF) + (s >> 16);
         s = (s & 32'hFFFF) + (s >> 16);
         return (s[15:0] == 16'hFFFF);
     endfunction
+    // Partial v6 UDP csum (raw ~sum, tx_ts words 10..13 excluded) over a v6/UDP
+    // header whose UDP starts at `udp0` -- matches pw_flow_gen_multi's emit.
+    function automatic logic [15:0] partial6_at(input int udp0);
+        logic [31:0] s; logic [15:0] ulen; s = 0;
+        ulen = {fin[udp0+4], fin[udp0+5]};
+        for (int w = 0; w < 8; w++) s += {fin[udp0-32 + w*2], fin[udp0-31 + w*2]};
+        for (int w = 0; w < 8; w++) s += {fin[udp0-16 + w*2], fin[udp0-15 + w*2]};
+        s += {16'b0, ulen};
+        s += 32'h0000_0011;
+        s += {fin[udp0], fin[udp0+1]} + {fin[udp0+2], fin[udp0+3]} + {16'b0, ulen};
+        for (int w = 0; w < 16; w++)
+            if (w < 10 || w > 13) s += {fin[udp0+8 + w*2], fin[udp0+9 + w*2]};
+        s = (s & 32'hFFFF) + (s >> 16);
+        s = (s & 32'hFFFF) + (s >> 16);
+        return ~s[15:0];
+    endfunction
+
+    // ---- encap frame builders (distinctive byte pattern + structural bytes) --
+    // IPIP v4-in-v4: eth + outerIPv4(proto4) + innerIPv4 + UDP; inner UDP @54.
+    task automatic build_ipip44();
+        for (int i = 0; i < 160; i++) fin[i] = 8'(i);
+        fin[12] = 8'h08; fin[13] = 8'h00;       // outer ethertype IPv4
+        fin[14] = 8'h45; fin[23] = 8'd4;        // outer ver/ihl, proto = IPIP
+        fin[34] = 8'h45; fin[43] = 8'd17;       // inner ver/ihl, proto UDP
+        fin[62] = 8'hA5; fin[63] = 8'h02; fin[64] = 8'h7E; fin[65] = 8'h57;  // magic @62
+        for (int i = 0; i < 8; i++) fin[82 + i] = 8'hEE;                      // tx_ts @82
+    endtask
+    // GRE v4-in-v6: eth + outerIPv6(nh47) + GRE(4) + innerIPv4 + UDP; UDP @78.
+    task automatic build_gre_v4in_v6();
+        for (int i = 0; i < 160; i++) fin[i] = 8'(i);
+        fin[12] = 8'h86; fin[13] = 8'hDD;       // outer ethertype IPv6
+        fin[20] = 8'd47;                        // outer next-header = GRE
+        fin[54] = 8'h00; fin[55] = 8'h00; fin[56] = 8'h08; fin[57] = 8'h00;   // GRE: ptype 0800
+        fin[58] = 8'h45;                        // inner ver/ihl (v4)
+        fin[86] = 8'hA5; fin[87] = 8'h02; fin[88] = 8'h7E; fin[89] = 8'h57;   // magic @86
+        for (int i = 0; i < 8; i++) fin[106 + i] = 8'hEE;                     // tx_ts @106
+    endtask
+    // EtherIP v4-in-v4: eth + outerIPv4(proto97) + EtherIP(2) + innerEth(14)
+    //   + innerIPv4 + UDP; inner UDP @70.
+    task automatic build_etherip44();
+        for (int i = 0; i < 160; i++) fin[i] = 8'(i);
+        fin[12] = 8'h08; fin[13] = 8'h00;       // outer ethertype IPv4
+        fin[14] = 8'h45; fin[23] = 8'd97;       // outer ver/ihl, proto = EtherIP
+        fin[34] = 8'h30; fin[35] = 8'h00;       // EtherIP version 3
+        fin[48] = 8'h08; fin[49] = 8'h00;       // inner eth ethertype 0800
+        fin[50] = 8'h45;                        // inner ver/ihl (v4)
+        fin[78] = 8'hA5; fin[79] = 8'h02; fin[80] = 8'h7E; fin[81] = 8'h57;   // magic @78
+        for (int i = 0; i < 8; i++) fin[98 + i] = 8'hEE;                      // tx_ts @98
+    endtask
+    // IPIP v6-in-v6: eth + outerIPv6(nh41) + innerIPv6 + UDP; inner UDP @94,
+    //   csum @100, magic @102, tx_ts @122. Partial csum is over the inner v6.
+    task automatic build_ipip66();
+        logic [15:0] c;
+        for (int i = 0; i < 160; i++) fin[i] = 8'(i);
+        fin[12] = 8'h86; fin[13] = 8'hDD;       // outer ethertype IPv6
+        fin[20] = 8'd41;                        // outer next-header = IPIP (v6-in)
+        fin[54] = 8'h60; fin[60] = 8'd17;       // inner v6 version, next-header UDP
+        fin[98] = 8'h00; fin[99] = 8'h28;       // inner UDP length = 40
+        fin[102] = 8'hA5; fin[103] = 8'h02; fin[104] = 8'h7E; fin[105] = 8'h57; // magic @102
+        for (int i = 0; i < 8; i++) fin[122 + i] = 8'hEE;                       // tx_ts @122
+        c = partial6_at(94);
+        fin[100] = c[15:8]; fin[101] = c[7:0];  // inner partial UDP csum @100
+    endtask
 
     initial begin
         ts_now = 0; s_td = 0; s_tk = 0; s_tv = 0; s_tl = 0; s_tu = 0; m_tr = 0;
@@ -164,6 +235,37 @@ module tb_ts_insert;
         chk("fwd6 ts[89] kept", fout[89], 8'hEE);
         chk("fwd6 csum[60] kept", fout[60], fin[60]);
         chk("fwd6 csum[61] kept", fout[61], fin[61]);
+
+        // ---- 6: IPIP v4-in-v4 (magic-gated) -> tx_ts @82 overwritten ----
+        build_ipip44();
+        run_frame_n(64'hA1A2_A3A4_A5A6_A7A8, 1'b1, 12);
+        chk("ipip44 ts[82]", fout[82], 8'hA1); chk("ipip44 ts[89]", fout[89], 8'hA8);
+        chk("ipip44 magic[62] kept", fout[62], 8'hA5);
+        chk("ipip44 outer proto[23] kept", fout[23], 8'd4);
+
+        // ---- 7: GRE v4-in-v6 (outer v6 + GRE decode) -> tx_ts @106 ----
+        build_gre_v4in_v6();
+        run_frame_n(64'hB1B2_B3B4_B5B6_B7B8, 1'b1, 15);
+        chk("gre ts[106]", fout[106], 8'hB1); chk("gre ts[113]", fout[113], 8'hB8);
+        chk("gre magic[86] kept", fout[86], 8'hA5);
+        chk("gre ptype[56] kept", fout[56], 8'h08);
+
+        // ---- 8: EtherIP v4-in-v4 (etherip + inner-eth decode) -> tx_ts @98 ----
+        build_etherip44();
+        run_frame_n(64'hC1C2_C3C4_C5C6_C7C8, 1'b1, 14);
+        chk("etherip ts[98]", fout[98], 8'hC1); chk("etherip ts[105]", fout[105], 8'hC8);
+        chk("etherip magic[78] kept", fout[78], 8'hA5);
+        chk("etherip eip-ver[34] kept", fout[34], 8'h30);
+
+        // ---- 9: IPIP v6-in-v6 (deep inner v6) -> tx_ts @122 + inner csum @100 ----
+        build_ipip66();
+        run_frame_n(64'h0102_0304_0506_0708, 1'b1, 17);
+        chk("ipip66 ts[122]", fout[122], 8'h01); chk("ipip66 ts[129]", fout[129], 8'h08);
+        chk("ipip66 magic[102] kept", fout[102], 8'hA5);
+        chk1("ipip66 inner UDP checksum valid", full6_ok_at(fout, 94));
+        if (fout[100] === fin[100] && fout[101] === fin[101]) begin
+            $display("[FAIL] ipip66 inner csum field not updated"); errors++;
+        end
 
         if (errors == 0) $display("ALL TS_INSERT SCENARIOS PASS");
         else             $display("TS_INSERT FAILURES: %0d", errors);

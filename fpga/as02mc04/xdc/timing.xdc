@@ -15,3 +15,13 @@ set_false_path -from [get_clocks -of_objects [get_pins -hierarchical -filter {NA
 
 # Phase 2 adds the 156.25 MHz SFP MGT refclk; left commented for now.
 # create_clock -period 6.400 -name sfp_mgt_refclk [get_ports sfp_mgt_refclk_p]
+
+# --- Quasi-static flow/classifier table commit (pw_csr_window) -------------
+# The host stages a shadow table, pulses a commit register, and the data plane
+# only relies on the promoted "live" table after the commit settles (the BRAM
+# flow table even walks it in over many cycles). These shadow->live promotion
+# paths are therefore quasi-static and need not meet a single dp_clk period;
+# relaxing them frees the placer/router from a large, scattered FF->FF transfer
+# that was on the dp_clk critical floor.
+set_multicycle_path -setup 4 -from [get_cells -hier -filter {NAME =~ *u_win/shadow_reg*}] -to [get_cells -hier -filter {NAME =~ *u_win/live_reg*}] -quiet
+set_multicycle_path -hold  3 -from [get_cells -hier -filter {NAME =~ *u_win/shadow_reg*}] -to [get_cells -hier -filter {NAME =~ *u_win/live_reg*}] -quiet

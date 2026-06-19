@@ -455,6 +455,87 @@ static void test_background_and_match_mask(void) {
     pw_config_free(cfg);
 }
 
+static void test_encap_flow_compiles(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n"
+        "  - id: 0\n"
+        "    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "flows:\n"
+        "  - id: 1\n"                       /* IPIP: v4 inner in v4 outer */
+        "    tx_global_port: 0\n"
+        "    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv4: { src: \"192.0.2.1\", dst: \"192.0.2.2\" }\n"
+        "    udp:  { src_port: 49152, dst_port: 50001 }\n"
+        "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
+        "    encap: { type: ipip, outer: { ipv4: { src: \"10.0.0.1\", dst: \"10.0.0.2\", ttl: 32, dscp: 8 } } }\n"
+        "    rx_expect: tunneled\n"
+        "  - id: 2\n"                       /* GRE: v4 inner in v6 outer */
+        "    tx_global_port: 0\n"
+        "    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:03\", dst_mac: \"02:a5:02:00:00:04\" }\n"
+        "    ipv4: { src: \"192.0.2.3\", dst: \"192.0.2.4\" }\n"
+        "    udp:  { src_port: 49152, dst_port: 6000 }\n"
+        "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
+        "    encap: { type: gre, outer: { ipv6: { src: \"2001:db8::1\", dst: \"2001:db8::2\" } } }\n"
+        "  - id: 3\n"                       /* EtherIP: explicit inner-Ethernet MAC */
+        "    tx_global_port: 0\n"
+        "    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:05\", dst_mac: \"02:a5:02:00:00:06\" }\n"
+        "    ipv4: { src: \"192.0.2.5\", dst: \"192.0.2.6\" }\n"
+        "    udp:  { src_port: 49152, dst_port: 7000 }\n"
+        "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
+        "    encap: { type: etherip, outer: { ipv4: { src: \"10.0.0.5\", dst: \"10.0.0.6\" } },\n"
+        "             inner_l2: { src_mac: \"02:bb:00:00:00:01\", dst_mac: \"02:bb:00:00:00:02\" } }\n";
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    /* config model */
+    PW_ASSERT(cfg->flows[0].encap.present);
+    PW_ASSERT_EQ(cfg->flows[0].encap.type, PW_ENCAP_IPIP);
+    PW_ASSERT(cfg->flows[0].encap.outer_ipv4.present);
+    PW_ASSERT_EQ(cfg->flows[0].encap.outer_ipv4.ttl, 32);
+    PW_ASSERT_EQ(cfg->flows[0].encap.outer_ipv4.dscp, 8);
+    PW_ASSERT_EQ(cfg->flows[0].rx_expect, PW_RX_TUNNELED);
+    PW_ASSERT(cfg->flows[1].encap.present);
+    PW_ASSERT_EQ(cfg->flows[1].encap.type, PW_ENCAP_GRE);
+    PW_ASSERT(cfg->flows[1].encap.outer_ipv6.present);
+    PW_ASSERT_EQ(cfg->flows[1].rx_expect, PW_RX_INNER);   /* default */
+    PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
+    /* compiled wire */
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
+    const struct pwfpga_flow_config *r0 = &prog->per_card[0].flow_rows[0];
+    PW_ASSERT_EQ(r0->encap_type, PWFPGA_ENCAP_IPIP);
+    PW_ASSERT_EQ(r0->outer_ip_version, 4);
+    PW_ASSERT_EQ(r0->rx_expect, PWFPGA_RX_TUNNELED);
+    PW_ASSERT_EQ(r0->outer_ttl, 32);
+    PW_ASSERT_EQ(r0->outer_dscp, 8);
+    PW_ASSERT_EQ(r0->outer_src_ipv4, 0x0a000001u);
+    PW_ASSERT_EQ(r0->outer_dst_ipv4, 0x0a000002u);
+    const struct pwfpga_flow_config *r1 = &prog->per_card[0].flow_rows[1];
+    PW_ASSERT_EQ(r1->encap_type, PWFPGA_ENCAP_GRE);
+    PW_ASSERT_EQ(r1->outer_ip_version, 6);
+    PW_ASSERT_EQ(r1->outer_ipv6_src[0], 0x20);   /* 2001:db8::1, MSB first */
+    PW_ASSERT_EQ(r1->outer_ipv6_src[1], 0x01);
+    PW_ASSERT_EQ(r1->outer_ipv6_dst[15], 0x02);
+    /* IPIP flow has no inner_l2 -> inner MAC falls back to the flow l2 MAC. */
+    PW_ASSERT(cfg->flows[0].encap.inner_mac_set == false);
+    PW_ASSERT_EQ(r0->inner_src_mac[0], 0x02); PW_ASSERT_EQ(r0->inner_src_mac[1], 0xa5);
+    PW_ASSERT_EQ(r0->inner_src_mac[5], 0x01);
+    /* EtherIP flow with explicit inner_l2 -> distinct inner MAC on the wire. */
+    const struct pwfpga_flow_config *r2 = &prog->per_card[0].flow_rows[2];
+    PW_ASSERT_EQ(r2->encap_type, PWFPGA_ENCAP_ETHERIP);
+    PW_ASSERT(cfg->flows[2].encap.inner_mac_set);
+    PW_ASSERT_EQ(r2->inner_dst_mac[0], 0x02); PW_ASSERT_EQ(r2->inner_dst_mac[1], 0xbb);
+    PW_ASSERT_EQ(r2->inner_dst_mac[5], 0x02);
+    PW_ASSERT_EQ(r2->inner_src_mac[1], 0xbb); PW_ASSERT_EQ(r2->inner_src_mac[5], 0x01);
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
 static void test_reject_cross_card_forward(void) {
     const char *yaml =
         "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
@@ -988,6 +1069,7 @@ int main(void) {
         { "reject_cross_card_forward", test_reject_cross_card_forward },
         { "flow_field_modifiers", test_flow_field_modifiers },
         { "background_and_match_mask", test_background_and_match_mask },
+        { "encap_flow_compiles", test_encap_flow_compiles },
         { "fake_backend", test_fake_backend },
         { "bar_backend_path", test_bar_backend_path },
         { "bar_backend_window_writes", test_bar_backend_window_writes },

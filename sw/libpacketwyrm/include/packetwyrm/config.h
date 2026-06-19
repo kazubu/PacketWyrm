@@ -72,6 +72,32 @@ struct pw_flow_ipv6 {
     uint8_t  dscp;        /* optional, 0..63; emitted as the IPv6 traffic class */
 };
 
+/* Encapsulation: wrap the flow's inner IP/UDP/test frame in an outer L3 +
+ * tunnel header. Matches enum pwfpga_encap_type. IPIP = bare outer-IP (proto
+ * 4 v4-in / 41 v6-in); GRE = outer-IP proto 47 + 4-byte GRE; EtherIP = outer-IP
+ * proto 97 + 2-byte EtherIP + a full inner Ethernet frame. Outer family is
+ * independent of the inner (v4/v6 in v4/v6). */
+enum pw_encap_kind { PW_ENCAP_NONE = 0, PW_ENCAP_IPIP = 1,
+                     PW_ENCAP_GRE = 2, PW_ENCAP_ETHERIP = 3 };
+struct pw_flow_encap {
+    bool                present;
+    uint8_t             type;        /* enum pw_encap_kind */
+    struct pw_flow_ipv4 outer_ipv4;  /* outer L3 -- exactly one of v4/v6 */
+    struct pw_flow_ipv6 outer_ipv6;
+    /* EtherIP only: MAC of the encapsulated inner Ethernet frame. When unset
+     * the inner Ethernet reuses the flow's l2 MAC. */
+    bool                inner_mac_set;
+    uint8_t             inner_src_mac[6];
+    uint8_t             inner_dst_mac[6];
+};
+
+/* How the RX side receives a measured tunneled flow:
+ *  - inner: the DUT decapsulates; RX gets the bare inner frame (no decap parse)
+ *  - tunneled: RX gets the frame with the outer+encap still on it (DUT relayed
+ *    it as-is, or added its own encap); the parser must decap to the inner
+ *    test header to classify/measure. */
+enum pw_rx_expect { PW_RX_INNER = 0, PW_RX_TUNNELED = 1 };
+
 struct pw_flow_udp {
     uint16_t src_port;
     uint16_t dst_port;
@@ -142,6 +168,12 @@ struct pw_flow {
      * the classifier capacity (e.g. 32 gen slots, <=16 measured) -- the
      * unmeasured background flows do not consume a classifier entry. */
     bool background;
+
+    /* Encapsulation (optional): wrap the inner frame in an outer L3 + tunnel
+     * header. rx_expect says whether the RX side gets the bare inner frame
+     * (DUT decapsulated) or the tunneled frame (decap-parsed at RX). */
+    struct pw_flow_encap encap;
+    uint8_t  rx_expect;              /* enum pw_rx_expect; default inner */
 
     /* Per-field classifier match masks (BITWISE: a 1 bit means "this bit must
      * match"). The TEST_RX rule defaults to a full match on udp_dst / ipv4_dst;

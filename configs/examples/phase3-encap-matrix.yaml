@@ -1,0 +1,78 @@
+# Phase 3 HW: encap matrix over the SFP+ DAC loopback. Four flows, each a
+# different tunnel/family combo, distinct flow_id + udp_dst so the RX decap +
+# classifier disambiguates them. All TX p0 -> DAC -> RX p1; expect loss=0 on
+# every flow (the parser auto-decaps each tunnel and measures the inner flow).
+system: { name: "pw-encap-matrix", mode: "multi-card", default_speed: "10g",
+          control_socket: "/tmp/pw-phase3.sock" }
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+logical_interfaces:
+  - id: 1000
+    global_port: 0
+    vlan: 100
+    mac: "02:a5:02:00:00:64"
+    mtu: 9000
+    punt: { arp: false, ipv6_nd: false, lldp: false, icmp: false, bgp: false, ospf: false }
+
+flows:
+  # 1: IPIP, v4-in-v4
+  - id: 1
+    name: "ipip-v4v4"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:00:01", dst_mac: "02:a5:02:00:00:02", vlan: 100 }
+    ipv4: { src: "192.0.2.1", dst: "192.0.2.2" }
+    udp:  { src_port: 49152, dst_port: 50001 }
+    encap: { type: ipip, outer: { ipv4: { src: "10.0.0.1", dst: "10.0.0.2" } } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 1000000000 }
+    measurements: { loss: true, latency: true, jitter: false }
+
+  # 2: IPIP, v6-in-v6 (deepest inner-v6 UDP csum + deep parser offset)
+  - id: 2
+    name: "ipip-v6v6"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:00:03", dst_mac: "02:a5:02:00:00:04", vlan: 100 }
+    ipv6: { src: "2001:db8::1", dst: "2001:db8::2" }
+    udp:  { src_port: 49152, dst_port: 50002 }
+    encap: { type: ipip, outer: { ipv6: { src: "fd00::1", dst: "fd00::2" } } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 1000000000 }
+    measurements: { loss: true, latency: true, jitter: false }
+
+  # 3: GRE, v4-in-v6
+  - id: 3
+    name: "gre-v4in6"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:00:05", dst_mac: "02:a5:02:00:00:06", vlan: 100 }
+    ipv4: { src: "192.0.2.5", dst: "192.0.2.6" }
+    udp:  { src_port: 49152, dst_port: 50003 }
+    encap: { type: gre, outer: { ipv6: { src: "fd00::5", dst: "fd00::6" } } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 1000000000 }
+    measurements: { loss: true, latency: true, jitter: false }
+
+  # 4: EtherIP, v4-in-v4 with a distinct inner-Ethernet MAC
+  - id: 4
+    name: "etherip-v4v4"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:00:07", dst_mac: "02:a5:02:00:00:08", vlan: 100 }
+    ipv4: { src: "192.0.2.7", dst: "192.0.2.8" }
+    udp:  { src_port: 49152, dst_port: 50004 }
+    encap:
+      type: etherip
+      outer: { ipv4: { src: "10.0.0.7", dst: "10.0.0.8" } }
+      inner_l2: { src_mac: "02:bb:00:00:00:01", dst_mac: "02:bb:00:00:00:02" }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 1000000000 }
+    measurements: { loss: true, latency: true, jitter: false }

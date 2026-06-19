@@ -38,9 +38,14 @@ module pw_data_plane_axis #(
     parameter int PW_PORTS          = 2,
     parameter int PW_NUM_FLOWS      = 16,
     parameter int PW_NUM_BUCKETS    = 16,
-    parameter int HDR_BYTES         = 100,  // parser header-capture depth
+    parameter int HDR_BYTES         = 160,  // parser header-capture depth (deep
+                                            // enough for the inner test header of
+                                            // an encapsulated frame; see parser)
     parameter int FRAME_LEN_PAYLOAD = 32,   // flow_gen L4 payload bytes
-    parameter int SAF_DEPTH_BEATS   = 512    // per-ingress forward buffer (x8 bytes)
+    parameter int SAF_DEPTH_BEATS   = 512,   // per-ingress forward buffer (x8 bytes)
+    parameter int FLOW_ADDR_W       = 16,    // CSR address width for the flow window
+    parameter logic [15:0] FLOW_WIN_BASE      = 16'h6000,   // matches pw_csr_full
+    parameter logic [15:0] FLOW_COMMIT_OFFSET = 16'h3FFC
 ) (
     input  wire                   clk,
     input  wire                   rst_n,
@@ -103,10 +108,13 @@ module pw_data_plane_axis #(
     input  wire                   s_axis_inj_tlast,
     input  wire [3:0]             s_axis_inj_egress,
 
-    // Flow gen control (one generator per egress port, flow 1+port)
-    // Full decoded flow table; each egress port's multi-flow generator
-    // emits the rows whose egress matches it (round-robin).
-    input  pw_flow_row_t          flow_rows_i    [PW_NUM_FLOWS],
+    // Flow gen control: the flow table is BRAM-backed here (pw_flow_table_bram),
+    // fed by the CSR write strobe (decoded in pw_csr_full, routed through the
+    // top). Each egress generator schedules from the compact per-slot array and
+    // reads its picked row's wide content from the table BRAM.
+    input  wire                   flow_wr_en_i,
+    input  wire [FLOW_ADDR_W-1:0] flow_wr_addr_i,
+    input  wire [31:0]            flow_wr_data_i,
 
     // Per-flow checker counters (over all flows on the card)
     output logic [63:0]           flow_rx        [PW_NUM_FLOWS],
@@ -382,6 +390,32 @@ module pw_data_plane_axis #(
     end
 
     // ------------------------------------------------------------
+    // BRAM-backed flow table (one read port per egress generator)
+    // ------------------------------------------------------------
+    pw_flow_sched_t flow_sched [PW_NUM_FLOWS];
+    logic [$clog2(PW_NUM_FLOWS)-1:0] gen_rd_addr [PW_PORTS];
+    pw_flow_row_t                    gen_rd_row  [PW_PORTS];
+
+    pw_flow_table_bram #(
+        .ADDR_W           (FLOW_ADDR_W),
+        .DEPTH            (PW_NUM_FLOWS),
+        .PORTS            (PW_PORTS),
+        .FRAME_LEN_PAYLOAD(FRAME_LEN_PAYLOAD),
+        .WIN_BASE         (FLOW_WIN_BASE),
+        .COMMIT_OFFSET    (FLOW_COMMIT_OFFSET)
+    ) u_flow_table (
+        .clk            (clk),
+        .rst_n          (rst_n),          // table survives the datapath soft-reset
+        .wr_en          (flow_wr_en_i),
+        .wr_addr         (flow_wr_addr_i),
+        .wr_data         (flow_wr_data_i),
+        .flow_sched_o   (flow_sched),
+        .rd_addr_i      (gen_rd_addr),
+        .rd_row_o       (gen_rd_row),
+        .commit_pulse_o ()
+    );
+
+    // ------------------------------------------------------------
     // Per-egress flow generators
     // ------------------------------------------------------------
     logic [63:0] gen_td [PW_PORTS];
@@ -394,7 +428,8 @@ module pw_data_plane_axis #(
         for (gp = 0; gp < PW_PORTS; gp++) begin : g_gen
             // One multi-flow generator per egress port: it emits every flow
             // row whose egress == gp, round-robin, each with its own flow_id
-            // / sequence / token bucket.
+            // / sequence / token bucket. Schedules from flow_sched[]; reads the
+            // picked row's wide content from the table BRAM via its read port.
             pw_flow_gen_multi #(
                 .EGRESS_PORT      (gp),
                 .NUM_SLOTS        (PW_NUM_FLOWS),
@@ -403,7 +438,9 @@ module pw_data_plane_axis #(
                 .clk         (clk),
                 .rst_n       (dp_rst_n),   // soft-reset clears wedged generator
                 .timestamp_i (timestamp_i),
-                .f_rows_i    (flow_rows_i),
+                .flow_sched_i(flow_sched),
+                .rd_addr_o   (gen_rd_addr[gp]),
+                .rd_row_i    (gen_rd_row[gp]),
                 .m_tdata     (gen_td[gp]),
                 .m_tkeep     (gen_tk[gp]),
                 .m_tvalid    (gen_tv[gp]),

@@ -145,6 +145,19 @@ flows:
                                      # flows (up to the HW slot count) than the
                                      # classifier capacity (e.g. 32 gen / 16 meas).
 
+    encap:                           # optional: wrap the inner frame in a tunnel
+      type: ipip                     #   ipip | gre | etherip
+      outer:                         #   outer L3 -- exactly one of ipv4 / ipv6
+        ipv4: { src: "10.0.0.1", dst: "10.0.0.2", ttl: 32, dscp: 0 }
+        # ipv6: { src: "2001:db8::1", dst: "2001:db8::2", hop_limit: 64 }
+      # inner_l2:                    # EtherIP only, optional: MAC of the inner
+      #   src_mac: "02:bb:00:00:00:01"   # Ethernet frame. Defaults to the flow
+      #   dst_mac: "02:bb:00:00:00:02"   # l2 MAC when omitted.
+    rx_expect: tunneled              # optional, default inner. inner = DUT
+                                     #   decapsulated (RX gets the bare inner
+                                     #   frame); tunneled = RX gets the frame
+                                     #   with the outer+tunnel still on it.
+
     match:                           # optional: narrow the RX classifier match
       udp_dst: 0xff00                # bitwise mask (1 = bit must match); default
       ipv4_dst: 0xffffff00           # full match. Lets the rule classify on part
@@ -190,6 +203,36 @@ there is no extra per-slot state. Notes:
   checksum). All rotate off the same sequence (correlated, not a full
   cross-product). Full 128-bit IPv6-address rotation is a mechanical
   extension of the same scheme.
+
+`encap` wraps the flow's inner IP/UDP/test frame in an outer L3 + tunnel
+header so PacketWyrm can exercise a DUT's tunnel decap/encap path:
+
+- `type: ipip` — bare outer IP (proto 4 for a v4 inner, 41 for a v6 inner).
+- `type: gre` — outer IP proto 47 + a 4-byte GRE header (protocol-type
+  `0x0800` / `0x86DD` matching the inner family).
+- `type: etherip` — outer IP proto 97 + a 2-byte EtherIP header + a full
+  inner Ethernet header. The inner Ethernet MAC comes from `encap.inner_l2`
+  (`src_mac`/`dst_mac`); when that block is omitted it reuses the flow's `l2`
+  MACs.
+- `outer:` carries its own `ipv4`/`ipv6` block (src/dst, ttl/hop_limit,
+  dscp); the **outer family is independent of the inner** (v4-in-v6, etc.).
+- The outer IPv4 header checksum is computed in hardware. The inner header
+  checksums (IPv4 header / IPv6 UDP) are unchanged — egress timestamping
+  still rewrites the inner test header's `tx_timestamp` and fixes up the
+  inner UDP checksum at its (encap-dependent) deep offset.
+- The test header lives in the **innermost** UDP payload, so loss/latency
+  measurement is identical to a non-encapsulated flow.
+
+`rx_expect` says how the measured return traffic arrives:
+
+- `inner` (default) — the DUT decapsulated; RX receives the bare inner frame.
+- `tunneled` — RX receives the frame with the outer + tunnel header still on
+  it (the DUT relayed it as-is or added its own encap).
+
+The RX parser auto-decapsulates recognized tunnels (IPIP/GRE/EtherIP) and
+classifies on the **inner** frame, so both `rx_expect` modes are measured by
+matching the inner test header; `rx_expect` is recorded for the daemon's
+benefit. (Both inner and outer may be v4 or v6.)
 
 Constraints:
 
