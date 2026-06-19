@@ -21,12 +21,21 @@ For where work is going next, see `NEXT-STEPS.md`.
     RX parser auto-decapsulates recognized tunnels and classifies on the inner
     test flow. `rx_expect: inner|tunneled` records whether the DUT decapsulated
     the return traffic. Full stack: config/wire/compiler, RTL (generator,
-    `pw_ts_insert`, `pw_parser_axis`, flow-window/row), sims (`sim_fge` byte-level
-    + gen→decap round-trip, `sim_tsi` deep-offset cases), and docs. To make room
-    on the fabric, `pw_flow_window`'s dead legacy per-port `gen_*_o` single-flow
-    selection (a 32:1 priority mux per field × egress port, unused since the
-    multi-flow generator consumes `flow_rows_o` directly) was removed, recovering
-    a block of LUTs.
+    `pw_ts_insert`, `pw_parser_axis`, flow table/row), sims (`sim_fge` byte-level
+    + gen→decap round-trip, `sim_tsi` deep-offset cases, `sim_ftb`), and docs.
+    **Validated on HW** (KU3P, SFP+ DAC loopback): all four combos — IPIP v4/v4,
+    IPIP v6/v6, GRE v4-in-v6, EtherIP v4/v4 — run loss=0 at line rate, latency
+    70–82 ns, 0 drops (`configs/examples/phase3-encap{,-matrix}.yaml` via
+    `pw_phase3_loopback`).
+  - **BRAM-backed flow table** (`pw_flow_table_bram`) — to fit the encap-widened
+    data plane on the fabric: the 32-wide registered flow-row array + its fan-out
+    + the per-generator 32:1 row mux (the routing wall, ~92% LUT) were replaced
+    with a block-RAM table (decoded once via a commit walk into a per-generator
+    BRAM copy) + a compact per-slot scheduling FF array; the dead legacy
+    `gen_*_o` selection was removed. LUT 92%→87%, FF 78%→66%, +34 RAMB36. The
+    parser was split 2→3 stages (L2+decap-descent / inner L3-L4 / test extract)
+    and the quasi-static shadow→live commit paths multicycled, to recover dp_clk
+    margin. Host CSR/wire format unchanged.
   - **Background (load) flows** — a flow can set `background: true` to generate
     TX-only traffic with no RX classifier rule and no measurement. Background
     flows don't consume a classifier entry, so a config can run more generator
