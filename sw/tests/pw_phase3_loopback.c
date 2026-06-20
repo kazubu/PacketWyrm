@@ -114,6 +114,11 @@ int main(int argc, char **argv) {
         if (o->port_stats_read) { o->port_stats_read(be.ctx, 0, &p0); o->port_stats_read(be.ctx, 1, &p1); }
         printf("[%d] port_drops: p0=%llu p1=%llu\n", it,
                (unsigned long long)p0.rx_bad_frame, (unsigned long long)p1.rx_bad_frame);
+        printf("    p0 rx=%llu/%lluB tx=%llu/%lluB | p1 rx=%llu/%lluB tx=%llu/%lluB\n",
+               (unsigned long long)p0.rx_frames, (unsigned long long)p0.rx_bytes,
+               (unsigned long long)p0.tx_frames, (unsigned long long)p0.tx_bytes,
+               (unsigned long long)p1.rx_frames, (unsigned long long)p1.rx_bytes,
+               (unsigned long long)p1.tx_frames, (unsigned long long)p1.tx_bytes);
         for (size_t m = 0; m < prog->n_flow_meta; m++) {
             uint32_t lf = prog->flow_meta[m].rx_local_flow_id;
             struct pw_flow_stats rs = {0};
