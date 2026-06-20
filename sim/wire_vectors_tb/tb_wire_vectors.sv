@@ -41,7 +41,8 @@ module tb_wire_vectors;
     logic [47:0] ps_zero         [NUM_PORTS] = '{default: 48'd0};  // port stats not exercised here
     logic [31:0] pl_zero         [NUM_PORTS] = '{default: 32'd0};  // link-health counts not exercised here
     logic [47:0] ftx_zero        [NUM_FLOWS] = '{default: 48'd0};  // per-flow tx not exercised here
-    logic [63:0] fjit_zero       [NUM_FLOWS] = '{default: 64'd0};  // per-flow jitter not exercised here
+    logic [63:0] fjit_zero       [NUM_FLOWS] = '{default: 64'd0};  // per-flow jitter sum not exercised here
+    logic [31:0] fjit32_zero     [NUM_FLOWS] = '{default: 32'd0};  // per-flow jitter min/max not exercised here
     logic [63:0] flow_rx         [NUM_FLOWS];
     logic [63:0] flow_lost       [NUM_FLOWS];
     logic [63:0] flow_dup        [NUM_FLOWS];
@@ -122,8 +123,8 @@ module tb_wire_vectors;
         .flow_max_lat_i      (flow_max_lat),
         .flow_sum_lat_i      (flow_sum_lat),
         .flow_samples_i      (flow_samples),
-        .flow_jit_min_i      (fjit_zero),
-        .flow_jit_max_i      (fjit_zero),
+        .flow_jit_min_i      (fjit32_zero),
+        .flow_jit_max_i      (fjit32_zero),
         .flow_jit_sum_i      (fjit_zero),
         .flow_tx_i           (ftx_zero),
         .hist_rd_addr_o      (),

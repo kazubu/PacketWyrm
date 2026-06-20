@@ -78,8 +78,8 @@ module pw_stats_snapshot #(
     input  wire [63:0]                flow_sum_lat_i    [NUM_FLOWS],
     input  wire [63:0]                flow_samples_i    [NUM_FLOWS],
     input  wire [47:0]                flow_tx_i         [NUM_FLOWS],
-    input  wire [63:0]                flow_jit_min_i    [NUM_FLOWS],
-    input  wire [63:0]                flow_jit_max_i    [NUM_FLOWS],
+    input  wire [31:0]                flow_jit_min_i    [NUM_FLOWS],
+    input  wire [31:0]                flow_jit_max_i    [NUM_FLOWS],
     input  wire [63:0]                flow_jit_sum_i    [NUM_FLOWS],
 
     input  wire [15:0]                rd_addr_i,
@@ -154,8 +154,8 @@ module pw_stats_snapshot #(
                 fr = put_u32(fr,  84, flow_max_lat_i[f][31:0]);  // max_latency
                 fr = put_u64(fr,  88, flow_sum_lat_i[f]);        // sum_latency
                 fr = put_u64(fr,  96, flow_samples_i[f]);        // sample_count
-                fr = put_u32(fr, 104, flow_jit_min_i[f][31:0]);  // jitter_min
-                fr = put_u32(fr, 108, flow_jit_max_i[f][31:0]);  // jitter_max
+                fr = put_u32(fr, 104, flow_jit_min_i[f]);        // jitter_min
+                fr = put_u32(fr, 108, flow_jit_max_i[f]);        // jitter_max
                 fr = put_u64(fr, 112, flow_jit_sum_i[f]);        // jitter_sum
                 shadow_flow[f] <= fr;
             end

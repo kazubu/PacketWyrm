@@ -83,8 +83,8 @@ module pw_csr_full #(
     input  wire [63:0]       flow_max_lat_i    [NUM_FLOWS],
     input  wire [63:0]       flow_sum_lat_i    [NUM_FLOWS],
     input  wire [63:0]       flow_samples_i    [NUM_FLOWS],
-    input  wire [63:0]       flow_jit_min_i    [NUM_FLOWS],
-    input  wire [63:0]       flow_jit_max_i    [NUM_FLOWS],
+    input  wire [31:0]       flow_jit_min_i    [NUM_FLOWS],
+    input  wire [31:0]       flow_jit_max_i    [NUM_FLOWS],
     input  wire [63:0]       flow_jit_sum_i    [NUM_FLOWS],
     input  wire [47:0]       flow_tx_i         [NUM_FLOWS],
 

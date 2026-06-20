@@ -129,8 +129,8 @@ module pw_data_plane_axis #(
     output logic [63:0]           flow_max_lat   [PW_NUM_FLOWS],
     output logic [63:0]           flow_sum_lat   [PW_NUM_FLOWS],
     output logic [63:0]           flow_samples   [PW_NUM_FLOWS],
-    output logic [63:0]           flow_jit_min   [PW_NUM_FLOWS],
-    output logic [63:0]           flow_jit_max   [PW_NUM_FLOWS],
+    output logic [31:0]           flow_jit_min   [PW_NUM_FLOWS],
+    output logic [31:0]           flow_jit_max   [PW_NUM_FLOWS],
     output logic [63:0]           flow_jit_sum   [PW_NUM_FLOWS],
     output logic [47:0]           flow_tx        [PW_NUM_FLOWS],  // emitted frames (tx-rx loss)
 
@@ -305,8 +305,8 @@ module pw_data_plane_axis #(
     logic [63:0] pc_max  [PW_PORTS][PW_NUM_FLOWS];
     logic [63:0] pc_sum  [PW_PORTS][PW_NUM_FLOWS];
     logic [63:0] pc_samp [PW_PORTS][PW_NUM_FLOWS];
-    logic [63:0] pc_jmin [PW_PORTS][PW_NUM_FLOWS];
-    logic [63:0] pc_jmax [PW_PORTS][PW_NUM_FLOWS];
+    logic [31:0] pc_jmin [PW_PORTS][PW_NUM_FLOWS];
+    logic [31:0] pc_jmax [PW_PORTS][PW_NUM_FLOWS];
     logic [63:0] pc_jsum [PW_PORTS][PW_NUM_FLOWS];
 
     // Per-port registered histogram events into the BRAM histogram.
@@ -374,7 +374,8 @@ module pw_data_plane_axis #(
             automatic logic [63:0] rx = '0, lost = '0, dup = '0, ooo = '0;
             automatic logic [63:0] sum = '0, samp = '0, lseq = '0;
             automatic logic [63:0] mn = {64{1'b1}}, mx = '0;
-            automatic logic [63:0] jmn = {64{1'b1}}, jmx = '0, jsm = '0;
+            automatic logic [31:0] jmn = {32{1'b1}}, jmx = '0;
+            automatic logic [63:0] jsm = '0;
             for (int p = 0; p < PW_PORTS; p++) begin
                 rx   += pc_rx[p][f];
                 lost += pc_lost[p][f];

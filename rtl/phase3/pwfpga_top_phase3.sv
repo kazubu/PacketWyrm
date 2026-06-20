@@ -114,8 +114,8 @@ module pwfpga_top_phase3 #(
     logic [63:0] flow_max_lat_w   [NUM_FLOWS];
     logic [63:0] flow_sum_lat_w   [NUM_FLOWS];
     logic [63:0] flow_samples_w   [NUM_FLOWS];
-    logic [63:0] flow_jit_min_w   [NUM_FLOWS];
-    logic [63:0] flow_jit_max_w   [NUM_FLOWS];
+    logic [31:0] flow_jit_min_w   [NUM_FLOWS];
+    logic [31:0] flow_jit_max_w   [NUM_FLOWS];
     logic [63:0] flow_jit_sum_w   [NUM_FLOWS];
     logic [47:0] flow_tx_w        [NUM_FLOWS];
 
