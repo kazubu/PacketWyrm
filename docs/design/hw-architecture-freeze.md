@@ -22,7 +22,26 @@ on the existing PUNT/MIRROR slow path (host TAP).
 
 ## What must go into silicon NOW (retrofit-expensive hooks)
 
-### 1. PTP-ready timestamp architecture  ← the load-bearing item
+### DECISION (2026-06-21): raw HW timestamps + SW correction
+
+`pw_ts_gray_cdc` (egress timestamp dp_clk→MAC-TX) is a Gray-code CDC: correct
+only when the counter steps by 0/1 per cycle. A *disciplined* counter speeding
+up (period_inc > nominal) would step +2 → two Gray bits flip → a mid-transition
+sample can resolve to garbage → corrupted wire timestamps. So we do **not**
+discipline the HW counter. Instead:
+
+- The dp_clk counter stays free-running `+1`/cycle (Gray-CDC unchanged).
+- HW captures **raw wire timestamps** (TX egress already does; add RX ingress).
+- The SW PTP servo measures each card's offset/skew vs the grandmaster from PTP
+  packet exchanges and **corrects the raw timestamps in software**. Adequate for
+  a latency tester (one-way latency = corrected rx_wire_ts − corrected tx_wire_ts).
+
+So the original "disciplinable counter" (item 1 below) is **dropped**, and
+"atomic snapshot" is moot (the flow snapshot is a BRAM walk, coherent per-flow;
+final loss uses stop→drain→snapshot). The remaining HW hook is the RX ingress
+wire-stamp (item, was step 3) + exposing TX/RX wire timestamps for PTP packets.
+
+### 1. (DROPPED) PTP-ready disciplinable timestamp
 
 Cross-card / cross-chassis one-way latency **is in scope**, so the timestamp
 unit must become a *disciplinable clock* and the RX path must *wire-stamp at
@@ -48,6 +67,24 @@ nanosecond accumulator:
   cycles); the test header `tx_timestamp` and all latency math inherit ns units.
 - Same-card latency is unaffected (both ends already share this counter);
   cross-card becomes valid once both cards discipline to the same grandmaster.
+
+**Concrete RX wire-stamp implementation plan** (scoped 2026-06-21):
+1. Board top: per-port `pw_ts_gray_cdc` dp_clk→`sfp_rx_clk` → `ts_rx[p]` (the +1
+   counter is Gray-safe). Latch `rx_wire_ts[p]` at RX SOF in `sfp_rx_clk`.
+2. `pw_mac_axis_cdc` (rtl/phase2): widen the RX async-FIFO `USER_W` 1→65 and pack
+   `{rx_wire_ts_at_sof, mac_rx_tuser}`; the 64-bit ts (held over the frame)
+   crosses with the frame, emerging as `dp_rx` user on dp_clk.
+3. `pw_data_plane_axis`: split the dp_rx user into rx_tuser + rx_wire_ts per port;
+   present rx_wire_ts to the parser as per-frame metadata.
+4. `pw_parser_axis`: carry rx_wire_ts from SOF through the 3 stages so it emerges
+   aligned with `key_valid` (the test header is at end-of-frame). THE alignment
+   risk — verify in sim that the ts that exits matches the frame's SOF capture.
+5. `pw_test_rx_checker_bram`: take rx_wire_ts on the event and use it for latency
+   (`latency = rx_wire_ts − tx_ts`) instead of the dp_clk `timestamp_i` sampled
+   at the checker — removes the RX-FIFO-occupancy jitter (tighter min/max even
+   same-card) and is the cross-card one-way reference.
+HW check: same-card loopback min/max latency spread should *shrink* vs today's
+71–77; loss still 0.
 
 **1b. RX ingress wire-stamp (the expensive plumb — do it now).**
 Today RX latency = `dp_clk timestamp at the checker − test_tx_timestamp`, i.e.
