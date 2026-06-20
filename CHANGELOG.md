@@ -9,6 +9,16 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Per-port Tx/Rx frame + byte counters** — `pw_data_plane_axis` now counts
+    every frame/byte at each port's ingress (rx_frames/rx_bytes) and egress
+    (tx_frames/tx_bytes), 48-bit (zero-extended to the 64-bit snapshot fields),
+    filling the previously-zeroed `pw_port_stats` slots. The SAF forward-buffer
+    overflow (previously a silent drop) folds into `port_drops`, and a stats
+    clear now re-baselines the port counters + `port_drops`. `pw_phase3_loopback`
+    prints them. NUM_FLOWS dropped 32→24 for the LUT headroom (80.7%, dp_clk
+    +0.038 met). HW-validated: per-port counters track the loopback (p0 tx ==
+    p1 rx), encap matrix still loss=0. (Pending: standalone `stats clear` CLI,
+    per-flow TX / true loss, link-health + jitter.)
   - **Encapsulated packet generation + RX decap (IPIP / GRE / EtherIP)** — a flow
     can set `encap: { type, outer: {ipv4|ipv6} }` to wrap its inner IP/UDP/test
     frame in a tunnel: IPIP (outer-IP proto 4/41), GRE (proto 47 + 4-byte GRE),

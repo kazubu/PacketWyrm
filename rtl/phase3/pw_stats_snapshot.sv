@@ -36,8 +36,10 @@
 //    108  jitter_max          (u32)
 //    112  jitter_sum          (u64)
 //
-// Fields the data plane does not yet produce (tx counters, rx_bytes,
-// jitter, etc.) are zeroed in the snapshot.
+// Per-port rx/tx frames+bytes are now produced (pw_data_plane_axis port
+// counters); port_drops lands in rx_bad_frame@24. Fields still not produced
+// (rx_fcs_error / oversize / undersize / link counters; per-flow jitter) are
+// zeroed in the snapshot.
 
 `default_nettype none
 
