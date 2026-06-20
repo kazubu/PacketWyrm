@@ -39,7 +39,9 @@ module tb_wire_vectors;
 
     logic [31:0] port_drops      [NUM_PORTS];
     logic [47:0] ps_zero         [NUM_PORTS] = '{default: 48'd0};  // port stats not exercised here
+    logic [31:0] pl_zero         [NUM_PORTS] = '{default: 32'd0};  // link-health counts not exercised here
     logic [47:0] ftx_zero        [NUM_FLOWS] = '{default: 48'd0};  // per-flow tx not exercised here
+    logic [63:0] fjit_zero       [NUM_FLOWS] = '{default: 64'd0};  // per-flow jitter not exercised here
     logic [63:0] flow_rx         [NUM_FLOWS];
     logic [63:0] flow_lost       [NUM_FLOWS];
     logic [63:0] flow_dup        [NUM_FLOWS];
@@ -107,6 +109,10 @@ module tb_wire_vectors;
         .rx_bytes_i          (ps_zero),
         .tx_frames_i         (ps_zero),
         .tx_bytes_i          (ps_zero),
+        .rx_fcs_err_i        (ps_zero),
+        .link_up_cnt_i       (pl_zero),
+        .link_down_cnt_i     (pl_zero),
+        .block_lock_loss_i   (pl_zero),
         .flow_rx_i           (flow_rx),
         .flow_lost_i         (flow_lost),
         .flow_dup_i          (flow_dup),
@@ -116,6 +122,9 @@ module tb_wire_vectors;
         .flow_max_lat_i      (flow_max_lat),
         .flow_sum_lat_i      (flow_sum_lat),
         .flow_samples_i      (flow_samples),
+        .flow_jit_min_i      (fjit_zero),
+        .flow_jit_max_i      (fjit_zero),
+        .flow_jit_sum_i      (fjit_zero),
         .flow_tx_i           (ftx_zero),
         .hist_rd_addr_o      (),
         .hist_rd_data_i      (hist_rd_data_w),

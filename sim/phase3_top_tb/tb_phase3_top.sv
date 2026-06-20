@@ -76,6 +76,9 @@ module tb_phase3_top;
     logic        rx_tvalid [NUM_PORTS];
     logic        rx_tready [NUM_PORTS];
     logic        rx_tlast  [NUM_PORTS];
+    logic        rx_tuser     [NUM_PORTS] = '{default: 1'b0};
+    logic        link_up_t    [NUM_PORTS] = '{default: 1'b1};
+    logic        block_lock_t [NUM_PORTS] = '{default: 1'b1};
 
     // Per-port AXIS TX (out of DUT)
     logic [63:0] tx_tdata  [NUM_PORTS];
@@ -117,6 +120,9 @@ module tb_phase3_top;
         .s_axis_rx_tvalid (rx_tvalid),
         .s_axis_rx_tready (rx_tready),
         .s_axis_rx_tlast  (rx_tlast),
+        .s_axis_rx_tuser  (rx_tuser),
+        .link_up_i        (link_up_t),
+        .block_lock_i     (block_lock_t),
         .m_axis_tx_tdata  (tx_tdata),
         .m_axis_tx_tkeep  (tx_tkeep),
         .m_axis_tx_tvalid (tx_tvalid),

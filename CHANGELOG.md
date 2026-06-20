@@ -9,6 +9,23 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Per-flow IPDV jitter** — `pw_test_rx_checker` now tracks each flow's
+    previous-sample latency and accumulates `|latency[n] - latency[n-1]|` into
+    per-flow jitter min / max / sum (RFC-3393 instantaneous packet delay
+    variation; the first sample only seeds `prev_latency`). Surfaces in the flow
+    stats block at jitter_min@104 / jitter_max@108 / jitter_sum@112 and is
+    printed by `pw_phase3_loopback` (with a derived average over n-1 deltas).
+  - **Per-port link health + FCS errors** — `pw_data_plane_axis` 2-FF
+    synchronizes the async MAC/PCS `link_up` / `block_lock` status into `dp_clk`
+    and edge-counts link-up / link-down transitions and block-lock losses
+    (`link_up_count@64` / `link_down_count@68` / `block_lock_loss@72`, sticky
+    across `stats_clear`); RX `tuser`-on-`tlast` errored frames are counted into
+    `rx_fcs_error@16`. A `set_false_path` constrains the status synchronizer.
+  - **Per-flow TX counters (true loss = tx − rx)** — the generator keeps a
+    clearable per-slot TX frame counter that merges into the flow stats block's
+    `tx_frames`; `pw_phase3_loopback` prints `tx / rx / loss(tx−rx)`. (The
+    snapshot reads tx and rx non-atomically, so a single frame in flight shows
+    as loss(tx−rx)=±1; `lost_packets_estimated` is the authoritative loss.)
   - **Per-port Tx/Rx frame + byte counters** — `pw_data_plane_axis` now counts
     every frame/byte at each port's ingress (rx_frames/rx_bytes) and egress
     (tx_frames/tx_bytes), 48-bit (zero-extended to the 64-bit snapshot fields),
@@ -17,8 +34,7 @@ For where work is going next, see `NEXT-STEPS.md`.
     clear now re-baselines the port counters + `port_drops`. `pw_phase3_loopback`
     prints them. NUM_FLOWS dropped 32→24 for the LUT headroom (80.7%, dp_clk
     +0.038 met). HW-validated: per-port counters track the loopback (p0 tx ==
-    p1 rx), encap matrix still loss=0. (Pending: standalone `stats clear` CLI,
-    per-flow TX / true loss, link-health + jitter.)
+    p1 rx), encap matrix still loss=0.
   - **Encapsulated packet generation + RX decap (IPIP / GRE / EtherIP)** — a flow
     can set `encap: { type, outer: {ipv4|ipv6} }` to wrap its inner IP/UDP/test
     frame in a tunnel: IPIP (outer-IP proto 4/41), GRE (proto 47 + 4-byte GRE),

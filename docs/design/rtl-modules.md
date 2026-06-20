@@ -30,7 +30,10 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
         |                        read port + compact scheduling FF array)
         +-- per ingress port: pw_parser_axis -> pw_classifier (RESULT_STAGES=2)
         |                      -> pw_frame_saf (store-and-forward)
-        +-- per ingress port: pw_test_rx_checker (loss/dup/ooo/min/max/sum)
+        +-- per ingress port: pw_test_rx_checker (loss/dup/ooo/min/max/sum +
+        |                      RFC-3393 IPDV jitter min/max/sum)
+        +-- link health: per-port 2-FF sync + edge count of MAC link_up /
+        |                block_lock; FCS errors from RX tuser-on-tlast
         +-- pw_lat_histogram     shared BRAM latency histogram
         +-- per egress port:  pw_flow_gen_multi (N-slot token-bucket gen)
         +-- egress / punt arbiters
@@ -241,6 +244,10 @@ Output: a flat "header descriptor" with all extracted fields plus a
 - Computes `rx_timestamp - tx_timestamp` (both from this card's
   `timestamp_unit`) and updates min / max / sum / sample_count plus
   the histogram bin.
+- Per-flow IPDV jitter (RFC-3393): tracks the previous sample's latency
+  and accumulates `|latency[n] - latency[n-1]|` into jitter min / max /
+  sum (the first sample of a flow only seeds `prev_latency`). Surfaces in
+  the flow stats block at jitter_min@104 / jitter_max@108 / jitter_sum@112.
 - Cross-card flows still hit `test_rx_checker`; daemon flags
   `latency_valid = false` on those flows and the host does not surface
   the (invalid) latency numbers.

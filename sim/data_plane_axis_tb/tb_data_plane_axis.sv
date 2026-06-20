@@ -126,11 +126,19 @@ module tb_data_plane_axis;
     logic [63:0] flow_max_lat   [FLOWS];
     logic [63:0] flow_sum_lat   [FLOWS];
     logic [63:0] flow_samples   [FLOWS];
+    logic [63:0] flow_jit_min   [FLOWS];
+    logic [63:0] flow_jit_max   [FLOWS];
+    logic [63:0] flow_jit_sum   [FLOWS];
     logic [47:0] flow_tx_d      [FLOWS];
     logic [15:0] hist_rd_addr = 16'h0;
     logic [63:0] hist_rd_data;
     logic [31:0] port_drops     [PORTS];
     logic [47:0] rxf_d [PORTS], rxb_d [PORTS], txf_d [PORTS], txb_d [PORTS];
+    logic        rx_tuser   [PORTS];
+    logic        link_up_dp [PORTS];
+    logic        block_lock_dp [PORTS];
+    logic [47:0] fcs_d  [PORTS];
+    logic [31:0] luc_d  [PORTS], ldc_d [PORTS], bllc_d [PORTS];
 
     pw_data_plane_axis #(
         .PW_PORTS         (PORTS),
@@ -150,6 +158,9 @@ module tb_data_plane_axis;
         .s_axis_rx_tvalid (rx_tvalid),
         .s_axis_rx_tready (rx_tready),
         .s_axis_rx_tlast  (rx_tlast),
+        .s_axis_rx_tuser  (rx_tuser),
+        .link_up_i        (link_up_dp),
+        .block_lock_i     (block_lock_dp),
         .m_axis_tx_tdata  (tx_tdata),
         .m_axis_tx_tkeep  (tx_tkeep),
         .m_axis_tx_tvalid (tx_tvalid),
@@ -180,6 +191,9 @@ module tb_data_plane_axis;
         .flow_max_lat     (flow_max_lat),
         .flow_sum_lat     (flow_sum_lat),
         .flow_samples     (flow_samples),
+        .flow_jit_min     (flow_jit_min),
+        .flow_jit_max     (flow_jit_max),
+        .flow_jit_sum     (flow_jit_sum),
         .flow_tx          (flow_tx_d),
         .hist_rd_addr_i   (hist_rd_addr),
         .hist_rd_data_o   (hist_rd_data),
@@ -187,7 +201,11 @@ module tb_data_plane_axis;
         .rx_frames_o      (rxf_d),
         .rx_bytes_o       (rxb_d),
         .tx_frames_o      (txf_d),
-        .tx_bytes_o       (txb_d)
+        .tx_bytes_o       (txb_d),
+        .rx_fcs_error_o   (fcs_d),
+        .link_up_cnt_o    (luc_d),
+        .link_down_cnt_o  (ldc_d),
+        .block_lock_loss_o(bllc_d)
     );
 
     // --- egress / punt collectors (reassemble forwarded & punted frames)
@@ -378,6 +396,9 @@ module tb_data_plane_axis;
             inj_tdata[p]  = '0; inj_tkeep[p] = '0;
             inj_tvalid[p] = 1'b0; inj_tlast[p] = 1'b0;
             tx_tready[p]  = 1'b1;
+            rx_tuser[p]   = 1'b0;     // no errored frames in loopback
+            link_up_dp[p]    = 1'b1;  // links up, locked
+            block_lock_dp[p] = 1'b1;
         end
         // Flow table: slot 0 -> egress 0 (flow_id 1), slot 1 -> egress 1
         // (flow_id 2). .valid toggles each generator; other slots idle.

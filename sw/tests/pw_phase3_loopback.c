@@ -119,6 +119,12 @@ int main(int argc, char **argv) {
                (unsigned long long)p0.tx_frames, (unsigned long long)p0.tx_bytes,
                (unsigned long long)p1.rx_frames, (unsigned long long)p1.rx_bytes,
                (unsigned long long)p1.tx_frames, (unsigned long long)p1.tx_bytes);
+        printf("    p0 fcs_err=%llu link_up=%u down=%u blk_lock_loss=%u | "
+               "p1 fcs_err=%llu link_up=%u down=%u blk_lock_loss=%u\n",
+               (unsigned long long)p0.rx_fcs_error, p0.link_up_count,
+               p0.link_down_count, p0.block_lock_loss,
+               (unsigned long long)p1.rx_fcs_error, p1.link_up_count,
+               p1.link_down_count, p1.block_lock_loss);
         for (size_t m = 0; m < prog->n_flow_meta; m++) {
             uint32_t lf = prog->flow_meta[m].rx_local_flow_id;
             struct pw_flow_stats rs = {0};
@@ -126,14 +132,18 @@ int main(int argc, char **argv) {
             unsigned long long txf = (unsigned long long)rs.tx_frames;
             unsigned long long rxf = (unsigned long long)rs.rx_frames;
             long long trueloss = (long long)txf - (long long)rxf;
+            unsigned long long jsamp = (rs.sample_count > 1) ? (rs.sample_count - 1) : 0;
+            unsigned long long javg  = jsamp ? (unsigned long long)(rs.jitter_sum / jsamp) : 0;
             printf("    flow %u (lf=%u): tx=%llu rx=%llu loss(tx-rx)=%lld "
-                   "lost_est=%llu dup=%llu ooo=%llu min_lat=%u max_lat=%u samples=%llu\n",
+                   "lost_est=%llu dup=%llu ooo=%llu min_lat=%u max_lat=%u samples=%llu "
+                   "jit_min=%u jit_max=%u jit_avg=%llu\n",
                    prog->flow_meta[m].global_flow_id, lf, txf, rxf, trueloss,
                    (unsigned long long)rs.lost_packets_estimated,
                    (unsigned long long)rs.duplicate_count,
                    (unsigned long long)rs.out_of_order_count,
                    rs.min_latency, rs.max_latency,
-                   (unsigned long long)rs.sample_count);
+                   (unsigned long long)rs.sample_count,
+                   rs.jitter_min, rs.jitter_max, javg);
         }
     }
 
