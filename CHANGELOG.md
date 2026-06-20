@@ -15,6 +15,10 @@ For where work is going next, see `NEXT-STEPS.md`.
     variation; the first sample only seeds `prev_latency`). Surfaces in the flow
     stats block at jitter_min@104 / jitter_max@108 / jitter_sum@112 and is
     printed by `pw_phase3_loopback` (with a derived average over n-1 deltas).
+    min/max (and the internal `prev_latency`) are 32-bit — a single inter-arrival
+    delta never approaches 2^32 ns, and the snapshot fields are u32 anyway — while
+    `sum` stays 64-bit (it accumulates over the whole run); this reclaims the
+    dp_clk LUT headroom that a fully-64-bit jitter path had pushed to ~90%.
   - **Per-port link health + FCS errors** — `pw_data_plane_axis` 2-FF
     synchronizes the async MAC/PCS `link_up` / `block_lock` status into `dp_clk`
     and edge-counts link-up / link-down transitions and block-lock losses

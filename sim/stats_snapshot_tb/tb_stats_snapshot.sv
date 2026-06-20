@@ -64,8 +64,8 @@ module tb_stats_snapshot;
     logic [63:0] flow_max_lat   [NUM_FLOWS];
     logic [63:0] flow_sum_lat   [NUM_FLOWS];
     logic [63:0] flow_samples   [NUM_FLOWS];
-    logic [63:0] flow_jit_min   [NUM_FLOWS];
-    logic [63:0] flow_jit_max   [NUM_FLOWS];
+    logic [31:0] flow_jit_min   [NUM_FLOWS];
+    logic [31:0] flow_jit_max   [NUM_FLOWS];
     logic [63:0] flow_jit_sum   [NUM_FLOWS];
     logic [47:0] flow_tx_s     [NUM_FLOWS];
 
