@@ -31,11 +31,13 @@ module tb_flow_gen_multi;
     end
     logic [$clog2(SLOTS)-1:0] rd_addr;
     pw_flow_row_t             rd_row;
+    logic [47:0]              gtxc [SLOTS];
     always_ff @(posedge clk) rd_row <= f_rows[rd_addr];
 
     pw_flow_gen_multi #(.EGRESS_PORT(0), .NUM_SLOTS(SLOTS), .FRAME_LEN_PAYLOAD(32)) gen (
         .clk(clk), .rst_n(rst_n), .timestamp_i(ts),
         .flow_sched_i(f_sched), .rd_addr_o(rd_addr), .rd_row_i(rd_row),
+        .stats_clear_i(1'b0), .tx_count_o(gtxc),
         .m_tdata(td), .m_tkeep(tk), .m_tvalid(tv), .m_tready(1'b1), .m_tlast(tl)
     );
 

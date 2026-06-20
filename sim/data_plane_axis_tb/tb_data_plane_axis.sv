@@ -126,6 +126,7 @@ module tb_data_plane_axis;
     logic [63:0] flow_max_lat   [FLOWS];
     logic [63:0] flow_sum_lat   [FLOWS];
     logic [63:0] flow_samples   [FLOWS];
+    logic [47:0] flow_tx_d      [FLOWS];
     logic [15:0] hist_rd_addr = 16'h0;
     logic [63:0] hist_rd_data;
     logic [31:0] port_drops     [PORTS];
@@ -179,6 +180,7 @@ module tb_data_plane_axis;
         .flow_max_lat     (flow_max_lat),
         .flow_sum_lat     (flow_sum_lat),
         .flow_samples     (flow_samples),
+        .flow_tx          (flow_tx_d),
         .hist_rd_addr_i   (hist_rd_addr),
         .hist_rd_data_o   (hist_rd_data),
         .port_drops_o     (port_drops),
@@ -430,6 +432,9 @@ module tb_data_plane_axis;
         check_eq("port1 rx_frames > 0", (rxf_d[1] > 0) ? 1 : 0, 1);
         check_eq("port0 tx_bytes > frames", (txb_d[0] > txf_d[0]) ? 1 : 0, 1);
         check_eq("port1 rx_bytes > frames", (rxb_d[1] > rxf_d[1]) ? 1 : 0, 1);
+        // per-flow TX counter (gen slot 0) -> true loss = tx - rx >= 0.
+        check_eq("flow0 tx_frames > 0",   (flow_tx_d[0] > 0) ? 1 : 0, 1);
+        check_eq("flow0 tx >= rx (loss)", (flow_tx_d[0] >= flow_rx[0]) ? 1 : 0, 1);
         check_eq("loopback ooo  ", flow_ooo[0], 0);
         check_eq("loopback samples == rx", flow_samples[0], flow_rx[0]);
         check_eq("loopback min <= max",

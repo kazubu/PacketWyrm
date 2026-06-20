@@ -39,6 +39,7 @@ module tb_wire_vectors;
 
     logic [31:0] port_drops      [NUM_PORTS];
     logic [47:0] ps_zero         [NUM_PORTS] = '{default: 48'd0};  // port stats not exercised here
+    logic [47:0] ftx_zero        [NUM_FLOWS] = '{default: 48'd0};  // per-flow tx not exercised here
     logic [63:0] flow_rx         [NUM_FLOWS];
     logic [63:0] flow_lost       [NUM_FLOWS];
     logic [63:0] flow_dup        [NUM_FLOWS];
@@ -115,6 +116,7 @@ module tb_wire_vectors;
         .flow_max_lat_i      (flow_max_lat),
         .flow_sum_lat_i      (flow_sum_lat),
         .flow_samples_i      (flow_samples),
+        .flow_tx_i           (ftx_zero),
         .hist_rd_addr_o      (),
         .hist_rd_data_i      (hist_rd_data_w),
         .cls_table_o         (cls_table),

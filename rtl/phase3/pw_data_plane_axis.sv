@@ -126,6 +126,7 @@ module pw_data_plane_axis #(
     output logic [63:0]           flow_max_lat   [PW_NUM_FLOWS],
     output logic [63:0]           flow_sum_lat   [PW_NUM_FLOWS],
     output logic [63:0]           flow_samples   [PW_NUM_FLOWS],
+    output logic [47:0]           flow_tx        [PW_NUM_FLOWS],  // emitted frames (tx-rx loss)
 
     // Live latency-histogram read port (BRAM-backed pw_lat_histogram):
     // flat address (flow*PW_NUM_BUCKETS + bucket) in, 64-bit count out
@@ -442,6 +443,7 @@ module pw_data_plane_axis #(
     pw_flow_sched_t flow_sched [PW_NUM_FLOWS];
     logic [$clog2(PW_NUM_FLOWS)-1:0] gen_rd_addr [PW_PORTS];
     pw_flow_row_t                    gen_rd_row  [PW_PORTS];
+    logic [47:0]                     gen_tx_count [PW_PORTS][PW_NUM_FLOWS];
 
     pw_flow_table_bram #(
         .ADDR_W           (FLOW_ADDR_W),
@@ -488,6 +490,8 @@ module pw_data_plane_axis #(
                 .flow_sched_i(flow_sched),
                 .rd_addr_o   (gen_rd_addr[gp]),
                 .rd_row_i    (gen_rd_row[gp]),
+                .stats_clear_i(stats_clear_i),
+                .tx_count_o  (gen_tx_count[gp]),
                 .m_tdata     (gen_td[gp]),
                 .m_tkeep     (gen_tk[gp]),
                 .m_tvalid    (gen_tv[gp]),
@@ -496,6 +500,18 @@ module pw_data_plane_axis #(
             );
         end
     endgenerate
+
+    // Per-flow TX count = the owning egress generator's slot counter. Each slot
+    // is emitted by exactly one generator (egress match), so the others' count
+    // for that slot stays 0; summing picks out the owner. Slot index == flow
+    // row index == tx_local_flow_id, so this aligns with the flow stats block.
+    always_comb begin
+        for (int s = 0; s < PW_NUM_FLOWS; s++) begin
+            automatic logic [47:0] acc = '0;
+            for (int p = 0; p < PW_PORTS; p++) acc += gen_tx_count[p][s];
+            flow_tx[s] = acc;
+        end
+    end
 
     // ------------------------------------------------------------
     // Egress TX arbiters: forwarded frames (from any ingress SAF routed

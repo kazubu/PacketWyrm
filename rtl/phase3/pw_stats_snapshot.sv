@@ -70,6 +70,7 @@ module pw_stats_snapshot #(
     input  wire [63:0]                flow_max_lat_i    [NUM_FLOWS],
     input  wire [63:0]                flow_sum_lat_i    [NUM_FLOWS],
     input  wire [63:0]                flow_samples_i    [NUM_FLOWS],
+    input  wire [47:0]                flow_tx_i         [NUM_FLOWS],
 
     input  wire [15:0]                rd_addr_i,
     output logic [31:0]               rd_data_o
@@ -129,6 +130,7 @@ module pw_stats_snapshot #(
             for (int f = 0; f < NUM_FLOWS; f++) begin
                 logic [FLOW_STRIDE*8-1:0] fr;
                 fr = '0;
+                fr = put_u64(fr,   0, {16'h0, flow_tx_i[f]});    // tx_frames (emitted)
                 fr = put_u64(fr,  16, flow_rx_i[f]);             // rx_frames
                 fr = put_u64(fr,  32, flow_last_seq_i[f]);       // expected_sequence
                 fr = put_u64(fr,  48, flow_lost_i[f]);           // lost_packets_estimated

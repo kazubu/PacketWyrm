@@ -41,6 +41,12 @@ module pw_flow_gen_multi #(
     output logic [$clog2(NUM_SLOTS)-1:0] rd_addr_o,
     input  pw_flow_row_t   rd_row_i,
 
+    // Per-slot TX frame counter for true loss (tx - rx). Separate from the
+    // on-wire sequence number (which must never be cleared); this one is
+    // re-baselined by stats_clear_i alongside the RX checkers.
+    input  wire            stats_clear_i,
+    output logic [47:0]    tx_count_o [NUM_SLOTS],
+
     // 64-bit AXIS egress
     output logic [63:0]   m_tdata,
     output logic [7:0]    m_tkeep,
@@ -82,6 +88,9 @@ module pw_flow_gen_multi #(
     // Per-slot state.
     logic [63:0] sequence_q [NUM_SLOTS];
     logic [31:0] tokens_q   [NUM_SLOTS];   // Q16.16
+    logic [47:0] tx_count   [NUM_SLOTS];   // emitted frames (clearable, for tx-rx loss)
+
+    always_comb for (int s = 0; s < NUM_SLOTS; s++) tx_count_o[s] = tx_count[s];
 
     // In-flight frame (built from the selected slot at frame start).
     logic [HDR_MAX_BYTES-1:0][7:0] fb;
@@ -540,8 +549,13 @@ module pw_flow_gen_multi #(
             for (int s = 0; s < NUM_SLOTS; s++) begin
                 sequence_q[s] <= '0;
                 tokens_q[s]   <= '0;
+                tx_count[s]   <= '0;
             end
         end else begin
+            // Re-baseline the TX frame counters on a stats clear (the on-wire
+            // sequence_q is NOT cleared -- that would break RX sequence tracking).
+            if (stats_clear_i)
+                for (int s = 0; s < NUM_SLOTS; s++) tx_count[s] <= '0;
             // Token buckets: accumulate per active slot, clamp to cap.
             for (int s = 0; s < NUM_SLOTS; s++) begin
                 automatic logic [32:0] sum;
@@ -578,6 +592,8 @@ module pw_flow_gen_multi #(
                 if (last) begin
                     active          <= 1'b0;
                     sequence_q[sel] <= sequence_q[sel] + 64'd1;
+                    // TX frame count for tx-rx loss (clear wins over increment).
+                    if (!stats_clear_i) tx_count[sel] <= tx_count[sel] + 48'd1;
                 end else begin
                     byte_off <= byte_off + 12'd8;
                 end

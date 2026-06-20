@@ -105,6 +105,7 @@ module pwfpga_top_phase3 #(
     logic [63:0] flow_max_lat_w   [NUM_FLOWS];
     logic [63:0] flow_sum_lat_w   [NUM_FLOWS];
     logic [63:0] flow_samples_w   [NUM_FLOWS];
+    logic [47:0] flow_tx_w        [NUM_FLOWS];
 
     // Live histogram read port (CSR <-> data-plane BRAM).
     logic [15:0] hist_rd_addr_w;
@@ -167,6 +168,7 @@ module pwfpga_top_phase3 #(
         .flow_max_lat_i      (flow_max_lat_w),
         .flow_sum_lat_i      (flow_sum_lat_w),
         .flow_samples_i      (flow_samples_w),
+        .flow_tx_i           (flow_tx_w),
         .hist_rd_addr_o      (hist_rd_addr_w),
         .hist_rd_data_i      (hist_rd_data_w),
         .cls_table_o         (cls_table),
@@ -280,6 +282,7 @@ module pwfpga_top_phase3 #(
         .flow_max_lat      (flow_max_lat_w),
         .flow_sum_lat      (flow_sum_lat_w),
         .flow_samples      (flow_samples_w),
+        .flow_tx           (flow_tx_w),
         .hist_rd_addr_i    (hist_rd_addr_w),
         .hist_rd_data_o    (hist_rd_data_w),
         .port_drops_o      (port_drops_w),
