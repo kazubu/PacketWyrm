@@ -129,6 +129,7 @@ module tb_data_plane_axis;
     logic [15:0] hist_rd_addr = 16'h0;
     logic [63:0] hist_rd_data;
     logic [31:0] port_drops     [PORTS];
+    logic [47:0] rxf_d [PORTS], rxb_d [PORTS], txf_d [PORTS], txb_d [PORTS];
 
     pw_data_plane_axis #(
         .PW_PORTS         (PORTS),
@@ -180,7 +181,11 @@ module tb_data_plane_axis;
         .flow_samples     (flow_samples),
         .hist_rd_addr_i   (hist_rd_addr),
         .hist_rd_data_o   (hist_rd_data),
-        .port_drops_o     (port_drops)
+        .port_drops_o     (port_drops),
+        .rx_frames_o      (rxf_d),
+        .rx_bytes_o       (rxb_d),
+        .tx_frames_o      (txf_d),
+        .tx_bytes_o       (txb_d)
     );
 
     // --- egress / punt collectors (reassemble forwarded & punted frames)
@@ -420,6 +425,11 @@ module tb_data_plane_axis;
 
         check_eq("loopback rx > 0", (flow_rx[0] > 0) ? 1 : 0, 1);
         check_eq("loopback lost ", flow_lost[0], 0);
+        // per-port counters: gen drives TX[0], loopback feeds RX[1].
+        check_eq("port0 tx_frames > 0", (txf_d[0] > 0) ? 1 : 0, 1);
+        check_eq("port1 rx_frames > 0", (rxf_d[1] > 0) ? 1 : 0, 1);
+        check_eq("port0 tx_bytes > frames", (txb_d[0] > txf_d[0]) ? 1 : 0, 1);
+        check_eq("port1 rx_bytes > frames", (rxb_d[1] > rxf_d[1]) ? 1 : 0, 1);
         check_eq("loopback ooo  ", flow_ooo[0], 0);
         check_eq("loopback samples == rx", flow_samples[0], flow_rx[0]);
         check_eq("loopback min <= max",

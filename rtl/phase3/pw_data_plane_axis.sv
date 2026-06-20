@@ -134,7 +134,15 @@ module pw_data_plane_axis #(
     output logic [63:0]           hist_rd_data_o,
 
     // Per-port simple drop counters
-    output logic [31:0]           port_drops_o   [PW_PORTS]
+    output logic [31:0]           port_drops_o   [PW_PORTS],
+
+    // Per-port total RX/TX frame + byte counters (48-bit internal, zero-extended
+    // to the 64-bit snapshot fields). Count ALL frames/bytes at the port edge
+    // (not just test traffic). Cleared by stats_clear_i (re-baseline).
+    output logic [47:0]           rx_frames_o    [PW_PORTS],
+    output logic [47:0]           rx_bytes_o     [PW_PORTS],
+    output logic [47:0]           tx_frames_o    [PW_PORTS],
+    output logic [47:0]           tx_bytes_o     [PW_PORTS]
 );
 
     // Source-select index space for the TX arbiter: 0..PW_PORTS-1 select
@@ -191,6 +199,7 @@ module pw_data_plane_axis #(
     logic [RW-1:0]    saf_rt [PW_PORTS];
     logic [MW-1:0]    saf_md [PW_PORTS];   // per-frame punt metadata {ingress[3:0], lif[31:0]}
     logic             saf_tr [PW_PORTS];   // tready into the SAF (from arbiters)
+    logic             saf_overflow [PW_PORTS];  // forward-buffer-full drop pulse
 
     genvar gp;
     generate
@@ -247,7 +256,7 @@ module pw_data_plane_axis #(
                 .dec_route_i     (act_punt ? {1'b1, 4'd0}
                                            : {1'b0, rx_res[gp].egress_port}),
                 .dec_meta_i      ({4'(gp), rx_res[gp].logical_if_id}),
-                .overflow_drop_o (),                 // future: per-port telemetry tap
+                .overflow_drop_o (saf_overflow[gp]),  // forward-buffer-full drop
                 .m_tdata         (saf_td[gp]),
                 .m_tkeep         (saf_tk[gp]),
                 .m_tvalid        (saf_tv[gp]),
@@ -366,21 +375,59 @@ module pw_data_plane_axis #(
     end
 
     // ------------------------------------------------------------
-    // Per-port DROP counter
+    // Per-port counters: DROP + total RX/TX frames & bytes
     // ------------------------------------------------------------
-    // A key_valid event whose action is DROP (including the default for
-    // no match) increments. FORWARD/PUNT/MIRROR are routed by the SAF,
-    // not counted here; SAF overflow drops are separate telemetry.
+    // port_drops: a key_valid DROP event (incl. the no-match default) ticks.
+    // rx_frames/bytes: every frame/byte arriving on the ingress AXIS (all
+    // traffic, not just test). tx_frames/bytes: every frame/byte accepted on
+    // the egress AXIS (gen + forwarded + injected). All are re-baselined by
+    // stats_clear_i (alongside the flow checkers) so a measurement run starts
+    // from zero. Bytes accumulate the per-beat tkeep population count.
     logic [31:0] port_drops [PW_PORTS];
+    logic [47:0] rx_frames  [PW_PORTS];
+    logic [47:0] rx_bytes   [PW_PORTS];
+    logic [47:0] tx_frames  [PW_PORTS];
+    logic [47:0] tx_bytes   [PW_PORTS];
+
+    function automatic logic [3:0] popk8(input logic [7:0] k);
+        logic [3:0] n; n = '0;
+        for (int i = 0; i < 8; i++) n += {3'b0, k[i]};
+        return n;
+    endfunction
 
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            for (int p = 0; p < PW_PORTS; p++) port_drops[p] <= '0;
+        if (!rst_n || stats_clear_i) begin
+            for (int p = 0; p < PW_PORTS; p++) begin
+                port_drops[p] <= '0; rx_frames[p] <= '0; rx_bytes[p] <= '0;
+                tx_frames[p] <= '0; tx_bytes[p] <= '0;
+            end
         end else begin
             for (int p = 0; p < PW_PORTS; p++) begin
-                if (rx_kv_d[p] && rx_res[p].action == PW_ACT_DROP)
-                    port_drops[p] <= port_drops[p] + 32'd1;
+                // total drops: no-match/DROP classifier decisions + SAF
+                // forward-buffer-full drops (previously silent).
+                if ((rx_kv_d[p] && rx_res[p].action == PW_ACT_DROP) || saf_overflow[p])
+                    port_drops[p] <= port_drops[p]
+                        + 32'((rx_kv_d[p] && rx_res[p].action == PW_ACT_DROP) ? 1 : 0)
+                        + 32'(saf_overflow[p] ? 1 : 0);
+                // RX edge: ingress AXIS is never backpressured (parser snoops,
+                // SAF drops on overflow), so a valid beat is always accepted.
+                if (s_axis_rx_tvalid[p]) begin
+                    rx_bytes[p] <= rx_bytes[p] + 48'(popk8(s_axis_rx_tkeep[p]));
+                    if (s_axis_rx_tlast[p]) rx_frames[p] <= rx_frames[p] + 48'd1;
+                end
+                // TX edge: count accepted egress beats (valid && ready).
+                if (m_axis_tx_tvalid[p] && m_axis_tx_tready[p]) begin
+                    tx_bytes[p] <= tx_bytes[p] + 48'(popk8(m_axis_tx_tkeep[p]));
+                    if (m_axis_tx_tlast[p]) tx_frames[p] <= tx_frames[p] + 48'd1;
+                end
             end
+        end
+    end
+
+    always_comb begin
+        for (int p = 0; p < PW_PORTS; p++) begin
+            rx_frames_o[p] = rx_frames[p]; rx_bytes_o[p] = rx_bytes[p];
+            tx_frames_o[p] = tx_frames[p]; tx_bytes_o[p] = tx_bytes[p];
         end
     end
 

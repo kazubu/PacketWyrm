@@ -66,6 +66,10 @@ module pw_csr_full #(
     // Counters from the data plane (driven into the stats /
     // histogram snapshot modules).
     input  wire [31:0]       port_drops_i      [NUM_PORTS],
+    input  wire [47:0]       rx_frames_i       [NUM_PORTS],
+    input  wire [47:0]       rx_bytes_i        [NUM_PORTS],
+    input  wire [47:0]       tx_frames_i       [NUM_PORTS],
+    input  wire [47:0]       tx_bytes_i        [NUM_PORTS],
     input  wire [63:0]       flow_rx_i         [NUM_FLOWS],
     input  wire [63:0]       flow_lost_i       [NUM_FLOWS],
     input  wire [63:0]       flow_dup_i        [NUM_FLOWS],
@@ -373,6 +377,10 @@ module pw_csr_full #(
         .rst_n          (s_axi_aresetn),
         .trigger_i      (snapshot_trigger),
         .port_drops_i   (port_drops_i),
+        .rx_frames_i    (rx_frames_i),
+        .rx_bytes_i     (rx_bytes_i),
+        .tx_frames_i    (tx_frames_i),
+        .tx_bytes_i     (tx_bytes_i),
         .flow_rx_i      (flow_rx_i),
         .flow_lost_i    (flow_lost_i),
         .flow_dup_i     (flow_dup_i),

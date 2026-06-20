@@ -185,7 +185,7 @@ module pwfpga_top_phase3_board (
     // histogram (16 rules => up to 16 distinctly-classified flows).
     pwfpga_top_phase3 #(
         .ADDR_W(ADDR_W), .CAPABILITIES(PW_PHASE3_CAPABILITIES),
-        .NUM_PORTS(2), .NUM_FLOWS(32), .NUM_CLASSIFIER(16), .NUM_HIST_BINS(16)
+        .NUM_PORTS(2), .NUM_FLOWS(24), .NUM_CLASSIFIER(16), .NUM_HIST_BINS(16)
     ) u_dp (
         .clk(dp_clk), .rst_n(dp_aresetn),
         .s_axi_awaddr(daw), .s_axi_awvalid(dawv), .s_axi_awready(dawr),
