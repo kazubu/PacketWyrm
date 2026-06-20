@@ -446,7 +446,24 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "map"))    return cmd_map(argc - 2, argv + 2);
     if (!strcmp(sub, "load"))   return cmd_load(argc - 2, argv + 2);
     if (!strcmp(sub, "rpc"))    return cmd_rpc(argc - 2, argv + 2);
-    if (!strcmp(sub, "stats"))  return cmd_stats(argc - 2, argv + 2);
+    if (!strcmp(sub, "stats")) {
+        /* `pktwyrm stats clear` -> re-baseline all counters (RX checkers,
+         * per-port frames/bytes, drops, histogram) via the daemon, independent
+         * of test arm/start/stop. Plain `pktwyrm stats` reads/prints. */
+        if (argc >= 3 && !strcmp(argv[2], "clear")) {
+            const char *sock = PW_IPC_DEFAULT_PATH;
+            for (int i = 3; i < argc; i++)
+                if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
+            char resp[PW_IPC_FRAME_MAX]; size_t got = 0;
+            if (rpc_call(sock, "{\"rpc\":\"stats.clear\"}", resp, sizeof(resp), &got) < 0) {
+                fprintf(stderr, "rpc call failed (socket=%s)\n", sock);
+                return 1;
+            }
+            fwrite(resp, 1, got, stdout); fputc('\n', stdout);
+            return 0;
+        }
+        return cmd_stats(argc - 2, argv + 2);
+    }
     if (!strcmp(sub, "hist")) {
         if (argc < 4 || strcmp(argv[2], "latency")) {
             fprintf(stderr,

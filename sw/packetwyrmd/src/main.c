@@ -720,6 +720,22 @@ static void handle_client(int cfd,
             json_object_object_add(resp, "action", json_object_new_string(name));
             json_object_object_add(resp, "changed", json_object_new_int(changed));
             json_object_object_add(resp, "failed",  json_object_new_int(failed));
+        } else if (!strcmp(name, "stats.clear")) {
+            /* Soft-clear all RX checker + per-port counters + histogram on
+             * every card (same CSR as test.arm's clear) without re-pushing the
+             * program -- a standalone re-baseline independent of arm/start/stop. */
+            int changed = 0, failed = 0;
+            for (size_t ci = 0; ci < cfg->n_cards; ci++) {
+                if (cards[ci].open && cards[ci].backend.ops->write32) {
+                    pw_status s = cards[ci].backend.ops->write32(
+                        cards[ci].backend.ctx, PWFPGA_REG_STATS_CLEAR, 1u);
+                    if (s == PW_OK) changed++; else failed++;
+                }
+            }
+            resp = json_object_new_object();
+            json_object_object_add(resp, "action", json_object_new_string("stats.clear"));
+            json_object_object_add(resp, "changed", json_object_new_int(changed));
+            json_object_object_add(resp, "failed",  json_object_new_int(failed));
         } else if (!strcmp(name, "config.load")) {
             resp = do_config_load(cfg_pp, prog_pp, cards, req);
             /* refresh local snapshots after a successful swap */
