@@ -40,7 +40,7 @@ DPA_RTL := \
     $(REPO)/rtl/phase3/pw_flow_table_bram.sv \
     $(REPO)/rtl/phase3/pw_parser_axis.sv \
     $(REPO)/rtl/phase3/pw_classifier.sv \
-    $(REPO)/rtl/phase3/pw_test_rx_checker.sv \
+    $(REPO)/rtl/phase3/pw_test_rx_checker_bram.sv \
     $(REPO)/rtl/phase3/pw_lat_histogram.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_axis.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_multi.sv \
@@ -100,7 +100,7 @@ TOP_RTL := \
     $(REPO)/rtl/phase3/pw_csr_full.sv \
     $(REPO)/rtl/phase3/pw_parser_axis.sv \
     $(REPO)/rtl/phase3/pw_classifier.sv \
-    $(REPO)/rtl/phase3/pw_test_rx_checker.sv \
+    $(REPO)/rtl/phase3/pw_test_rx_checker_bram.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_axis.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_multi.sv \
     $(REPO)/rtl/phase3/pw_frame_saf.sv \

@@ -117,6 +117,7 @@ module tb_data_plane_axis;
     localparam logic [15:0] FBASE   = 16'h6000;          // FLOW_WIN_BASE
     localparam logic [15:0] FCOMMIT = FBASE + 16'h3FFC;
 
+    // tb-side shadow arrays, filled by snap_all() from the BRAM read port.
     logic [63:0] flow_rx        [FLOWS];
     logic [63:0] flow_lost      [FLOWS];
     logic [63:0] flow_dup       [FLOWS];
@@ -130,6 +131,11 @@ module tb_data_plane_axis;
     logic [31:0] flow_jit_max   [FLOWS];
     logic [63:0] flow_jit_sum   [FLOWS];
     logic [47:0] flow_tx_d      [FLOWS];
+    // scalar dut read port (merged record for flow_rd_addr).
+    logic [$clog2(FLOWS)-1:0] flow_rd_addr = '0;
+    logic [63:0] dp_rx, dp_lost, dp_dup, dp_ooo, dp_lseq, dp_minl, dp_maxl, dp_suml, dp_samp, dp_jsum;
+    logic [31:0] dp_jmin, dp_jmax;
+    logic [47:0] dp_tx;
     logic [15:0] hist_rd_addr = 16'h0;
     logic [63:0] hist_rd_data;
     logic [31:0] port_drops     [PORTS];
@@ -182,19 +188,20 @@ module tb_data_plane_axis;
         .flow_wr_en_i     (flow_wr_en),
         .flow_wr_addr_i   (flow_wr_addr),
         .flow_wr_data_i   (flow_wr_data),
-        .flow_rx          (flow_rx),
-        .flow_lost        (flow_lost),
-        .flow_dup         (flow_dup),
-        .flow_ooo         (flow_ooo),
-        .flow_last_seq    (flow_last_seq),
-        .flow_min_lat     (flow_min_lat),
-        .flow_max_lat     (flow_max_lat),
-        .flow_sum_lat     (flow_sum_lat),
-        .flow_samples     (flow_samples),
-        .flow_jit_min     (flow_jit_min),
-        .flow_jit_max     (flow_jit_max),
-        .flow_jit_sum     (flow_jit_sum),
-        .flow_tx          (flow_tx_d),
+        .flow_rd_addr_i   (flow_rd_addr),
+        .flow_rx          (dp_rx),
+        .flow_lost        (dp_lost),
+        .flow_dup         (dp_dup),
+        .flow_ooo         (dp_ooo),
+        .flow_last_seq    (dp_lseq),
+        .flow_min_lat     (dp_minl),
+        .flow_max_lat     (dp_maxl),
+        .flow_sum_lat     (dp_suml),
+        .flow_samples     (dp_samp),
+        .flow_jit_min     (dp_jmin),
+        .flow_jit_max     (dp_jmax),
+        .flow_jit_sum     (dp_jsum),
+        .flow_tx          (dp_tx),
         .hist_rd_addr_i   (hist_rd_addr),
         .hist_rd_data_o   (hist_rd_data),
         .port_drops_o     (port_drops),
@@ -242,6 +249,21 @@ module tb_data_plane_axis;
             errors++;
         end else begin
             $display("[ ok %s] %s: %0d", scenario, what, got);
+        end
+    endtask
+
+    // Walk the BRAM read port into the tb-side shadow arrays (mirrors what
+    // pw_stats_snapshot does on a trigger). flow_* is valid 2 cycles after
+    // flow_rd_addr; wait a little extra for margin.
+    task automatic snap_all();
+        for (int f = 0; f < FLOWS; f++) begin
+            @(posedge clk); flow_rd_addr = f[$clog2(FLOWS)-1:0];
+            repeat (3) @(posedge clk);
+            flow_rx[f]=dp_rx; flow_lost[f]=dp_lost; flow_dup[f]=dp_dup; flow_ooo[f]=dp_ooo;
+            flow_last_seq[f]=dp_lseq; flow_min_lat[f]=dp_minl; flow_max_lat[f]=dp_maxl;
+            flow_sum_lat[f]=dp_suml; flow_samples[f]=dp_samp;
+            flow_jit_min[f]=dp_jmin; flow_jit_max[f]=dp_jmax; flow_jit_sum[f]=dp_jsum;
+            flow_tx_d[f]=dp_tx;
         end
     endtask
 
@@ -446,6 +468,7 @@ module tb_data_plane_axis;
         lb_en     = 1'b0;             // dropping lb_en never cuts a partial frame
         repeat (4) @(posedge clk);
 
+        snap_all();
         check_eq("loopback rx > 0", (flow_rx[0] > 0) ? 1 : 0, 1);
         check_eq("loopback lost ", flow_lost[0], 0);
         // per-port counters: gen drives TX[0], loopback feeds RX[1].
@@ -491,12 +514,14 @@ module tb_data_plane_axis;
 
         for (int s = 0; s < 5; s++) inject_test(1, 32'd9, 64'(s));
         repeat (8) @(posedge clk);
+        snap_all();
         check_eq("pre-gap rx",   flow_rx[1],   5);
         check_eq("pre-gap lost", flow_lost[1], 0);
 
         // jump 4 -> 10: 5 missing
         for (int s = 10; s < 13; s++) inject_test(1, 32'd9, 64'(s));
         repeat (8) @(posedge clk);
+        snap_all();
         check_eq("post-gap rx",   flow_rx[1],   8);
         check_eq("post-gap lost", flow_lost[1], 5);
 
@@ -504,6 +529,7 @@ module tb_data_plane_axis;
         scenario = "dup";
         inject_test(1, 32'd9, 64'd12);
         repeat (8) @(posedge clk);
+        snap_all();
         check_eq("dup count", flow_dup[1], 1);
 
         // ---------------- scenario 4: out-of-order ----------------
@@ -523,6 +549,7 @@ module tb_data_plane_axis;
         inject_test(1, 32'd30, 64'd5);  // jump ahead
         inject_test(1, 32'd30, 64'd4);  // come back
         repeat (8) @(posedge clk);
+        snap_all();
         check_eq("ooo rx ",  flow_rx[3],   6);
         check_eq("ooo lost", flow_lost[3], 1);
         check_eq("ooo ooo ", flow_ooo[3],  1);
@@ -555,6 +582,7 @@ module tb_data_plane_axis;
         lb_en     = 1'b0;             // dropping lb_en never cuts a partial frame
         repeat (4) @(posedge clk);
         // 74-byte frames, ~4 B/cyc over 200 cyc -> ~10 frames; window [4,16]
+        snap_all();
         check_eq("rate rx >= 4",  (flow_rx[4] >= 4)  ? 1 : 0, 1);
         check_eq("rate rx <= 16", (flow_rx[4] <= 16) ? 1 : 0, 1);
         check_eq("rate lost==0",  flow_lost[4], 0);
@@ -671,6 +699,7 @@ module tb_data_plane_axis;
             commit_flows();
             lb_en = 1'b1; bidir_en = 1'b1;
             repeat (800) @(posedge clk);            // warm up
+            snap_all();
             rx0_a = flow_rx[0]; rx1_a = flow_rx[1];
             lost0_a = flow_lost[0]; lost1_a = flow_lost[1];
             repeat (2000) @(posedge clk);           // measurement window
@@ -683,6 +712,7 @@ module tb_data_plane_axis;
             repeat (8) @(posedge clk);
 
             // Both directions keep receiving through the window...
+            snap_all();
             check_eq("bidir flow0 rx grew",  (flow_rx[0] > rx0_a) ? 1 : 0, 1);
             check_eq("bidir flow1 rx grew",  (flow_rx[1] > rx1_a) ? 1 : 0, 1);
             // ...with NO ongoing loss on either (steady-state loss == 0).
@@ -699,7 +729,8 @@ module tb_data_plane_axis;
         stats_clear = 1'b1;
         @(posedge clk);
         stats_clear = 1'b0;
-        repeat (4) @(posedge clk);
+        repeat (FLOWS + 8) @(posedge clk);   // let the checker clear-walk finish
+        snap_all();
         check_eq("clear flow0 rx==0",      flow_rx[0],      0);
         check_eq("clear flow0 lost==0",    flow_lost[0],    0);
         check_eq("clear flow0 samples==0", flow_samples[0], 0);
@@ -717,6 +748,7 @@ module tb_data_plane_axis;
         repeat (200) @(posedge clk);
         begin
             longint rx_before;
+            snap_all();
             rx_before = flow_rx[0];
             check_eq("soft_rst pre rx > 0", (rx_before > 0) ? 1 : 0, 1);
             // Soft-reset the datapath while traffic is flowing.
@@ -730,6 +762,7 @@ module tb_data_plane_axis;
             @(posedge clk);
             stats_clear = 1'b0;
             repeat (300) @(posedge clk);
+            snap_all();
             check_eq("soft_rst traffic resumed", (flow_rx[0] > 0) ? 1 : 0, 1);
             check_eq("soft_rst no loss after",   flow_lost[0], 0);
         end

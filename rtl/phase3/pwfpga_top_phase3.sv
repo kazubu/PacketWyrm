@@ -105,19 +105,23 @@ module pwfpga_top_phase3 #(
     logic [31:0] link_up_cnt_w     [NUM_PORTS];
     logic [31:0] link_down_cnt_w   [NUM_PORTS];
     logic [31:0] block_lock_loss_w [NUM_PORTS];
-    logic [63:0] flow_rx_w        [NUM_FLOWS];
-    logic [63:0] flow_lost_w      [NUM_FLOWS];
-    logic [63:0] flow_dup_w       [NUM_FLOWS];
-    logic [63:0] flow_ooo_w       [NUM_FLOWS];
-    logic [63:0] flow_last_seq_w  [NUM_FLOWS];
-    logic [63:0] flow_min_lat_w   [NUM_FLOWS];
-    logic [63:0] flow_max_lat_w   [NUM_FLOWS];
-    logic [63:0] flow_sum_lat_w   [NUM_FLOWS];
-    logic [63:0] flow_samples_w   [NUM_FLOWS];
-    logic [31:0] flow_jit_min_w   [NUM_FLOWS];
-    logic [31:0] flow_jit_max_w   [NUM_FLOWS];
-    logic [63:0] flow_jit_sum_w   [NUM_FLOWS];
-    logic [47:0] flow_tx_w        [NUM_FLOWS];
+    // Per-flow stats: BRAM-backed in the data plane, read one flow at a time.
+    // The snapshot (in csr_full) drives flow_rd_addr_w; the merged record comes
+    // back on these scalar nets 2 cycles later.
+    logic [$clog2(NUM_FLOWS)-1:0] flow_rd_addr_w;
+    logic [63:0] flow_rx_w;
+    logic [63:0] flow_lost_w;
+    logic [63:0] flow_dup_w;
+    logic [63:0] flow_ooo_w;
+    logic [63:0] flow_last_seq_w;
+    logic [63:0] flow_min_lat_w;
+    logic [63:0] flow_max_lat_w;
+    logic [63:0] flow_sum_lat_w;
+    logic [63:0] flow_samples_w;
+    logic [31:0] flow_jit_min_w;
+    logic [31:0] flow_jit_max_w;
+    logic [63:0] flow_jit_sum_w;
+    logic [47:0] flow_tx_w;
 
     // Live histogram read port (CSR <-> data-plane BRAM).
     logic [15:0] hist_rd_addr_w;
@@ -175,6 +179,7 @@ module pwfpga_top_phase3 #(
         .rx_bytes_i          (rx_bytes_w),
         .tx_frames_i         (tx_frames_w),
         .tx_bytes_i          (tx_bytes_w),
+        .flow_rd_addr_o      (flow_rd_addr_w),
         .flow_rx_i           (flow_rx_w),
         .flow_lost_i         (flow_lost_w),
         .flow_dup_i          (flow_dup_w),
@@ -295,6 +300,7 @@ module pwfpga_top_phase3 #(
         .flow_wr_en_i      (flow_wr_en_w),
         .flow_wr_addr_i    (flow_wr_addr_w),
         .flow_wr_data_i    (flow_wr_data_w),
+        .flow_rd_addr_i    (flow_rd_addr_w),
         .flow_rx           (flow_rx_w),
         .flow_lost         (flow_lost_w),
         .flow_dup          (flow_dup_w),

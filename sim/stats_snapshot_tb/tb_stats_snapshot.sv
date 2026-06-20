@@ -72,6 +72,25 @@ module tb_stats_snapshot;
     logic [15:0] rd_addr;
     logic [31:0] rd_data;
 
+    // BRAM read-port responder: the snapshot drives flow_rd_addr; model the
+    // data plane's 2-cycle read latency, presenting flow_*[ad2].
+    localparam int AWT = $clog2(NUM_FLOWS);
+    logic [AWT-1:0] flow_rd_addr, ad1, ad2;
+    always_ff @(posedge clk) begin ad1 <= flow_rd_addr; ad2 <= ad1; end
+    wire [63:0] flow_rx_r   = flow_rx[ad2];
+    wire [63:0] flow_lost_r = flow_lost[ad2];
+    wire [63:0] flow_dup_r  = flow_dup[ad2];
+    wire [63:0] flow_ooo_r  = flow_ooo[ad2];
+    wire [63:0] flow_lseq_r = flow_last_seq[ad2];
+    wire [63:0] flow_minl_r = flow_min_lat[ad2];
+    wire [63:0] flow_maxl_r = flow_max_lat[ad2];
+    wire [63:0] flow_suml_r = flow_sum_lat[ad2];
+    wire [63:0] flow_samp_r = flow_samples[ad2];
+    wire [31:0] flow_jmin_r = flow_jit_min[ad2];
+    wire [31:0] flow_jmax_r = flow_jit_max[ad2];
+    wire [63:0] flow_jsum_r = flow_jit_sum[ad2];
+    wire [47:0] flow_tx_r   = flow_tx_s[ad2];
+
     pw_stats_snapshot #(
         .PORTS      (PORTS),
         .NUM_FLOWS  (NUM_FLOWS),
@@ -91,19 +110,20 @@ module tb_stats_snapshot;
         .link_up_cnt_i    (link_up_p),
         .link_down_cnt_i  (link_dn_p),
         .block_lock_loss_i(blk_loss_p),
-        .flow_rx_i      (flow_rx),
-        .flow_lost_i    (flow_lost),
-        .flow_dup_i     (flow_dup),
-        .flow_ooo_i     (flow_ooo),
-        .flow_last_seq_i(flow_last_seq),
-        .flow_min_lat_i (flow_min_lat),
-        .flow_max_lat_i (flow_max_lat),
-        .flow_sum_lat_i (flow_sum_lat),
-        .flow_samples_i (flow_samples),
-        .flow_jit_min_i (flow_jit_min),
-        .flow_jit_max_i (flow_jit_max),
-        .flow_jit_sum_i (flow_jit_sum),
-        .flow_tx_i      (flow_tx_s),
+        .flow_rd_addr_o (flow_rd_addr),
+        .flow_rx_i      (flow_rx_r),
+        .flow_lost_i    (flow_lost_r),
+        .flow_dup_i     (flow_dup_r),
+        .flow_ooo_i     (flow_ooo_r),
+        .flow_last_seq_i(flow_lseq_r),
+        .flow_min_lat_i (flow_minl_r),
+        .flow_max_lat_i (flow_maxl_r),
+        .flow_sum_lat_i (flow_suml_r),
+        .flow_samples_i (flow_samp_r),
+        .flow_jit_min_i (flow_jmin_r),
+        .flow_jit_max_i (flow_jmax_r),
+        .flow_jit_sum_i (flow_jsum_r),
+        .flow_tx_i      (flow_tx_r),
         .rd_addr_i      (rd_addr),
         .rd_data_o      (rd_data)
     );
@@ -209,7 +229,7 @@ module tb_stats_snapshot;
         trigger = 1'b1;
         @(posedge clk);
         trigger = 1'b0;
-        @(posedge clk);
+        repeat (NUM_FLOWS + 6) @(posedge clk);   // let the flow-block walk finish
 
         // ---- read back ----------------------------------------
         begin
@@ -275,7 +295,7 @@ module tb_stats_snapshot;
         trigger = 1'b1;
         @(posedge clk);
         trigger = 1'b0;
-        @(posedge clk);
+        repeat (NUM_FLOWS + 6) @(posedge clk);   // let the flow-block walk finish
         begin
             logic [63:0] v;
             read_u64(FLOW_BASE + 2 * FLOW_STRIDE, OFF_TX_FRAMES, v); check_eq("flow2 tx_frames", v, 1240);
