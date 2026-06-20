@@ -25,3 +25,11 @@ set_false_path -from [get_clocks -of_objects [get_pins -hierarchical -filter {NA
 # that was on the dp_clk critical floor.
 set_multicycle_path -setup 4 -from [get_cells -hier -filter {NAME =~ *u_win/shadow_reg*}] -to [get_cells -hier -filter {NAME =~ *u_win/live_reg*}] -quiet
 set_multicycle_path -hold  3 -from [get_cells -hier -filter {NAME =~ *u_win/shadow_reg*}] -to [get_cells -hier -filter {NAME =~ *u_win/live_reg*}] -quiet
+
+# --- Link-health status CDC (pw_data_plane_axis) ---------------------------
+# sfp_rx_status / sfp_block_lock are slow PCS status levels from the SFP/GT
+# domain, sampled into dp_clk by a 2-FF synchronizer (lu_sync0/bl_sync0 -> *1).
+# Declare the capture into the first sync flop as a false path (the synchronizer
+# handles metastability; the levels change on millisecond link events).
+set_false_path -to [get_pins -hier -filter {NAME =~ *lu_sync0_reg*/D}] -quiet
+set_false_path -to [get_pins -hier -filter {NAME =~ *bl_sync0_reg*/D}] -quiet

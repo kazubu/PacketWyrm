@@ -36,10 +36,13 @@
 //    108  jitter_max          (u32)
 //    112  jitter_sum          (u64)
 //
-// Per-port rx/tx frames+bytes are now produced (pw_data_plane_axis port
-// counters); port_drops lands in rx_bad_frame@24. Fields still not produced
-// (rx_fcs_error / oversize / undersize / link counters; per-flow jitter) are
-// zeroed in the snapshot.
+// Per-port rx/tx frames+bytes are produced (pw_data_plane_axis port
+// counters); port_drops lands in rx_bad_frame@24; rx_fcs_error@16 counts
+// MAC tuser-on-tlast errored frames; link_up_count@64/link_down_count@68/
+// block_lock_loss@72 are link-health transition counts. Per-flow jitter
+// (jitter_min@104/max@108/sum@112) is produced by pw_test_rx_checker
+// (RFC-3393 IPDV over consecutive samples). Fields still not produced
+// (oversize / undersize) are zeroed in the snapshot.
 
 `default_nettype none
 
@@ -60,6 +63,10 @@ module pw_stats_snapshot #(
     input  wire [47:0]                rx_bytes_i   [PORTS],
     input  wire [47:0]                tx_frames_i  [PORTS],
     input  wire [47:0]                tx_bytes_i   [PORTS],
+    input  wire [47:0]                rx_fcs_err_i [PORTS],
+    input  wire [31:0]                link_up_cnt_i    [PORTS],
+    input  wire [31:0]                link_down_cnt_i  [PORTS],
+    input  wire [31:0]                block_lock_loss_i[PORTS],
 
     input  wire [63:0]                flow_rx_i         [NUM_FLOWS],
     input  wire [63:0]                flow_lost_i       [NUM_FLOWS],
@@ -71,6 +78,9 @@ module pw_stats_snapshot #(
     input  wire [63:0]                flow_sum_lat_i    [NUM_FLOWS],
     input  wire [63:0]                flow_samples_i    [NUM_FLOWS],
     input  wire [47:0]                flow_tx_i         [NUM_FLOWS],
+    input  wire [63:0]                flow_jit_min_i    [NUM_FLOWS],
+    input  wire [63:0]                flow_jit_max_i    [NUM_FLOWS],
+    input  wire [63:0]                flow_jit_sum_i    [NUM_FLOWS],
 
     input  wire [15:0]                rd_addr_i,
     output logic [31:0]               rd_data_o
@@ -122,9 +132,13 @@ module pw_stats_snapshot #(
                 // tx_bytes@56. Counters are 48-bit, zero-extended to u64.
                 pr = put_u64(pr,  0, {16'h0, rx_frames_i[p]});
                 pr = put_u64(pr,  8, {16'h0, rx_bytes_i[p]});
+                pr = put_u64(pr, 16, {16'h0, rx_fcs_err_i[p]});  // rx_fcs_error
                 pr = put_u32_port(pr, 24, port_drops_i[p]);   // rx_bad_frame slot
                 pr = put_u64(pr, 48, {16'h0, tx_frames_i[p]});
                 pr = put_u64(pr, 56, {16'h0, tx_bytes_i[p]});
+                pr = put_u32_port(pr, 64, link_up_cnt_i[p]);     // link_up_count
+                pr = put_u32_port(pr, 68, link_down_cnt_i[p]);   // link_down_count
+                pr = put_u32_port(pr, 72, block_lock_loss_i[p]); // block_lock_loss
                 shadow_port[p] <= pr;
             end
             for (int f = 0; f < NUM_FLOWS; f++) begin
@@ -140,6 +154,9 @@ module pw_stats_snapshot #(
                 fr = put_u32(fr,  84, flow_max_lat_i[f][31:0]);  // max_latency
                 fr = put_u64(fr,  88, flow_sum_lat_i[f]);        // sum_latency
                 fr = put_u64(fr,  96, flow_samples_i[f]);        // sample_count
+                fr = put_u32(fr, 104, flow_jit_min_i[f][31:0]);  // jitter_min
+                fr = put_u32(fr, 108, flow_jit_max_i[f][31:0]);  // jitter_max
+                fr = put_u64(fr, 112, flow_jit_sum_i[f]);        // jitter_sum
                 shadow_flow[f] <= fr;
             end
         end

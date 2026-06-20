@@ -75,6 +75,9 @@ module pw_data_plane_axis #(
     input  wire                   s_axis_rx_tvalid [PW_PORTS],
     output logic                  s_axis_rx_tready [PW_PORTS],
     input  wire                   s_axis_rx_tlast  [PW_PORTS],
+    // MAC RX tuser asserted on tlast = errored frame (FCS/runt); counted
+    // per port as rx_fcs_error. Tie low if the MAC doesn't surface it.
+    input  wire                   s_axis_rx_tuser  [PW_PORTS],
 
     // Per-port AXIS TX (data plane egress -> MAC). Forwarded frames take
     // priority; the per-port flow generator fills idle slots.
@@ -126,6 +129,9 @@ module pw_data_plane_axis #(
     output logic [63:0]           flow_max_lat   [PW_NUM_FLOWS],
     output logic [63:0]           flow_sum_lat   [PW_NUM_FLOWS],
     output logic [63:0]           flow_samples   [PW_NUM_FLOWS],
+    output logic [63:0]           flow_jit_min   [PW_NUM_FLOWS],
+    output logic [63:0]           flow_jit_max   [PW_NUM_FLOWS],
+    output logic [63:0]           flow_jit_sum   [PW_NUM_FLOWS],
     output logic [47:0]           flow_tx        [PW_NUM_FLOWS],  // emitted frames (tx-rx loss)
 
     // Live latency-histogram read port (BRAM-backed pw_lat_histogram):
@@ -143,7 +149,17 @@ module pw_data_plane_axis #(
     output logic [47:0]           rx_frames_o    [PW_PORTS],
     output logic [47:0]           rx_bytes_o     [PW_PORTS],
     output logic [47:0]           tx_frames_o    [PW_PORTS],
-    output logic [47:0]           tx_bytes_o     [PW_PORTS]
+    output logic [47:0]           tx_bytes_o     [PW_PORTS],
+    output logic [47:0]           rx_fcs_error_o [PW_PORTS],
+
+    // Link health. link_up_i / block_lock_i are the (async) MAC/PCS status
+    // levels; synchronized into clk here, then edge-counted: link up/down
+    // transitions and block-lock losses. Counts feed the port stats block.
+    input  wire                   link_up_i        [PW_PORTS],
+    input  wire                   block_lock_i     [PW_PORTS],
+    output logic [31:0]           link_up_cnt_o    [PW_PORTS],
+    output logic [31:0]           link_down_cnt_o  [PW_PORTS],
+    output logic [31:0]           block_lock_loss_o[PW_PORTS]
 );
 
     // Source-select index space for the TX arbiter: 0..PW_PORTS-1 select
@@ -289,6 +305,9 @@ module pw_data_plane_axis #(
     logic [63:0] pc_max  [PW_PORTS][PW_NUM_FLOWS];
     logic [63:0] pc_sum  [PW_PORTS][PW_NUM_FLOWS];
     logic [63:0] pc_samp [PW_PORTS][PW_NUM_FLOWS];
+    logic [63:0] pc_jmin [PW_PORTS][PW_NUM_FLOWS];
+    logic [63:0] pc_jmax [PW_PORTS][PW_NUM_FLOWS];
+    logic [63:0] pc_jsum [PW_PORTS][PW_NUM_FLOWS];
 
     // Per-port registered histogram events into the BRAM histogram.
     logic        hev_v  [PW_PORTS];
@@ -321,6 +340,9 @@ module pw_data_plane_axis #(
                 .max_latency_o   (pc_max[gp]),
                 .sum_latency_o   (pc_sum[gp]),
                 .sample_count_o  (pc_samp[gp]),
+                .jitter_min_o    (pc_jmin[gp]),
+                .jitter_max_o    (pc_jmax[gp]),
+                .jitter_sum_o    (pc_jsum[gp]),
                 .hist_ev_o       (hev_v[gp]),
                 .hist_flow_o     (hev_fl[gp]),
                 .hist_bucket_o   (hev_bk[gp]),
@@ -352,6 +374,7 @@ module pw_data_plane_axis #(
             automatic logic [63:0] rx = '0, lost = '0, dup = '0, ooo = '0;
             automatic logic [63:0] sum = '0, samp = '0, lseq = '0;
             automatic logic [63:0] mn = {64{1'b1}}, mx = '0;
+            automatic logic [63:0] jmn = {64{1'b1}}, jmx = '0, jsm = '0;
             for (int p = 0; p < PW_PORTS; p++) begin
                 rx   += pc_rx[p][f];
                 lost += pc_lost[p][f];
@@ -359,9 +382,12 @@ module pw_data_plane_axis #(
                 ooo  += pc_ooo[p][f];
                 sum  += pc_sum[p][f];
                 samp += pc_samp[p][f];
+                jsm  += pc_jsum[p][f];
                 lseq |= pc_lseq[p][f];               // one active port per flow
                 if (pc_min[p][f] < mn) mn = pc_min[p][f];
                 if (pc_max[p][f] > mx) mx = pc_max[p][f];
+                if (pc_jmin[p][f] < jmn) jmn = pc_jmin[p][f];
+                if (pc_jmax[p][f] > jmx) jmx = pc_jmax[p][f];
             end
             flow_rx[f]       = rx;
             flow_lost[f]     = lost;
@@ -372,6 +398,9 @@ module pw_data_plane_axis #(
             flow_last_seq[f] = lseq;
             flow_min_lat[f]  = mn;
             flow_max_lat[f]  = mx;
+            flow_jit_min[f]  = jmn;
+            flow_jit_max[f]  = jmx;
+            flow_jit_sum[f]  = jsm;
         end
     end
 
@@ -389,6 +418,7 @@ module pw_data_plane_axis #(
     logic [47:0] rx_bytes   [PW_PORTS];
     logic [47:0] tx_frames  [PW_PORTS];
     logic [47:0] tx_bytes   [PW_PORTS];
+    logic [47:0] rx_fcs_err [PW_PORTS];
 
     function automatic logic [3:0] popk8(input logic [7:0] k);
         logic [3:0] n; n = '0;
@@ -400,7 +430,7 @@ module pw_data_plane_axis #(
         if (!rst_n || stats_clear_i) begin
             for (int p = 0; p < PW_PORTS; p++) begin
                 port_drops[p] <= '0; rx_frames[p] <= '0; rx_bytes[p] <= '0;
-                tx_frames[p] <= '0; tx_bytes[p] <= '0;
+                tx_frames[p] <= '0; tx_bytes[p] <= '0; rx_fcs_err[p] <= '0;
             end
         end else begin
             for (int p = 0; p < PW_PORTS; p++) begin
@@ -414,7 +444,11 @@ module pw_data_plane_axis #(
                 // SAF drops on overflow), so a valid beat is always accepted.
                 if (s_axis_rx_tvalid[p]) begin
                     rx_bytes[p] <= rx_bytes[p] + 48'(popk8(s_axis_rx_tkeep[p]));
-                    if (s_axis_rx_tlast[p]) rx_frames[p] <= rx_frames[p] + 48'd1;
+                    if (s_axis_rx_tlast[p]) begin
+                        rx_frames[p] <= rx_frames[p] + 48'd1;
+                        // tuser on tlast = errored frame (bad FCS / runt).
+                        if (s_axis_rx_tuser[p]) rx_fcs_err[p] <= rx_fcs_err[p] + 48'd1;
+                    end
                 end
                 // TX edge: count accepted egress beats (valid && ready).
                 if (m_axis_tx_tvalid[p] && m_axis_tx_tready[p]) begin
@@ -429,12 +463,54 @@ module pw_data_plane_axis #(
         for (int p = 0; p < PW_PORTS; p++) begin
             rx_frames_o[p] = rx_frames[p]; rx_bytes_o[p] = rx_bytes[p];
             tx_frames_o[p] = tx_frames[p]; tx_bytes_o[p] = tx_bytes[p];
+            rx_fcs_error_o[p] = rx_fcs_err[p];
         end
     end
 
     always_comb begin
         for (int p = 0; p < PW_PORTS; p++)
             port_drops_o[p] = port_drops[p];
+    end
+
+    // ------------------------------------------------------------
+    // Link health: synchronize the async MAC/PCS status levels into
+    // clk (2-FF), then count link up/down transitions and block-lock
+    // losses. Not affected by stats_clear_i (link history is sticky).
+    // ------------------------------------------------------------
+    logic [PW_PORTS-1:0] lu_sync0, lu_sync1, lu_prev;
+    logic [PW_PORTS-1:0] bl_sync0, bl_sync1, bl_prev;
+    logic [31:0] link_up_cnt   [PW_PORTS];
+    logic [31:0] link_down_cnt [PW_PORTS];
+    logic [31:0] bl_loss_cnt   [PW_PORTS];
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            lu_sync0 <= '0; lu_sync1 <= '0; lu_prev <= '0;
+            bl_sync0 <= '0; bl_sync1 <= '0; bl_prev <= '0;
+            for (int p = 0; p < PW_PORTS; p++) begin
+                link_up_cnt[p]   <= '0;
+                link_down_cnt[p] <= '0;
+                bl_loss_cnt[p]   <= '0;
+            end
+        end else begin
+            for (int p = 0; p < PW_PORTS; p++) begin
+                lu_sync0[p] <= link_up_i[p];     lu_sync1[p] <= lu_sync0[p];
+                bl_sync0[p] <= block_lock_i[p];  bl_sync1[p] <= bl_sync0[p];
+                lu_prev[p]  <= lu_sync1[p];
+                bl_prev[p]  <= bl_sync1[p];
+                if ( lu_sync1[p] && !lu_prev[p]) link_up_cnt[p]   <= link_up_cnt[p]   + 32'd1;
+                if (!lu_sync1[p] &&  lu_prev[p]) link_down_cnt[p] <= link_down_cnt[p] + 32'd1;
+                if (!bl_sync1[p] &&  bl_prev[p]) bl_loss_cnt[p]   <= bl_loss_cnt[p]   + 32'd1;
+            end
+        end
+    end
+
+    always_comb begin
+        for (int p = 0; p < PW_PORTS; p++) begin
+            link_up_cnt_o[p]     = link_up_cnt[p];
+            link_down_cnt_o[p]   = link_down_cnt[p];
+            block_lock_loss_o[p] = bl_loss_cnt[p];
+        end
     end
 
     // ------------------------------------------------------------

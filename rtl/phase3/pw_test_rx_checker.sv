@@ -61,6 +61,13 @@ module pw_test_rx_checker #(
     output logic [63:0]          sum_latency_o [NUM_FLOWS],
     output logic [63:0]          sample_count_o[NUM_FLOWS],
 
+    // Per-flow IPDV jitter (RFC-3393 style): |latency[n] - latency[n-1]|
+    // accumulated per flow. min/max/sum over the deltas; the first sample
+    // of a flow seeds prev_latency without producing a delta.
+    output logic [63:0]          jitter_min_o  [NUM_FLOWS],
+    output logic [63:0]          jitter_max_o  [NUM_FLOWS],
+    output logic [63:0]          jitter_sum_o  [NUM_FLOWS],
+
     // Registered histogram event: one pulse per counted frame, carrying
     // the flow id and its log2 latency bucket. Always driven.
     output logic                 hist_ev_o,
@@ -74,6 +81,7 @@ module pw_test_rx_checker #(
 
     logic [63:0] expected_seq [NUM_FLOWS];
     logic        flow_seen    [NUM_FLOWS];
+    logic [63:0] prev_latency [NUM_FLOWS];   // last sample's latency, for IPDV
 
     // Find the highest set bit in `x` (returns 0 when x==0). The
     // simulator unrolls this comfortably for 64 bits; the same
@@ -108,6 +116,10 @@ module pw_test_rx_checker #(
             max_latency_o[i]  = '0;
             sum_latency_o[i]  = '0;
             sample_count_o[i] = '0;
+            jitter_min_o[i]   = 64'hFFFF_FFFF_FFFF_FFFF;
+            jitter_max_o[i]   = '0;
+            jitter_sum_o[i]   = '0;
+            prev_latency[i]   = '0;
             expected_seq[i]   = '0;
             flow_seen[i]      = 1'b0;
         end
@@ -142,6 +154,10 @@ module pw_test_rx_checker #(
                     max_latency_o[i]  <= '0;
                     sum_latency_o[i]  <= '0;
                     sample_count_o[i] <= '0;
+                    jitter_min_o[i]   <= 64'hFFFF_FFFF_FFFF_FFFF;
+                    jitter_max_o[i]   <= '0;
+                    jitter_sum_o[i]   <= '0;
+                    prev_latency[i]   <= '0;
                     expected_seq[i]   <= '0;
                     flow_seen[i]      <= 1'b0;
                 end
@@ -156,6 +172,18 @@ module pw_test_rx_checker #(
                 sample_count_o[idx]         <= sample_count_o[idx] + 64'd1;
                 if (latency < min_latency_o[idx]) min_latency_o[idx] <= latency;
                 if (latency > max_latency_o[idx]) max_latency_o[idx] <= latency;
+
+                // IPDV jitter: |latency - prev_latency|. flow_seen gates the
+                // first sample (no prior latency yet); prev_latency always tracks.
+                if (flow_seen[idx]) begin
+                    automatic logic [63:0] jdelta =
+                        (latency >= prev_latency[idx]) ? (latency - prev_latency[idx])
+                                                       : (prev_latency[idx] - latency);
+                    jitter_sum_o[idx]               <= jitter_sum_o[idx] + jdelta;
+                    if (jdelta < jitter_min_o[idx]) jitter_min_o[idx] <= jdelta;
+                    if (jdelta > jitter_max_o[idx]) jitter_max_o[idx] <= jdelta;
+                end
+                prev_latency[idx]           <= latency;
 
                 if (!flow_seen[idx]) begin
                     expected_seq[idx] <= rx_seq + 64'd1;
@@ -218,6 +246,10 @@ module pw_test_rx_checker #(
                     max_latency_o[i]  <= '0;
                     sum_latency_o[i]  <= '0;
                     sample_count_o[i] <= '0;
+                    jitter_min_o[i]   <= 64'hFFFF_FFFF_FFFF_FFFF;
+                    jitter_max_o[i]   <= '0;
+                    jitter_sum_o[i]   <= '0;
+                    prev_latency[i]   <= '0;
                     expected_seq[i]   <= '0;
                     flow_seen[i]      <= 1'b0;
                 end
@@ -232,6 +264,18 @@ module pw_test_rx_checker #(
                 sample_count_o[idx]         <= sample_count_o[idx] + 64'd1;
                 if (latency < min_latency_o[idx]) min_latency_o[idx] <= latency;
                 if (latency > max_latency_o[idx]) max_latency_o[idx] <= latency;
+
+                // IPDV jitter: |latency - prev_latency|. flow_seen gates the
+                // first sample (no prior latency yet); prev_latency always tracks.
+                if (flow_seen[idx]) begin
+                    automatic logic [63:0] jdelta =
+                        (latency >= prev_latency[idx]) ? (latency - prev_latency[idx])
+                                                       : (prev_latency[idx] - latency);
+                    jitter_sum_o[idx]               <= jitter_sum_o[idx] + jdelta;
+                    if (jdelta < jitter_min_o[idx]) jitter_min_o[idx] <= jdelta;
+                    if (jdelta > jitter_max_o[idx]) jitter_max_o[idx] <= jdelta;
+                end
+                prev_latency[idx]           <= latency;
 
                 if (!flow_seen[idx]) begin
                     expected_seq[idx] <= rx_seq + 64'd1;

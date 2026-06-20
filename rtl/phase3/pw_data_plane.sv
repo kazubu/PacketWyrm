@@ -153,6 +153,9 @@ module pw_data_plane #(
         .max_latency_o   (flow_max_lat),
         .sum_latency_o   (flow_sum_lat),
         .sample_count_o  (flow_samples),
+        .jitter_min_o    (),   // legacy wide-bus plane (sim-only): jitter unused
+        .jitter_max_o    (),
+        .jitter_sum_o    (),
         .hist_ev_o       (),
         .hist_flow_o     (),
         .hist_bucket_o   (),

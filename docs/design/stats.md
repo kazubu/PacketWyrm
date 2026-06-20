@@ -10,18 +10,23 @@ counters, their semantics, and how multi-card aggregation works.
 |------------------------|------|----------------------------------------|
 | `rx_frames`            | u64  | post-FCS, valid + invalid              |
 | `rx_bytes`             | u64  | wire bytes including FCS               |
-| `rx_fcs_error`         | u64  | FCS mismatch                           |
-| `rx_bad_frame`         | u64  | length / alignment errors              |
-| `rx_oversize`          | u64  | > MTU                                  |
-| `rx_undersize`         | u64  | < 64 B                                 |
+| `rx_fcs_error`         | u64  | RX `tuser`-on-`tlast` errored frames   |
+| `rx_bad_frame`         | u64  | DROP/no-match + SAF overflow drops     |
+| `rx_oversize`          | u64  | > MTU (not yet produced)               |
+| `rx_undersize`         | u64  | < 64 B (not yet produced)              |
 | `tx_frames`            | u64  |                                        |
 | `tx_bytes`             | u64  |                                        |
-| `link_up_count`        | u32  | edge counter                           |
-| `link_down_count`      | u32  | edge counter                           |
-| `block_lock_loss`      | u32  | PCS block-lock loss events             |
+| `link_up_count`        | u32  | rising-edge count of MAC link_up       |
+| `link_down_count`      | u32  | falling-edge count of MAC link_up      |
+| `block_lock_loss`      | u32  | falling-edge count of PCS block_lock   |
 
-These live next to the MAC and snapshot using the `_low` read-latch
-mechanism.
+`rx_frames/bytes`, `tx_frames/bytes`, `rx_fcs_error` and `rx_bad_frame`
+are counted at the port edge in `pw_data_plane_axis` (48-bit, zero-extended
+to the snapshot fields; cleared by `stats_clear`). Link health
+(`link_up/down_count`, `block_lock_loss`) is derived by 2-FF synchronizing
+the async MAC/PCS status levels into `dp_clk` and edge-counting; these are
+sticky (not affected by `stats_clear`). `rx_oversize/undersize` are not yet
+produced and read back as zero.
 
 ## Per-flow counters (from FPGA)
 

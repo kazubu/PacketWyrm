@@ -26,13 +26,20 @@ module tb_stats_snapshot;
     localparam int OFF_MAX_LAT     = 84;
     localparam int OFF_SUM_LAT     = 88;
     localparam int OFF_SAMPLES     = 96;
+    localparam int OFF_JIT_MIN     = 104;
+    localparam int OFF_JIT_MAX     = 108;
+    localparam int OFF_JIT_SUM     = 112;
 
     // pw_port_stats wire offsets
     localparam int OFF_PORT_RXF    = 0;
     localparam int OFF_PORT_RXB    = 8;
+    localparam int OFF_PORT_FCS    = 16;
     localparam int OFF_PORT_BAD    = 24;
     localparam int OFF_PORT_TXF    = 48;
     localparam int OFF_PORT_TXB    = 56;
+    localparam int OFF_PORT_LU     = 64;
+    localparam int OFF_PORT_LD     = 68;
+    localparam int OFF_PORT_BLL    = 72;
 
     logic clk = 1'b0;
     always #5 clk = ~clk;
@@ -44,6 +51,10 @@ module tb_stats_snapshot;
     logic [47:0] rx_bytes_p  [PORTS];
     logic [47:0] tx_frames_p [PORTS];
     logic [47:0] tx_bytes_p  [PORTS];
+    logic [47:0] rx_fcs_p    [PORTS];
+    logic [31:0] link_up_p   [PORTS];
+    logic [31:0] link_dn_p   [PORTS];
+    logic [31:0] blk_loss_p  [PORTS];
     logic [63:0] flow_rx        [NUM_FLOWS];
     logic [63:0] flow_lost      [NUM_FLOWS];
     logic [63:0] flow_dup       [NUM_FLOWS];
@@ -53,6 +64,9 @@ module tb_stats_snapshot;
     logic [63:0] flow_max_lat   [NUM_FLOWS];
     logic [63:0] flow_sum_lat   [NUM_FLOWS];
     logic [63:0] flow_samples   [NUM_FLOWS];
+    logic [63:0] flow_jit_min   [NUM_FLOWS];
+    logic [63:0] flow_jit_max   [NUM_FLOWS];
+    logic [63:0] flow_jit_sum   [NUM_FLOWS];
     logic [47:0] flow_tx_s     [NUM_FLOWS];
 
     logic [15:0] rd_addr;
@@ -73,6 +87,10 @@ module tb_stats_snapshot;
         .rx_bytes_i     (rx_bytes_p),
         .tx_frames_i    (tx_frames_p),
         .tx_bytes_i     (tx_bytes_p),
+        .rx_fcs_err_i   (rx_fcs_p),
+        .link_up_cnt_i    (link_up_p),
+        .link_down_cnt_i  (link_dn_p),
+        .block_lock_loss_i(blk_loss_p),
         .flow_rx_i      (flow_rx),
         .flow_lost_i    (flow_lost),
         .flow_dup_i     (flow_dup),
@@ -82,6 +100,9 @@ module tb_stats_snapshot;
         .flow_max_lat_i (flow_max_lat),
         .flow_sum_lat_i (flow_sum_lat),
         .flow_samples_i (flow_samples),
+        .flow_jit_min_i (flow_jit_min),
+        .flow_jit_max_i (flow_jit_max),
+        .flow_jit_sum_i (flow_jit_sum),
         .flow_tx_i      (flow_tx_s),
         .rd_addr_i      (rd_addr),
         .rd_data_o      (rd_data)
@@ -129,6 +150,7 @@ module tb_stats_snapshot;
         for (int p = 0; p < PORTS; p++) begin
             port_drops[p] = '0; rx_frames_p[p] = '0; rx_bytes_p[p] = '0;
             tx_frames_p[p] = '0; tx_bytes_p[p] = '0;
+            rx_fcs_p[p] = '0; link_up_p[p] = '0; link_dn_p[p] = '0; blk_loss_p[p] = '0;
         end
         for (int f = 0; f < NUM_FLOWS; f++) begin
             flow_rx[f]        = '0;
@@ -140,6 +162,9 @@ module tb_stats_snapshot;
             flow_max_lat[f]   = '0;
             flow_sum_lat[f]   = '0;
             flow_samples[f]   = '0; flow_tx_s[f] = '0;
+            flow_jit_min[f]   = '0;
+            flow_jit_max[f]   = '0;
+            flow_jit_sum[f]   = '0;
         end
 
         repeat (4) @(posedge clk);
@@ -160,6 +185,8 @@ module tb_stats_snapshot;
         port_drops[1]    = 32'd99;
         rx_frames_p[0]   = 48'd1000; rx_bytes_p[0] = 48'd64000;
         tx_frames_p[0]   = 48'd900;  tx_bytes_p[0] = 48'd57600;
+        rx_fcs_p[0]      = 48'd7;
+        link_up_p[0]     = 32'd2; link_dn_p[0] = 32'd1; blk_loss_p[0] = 32'd3;
 
         flow_rx[2]       = 64'd1234;
         flow_last_seq[2] = 64'd5000;
@@ -171,6 +198,9 @@ module tb_stats_snapshot;
         flow_sum_lat[2]  = 64'd10000;
         flow_samples[2]  = 64'd80;
         flow_tx_s[2]     = 48'd1240;
+        flow_jit_min[2]  = 64'd2;
+        flow_jit_max[2]  = 64'd40;
+        flow_jit_sum[2]  = 64'd790;
 
         flow_rx[6]       = 64'h12345678_AABBCCDD;
         flow_last_seq[6] = 64'h00000000_FFFFFFFE;
@@ -193,6 +223,10 @@ module tb_stats_snapshot;
             read_u64(0, OFF_PORT_RXB, v); check_eq("port0 rx_bytes",  v, 64000);
             read_u64(0, OFF_PORT_TXF, v); check_eq("port0 tx_frames", v, 900);
             read_u64(0, OFF_PORT_TXB, v); check_eq("port0 tx_bytes",  v, 57600);
+            read_u64(0, OFF_PORT_FCS, v); check_eq("port0 fcs_error", v, 7);
+            read_u32(0, OFF_PORT_LU,  w); check_eq("port0 link_up",   w, 2);
+            read_u32(0, OFF_PORT_LD,  w); check_eq("port0 link_down", w, 1);
+            read_u32(0, OFF_PORT_BLL, w); check_eq("port0 blk_loss",  w, 3);
             read_u32(PORT_STRIDE, OFF_PORT_BAD, w);
             check_eq("port1 drops", w, 99);
 
@@ -216,6 +250,12 @@ module tb_stats_snapshot;
             check_eq("flow2 sum_lat", v, 10000);
             read_u64(FLOW_BASE + 2 * FLOW_STRIDE, OFF_SAMPLES, v);
             check_eq("flow2 samples", v, 80);
+            read_u32(FLOW_BASE + 2 * FLOW_STRIDE, OFF_JIT_MIN, w);
+            check_eq("flow2 jit_min", w, 2);
+            read_u32(FLOW_BASE + 2 * FLOW_STRIDE, OFF_JIT_MAX, w);
+            check_eq("flow2 jit_max", w, 40);
+            read_u64(FLOW_BASE + 2 * FLOW_STRIDE, OFF_JIT_SUM, v);
+            check_eq("flow2 jit_sum", v, 790);
 
             // Flow 6 — verify wide values round-trip via two u32 reads.
             read_u64(FLOW_BASE + 6 * FLOW_STRIDE, OFF_RX_FRAMES, v);

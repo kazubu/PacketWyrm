@@ -194,7 +194,9 @@ module pwfpga_top_phase3_board (
         .s_axi_araddr(dar), .s_axi_arvalid(darv), .s_axi_arready(darr),
         .s_axi_rdata(drd), .s_axi_rresp(drresp), .s_axi_rvalid(drv), .s_axi_rready(drr),
         .s_axis_rx_tdata(dprx_d), .s_axis_rx_tkeep(dprx_k), .s_axis_rx_tvalid(dprx_v),
-        .s_axis_rx_tready(dprx_r), .s_axis_rx_tlast(dprx_l),
+        .s_axis_rx_tready(dprx_r), .s_axis_rx_tlast(dprx_l), .s_axis_rx_tuser(dprx_u),
+        // link-health status levels (async; synchronized in the data plane)
+        .link_up_i(sfp_rx_status), .block_lock_i(sfp_block_lock),
         .m_axis_tx_tdata(dptx_d), .m_axis_tx_tkeep(dptx_k), .m_axis_tx_tvalid(dptx_v),
         .m_axis_tx_tready(dptx_r), .m_axis_tx_tlast(dptx_l), .m_axis_tx_tuser(dptx_u),
         .timestamp_i(ts),

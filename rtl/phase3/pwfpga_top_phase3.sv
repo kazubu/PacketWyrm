@@ -56,6 +56,11 @@ module pwfpga_top_phase3 #(
     input  wire              s_axis_rx_tvalid [NUM_PORTS],
     output wire              s_axis_rx_tready [NUM_PORTS],
     input  wire              s_axis_rx_tlast  [NUM_PORTS],
+    input  wire              s_axis_rx_tuser  [NUM_PORTS],
+
+    // Link-health status levels (async MAC/PCS), synchronized in the data plane.
+    input  wire              link_up_i        [NUM_PORTS],
+    input  wire              block_lock_i     [NUM_PORTS],
 
     // Per-port MAC TX (64-bit AXIS from data plane to MAC)
     output wire [63:0]       m_axis_tx_tdata  [NUM_PORTS],
@@ -96,6 +101,10 @@ module pwfpga_top_phase3 #(
     logic [47:0] rx_bytes_w    [NUM_PORTS];
     logic [47:0] tx_frames_w   [NUM_PORTS];
     logic [47:0] tx_bytes_w    [NUM_PORTS];
+    logic [47:0] rx_fcs_err_w  [NUM_PORTS];
+    logic [31:0] link_up_cnt_w     [NUM_PORTS];
+    logic [31:0] link_down_cnt_w   [NUM_PORTS];
+    logic [31:0] block_lock_loss_w [NUM_PORTS];
     logic [63:0] flow_rx_w        [NUM_FLOWS];
     logic [63:0] flow_lost_w      [NUM_FLOWS];
     logic [63:0] flow_dup_w       [NUM_FLOWS];
@@ -105,6 +114,9 @@ module pwfpga_top_phase3 #(
     logic [63:0] flow_max_lat_w   [NUM_FLOWS];
     logic [63:0] flow_sum_lat_w   [NUM_FLOWS];
     logic [63:0] flow_samples_w   [NUM_FLOWS];
+    logic [63:0] flow_jit_min_w   [NUM_FLOWS];
+    logic [63:0] flow_jit_max_w   [NUM_FLOWS];
+    logic [63:0] flow_jit_sum_w   [NUM_FLOWS];
     logic [47:0] flow_tx_w        [NUM_FLOWS];
 
     // Live histogram read port (CSR <-> data-plane BRAM).
@@ -155,6 +167,10 @@ module pwfpga_top_phase3 #(
         .global_control_o    (),
         .error_status_set_i  (32'h0),
         .port_drops_i        (port_drops_w),
+        .rx_fcs_err_i        (rx_fcs_err_w),
+        .link_up_cnt_i       (link_up_cnt_w),
+        .link_down_cnt_i     (link_down_cnt_w),
+        .block_lock_loss_i   (block_lock_loss_w),
         .rx_frames_i         (rx_frames_w),
         .rx_bytes_i          (rx_bytes_w),
         .tx_frames_i         (tx_frames_w),
@@ -168,6 +184,9 @@ module pwfpga_top_phase3 #(
         .flow_max_lat_i      (flow_max_lat_w),
         .flow_sum_lat_i      (flow_sum_lat_w),
         .flow_samples_i      (flow_samples_w),
+        .flow_jit_min_i      (flow_jit_min_w),
+        .flow_jit_max_i      (flow_jit_max_w),
+        .flow_jit_sum_i      (flow_jit_sum_w),
         .flow_tx_i           (flow_tx_w),
         .hist_rd_addr_o      (hist_rd_addr_w),
         .hist_rd_data_i      (hist_rd_data_w),
@@ -252,6 +271,9 @@ module pwfpga_top_phase3 #(
         .s_axis_rx_tvalid  (s_axis_rx_tvalid),
         .s_axis_rx_tready  (s_axis_rx_tready),
         .s_axis_rx_tlast   (s_axis_rx_tlast),
+        .s_axis_rx_tuser   (s_axis_rx_tuser),
+        .link_up_i         (link_up_i),
+        .block_lock_i      (block_lock_i),
         .m_axis_tx_tdata   (m_axis_tx_tdata),
         .m_axis_tx_tkeep   (m_axis_tx_tkeep),
         .m_axis_tx_tvalid  (m_axis_tx_tvalid),
@@ -282,6 +304,9 @@ module pwfpga_top_phase3 #(
         .flow_max_lat      (flow_max_lat_w),
         .flow_sum_lat      (flow_sum_lat_w),
         .flow_samples      (flow_samples_w),
+        .flow_jit_min      (flow_jit_min_w),
+        .flow_jit_max      (flow_jit_max_w),
+        .flow_jit_sum      (flow_jit_sum_w),
         .flow_tx           (flow_tx_w),
         .hist_rd_addr_i    (hist_rd_addr_w),
         .hist_rd_data_o    (hist_rd_data_w),
@@ -289,7 +314,11 @@ module pwfpga_top_phase3 #(
         .rx_frames_o       (rx_frames_w),
         .rx_bytes_o        (rx_bytes_w),
         .tx_frames_o       (tx_frames_w),
-        .tx_bytes_o        (tx_bytes_w)
+        .tx_bytes_o        (tx_bytes_w),
+        .rx_fcs_error_o    (rx_fcs_err_w),
+        .link_up_cnt_o     (link_up_cnt_w),
+        .link_down_cnt_o   (link_down_cnt_w),
+        .block_lock_loss_o (block_lock_loss_w)
     );
 
 endmodule
