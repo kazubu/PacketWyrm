@@ -171,6 +171,13 @@ classifier result's `egress_port`; this byte is what carries the
 host's choice into it (earlier bitstreams hardwired it to 0). Ignored
 for non-FORWARD actions.
 
+The inner **IPv6 dst-address** match lives in the row tail: `ipv6_dst`
+(bytes 96..111) + `ipv6_dst_mask` (bytes 112..127), network byte order.
+The 40-byte `pwfpga_match_key` has no room for a 128-bit address, so this
+sits outside the key/mask sub-structs (the entry was 96 B of the 128 B
+stride). `pw_classifier_window` OR-reduces the mask to the single
+`match_ipv6_dst` enable bit; the compare is exact (`==`), not bitwise.
+
 The RTL side of the window is implemented by
 `rtl/shared/pw_csr_window.sv` (generic shadow + commit) and
 `rtl/phase3/pw_classifier_window.sv` (wire-format ↔

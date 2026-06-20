@@ -226,6 +226,11 @@ Output: a flat "header descriptor" with all extracted fields plus a
   unmatched bits, or classifying arbitrary-payload traffic by header bits.
   An all-ones mask is exact match (back-compatible); 0 is wildcard. Other
   fields remain boolean match/ignore.
+- **IPv6 dst address** matches **exactly** (`==`, not bitwise): the 40-byte
+  wire `match_key` has no room for a 128-bit address, so the dst key + mask
+  live in the row tail (bytes 96..127, decoded by `pw_classifier_window` in
+  network byte order to match the parser). The compiler enables it for IPv6
+  TEST_RX flows unless a dst modifier rotates the address.
 - Actions: `DROP`, `TEST_RX`, `PUNT_TO_HOST`, `MIRROR_TO_HOST`,
   `FORWARD_PORT`.
 - `FORWARD_PORT` uses `egress_local_port` (byte 92 of the wire row,
