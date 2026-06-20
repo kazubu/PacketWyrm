@@ -68,23 +68,34 @@ module pw_stats_snapshot #(
     input  wire [31:0]                link_down_cnt_i  [PORTS],
     input  wire [31:0]                block_lock_loss_i[PORTS],
 
-    input  wire [63:0]                flow_rx_i         [NUM_FLOWS],
-    input  wire [63:0]                flow_lost_i       [NUM_FLOWS],
-    input  wire [63:0]                flow_dup_i        [NUM_FLOWS],
-    input  wire [63:0]                flow_ooo_i        [NUM_FLOWS],
-    input  wire [63:0]                flow_last_seq_i   [NUM_FLOWS],
-    input  wire [63:0]                flow_min_lat_i    [NUM_FLOWS],
-    input  wire [63:0]                flow_max_lat_i    [NUM_FLOWS],
-    input  wire [63:0]                flow_sum_lat_i    [NUM_FLOWS],
-    input  wire [63:0]                flow_samples_i    [NUM_FLOWS],
-    input  wire [47:0]                flow_tx_i         [NUM_FLOWS],
-    input  wire [31:0]                flow_jit_min_i    [NUM_FLOWS],
-    input  wire [31:0]                flow_jit_max_i    [NUM_FLOWS],
-    input  wire [63:0]                flow_jit_sum_i    [NUM_FLOWS],
+    // Per-flow stats are BRAM-backed in the data plane and read one flow at a
+    // time. The snapshot drives flow_rd_addr_o and the merged record arrives
+    // FLOW_RD_LAT cycles later; on trigger it walks 0..NUM_FLOWS-1 into the
+    // shadow. All fields are scalars (the record for flow_rd_addr_o).
+    output logic [$clog2(NUM_FLOWS)-1:0] flow_rd_addr_o,
+    input  wire [63:0]                flow_rx_i,
+    input  wire [63:0]                flow_lost_i,
+    input  wire [63:0]                flow_dup_i,
+    input  wire [63:0]                flow_ooo_i,
+    input  wire [63:0]                flow_last_seq_i,
+    input  wire [63:0]                flow_min_lat_i,
+    input  wire [63:0]                flow_max_lat_i,
+    input  wire [63:0]                flow_sum_lat_i,
+    input  wire [63:0]                flow_samples_i,
+    input  wire [47:0]                flow_tx_i,
+    input  wire [31:0]                flow_jit_min_i,
+    input  wire [31:0]                flow_jit_max_i,
+    input  wire [63:0]                flow_jit_sum_i,
 
     input  wire [15:0]                rd_addr_i,
     output logic [31:0]               rd_data_o
 );
+
+    // flow_rd_addr_o -> flow_*_i latency (data plane: 1 checker read + 1 merge
+    // register). The walk captures the record for the address issued this many
+    // cycles earlier.
+    localparam int FLOW_RD_LAT = 2;
+    localparam int AW = $clog2(NUM_FLOWS);
 
     // Packed byte arrays so the read mux can use byte-aligned indexing
     // without unpacked-array gotchas.
@@ -119,17 +130,29 @@ module pw_stats_snapshot #(
         return o;
     endfunction
 
+    // Flow-block walk: on trigger, issue addresses 0..NUM_FLOWS-1 (one/cycle)
+    // and capture each merged record FLOW_RD_LAT cycles later. The port block
+    // latches atomically on the trigger (small FF arrays).
+    logic        walking;
+    logic [15:0] wcnt;
+
+    always_comb begin
+        flow_rd_addr_o = (walking && wcnt < NUM_FLOWS) ? wcnt[AW-1:0] : '0;
+    end
+
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             shadow_port <= '0;
             shadow_flow <= '0;
+            walking <= 1'b0;
+            wcnt    <= '0;
         end else if (trigger_i) begin
             for (int p = 0; p < PORTS; p++) begin
                 logic [PORT_STRIDE*8-1:0] pr;
                 pr = '0;
                 // pw_port_stats layout: rx_frames@0, rx_bytes@8, rx_fcs_error@16,
                 // rx_bad_frame@24 (we surface DROP here), ..., tx_frames@48,
-                // tx_bytes@56. Counters are 48-bit, zero-extended to u64.
+                // tx_bytes@56, link counters @64/68/72. Counters 48-bit -> u64.
                 pr = put_u64(pr,  0, {16'h0, rx_frames_i[p]});
                 pr = put_u64(pr,  8, {16'h0, rx_bytes_i[p]});
                 pr = put_u64(pr, 16, {16'h0, rx_fcs_err_i[p]});  // rx_fcs_error
@@ -141,24 +164,29 @@ module pw_stats_snapshot #(
                 pr = put_u32_port(pr, 72, block_lock_loss_i[p]); // block_lock_loss
                 shadow_port[p] <= pr;
             end
-            for (int f = 0; f < NUM_FLOWS; f++) begin
+            walking <= 1'b1;
+            wcnt    <= '0;
+        end else if (walking) begin
+            if (wcnt >= FLOW_RD_LAT) begin
                 logic [FLOW_STRIDE*8-1:0] fr;
                 fr = '0;
-                fr = put_u64(fr,   0, {16'h0, flow_tx_i[f]});    // tx_frames (emitted)
-                fr = put_u64(fr,  16, flow_rx_i[f]);             // rx_frames
-                fr = put_u64(fr,  32, flow_last_seq_i[f]);       // expected_sequence
-                fr = put_u64(fr,  48, flow_lost_i[f]);           // lost_packets_estimated
-                fr = put_u64(fr,  56, flow_dup_i[f]);            // duplicate_count
-                fr = put_u64(fr,  64, flow_ooo_i[f]);            // out_of_order_count
-                fr = put_u32(fr,  80, flow_min_lat_i[f][31:0]);  // min_latency
-                fr = put_u32(fr,  84, flow_max_lat_i[f][31:0]);  // max_latency
-                fr = put_u64(fr,  88, flow_sum_lat_i[f]);        // sum_latency
-                fr = put_u64(fr,  96, flow_samples_i[f]);        // sample_count
-                fr = put_u32(fr, 104, flow_jit_min_i[f]);        // jitter_min
-                fr = put_u32(fr, 108, flow_jit_max_i[f]);        // jitter_max
-                fr = put_u64(fr, 112, flow_jit_sum_i[f]);        // jitter_sum
-                shadow_flow[f] <= fr;
+                fr = put_u64(fr,   0, {16'h0, flow_tx_i});    // tx_frames (emitted)
+                fr = put_u64(fr,  16, flow_rx_i);             // rx_frames
+                fr = put_u64(fr,  32, flow_last_seq_i);       // expected_sequence
+                fr = put_u64(fr,  48, flow_lost_i);           // lost_packets_estimated
+                fr = put_u64(fr,  56, flow_dup_i);            // duplicate_count
+                fr = put_u64(fr,  64, flow_ooo_i);            // out_of_order_count
+                fr = put_u32(fr,  80, flow_min_lat_i[31:0]);  // min_latency
+                fr = put_u32(fr,  84, flow_max_lat_i[31:0]);  // max_latency
+                fr = put_u64(fr,  88, flow_sum_lat_i);        // sum_latency
+                fr = put_u64(fr,  96, flow_samples_i);        // sample_count
+                fr = put_u32(fr, 104, flow_jit_min_i);        // jitter_min
+                fr = put_u32(fr, 108, flow_jit_max_i);        // jitter_max
+                fr = put_u64(fr, 112, flow_jit_sum_i);        // jitter_sum
+                shadow_flow[(wcnt - FLOW_RD_LAT)] <= fr;
             end
+            if (wcnt == 16'(NUM_FLOWS - 1 + FLOW_RD_LAT)) walking <= 1'b0;
+            wcnt <= wcnt + 16'd1;
         end
     end
 

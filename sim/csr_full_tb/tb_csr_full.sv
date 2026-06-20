@@ -73,6 +73,20 @@ module tb_csr_full;
     logic [63:0] flow_sum_lat    [NUM_FLOWS];
     logic [63:0] flow_samples    [NUM_FLOWS];
 
+    // BRAM read-port responder: csr_full's snapshot drives flow_rd_addr_o;
+    // model the data plane's 2-cycle read latency over the model arrays.
+    logic [$clog2(NUM_FLOWS)-1:0] snap_addr, sa1, sa2;
+    always_ff @(posedge clk) begin sa1 <= snap_addr; sa2 <= sa1; end
+    wire [63:0] flow_rx_r   = flow_rx[sa2];
+    wire [63:0] flow_lost_r = flow_lost[sa2];
+    wire [63:0] flow_dup_r  = flow_dup[sa2];
+    wire [63:0] flow_ooo_r  = flow_ooo[sa2];
+    wire [63:0] flow_lseq_r = flow_last_seq[sa2];
+    wire [63:0] flow_minl_r = flow_min_lat[sa2];
+    wire [63:0] flow_maxl_r = flow_max_lat[sa2];
+    wire [63:0] flow_suml_r = flow_sum_lat[sa2];
+    wire [63:0] flow_samp_r = flow_samples[sa2];
+
     // Live histogram read port + an event-fed BRAM histogram standing
     // in for the data plane's pw_lat_histogram.
     logic [15:0] hist_rd_addr_w;
@@ -121,19 +135,20 @@ module tb_csr_full;
         .link_up_cnt_i       (pl_zero),
         .link_down_cnt_i     (pl_zero),
         .block_lock_loss_i   (pl_zero),
-        .flow_rx_i           (flow_rx),
-        .flow_lost_i         (flow_lost),
-        .flow_dup_i          (flow_dup),
-        .flow_ooo_i          (flow_ooo),
-        .flow_last_seq_i     (flow_last_seq),
-        .flow_min_lat_i      (flow_min_lat),
-        .flow_max_lat_i      (flow_max_lat),
-        .flow_sum_lat_i      (flow_sum_lat),
-        .flow_samples_i      (flow_samples),
-        .flow_jit_min_i      (fjit32_zero),
-        .flow_jit_max_i      (fjit32_zero),
-        .flow_jit_sum_i      (fjit_zero),
-        .flow_tx_i           (ftx_zero),
+        .flow_rd_addr_o      (snap_addr),
+        .flow_rx_i           (flow_rx_r),
+        .flow_lost_i         (flow_lost_r),
+        .flow_dup_i          (flow_dup_r),
+        .flow_ooo_i          (flow_ooo_r),
+        .flow_last_seq_i     (flow_lseq_r),
+        .flow_min_lat_i      (flow_minl_r),
+        .flow_max_lat_i      (flow_maxl_r),
+        .flow_sum_lat_i      (flow_suml_r),
+        .flow_samples_i      (flow_samp_r),
+        .flow_jit_min_i      (32'd0),
+        .flow_jit_max_i      (32'd0),
+        .flow_jit_sum_i      (64'd0),
+        .flow_tx_i           (48'd0),
         .hist_rd_addr_o      (hist_rd_addr_w),
         .hist_rd_data_i      (hist_rd_data_w),
         .cls_table_o         (cls_table),
@@ -318,8 +333,7 @@ module tb_csr_full;
         flow_rx[3]       = 64'd7777;
         flow_last_seq[3] = 64'd333;
         axi_write(REG_SNAPSHOT_TRIGGER, 32'h1);
-        @(posedge clk);
-        @(posedge clk);
+        repeat (NUM_FLOWS + 8) @(posedge clk);   // let the flow-block walk finish
         begin
             logic [31:0] lo, hi;
             // pw_flow_stats.rx_frames is at offset 16 within the

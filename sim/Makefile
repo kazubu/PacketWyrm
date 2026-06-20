@@ -40,7 +40,7 @@ DPA_RTL := \
     $(REPO)/rtl/phase3/pw_flow_table_bram.sv \
     $(REPO)/rtl/phase3/pw_parser_axis.sv \
     $(REPO)/rtl/phase3/pw_classifier.sv \
-    $(REPO)/rtl/phase3/pw_test_rx_checker.sv \
+    $(REPO)/rtl/phase3/pw_test_rx_checker_bram.sv \
     $(REPO)/rtl/phase3/pw_lat_histogram.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_axis.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_multi.sv \
@@ -100,7 +100,7 @@ TOP_RTL := \
     $(REPO)/rtl/phase3/pw_csr_full.sv \
     $(REPO)/rtl/phase3/pw_parser_axis.sv \
     $(REPO)/rtl/phase3/pw_classifier.sv \
-    $(REPO)/rtl/phase3/pw_test_rx_checker.sv \
+    $(REPO)/rtl/phase3/pw_test_rx_checker_bram.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_axis.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_multi.sv \
     $(REPO)/rtl/phase3/pw_frame_saf.sv \
@@ -122,6 +122,12 @@ TB_DPA   := data_plane_axis_tb/tb_data_plane_axis.sv
 TB_SAF   := frame_saf_tb/tb_frame_saf.sv
 TB_PUNT  := punt_window_tb/tb_punt_window.sv
 TB_INJ   := inject_window_tb/tb_inject_window.sv
+TB_CHK   := test_rx_checker_bram_tb/tb_test_rx_checker_bram.sv
+
+CHK_RTL := \
+    $(REPO)/rtl/phase3/pw_axis_pkg.sv \
+    $(REPO)/rtl/phase3/pw_classifier_pkg.sv \
+    $(REPO)/rtl/phase3/pw_test_rx_checker_bram.sv
 
 VECTORS := vectors/bar_image.hex
 
@@ -152,6 +158,9 @@ sim_stats: sim_build/stats_snapshot
 
 sim_lat: sim_build/lat_histogram
 	./sim_build/lat_histogram
+
+sim_chk: sim_build/test_rx_checker_bram
+	./sim_build/test_rx_checker_bram
 
 sim_spi: sim_build/spi_flash
 	./sim_build/spi_flash
@@ -253,6 +262,13 @@ sim_build/lat_histogram: $(LAT_RTL) $(TB_LAT)
 	    --top-module tb_lat_histogram \
 	    -o lat_histogram \
 	    $(LAT_RTL) $(TB_LAT)
+
+sim_build/test_rx_checker_bram: $(CHK_RTL) $(TB_CHK)
+	$(VERILATOR) $(VFLAGS) \
+	    -Mdir sim_build \
+	    --top-module tb_test_rx_checker_bram \
+	    -o test_rx_checker_bram \
+	    $(CHK_RTL) $(TB_CHK)
 
 sim_build/spi_flash: $(SPI_RTL) $(TB_SPI)
 	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET \

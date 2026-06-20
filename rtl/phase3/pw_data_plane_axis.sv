@@ -119,20 +119,23 @@ module pw_data_plane_axis #(
     input  wire [FLOW_ADDR_W-1:0] flow_wr_addr_i,
     input  wire [31:0]            flow_wr_data_i,
 
-    // Per-flow checker counters (over all flows on the card)
-    output logic [63:0]           flow_rx        [PW_NUM_FLOWS],
-    output logic [63:0]           flow_lost      [PW_NUM_FLOWS],
-    output logic [63:0]           flow_dup       [PW_NUM_FLOWS],
-    output logic [63:0]           flow_ooo       [PW_NUM_FLOWS],
-    output logic [63:0]           flow_last_seq  [PW_NUM_FLOWS],
-    output logic [63:0]           flow_min_lat   [PW_NUM_FLOWS],
-    output logic [63:0]           flow_max_lat   [PW_NUM_FLOWS],
-    output logic [63:0]           flow_sum_lat   [PW_NUM_FLOWS],
-    output logic [63:0]           flow_samples   [PW_NUM_FLOWS],
-    output logic [31:0]           flow_jit_min   [PW_NUM_FLOWS],
-    output logic [31:0]           flow_jit_max   [PW_NUM_FLOWS],
-    output logic [63:0]           flow_jit_sum   [PW_NUM_FLOWS],
-    output logic [47:0]           flow_tx        [PW_NUM_FLOWS],  // emitted frames (tx-rx loss)
+    // Per-flow checker counters: BRAM-backed (pw_test_rx_checker_bram), read
+    // one flow at a time. Drive flow_rd_addr_i; the merged (across ports)
+    // record is valid 2 cycles later. pw_stats_snapshot walks 0..NUM_FLOWS-1.
+    input  wire [$clog2(PW_NUM_FLOWS)-1:0] flow_rd_addr_i,
+    output logic [63:0]           flow_rx,
+    output logic [63:0]           flow_lost,
+    output logic [63:0]           flow_dup,
+    output logic [63:0]           flow_ooo,
+    output logic [63:0]           flow_last_seq,
+    output logic [63:0]           flow_min_lat,
+    output logic [63:0]           flow_max_lat,
+    output logic [63:0]           flow_sum_lat,
+    output logic [63:0]           flow_samples,
+    output logic [31:0]           flow_jit_min,
+    output logic [31:0]           flow_jit_max,
+    output logic [63:0]           flow_jit_sum,
+    output logic [47:0]           flow_tx,        // emitted frames (tx-rx loss)
 
     // Live latency-histogram read port (BRAM-backed pw_lat_histogram):
     // flat address (flow*PW_NUM_BUCKETS + bucket) in, 64-bit count out
@@ -296,18 +299,14 @@ module pw_data_plane_axis #(
     // for additive counters / last_seq, min/max for latency. Inactive
     // ports contribute identity values (0, or 0xFFFF.. for min), so the
     // merge yields the active port's value.
-    logic [63:0] pc_rx   [PW_PORTS][PW_NUM_FLOWS];
-    logic [63:0] pc_lost [PW_PORTS][PW_NUM_FLOWS];
-    logic [63:0] pc_dup  [PW_PORTS][PW_NUM_FLOWS];
-    logic [63:0] pc_ooo  [PW_PORTS][PW_NUM_FLOWS];
-    logic [63:0] pc_lseq [PW_PORTS][PW_NUM_FLOWS];
-    logic [63:0] pc_min  [PW_PORTS][PW_NUM_FLOWS];
-    logic [63:0] pc_max  [PW_PORTS][PW_NUM_FLOWS];
-    logic [63:0] pc_sum  [PW_PORTS][PW_NUM_FLOWS];
-    logic [63:0] pc_samp [PW_PORTS][PW_NUM_FLOWS];
-    logic [31:0] pc_jmin [PW_PORTS][PW_NUM_FLOWS];
-    logic [31:0] pc_jmax [PW_PORTS][PW_NUM_FLOWS];
-    logic [63:0] pc_jsum [PW_PORTS][PW_NUM_FLOWS];
+    // Per-port BRAM checkers. Each holds all NUM_FLOWS records; the flow's RX
+    // arrives on exactly one port, so the other port's record for that flow is
+    // blank (identity for the merge). We drive the same flow_rd_addr_i to every
+    // port and merge the read records (registered) below.
+    logic [63:0] prx   [PW_PORTS], plost [PW_PORTS], pdup  [PW_PORTS], pooo [PW_PORTS];
+    logic [63:0] plseq [PW_PORTS], pminl [PW_PORTS], pmaxl [PW_PORTS];
+    logic [63:0] psuml [PW_PORTS], psamp [PW_PORTS], pjsum [PW_PORTS];
+    logic [63:0] pjmin [PW_PORTS], pjmax [PW_PORTS];
 
     // Per-port registered histogram events into the BRAM histogram.
     logic        hev_v  [PW_PORTS];
@@ -318,11 +317,9 @@ module pw_data_plane_axis #(
         for (gp = 0; gp < PW_PORTS; gp++) begin : g_chk
             wire chk_ev = rx_kv_d[gp] && rx_res[gp].hit &&
                           (rx_res[gp].action == PW_ACT_TEST_RX);
-            pw_test_rx_checker #(
+            pw_test_rx_checker_bram #(
                 .NUM_FLOWS       (PW_NUM_FLOWS),
-                .NUM_BUCKETS     (PW_NUM_BUCKETS),
-                .PIPELINE        (1),
-                .EMIT_HIST_ARRAY (0)   // histogram lives in BRAM, not FFs
+                .NUM_BUCKETS     (PW_NUM_BUCKETS)
             ) u_checker (
                 .clk             (clk),
                 .rst_n           (rst_n),
@@ -331,22 +328,24 @@ module pw_data_plane_axis #(
                 .key_i           (rx_key_d[gp]),
                 .result_i        (rx_res[gp]),
                 .event_valid_i   (chk_ev),
-                .rx_frames_o     (pc_rx[gp]),
-                .lost_o          (pc_lost[gp]),
-                .duplicate_o     (pc_dup[gp]),
-                .out_of_order_o  (pc_ooo[gp]),
-                .last_seq_o      (pc_lseq[gp]),
-                .min_latency_o   (pc_min[gp]),
-                .max_latency_o   (pc_max[gp]),
-                .sum_latency_o   (pc_sum[gp]),
-                .sample_count_o  (pc_samp[gp]),
-                .jitter_min_o    (pc_jmin[gp]),
-                .jitter_max_o    (pc_jmax[gp]),
-                .jitter_sum_o    (pc_jsum[gp]),
                 .hist_ev_o       (hev_v[gp]),
                 .hist_flow_o     (hev_fl[gp]),
                 .hist_bucket_o   (hev_bk[gp]),
-                .hist_o          ()                // unused: histogram in BRAM
+                .rd_addr_i       (flow_rd_addr_i),
+                .rd_en_i         (1'b1),
+                .rd_valid_o      (),
+                .rd_rx_frames_o  (prx[gp]),
+                .rd_lost_o       (plost[gp]),
+                .rd_duplicate_o  (pdup[gp]),
+                .rd_out_of_order_o(pooo[gp]),
+                .rd_last_seq_o   (plseq[gp]),
+                .rd_min_latency_o(pminl[gp]),
+                .rd_max_latency_o(pmaxl[gp]),
+                .rd_sum_latency_o(psuml[gp]),
+                .rd_sample_count_o(psamp[gp]),
+                .rd_jitter_min_o (pjmin[gp]),
+                .rd_jitter_max_o (pjmax[gp]),
+                .rd_jitter_sum_o (pjsum[gp])
             );
         end
     endgenerate
@@ -368,40 +367,42 @@ module pw_data_plane_axis #(
         .rd_data_o   (hist_rd_data_o)
     );
 
-    // Merge the per-port checkers into the per-flow outputs.
-    always_comb begin
-        for (int f = 0; f < PW_NUM_FLOWS; f++) begin
-            automatic logic [63:0] rx = '0, lost = '0, dup = '0, ooo = '0;
-            automatic logic [63:0] sum = '0, samp = '0, lseq = '0;
-            automatic logic [63:0] mn = {64{1'b1}}, mx = '0;
-            automatic logic [31:0] jmn = {32{1'b1}}, jmx = '0;
-            automatic logic [63:0] jsm = '0;
+    // Merge the per-port read records (one flow per cycle) into the registered
+    // scalar outputs. The per-port checker read is 1 cycle after flow_rd_addr_i;
+    // this register adds 1 more, so flow_* is valid 2 cycles after the address.
+    // flow_tx (generator TX count) is sampled at flow_rd_addr_i delayed 1 cycle
+    // so it lands in the same register, aligned with the checker fields.
+    logic [$clog2(PW_NUM_FLOWS)-1:0] flow_rd_addr_d1;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            flow_rd_addr_d1 <= '0;
+            flow_rx <= '0; flow_lost <= '0; flow_dup <= '0; flow_ooo <= '0;
+            flow_last_seq <= '0; flow_sum_lat <= '0; flow_samples <= '0;
+            flow_min_lat <= '0; flow_max_lat <= '0;
+            flow_jit_min <= '0; flow_jit_max <= '0; flow_jit_sum <= '0;
+            flow_tx <= '0;
+        end else begin
+            logic [63:0] rx, lost, dup, ooo, lseq, sum, samp, jsum, mn, mx;
+            logic [31:0] jmn, jmx;
+            logic [47:0] txacc;
+            rx='0; lost='0; dup='0; ooo='0; lseq='0; sum='0; samp='0; jsum='0;
+            mn={64{1'b1}}; mx='0; jmn={32{1'b1}}; jmx='0; txacc='0;
             for (int p = 0; p < PW_PORTS; p++) begin
-                rx   += pc_rx[p][f];
-                lost += pc_lost[p][f];
-                dup  += pc_dup[p][f];
-                ooo  += pc_ooo[p][f];
-                sum  += pc_sum[p][f];
-                samp += pc_samp[p][f];
-                jsm  += pc_jsum[p][f];
-                lseq |= pc_lseq[p][f];               // one active port per flow
-                if (pc_min[p][f] < mn) mn = pc_min[p][f];
-                if (pc_max[p][f] > mx) mx = pc_max[p][f];
-                if (pc_jmin[p][f] < jmn) jmn = pc_jmin[p][f];
-                if (pc_jmax[p][f] > jmx) jmx = pc_jmax[p][f];
+                rx   += prx[p];   lost += plost[p]; dup += pdup[p]; ooo += pooo[p];
+                sum  += psuml[p]; samp += psamp[p]; jsum += pjsum[p];
+                lseq |= plseq[p];                        // one active port per flow
+                if (pminl[p] < mn) mn = pminl[p];
+                if (pmaxl[p] > mx) mx = pmaxl[p];
+                if (pjmin[p][31:0] < jmn) jmn = pjmin[p][31:0];
+                if (pjmax[p][31:0] > jmx) jmx = pjmax[p][31:0];
+                txacc += gen_tx_count[p][flow_rd_addr_d1];
             end
-            flow_rx[f]       = rx;
-            flow_lost[f]     = lost;
-            flow_dup[f]      = dup;
-            flow_ooo[f]      = ooo;
-            flow_sum_lat[f]  = sum;
-            flow_samples[f]  = samp;
-            flow_last_seq[f] = lseq;
-            flow_min_lat[f]  = mn;
-            flow_max_lat[f]  = mx;
-            flow_jit_min[f]  = jmn;
-            flow_jit_max[f]  = jmx;
-            flow_jit_sum[f]  = jsm;
+            flow_rd_addr_d1 <= flow_rd_addr_i;
+            flow_rx <= rx; flow_lost <= lost; flow_dup <= dup; flow_ooo <= ooo;
+            flow_last_seq <= lseq; flow_sum_lat <= sum; flow_samples <= samp;
+            flow_min_lat <= mn; flow_max_lat <= mx;
+            flow_jit_min <= jmn; flow_jit_max <= jmx; flow_jit_sum <= jsum;
+            flow_tx <= txacc;
         end
     end
 
@@ -578,17 +579,11 @@ module pw_data_plane_axis #(
         end
     endgenerate
 
-    // Per-flow TX count = the owning egress generator's slot counter. Each slot
-    // is emitted by exactly one generator (egress match), so the others' count
-    // for that slot stays 0; summing picks out the owner. Slot index == flow
-    // row index == tx_local_flow_id, so this aligns with the flow stats block.
-    always_comb begin
-        for (int s = 0; s < PW_NUM_FLOWS; s++) begin
-            automatic logic [47:0] acc = '0;
-            for (int p = 0; p < PW_PORTS; p++) acc += gen_tx_count[p][s];
-            flow_tx[s] = acc;
-        end
-    end
+    // (Per-flow TX count is read in the registered checker-merge block above:
+    // flow_tx <= sum_p gen_tx_count[p][flow_rd_addr_d1], aligned with the
+    // checker fields. Each slot is emitted by exactly one generator, so the
+    // others' count for that slot stays 0 and the sum picks out the owner.
+    // Slot index == flow row index == tx_local_flow_id.)
 
     // ------------------------------------------------------------
     // Egress TX arbiters: forwarded frames (from any ingress SAF routed
