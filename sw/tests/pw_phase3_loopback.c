@@ -123,10 +123,12 @@ int main(int argc, char **argv) {
             uint32_t lf = prog->flow_meta[m].rx_local_flow_id;
             struct pw_flow_stats rs = {0};
             if (o->flow_stats_read) o->flow_stats_read(be.ctx, lf, &rs);
-            printf("    flow %u (lf=%u): rx=%llu lost=%llu dup=%llu ooo=%llu "
-                   "min_lat=%u max_lat=%u samples=%llu\n",
-                   prog->flow_meta[m].global_flow_id, lf,
-                   (unsigned long long)rs.rx_frames,
+            unsigned long long txf = (unsigned long long)rs.tx_frames;
+            unsigned long long rxf = (unsigned long long)rs.rx_frames;
+            long long trueloss = (long long)txf - (long long)rxf;
+            printf("    flow %u (lf=%u): tx=%llu rx=%llu loss(tx-rx)=%lld "
+                   "lost_est=%llu dup=%llu ooo=%llu min_lat=%u max_lat=%u samples=%llu\n",
+                   prog->flow_meta[m].global_flow_id, lf, txf, rxf, trueloss,
                    (unsigned long long)rs.lost_packets_estimated,
                    (unsigned long long)rs.duplicate_count,
                    (unsigned long long)rs.out_of_order_count,

@@ -16,6 +16,7 @@ module tb_stats_snapshot;
     localparam int FLOW_BASE     = 256;  // PWFPGA_FLOW_STATS_BASE
 
     // pw_flow_stats wire offsets (little-endian)
+    localparam int OFF_TX_FRAMES   = 0;
     localparam int OFF_RX_FRAMES   = 16;
     localparam int OFF_EXPECTED_SEQ= 32;
     localparam int OFF_LOST        = 48;
@@ -52,6 +53,7 @@ module tb_stats_snapshot;
     logic [63:0] flow_max_lat   [NUM_FLOWS];
     logic [63:0] flow_sum_lat   [NUM_FLOWS];
     logic [63:0] flow_samples   [NUM_FLOWS];
+    logic [47:0] flow_tx_s     [NUM_FLOWS];
 
     logic [15:0] rd_addr;
     logic [31:0] rd_data;
@@ -80,6 +82,7 @@ module tb_stats_snapshot;
         .flow_max_lat_i (flow_max_lat),
         .flow_sum_lat_i (flow_sum_lat),
         .flow_samples_i (flow_samples),
+        .flow_tx_i      (flow_tx_s),
         .rd_addr_i      (rd_addr),
         .rd_data_o      (rd_data)
     );
@@ -136,7 +139,7 @@ module tb_stats_snapshot;
             flow_min_lat[f]   = '0;
             flow_max_lat[f]   = '0;
             flow_sum_lat[f]   = '0;
-            flow_samples[f]   = '0;
+            flow_samples[f]   = '0; flow_tx_s[f] = '0;
         end
 
         repeat (4) @(posedge clk);
@@ -167,6 +170,7 @@ module tb_stats_snapshot;
         flow_max_lat[2]  = 64'd200;
         flow_sum_lat[2]  = 64'd10000;
         flow_samples[2]  = 64'd80;
+        flow_tx_s[2]     = 48'd1240;
 
         flow_rx[6]       = 64'h12345678_AABBCCDD;
         flow_last_seq[6] = 64'h00000000_FFFFFFFE;
@@ -193,6 +197,7 @@ module tb_stats_snapshot;
             check_eq("port1 drops", w, 99);
 
             // Flow 2 (base = FLOW_BASE + 2*128 = 0x100 + 0x100 = 0x200)
+            read_u64(FLOW_BASE + 2 * FLOW_STRIDE, OFF_TX_FRAMES, v); check_eq("flow2 tx_frames", v, 1240);
             read_u64(FLOW_BASE + 2 * FLOW_STRIDE, OFF_RX_FRAMES, v);
             check_eq("flow2 rx_frames", v, 1234);
             read_u64(FLOW_BASE + 2 * FLOW_STRIDE, OFF_EXPECTED_SEQ, v);
@@ -233,6 +238,7 @@ module tb_stats_snapshot;
         @(posedge clk);
         begin
             logic [63:0] v;
+            read_u64(FLOW_BASE + 2 * FLOW_STRIDE, OFF_TX_FRAMES, v); check_eq("flow2 tx_frames", v, 1240);
             read_u64(FLOW_BASE + 2 * FLOW_STRIDE, OFF_RX_FRAMES, v);
             check_eq("flow2 rx after snap2", v, 9999);
         end

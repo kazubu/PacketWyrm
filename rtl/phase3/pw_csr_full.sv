@@ -79,6 +79,7 @@ module pw_csr_full #(
     input  wire [63:0]       flow_max_lat_i    [NUM_FLOWS],
     input  wire [63:0]       flow_sum_lat_i    [NUM_FLOWS],
     input  wire [63:0]       flow_samples_i    [NUM_FLOWS],
+    input  wire [47:0]       flow_tx_i         [NUM_FLOWS],
 
     // Outputs to the data plane.
     output pw_classifier_table_t          cls_table_o,
@@ -390,6 +391,7 @@ module pw_csr_full #(
         .flow_max_lat_i (flow_max_lat_i),
         .flow_sum_lat_i (flow_sum_lat_i),
         .flow_samples_i (flow_samples_i),
+        .flow_tx_i      (flow_tx_i),
         .rd_addr_i      (s_axi_araddr[15:0] - WIN_STATS_BASE),
         .rd_data_o      (stats_rdata)
     );
