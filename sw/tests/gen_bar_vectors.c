@@ -66,6 +66,9 @@ int main(int argc, char **argv) {
     ce.mask.test_magic      = 0xFFFFFFFFu;
     ce.key.global_flow_id   = 42;
     ce.mask.global_flow_id  = 0xFFFFFFFFu;
+    /* IPv6 dst match in the row tail (bytes 96..127): pattern 0x20..0x2F,
+     * mask all-ones (exact match). Exercises the classifier_window decode. */
+    for (int i = 0; i < 16; i++) { ce.ipv6_dst[i] = (uint8_t)(0x20 + i); ce.ipv6_dst_mask[i] = 0xff; }
     if ((r = b.ops->classifier_write(b.ctx, 1, &ce)) != PW_OK) {
         fprintf(stderr, "classifier_write: %s\n", pw_strerror(r));
         goto fail;

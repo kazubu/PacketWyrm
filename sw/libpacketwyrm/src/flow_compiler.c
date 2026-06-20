@@ -225,10 +225,17 @@ static pw_status compile_one_flow(struct pw_program *out,
         ce.key.ip_version = 4;
         ce.mask.ip_version = 0xff;
     } else {
-        /* IPv6: no v4 dst to match; udp_dst + l3_proto + magic + flow_id
-         * identify the test flow (the parser sets l3_proto = next-header). */
+        /* IPv6: match the inner dst address exactly (in addition to udp_dst +
+         * l3_proto + magic + flow_id). The v6 dst compare is exact (==), not
+         * bitwise, so skip it when a dst modifier rotates the address (shared
+         * dst_ipv4 field, low 32 bits of v6) -- then udp_dst+magic+flow_id
+         * still uniquely identify the flow, as before. */
         ce.key.ip_version = 6;
         ce.mask.ip_version = 0xff;
+        if (f->mod.dst_ipv4.mode == PWFPGA_FIELD_STATIC) {
+            memcpy(ce.ipv6_dst, f->ipv6.dst, 16);
+            memset(ce.ipv6_dst_mask, 0xFF, 16);
+        }
     }
     ce.key.l3_proto = 17; /* UDP (IPv6 next-header for our frames) */
     ce.mask.l3_proto = 0xff;

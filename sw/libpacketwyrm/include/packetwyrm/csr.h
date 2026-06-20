@@ -117,7 +117,17 @@ struct pwfpga_classifier_entry {
     uint16_t flags;      /* PWFPGA_CLS_FLAG_*    bytes 90..91 */
     uint8_t  egress_local_port; /* FORWARD_PORT target port  byte 92 */
     uint8_t  _reserved[3];      /* pad to a 32-bit word      bytes 93..95 */
+    /* IPv6 dst-address match. The 40-byte pwfpga_match_key has no room for a
+     * 128-bit address, so the inner IPv6 dst key + mask live in the row tail
+     * (the 40B key only covers v4). Network byte order (byte 0 first), matching
+     * pw_parser_axis. mask all-ones = exact match; all-zero = don't care. The
+     * match is exact (==), not bitwise. */
+    uint8_t  ipv6_dst[16];      /* bytes  96..111 */
+    uint8_t  ipv6_dst_mask[16]; /* bytes 112..127 */
 } __attribute__((packed));
+
+_Static_assert(sizeof(struct pwfpga_classifier_entry) == 128,
+               "pwfpga_classifier_entry must be exactly 128 bytes (fills the row)");
 
 enum pwfpga_payload_mode {
     PWFPGA_PAYLOAD_ZERO      = 0,

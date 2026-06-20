@@ -9,6 +9,16 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Classifier IPv6 dst-address match** — a TEST_RX rule for an IPv6 flow now
+    matches the inner IPv6 **destination** address exactly, in addition to
+    udp_dst + l3_proto + magic + flow_id. The 40-byte `pwfpga_match_key` has no
+    room for a 128-bit address, so the dst key + mask live in the classifier
+    row tail (bytes 96..127 — the entry was 96 B of a 128 B stride, so no row
+    growth); `pw_classifier_window` decodes them (network byte order, matching
+    `pw_parser_axis`). The match is exact (`==`), so the compiler skips it when
+    a dst modifier rotates the address (shared `dst_ipv4` field, low 32 bits of
+    v6) — udp_dst+magic+flow_id still identify the flow there. The `pw_classifier`
+    match logic + parser extraction already existed; this wires the host path.
   - **Per-flow IPDV jitter** — `pw_test_rx_checker` now tracks each flow's
     previous-sample latency and accumulates `|latency[n] - latency[n-1]|` into
     per-flow jitter min / max / sum (RFC-3393 instantaneous packet delay

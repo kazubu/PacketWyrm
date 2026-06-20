@@ -240,6 +240,10 @@ module tb_wire_vectors;
         check_eq("row1 mask l4",    cls_table[1].mask.match_l4_dst ? 1:0, 1);
         check_eq("row1 mask mg",    cls_table[1].mask.match_is_test ? 1:0, 1);
         check_eq("row1 mask fl",    cls_table[1].mask.match_flow_id ? 1:0, 1);
+        // IPv6 dst (row-tail bytes 96..127, pattern 0x20..0x2F, network order)
+        check_eq("row1 v6dst mask", cls_table[1].mask.match_ipv6_dst ? 1:0, 1);
+        check_eq("row1 v6dst hi",   cls_table[1].key.ipv6_dst[127:64], 64'h2021222324252627);
+        check_eq("row1 v6dst lo",   cls_table[1].key.ipv6_dst[63:0],   64'h28292A2B2C2D2E2F);
         // Row 0 stayed untouched (all zero).
         check_eq("row0 enable",     cls_table[0].enable ? 1 : 0, 0);
 

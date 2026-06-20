@@ -67,15 +67,13 @@ sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
 4. **IPv6 — at full generator parity** (done): generation + egress HW
    timestamping + UDP checksum, DSCP/traffic-class, TTL/hop-limit, and
    src/dst address field modifiers all work for IPv6 (YAML `ipv6:` block,
-   `src/dst_ipv6` modifiers). Remaining: **classifier IPv6 dst-address
-   matching** — *deferred* (functionally redundant: a TEST_RX IPv6 flow is
-   already uniquely classified by udp_dst + flow_id + magic). NOTE for a
-   future implementer: the RTL match logic already exists (`pw_classifier`
-   computes `m_v6dst` and the parser extracts `ipv6_dst` into the key); the
-   only missing pieces are the wire `pwfpga_match_key` IPv6 fields (which
-   pushes the classifier row past the 128 B stride → grow to 256 B like the
-   flow row), the `pw_classifier_window` decode, and the compiler setting
-   `ce.key.ipv6_dst`/`mask` for v6 flows. Watch timing (margin is +0.037 ns).
+   `src/dst_ipv6` modifiers). **Classifier IPv6 dst-address matching is DONE**
+   (exact `==` match): the dst key + mask landed in the classifier row tail
+   (bytes 96..127 — the entry was only 96 B of the 128 B stride, so it fit
+   *without* growing to 256 B), decoded by `pw_classifier_window`; the compiler
+   enables it for IPv6 TEST_RX flows except when a dst modifier rotates the
+   address (the match is exact, not bitwise). Remaining (optional): bitwise v6
+   dst masking (would need `ipv6_dst_bits` like the v4 path) and v6 *src* match.
    Also: IPv6 in the wide-bus legacy sim if ever needed.
 4. **Minor**: the `CAPABILITIES` parameter advertises `0x6C` (the
    currently-flashed build reports it).

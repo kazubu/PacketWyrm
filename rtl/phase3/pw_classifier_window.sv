@@ -100,6 +100,10 @@ module pw_classifier_window #(
                                              row[(ko+33)*8 +: 8], row[(ko+32)*8 +: 8]};
             cls_table_o[r].key.test_flow_id = {row[(ko+39)*8 +: 8], row[(ko+38)*8 +: 8],
                                                row[(ko+37)*8 +: 8], row[(ko+36)*8 +: 8]};
+            // IPv6 dst key lives in the row tail (bytes 96..111), network byte
+            // order (byte 0 first -> bits [127:120]), matching pw_parser_axis.
+            for (int i = 0; i < 16; i++)
+                cls_table_o[r].key.ipv6_dst[127 - i*8 -: 8] = row[(96+i)*8 +: 8];
 
             // Mask: each per-field bit becomes set if any byte of the
             // corresponding wire-mask field is non-zero.
@@ -132,7 +136,10 @@ module pw_classifier_window #(
             cls_table_o[r].mask.match_flow_id      =
                 |{row[(mo+39)*8 +: 8], row[(mo+38)*8 +: 8],
                   row[(mo+37)*8 +: 8], row[(mo+36)*8 +: 8]};
-            // IPv6 / inner-VLAN / protocol-class match bits are not
+            // IPv6 dst mask (bytes 112..127): OR-reduce to the single
+            // match_ipv6_dst enable bit (the compare is exact, not bitwise).
+            cls_table_o[r].mask.match_ipv6_dst = |row[112*8 +: 128];
+            // IPv6 src / inner-VLAN / protocol-class match bits are not
             // configurable from the current wire struct; they stay 0.
         end
     end
