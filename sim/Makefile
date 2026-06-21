@@ -162,6 +162,9 @@ sim_lat: sim_build/lat_histogram
 sim_chk: sim_build/test_rx_checker_bram
 	./sim_build/test_rx_checker_bram
 
+sim_slice: sim_build/slice_match
+	./sim_build/slice_match
+
 sim_spi: sim_build/spi_flash
 	./sim_build/spi_flash
 
@@ -269,6 +272,14 @@ sim_build/test_rx_checker_bram: $(CHK_RTL) $(TB_CHK)
 	    --top-module tb_test_rx_checker_bram \
 	    -o test_rx_checker_bram \
 	    $(CHK_RTL) $(TB_CHK)
+
+sim_build/slice_match: $(REPO)/rtl/phase3/pw_slice_match.sv slice_match_tb/tb_slice_match.sv
+	$(VERILATOR) $(VFLAGS) \
+	    -Mdir sim_build \
+	    --top-module tb_slice_match \
+	    -o slice_match \
+	    $(REPO)/rtl/phase3/pw_slice_match.sv slice_match_tb/tb_slice_match.sv
+
 
 sim_build/spi_flash: $(SPI_RTL) $(TB_SPI)
 	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET \
