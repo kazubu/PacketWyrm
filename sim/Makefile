@@ -165,6 +165,9 @@ sim_chk: sim_build/test_rx_checker_bram
 sim_slice: sim_build/slice_match
 	./sim_build/slice_match
 
+sim_fidmap: sim_build/flowid_map
+	./sim_build/flowid_map
+
 sim_spi: sim_build/spi_flash
 	./sim_build/spi_flash
 
@@ -279,6 +282,14 @@ sim_build/slice_match: $(REPO)/rtl/phase3/pw_slice_match.sv slice_match_tb/tb_sl
 	    --top-module tb_slice_match \
 	    -o slice_match \
 	    $(REPO)/rtl/phase3/pw_slice_match.sv slice_match_tb/tb_slice_match.sv
+
+sim_build/flowid_map: $(REPO)/rtl/phase3/pw_flowid_map.sv flowid_map_tb/tb_flowid_map.sv
+	$(VERILATOR) $(VFLAGS) \
+	    -Mdir sim_build \
+	    --top-module tb_flowid_map \
+	    -o flowid_map \
+	    $(REPO)/rtl/phase3/pw_flowid_map.sv flowid_map_tb/tb_flowid_map.sv
+
 
 
 sim_build/spi_flash: $(SPI_RTL) $(TB_SPI)
