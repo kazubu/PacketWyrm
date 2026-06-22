@@ -19,6 +19,7 @@ void pw_program_free(struct pw_program *p) {
         free(p->per_card[i].fc_cmps);
         free(p->per_card[i].fc_udfs);
         free(p->per_card[i].fc_rules);
+        free(p->per_card[i].hash_entries);
     }
     free(p->per_card);
     free(p->flow_meta);
@@ -93,32 +94,53 @@ static pw_status append_fc_rule(struct pw_card_program *cp, const struct pw_fc_r
     return PW_OK;
 }
 
-/* Build a header-classified RX flow: emit field comparators for the flow's
- * matched header fields (udp_dst / ipv4_dst, narrowed by the match masks) + one
- * rule -> TEST_RX @ rx_lfid. Comparators source the parser's canonical fields,
- * so the payload is irrelevant to this classification. */
+/* Build the 168-bit hash key (the 6 CSR words) from a flow's header tuple:
+ * {l3_dst(128b; IPv4 dst in low 32), l4_dst, l4_src, l3_proto}. Matches
+ * pw_hash_classifier's assemble() exactly. Exact-tuple (no masks). */
+static void pw_fc_hash_words(const struct pw_flow *f, uint32_t w[6]) {
+    unsigned __int128 l3 = 0;
+    if (f->ipv6.present)
+        for (int i = 0; i < 16; i++) l3 = (l3 << 8) | f->ipv6.dst[i];  /* dst[0] = MSB */
+    else
+        l3 = f->ipv4.dst;
+    uint32_t ld = f->udp.dst_port, ls = f->udp.src_port, proto = 17u;   /* UDP */
+    w[0] = proto | ((uint32_t)ls << 8) | ((ld & 0xFFu) << 24);
+    w[1] = ((ld >> 8) & 0xFFu) | (uint32_t)((l3 & 0xFFFFFFu) << 8);
+    w[2] = (uint32_t)((l3 >> 24)  & 0xFFFFFFFFu);
+    w[3] = (uint32_t)((l3 >> 56)  & 0xFFFFFFFFu);
+    w[4] = (uint32_t)((l3 >> 88)  & 0xFFFFFFFFu);
+    w[5] = (uint32_t)((l3 >> 120) & 0xFFu);
+}
+/* XOR-fold + multiply-shift -> bucket index. Bit-identical to the RTL. */
+static uint16_t pw_fc_hash_index(const uint32_t w[6], uint32_t seed) {
+    uint32_t k32  = w[0] ^ w[1] ^ w[2] ^ w[3] ^ w[4] ^ w[5];
+    uint32_t prod = k32 * (seed | 1u);
+    int idx_w = 0; for (unsigned d = PWFPGA_HASH_DEPTH; d > 1; d >>= 1) idx_w++;
+    return (uint16_t)(prod >> (32 - idx_w));
+}
+
+static pw_status append_hash_entry(struct pw_card_program *cp,
+                                   const uint32_t w[6], uint32_t lfid) {
+    if (cp->n_hash_entries >= PWFPGA_HASH_DEPTH) return PW_E_NO_RESOURCES;
+    struct pw_fc_hash_entry *na = realloc(
+        cp->hash_entries, sizeof(*cp->hash_entries) * (cp->n_hash_entries + 1));
+    if (!na) return PW_E_NO_RESOURCES;
+    cp->hash_entries = na;
+    struct pw_fc_hash_entry *e = &cp->hash_entries[cp->n_hash_entries++];
+    e->index = 0; e->local_flow_id = lfid;
+    for (int i = 0; i < 6; i++) e->key_word[i] = w[i];
+    return PW_OK;
+}
+
+/* Header-classified RX flow: classify by an EXACT header tuple via the hash
+ * exact table -- payload-agnostic, scaling to NUM_FLOWS (vs the field
+ * comparators' ~NCMP cap). The bucket index is assigned later (per-card seed
+ * search) so the configured keys land collision-free. */
 static pw_status compile_header_classify(struct pw_card_program *rx_cp,
                                          const struct pw_flow *f, uint32_t rx_lfid) {
-    uint16_t care = 0;
-    size_t   bit;
-    pw_status r;
-    if (f->ipv4.present && f->match_ipv4_dst_mask != 0) {
-        if ((r = append_fc_cmp(rx_cp, PWFPGA_FC_SRC_IPV4_DST, f->match_ipv4_dst_mask,
-                               f->ipv4.dst & f->match_ipv4_dst_mask, &bit)) != PW_OK) return r;
-        care |= (uint16_t)(1u << bit);
-    }
-    if (f->match_udp_dst_mask != 0) {
-        if ((r = append_fc_cmp(rx_cp, PWFPGA_FC_SRC_L4_DST, f->match_udp_dst_mask,
-                               (uint32_t)(f->udp.dst_port & f->match_udp_dst_mask), &bit)) != PW_OK)
-            return r;
-        care |= (uint16_t)(1u << bit);
-    }
-    if (care == 0) return PW_E_INVAL;   /* nothing to classify on */
-    struct pw_fc_rule rule = {
-        .care = care, .action = PWFPGA_ACT_TEST_RX, .egress = 0,
-        .local_flow_id = rx_lfid, .logical_if_id = 0, .priority = 32,
-    };
-    return append_fc_rule(rx_cp, &rule);
+    uint32_t w[6];
+    pw_fc_hash_words(f, w);
+    return append_hash_entry(rx_cp, w, rx_lfid);
 }
 
 static void mac_set(uint8_t *dst, const uint8_t *src) { memcpy(dst, src, 6); }
@@ -402,5 +424,31 @@ pw_status pw_flow_compile(const struct pw_config *cfg, struct pw_program *out,
 
     r = compile_punt_rules(out, cfg);
     if (r != PW_OK) return r;
-    return compile_forward_rules(out, cfg);
+    r = compile_forward_rules(out, cfg);
+    if (r != PW_OK) return r;
+
+    /* Per-card hash-table seed search: pick a seed so every configured
+     * header-key lands in a distinct bucket (the hash only chooses the bucket;
+     * the HW still verifies the full key). Search a deterministic seed sequence;
+     * a clean placement is found quickly while the load factor stays low
+     * (n_hash_entries << PWFPGA_HASH_DEPTH). */
+    for (size_t c = 0; c < out->n_cards; c++) {
+        struct pw_card_program *cp = &out->per_card[c];
+        if (cp->n_hash_entries == 0) continue;
+        bool placed = false;
+        for (uint32_t attempt = 0; attempt < 4096 && !placed; attempt++) {
+            uint32_t seed = 0x9E3779B1u * (attempt + 1u) + 1u;   /* odd, well-mixed */
+            bool used[PWFPGA_HASH_DEPTH] = {0};
+            bool collision = false;
+            for (size_t i = 0; i < cp->n_hash_entries; i++) {
+                uint16_t idx = pw_fc_hash_index(cp->hash_entries[i].key_word, seed);
+                if (used[idx]) { collision = true; break; }
+                used[idx] = true;
+                cp->hash_entries[i].index = idx;
+            }
+            if (!collision) { cp->hash_seed = seed; placed = true; }
+        }
+        if (!placed) return PW_E_NO_RESOURCES;   /* couldn't place collision-free */
+    }
+    return PW_OK;
 }

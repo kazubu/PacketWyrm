@@ -47,6 +47,15 @@ struct pw_fc_rule {
     uint8_t  priority;      /* lower wins */
 };
 
+/* Hash exact-table entry (pw_hash_classifier): a header-keyed TEST_RX flow.
+ * key_word[0..5] are the 6 CSR words of the 168-bit key (== the bucket the HW
+ * computes); index is the bucket the SW chose with the collision-free seed. */
+struct pw_fc_hash_entry {
+    uint16_t index;
+    uint32_t key_word[6];
+    uint32_t local_flow_id;
+};
+
 struct pw_card_program {
     uint16_t card_id;
 
@@ -62,6 +71,12 @@ struct pw_card_program {
     size_t                          n_fc_udfs;
     struct pw_fc_rule              *fc_rules;
     size_t                          n_fc_rules;
+
+    /* Hash exact table: header-keyed high-count TEST_RX flows. hash_seed is the
+     * collision-free seed the compiler found for this card's hash entries. */
+    uint32_t                        hash_seed;
+    struct pw_fc_hash_entry        *hash_entries;
+    size_t                          n_hash_entries;
 };
 
 struct pw_program {

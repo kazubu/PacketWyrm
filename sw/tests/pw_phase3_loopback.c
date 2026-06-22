@@ -97,11 +97,24 @@ int main(int argc, char **argv) {
             o->write32(be.ctx, PWFPGA_FC_RULE_LFID(PWFPGA_WIN_FC_RULE, i), rl->local_flow_id);
             o->write32(be.ctx, PWFPGA_FC_RULE_LIF(PWFPGA_WIN_FC_RULE, i), rl->logical_if_id);
         }
+        // hash exact table: seed + per-bucket entries (header-keyed TEST_RX)
+        if (cp->n_hash_entries > 0) {
+            o->write32(be.ctx, PWFPGA_REG_HASH_SEED, cp->hash_seed);
+            for (size_t i = 0; i < cp->n_hash_entries; i++) {
+                const struct pw_fc_hash_entry *he = &cp->hash_entries[i];
+                for (int w = 0; w < 6; w++)
+                    o->write32(be.ctx, PWFPGA_HASH_KEY_WORD(PWFPGA_WIN_FC_HASH, he->index, w),
+                               he->key_word[w]);
+                o->write32(be.ctx, PWFPGA_HASH_CTRL(PWFPGA_WIN_FC_HASH, he->index),
+                           PWFPGA_HASH_CTRL_VALID | he->local_flow_id);
+            }
+        }
     }
     printf("programmed %zu flow rows, %zu flow-id map entries, "
-           "%zu cmp/%zu udf/%zu rules; generator running\n",
+           "%zu cmp/%zu udf/%zu rules, %zu hash entries (seed %08x); generator running\n",
            cp->n_flow_rows, cp->n_map_entries,
-           cp->n_fc_cmps, cp->n_fc_udfs, cp->n_fc_rules);
+           cp->n_fc_cmps, cp->n_fc_udfs, cp->n_fc_rules,
+           cp->n_hash_entries, cp->hash_seed);
 
     /* --- debug: write-path self-test on GLOBAL_CONTROL (0x100, RW) --- */
     if (o->write32 && o->read32) {

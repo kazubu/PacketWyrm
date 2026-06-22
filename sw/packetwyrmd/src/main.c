@@ -261,6 +261,20 @@ static void program_backends(const struct pw_program *prog,
                 (void)b->ops->write32(b->ctx, PWFPGA_FC_RULE_LFID(PWFPGA_WIN_FC_RULE, i), rl->local_flow_id);
                 (void)b->ops->write32(b->ctx, PWFPGA_FC_RULE_LIF(PWFPGA_WIN_FC_RULE, i), rl->logical_if_id);
             }
+            /* Hash exact table: seed first, then each entry (key words, then the
+             * control word commits at the SW-chosen bucket index). */
+            if (cp->n_hash_entries > 0) {
+                (void)b->ops->write32(b->ctx, PWFPGA_REG_HASH_SEED, cp->hash_seed);
+                for (size_t i = 0; i < cp->n_hash_entries; i++) {
+                    const struct pw_fc_hash_entry *he = &cp->hash_entries[i];
+                    for (int w = 0; w < 6; w++)
+                        (void)b->ops->write32(b->ctx,
+                            PWFPGA_HASH_KEY_WORD(PWFPGA_WIN_FC_HASH, he->index, w), he->key_word[w]);
+                    (void)b->ops->write32(b->ctx,
+                        PWFPGA_HASH_CTRL(PWFPGA_WIN_FC_HASH, he->index),
+                        PWFPGA_HASH_CTRL_VALID | he->local_flow_id);
+                }
+            }
         }
         if (any_err) {
             fprintf(stderr,

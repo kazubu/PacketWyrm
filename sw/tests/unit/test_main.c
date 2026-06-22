@@ -495,18 +495,16 @@ static void test_header_classify_compiles(void) {
     PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
     struct pw_program *prog = pw_program_new();
     PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
-    /* header-classified -> no map entry; one field comparator (udp_dst) + rule. */
+    /* header-classified -> hash exact table (no map entry, no field comparator/
+     * rule -- those carry punt/forward only). One hash entry, slot 0. */
     PW_ASSERT_EQ(prog->per_card[0].n_map_entries, 0);
-    PW_ASSERT_EQ(prog->per_card[0].n_fc_cmps, 1);
-    PW_ASSERT_EQ(prog->per_card[0].n_fc_rules, 1);
-    /* udp_dst comparator: src = L4_DST, value 50001 (config dst_port). */
-    PW_ASSERT_EQ(prog->per_card[0].fc_cmps[0].src, PWFPGA_FC_SRC_L4_DST);
-    PW_ASSERT_EQ(prog->per_card[0].fc_cmps[0].mask, 0xFFFFu);
-    PW_ASSERT_EQ(prog->per_card[0].fc_cmps[0].value, 50007);
-    /* rule cares about comparator 0, action TEST_RX, lfid 0. */
-    PW_ASSERT_EQ(prog->per_card[0].fc_rules[0].care, 0x1);
-    PW_ASSERT_EQ(prog->per_card[0].fc_rules[0].action, PWFPGA_ACT_TEST_RX);
-    PW_ASSERT_EQ(prog->per_card[0].fc_rules[0].local_flow_id, 0);
+    PW_ASSERT_EQ(prog->per_card[0].n_fc_cmps, 0);
+    PW_ASSERT_EQ(prog->per_card[0].n_fc_rules, 0);
+    PW_ASSERT_EQ(prog->per_card[0].n_hash_entries, 1);
+    PW_ASSERT_EQ(prog->per_card[0].hash_entries[0].local_flow_id, 0);
+    PW_ASSERT(prog->per_card[0].hash_seed != 0);   /* a collision-free seed found */
+    /* key word0 = proto(17) | l4_src(49152)<<8 | (l4_dst(50007)&0xFF)<<24. */
+    PW_ASSERT_EQ(prog->per_card[0].hash_entries[0].key_word[0], 0x57C00011u);
     pw_program_free(prog);
     pw_config_free(cfg);
 }

@@ -72,6 +72,7 @@ set pw_srcs [list \
     "$repo_root/rtl/phase3/pw_parser_axis.sv" \
     "$repo_root/rtl/phase3/pw_slice_match.sv" \
     "$repo_root/rtl/phase3/pw_field_classifier.sv" \
+    "$repo_root/rtl/phase3/pw_hash_classifier.sv" \
     "$repo_root/rtl/phase3/pw_flow_gen_multi.sv" \
     "$repo_root/rtl/phase3/pw_test_rx_checker_bram.sv" \
     "$repo_root/rtl/phase3/pw_flowid_map.sv" \

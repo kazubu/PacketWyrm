@@ -29,10 +29,11 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
         +-- pw_flow_table_bram   BRAM flow table (commit-walk decode; per-port
         |                        read port + compact scheduling FF array)
         +-- per ingress port: pw_parser_axis -> pw_field_classifier (field+UDF
-        |                      comparators + rules; TEST_RX/punt/forward) +
-        |                      pw_flowid_map (structured TEST_RX flow_id ->
+        |                      comparators + rules; punt/forward/few-rule) +
+        |                      pw_hash_classifier (header-keyed high-count TEST_RX)
+        |                      + pw_flowid_map (structured TEST_RX flow_id ->
         |                      checker slot) -> pw_frame_saf
-        |                      (effective result: map > field classifier)
+        |                      (effective result: map > hash > field classifier)
         +-- per ingress port: pw_test_rx_checker (loss/dup/ooo/min/max/sum +
         |                      RFC-3393 IPDV jitter min/max/sum)
         +-- link health: per-port 2-FF sync + edge count of MAC link_up /
@@ -225,6 +226,22 @@ key compare) is **retired** — it was the xcku3p route wall (~16 entries). It i
 replaced by `pw_field_classifier` (see below), with structured high-count
 TEST_RX on `pw_flowid_map`. Actions are unchanged: `DROP`, `TEST_RX`,
 `PUNT_TO_HOST`, `MIRROR_TO_HOST`, `FORWARD_PORT`.
+
+### hash_classifier (`pw_hash_classifier`)
+
+- Header-keyed exact classification scaling to `NUM_FLOWS`, payload-agnostic
+  (no test `flow_id`). Lifts the header-defined-flow cap from the field
+  classifier's ~`NCMP` to the checker ceiling.
+- Direct-indexed BRAM hash table — **1 read + 1 compare**, not an N-way parallel
+  match, so it routes: assemble a 168-bit key `{l3_dst, l4_dst, l4_src,
+  l3_proto}` from the parser's canonical fields; XOR-fold to 32 bits; bucket =
+  `(k32 * (seed|1)) >> (32-log2 DEPTH)` (Dietzfelbinger multiply-shift); read
+  `mem[bucket]`; hit = `valid && stored_key == key` (FULL-key verify, so no
+  misclassification — the hash only picks the bucket). Latency 2.
+- SW computes the identical hash to place entries and searches a **seed** that
+  makes the configured keys collision-free (`mem[bucket]` written by index).
+  The compiler routes `classify: header` flows here; the field classifier then
+  carries only punt/forward. CSR: `PWFPGA_WIN_FC_HASH` @ 0x3000 + seed reg.
 
 ### flowid_map (`pw_flowid_map`)
 

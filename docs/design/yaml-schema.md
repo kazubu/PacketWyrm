@@ -163,21 +163,22 @@ flows:
                                      #            via the flow-id map (scales to
                                      #            256 flows; needs the flow_id at
                                      #            a fixed payload offset).
-                                     #   header = classify by header fields via
-                                     #            the generic slice classifier
+                                     #   header = classify by an EXACT header tuple
+                                     #            {dst IP, dst port, src port,
+                                     #            proto} via the hash exact table
                                      #            (payload carries NO classification
                                      #            dependency -- fill it freely).
-                                     #            Bounded by the slice-classifier
-                                     #            capacity: the field+UDF
-                                     #            classifier (12 comparators / 32
-                                     #            rules per card, shared with punt
-                                     #            + forward rules). Matched on the
-                                     #            parser's canonical header fields.
+                                     #            Scales to the checker's NUM_FLOWS;
+                                     #            the compiler finds a collision-
+                                     #            free hash seed. (Punt/forward use
+                                     #            the field+UDF classifier.)
 
-    match:                           # optional: narrow the RX match (the fields
-      udp_dst: 0xff00                # the slice classifier keys on when classify:
-      ipv4_dst: 0xffffff00           # header). bitwise mask (1 = bit must match);
-                                     # default full match. Also lets a modifier
+    match:                           # optional: narrow the RX match for masked
+      udp_dst: 0xff00                # field-comparator matching. bitwise mask
+      ipv4_dst: 0xffffff00           # (1 = bit must match); default full match.
+                                     # (classify: header uses an exact tuple, so
+                                     # the masks are advisory there.) Also lets a
+                                     # modifier rotate the unmatched bits.
                                      # rotate the unmatched bits. mask 0 = ignore
                                      # that field. A modifier on a matched field
                                      # auto-relaxes its mask.

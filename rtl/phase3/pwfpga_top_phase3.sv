@@ -30,7 +30,8 @@ module pwfpga_top_phase3 #(
     parameter int          NUM_CMP         = 12,   // field-classifier field comparators
     parameter int          NUM_UDF         = 2,    // field-classifier UDF comparators
     parameter int          NUM_RULE        = 32,   // field-classifier combine rules
-    parameter int          SLICE_WIN       = 48     // UDF match window depth
+    parameter int          SLICE_WIN       = 48,   // UDF match window depth
+    parameter int          HASH_DEPTH      = 128    // hash exact-table buckets
 ) (
     input  wire              clk,
     input  wire              rst_n,
@@ -152,7 +153,8 @@ module pwfpga_top_phase3 #(
         .NUM_HIST_BINS   (NUM_HIST_BINS),
         .NCMP            (NUM_CMP),
         .NUDF            (NUM_UDF),
-        .NRULE           (NUM_RULE)
+        .NRULE           (NUM_RULE),
+        .HASH_DEPTH      (HASH_DEPTH)
     ) u_csr (
         .s_axi_aclk          (clk),
         .s_axi_aresetn       (rst_n),
@@ -227,6 +229,12 @@ module pwfpga_top_phase3 #(
         .rule_wr_lif_o       (rule_wr_lif_w),
         .rule_wr_prio_o      (rule_wr_prio_w),
         .rule_wr_enable_o    (rule_wr_enable_w),
+        .hash_seed_o         (hash_seed_w),
+        .hash_wr_en_o        (hash_wr_en_w),
+        .hash_wr_index_o     (hash_wr_index_w),
+        .hash_wr_valid_o     (hash_wr_valid_w),
+        .hash_wr_key_o       (hash_wr_key_w),
+        .hash_wr_lfid_o      (hash_wr_lfid_w),
         .stats_clear_o       (stats_clear_w),
         .dp_soft_rst_o       (dp_soft_rst_w),
         .spi_sck_o           (spi_sck_o),
@@ -309,6 +317,12 @@ module pwfpga_top_phase3 #(
     logic [31:0]                   rule_wr_lif_w;
     logic [7:0]                    rule_wr_prio_w;
     logic                          rule_wr_enable_w;
+    logic [31:0]                   hash_seed_w;
+    logic                          hash_wr_en_w;
+    logic [$clog2(HASH_DEPTH)-1:0] hash_wr_index_w;
+    logic                          hash_wr_valid_w;
+    logic [167:0]                  hash_wr_key_w;
+    logic [$clog2(NUM_FLOWS)-1:0]  hash_wr_lfid_w;
     logic         stats_clear_w;
     logic         dp_soft_rst_w;
 
@@ -319,7 +333,8 @@ module pwfpga_top_phase3 #(
         .NCMP          (NUM_CMP),
         .NUDF          (NUM_UDF),
         .NRULE         (NUM_RULE),
-        .SLICE_WIN     (SLICE_WIN)
+        .SLICE_WIN     (SLICE_WIN),
+        .HASH_DEPTH    (HASH_DEPTH)
     ) u_dp (
         .clk               (clk),
         .rst_n             (rst_n),
@@ -380,6 +395,12 @@ module pwfpga_top_phase3 #(
         .rule_wr_lif_i     (rule_wr_lif_w),
         .rule_wr_prio_i    (rule_wr_prio_w),
         .rule_wr_enable_i  (rule_wr_enable_w),
+        .hash_seed_i       (hash_seed_w),
+        .hash_wr_en_i      (hash_wr_en_w),
+        .hash_wr_index_i   (hash_wr_index_w),
+        .hash_wr_valid_i   (hash_wr_valid_w),
+        .hash_wr_key_i     (hash_wr_key_w),
+        .hash_wr_lfid_i    (hash_wr_lfid_w),
         .flow_rd_addr_i    (flow_rd_addr_w),
         .flow_rx           (flow_rx_w),
         .flow_lost         (flow_lost_w),
