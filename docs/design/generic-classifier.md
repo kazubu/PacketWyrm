@@ -106,11 +106,18 @@ extraction is no longer the parser's job — offsets are SW-programmed.
   the new engine before the old classifier is retired.
 
 ## Phased implementation
-1. **Slice extractor unit** + unit tb (offset/width/mask/value → bit). Self-contained.
+Status: **Phase 1 + Phase 3 implemented + HW-bound** (pw_slice_match,
+pw_flowid_map + full data-plane/CSR/compiler integration; TEST_RX now rides the
+flow-id map, classifier stays at 16 for non-test rules). Phases 2 (parser →
+byte-window) + 4–6 (wildcard TCAM over slice bits, hash table, slice-driven
+compiler) remain for arbitrary DUT-traffic matching.
+
+1. **[DONE] Slice extractor unit** + unit tb (offset/width/mask/value → bit). Self-contained.
 2. **Parser → byte-window provider** (expose the decap'd window + inner base;
    keep test-header fields). The blast-radius step.
-3. **Direct-index exact path** for TEST_RX (flow_id → index) — unlocks the flow
-   ceiling immediately for test traffic; smallest path to "many flows".
+3. **[DONE] Direct-index exact path** for TEST_RX (flow_id → index, pw_flowid_map)
+   — unlocked the flow ceiling for test traffic; classifier dropped its TEST_RX
+   rules and the count is now checker/generator-bound.
 4. **Small wildcard TCAM** for PUNT/FORWARD over slice bits.
 5. (Optional) **hash exact table** for arbitrary DUT-traffic flows.
 6. Compiler: presets → slice configs + back-end entries; retire fixed-field path.

@@ -28,8 +28,9 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
     +-- pw_data_plane_axis       64-bit AXIS streaming data plane
         +-- pw_flow_table_bram   BRAM flow table (commit-walk decode; per-port
         |                        read port + compact scheduling FF array)
-        +-- per ingress port: pw_parser_axis -> pw_classifier (RESULT_STAGES=2)
-        |                      -> pw_frame_saf (store-and-forward)
+        +-- per ingress port: pw_parser_axis -> pw_classifier (RESULT_STAGES=2,
+        |                      non-test rules only) + pw_flowid_map (TEST_RX
+        |                      flow_id -> checker slot) -> pw_frame_saf (S&F)
         +-- per ingress port: pw_test_rx_checker (loss/dup/ooo/min/max/sum +
         |                      RFC-3393 IPDV jitter min/max/sum)
         +-- link health: per-port 2-FF sync + edge count of MAC link_up /
@@ -218,6 +219,11 @@ Output: a flat "header descriptor" with all extracted fields plus a
 ### classifier
 
 - Priority-ordered linear table (Phase 1).
+- **TEST_RX flows are NOT in the classifier** — they are classified by
+  `pw_flowid_map` (below), so the classifier carries only the few non-test
+  rules (PUNT/FORWARD/DROP) and stays small (16 entries) and routable. A wider
+  parallel match is route-congestion-bound on the xcku3p (~16 is the wall);
+  moving the many per-flow TEST_RX rules out is what lifts the flow ceiling.
 - Each entry: match key + mask, action, priority,
   `local_flow_id`, `logical_if_id`, `egress_local_port`.
 - The dst port (`l4_dst`/`udp_dst`) and dst IPv4 address match **bitwise**
@@ -239,6 +245,23 @@ Output: a flat "header descriptor" with all extracted fields plus a
   `docs/design/csr-map.md` (classifier window).
 - Double-buffered: stage row, then write `commit` to swap.
 - Returns the matched action + IDs to the rest of the RX pipeline.
+
+### flowid_map (`pw_flowid_map`)
+
+- Scalable TEST_RX classification: a test frame's parsed `test_flow_id`
+  directly indexes a BRAM table (`PWFPGA_WIN_FLOWID_MAP` @ 0x0400) →
+  `{valid, local_flow_id}`, gated by the parser's magic/`is_test`. No
+  per-flow comparators, so the test-flow count scales with the BRAM
+  (`MAP_DEPTH`) and the checker (`NUM_FLOWS`), not classifier routability.
+- The data plane combines: a map hit overrides the classifier result with
+  `TEST_RX @ mapped slot` (aligned to the classifier's latency); otherwise the
+  classifier result stands. All consumers (checker / SAF / drop) use the
+  combined `rx_eff`.
+- Programmed before traffic via the CSR window (the compiler emits one entry
+  per TEST_RX flow). Keying on the stable `flow_id` makes header-field modifiers
+  irrelevant to RX classification. First back-end of the generic slice
+  classifier — see `docs/design/generic-classifier.md`. The flexible front-end
+  (`pw_slice_match`, programmable offset/mask/value extractor) is also landed.
 
 ### test_rx_checker
 
