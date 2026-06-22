@@ -158,13 +158,28 @@ flows:
                                      #   frame); tunneled = RX gets the frame
                                      #   with the outer+tunnel still on it.
 
-    match:                           # optional: narrow the RX classifier match
-      udp_dst: 0xff00                # bitwise mask (1 = bit must match); default
-      ipv4_dst: 0xffffff00           # full match. Lets the rule classify on part
-                                     # of a field so a modifier can rotate the
-                                     # rest, or classify arbitrary-payload traffic
-                                     # by header bits. A modifier on a matched
-                                     # field also auto-relaxes its mask.
+    classify: header                 # optional, default map. RX classification:
+                                     #   map    = key on the test header flow_id
+                                     #            via the flow-id map (scales to
+                                     #            256 flows; needs the flow_id at
+                                     #            a fixed payload offset).
+                                     #   header = classify by header fields via
+                                     #            the generic slice classifier
+                                     #            (payload carries NO classification
+                                     #            dependency -- fill it freely).
+                                     #            Bounded by the slice-classifier
+                                     #            capacity (4 distinct header
+                                     #            matches / 8 rules per card; the
+                                     #            match window is the first 48
+                                     #            inner-frame bytes -> L3/L4).
+
+    match:                           # optional: narrow the RX match (the fields
+      udp_dst: 0xff00                # the slice classifier keys on when classify:
+      ipv4_dst: 0xffffff00           # header). bitwise mask (1 = bit must match);
+                                     # default full match. Also lets a modifier
+                                     # rotate the unmatched bits. mask 0 = ignore
+                                     # that field. A modifier on a matched field
+                                     # auto-relaxes its mask.
 
     modifiers:                       # optional: per-field "field modifiers"
       dst_ipv4: { mode: increment, mask: 0x000003ff }  # rotate low 10 bits -> 1024 flows

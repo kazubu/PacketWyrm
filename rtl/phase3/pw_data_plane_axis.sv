@@ -43,6 +43,9 @@ module pw_data_plane_axis #(
                                             // an encapsulated frame; see parser)
     parameter int FRAME_LEN_PAYLOAD = 32,   // flow_gen L4 payload bytes
     parameter int MAP_DEPTH         = 256,   // TEST_RX flow-id map index range
+    parameter int NSLICE            = 4,     // generic slice-classifier extractors
+    parameter int NRULE             = 8,     // generic slice-classifier rules
+    parameter int SLICE_WIN         = 48,    // slice-classifier match window depth
     parameter int SAF_DEPTH_BEATS   = 512,   // per-ingress forward buffer (x8 bytes)
     parameter int FLOW_ADDR_W       = 16,    // CSR address width for the flow window
     parameter logic [15:0] FLOW_WIN_BASE      = 16'h6000,   // matches pw_csr_full
@@ -128,6 +131,25 @@ module pw_data_plane_axis #(
     input  wire                              map_wr_valid_i,
     input  wire [$clog2(PW_NUM_FLOWS)-1:0]   map_wr_lfid_i,
 
+    // Generic slice-classifier programming (pw_slice_classifier): header-defined
+    // flows matched by arbitrary {offset,mask,value} slices + rules combining the
+    // slice-match bits. Lets a flow be classified by HEADER alone, so its payload
+    // is free (the flow-id map keys on the test_flow_id, which lives in payload).
+    // Same program is broadcast to every port's classifier.
+    input  wire                              slice_wr_en_i,
+    input  wire [$clog2(NSLICE)-1:0]         slice_wr_idx_i,
+    input  wire [15:0]                       slice_wr_offset_i,
+    input  wire [31:0]                       slice_wr_mask_i,
+    input  wire [31:0]                       slice_wr_value_i,
+    input  wire                              rule_wr_en_i,
+    input  wire [$clog2(NRULE)-1:0]          rule_wr_idx_i,
+    input  wire [NSLICE-1:0]                 rule_wr_care_i,
+    input  wire [2:0]                        rule_wr_action_i,
+    input  wire [3:0]                        rule_wr_egress_i,
+    input  wire [31:0]                       rule_wr_lfid_i,
+    input  wire [7:0]                        rule_wr_prio_i,
+    input  wire                              rule_wr_enable_i,
+
     // Per-flow checker counters: BRAM-backed (pw_test_rx_checker_bram), read
     // one flow at a time. Drive flow_rd_addr_i; the merged (across ports)
     // record is valid 2 cycles later. pw_stats_snapshot walks 0..NUM_FLOWS-1.
@@ -201,7 +223,11 @@ module pw_data_plane_axis #(
     // bites (the same one the wide-bus plane dodged).
     pw_match_key_t    [PW_PORTS-1:0] rx_key;
     logic             [PW_PORTS-1:0] rx_kv;
-    pw_class_result_t [PW_PORTS-1:0] rx_res;   // classifier result (non-test rules)
+    pw_class_result_t [PW_PORTS-1:0] rx_res;   // legacy classifier result (non-test rules)
+    pw_class_result_t [PW_PORTS-1:0] rx_slc;   // generic slice-classifier result
+    // Parser header byte-window + inner base per port (feed the slice classifier).
+    logic [HDR_BYTES-1:0][7:0]       rx_win  [PW_PORTS];
+    logic [15:0]                     rx_base [PW_PORTS];
     // Effective result = classifier, overridden by the TEST_RX flow-id map for
     // test frames (the map gives TEST_RX + the mapped checker slot directly).
     // All downstream consumers (checker / SAF / drop) use rx_eff, not rx_res.
@@ -250,7 +276,9 @@ module pw_data_plane_axis #(
                 .s_tlast        (s_axis_rx_tlast[gp]),
                 .ingress_port_i (4'(gp)),
                 .key_o          (rx_key[gp]),
-                .key_valid_o    (rx_kv[gp])
+                .key_valid_o    (rx_kv[gp]),
+                .window_o       (rx_win[gp]),
+                .base_o         (rx_base[gp])
             );
 
             pw_classifier #(.RESULT_STAGES(2)) u_cls (
@@ -260,6 +288,23 @@ module pw_data_plane_axis #(
                 .key_i       (rx_key[gp]),
                 .key_valid_i (rx_kv[gp]),
                 .result_o    (rx_res[gp])
+            );
+
+            // Generic slice classifier (header-defined flows; payload-agnostic).
+            // Latency 2 from key_valid -- same as pw_classifier -- so its result
+            // lands the same cycle as rx_res. window/base are parser outputs
+            // already aligned with key_valid_o.
+            pw_slice_classifier #(.HDR_BYTES(HDR_BYTES), .SLICE_WIN(SLICE_WIN), .NSLICE(NSLICE), .NRULE(NRULE)) u_sclass (
+                .clk(clk), .rst_n(rst_n),
+                .window_i(rx_win[gp]), .base_i(rx_base[gp]), .key_valid_i(rx_kv[gp]),
+                .slice_wr_en(slice_wr_en_i), .slice_wr_idx(slice_wr_idx_i),
+                .slice_wr_offset(slice_wr_offset_i), .slice_wr_mask(slice_wr_mask_i),
+                .slice_wr_value(slice_wr_value_i),
+                .rule_wr_en(rule_wr_en_i), .rule_wr_idx(rule_wr_idx_i),
+                .rule_wr_care(rule_wr_care_i), .rule_wr_action(rule_wr_action_i),
+                .rule_wr_egress(rule_wr_egress_i), .rule_wr_lfid(rule_wr_lfid_i),
+                .rule_wr_prio(rule_wr_prio_i), .rule_wr_enable(rule_wr_enable_i),
+                .result_o(rx_slc[gp])
             );
 
             // TEST_RX flow-id map: a frame's test_flow_id directly indexes the
@@ -278,10 +323,15 @@ module pw_data_plane_axis #(
                 if (!rst_n) begin mv2 <= 1'b0; ml2 <= '0; end
                 else        begin mv2 <= mv1;  ml2 <= ml1; end
             end
-            // Effective result (aligned to the classifier at +2): map hit ->
-            // TEST_RX @ mapped slot; else the classifier's result.
+            // Effective result (all aligned at +2). Precedence:
+            //   flow-id map (structured test, most specific)
+            //     > slice classifier (header-defined / arbitrary-payload flows)
+            //       > legacy named-field classifier (rx_res: forward/punt/drop).
+            // Unprogrammed slice rules are disabled (no hit), so this never
+            // perturbs existing rx_res behaviour.
             always_comb begin
                 rx_eff[gp] = rx_res[gp];
+                if (rx_slc[gp].hit) rx_eff[gp] = rx_slc[gp];
                 if (mv2) begin
                     rx_eff[gp].hit           = 1'b1;
                     rx_eff[gp].action        = PW_ACT_TEST_RX;

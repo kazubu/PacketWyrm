@@ -184,6 +184,15 @@ struct pw_flow {
      * mask 0 = wildcard (field ignored). */
     uint16_t match_udp_dst_mask;     /* default 0xFFFF */
     uint32_t match_ipv4_dst_mask;    /* default 0xFFFFFFFF */
+
+    /* RX classification mode. Default (false) keys on the test header flow_id
+     * via the flow-id map (scales to 256 flows but needs the flow_id at a fixed
+     * payload offset). When true ("classify: header"), the flow is classified
+     * by the generic slice classifier on its header fields (udp_dst / ipv4_dst,
+     * narrowed by the match masks) -- so the payload is free of any
+     * classification dependency. Bounded by the slice-classifier capacity
+     * (PWFPGA_NUM_SLICE distinct header matches / PWFPGA_NUM_SRULE rules). */
+    bool classify_header;
 };
 
 /* Store-and-forward rule: relay frames matching the (optional) key from

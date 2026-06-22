@@ -22,6 +22,24 @@ struct pw_flowid_map_entry {
     uint32_t local_flow_id;
 };
 
+/* Generic slice-classifier programming (header-defined / payload-agnostic
+ * flows). A slice config is one {offset,mask,value} exact-match unit over the
+ * parser's inner-frame header window; a rule ANDs a set of slice-match bits
+ * (care mask) into a TEST_RX result for a checker slot. The compiler dedups
+ * identical slices and caps at PWFPGA_NUM_SLICE / PWFPGA_NUM_SRULE. */
+struct pw_slice_config {
+    uint16_t offset;        /* byte offset from the inner-frame (L3) base */
+    uint32_t mask;
+    uint32_t value;
+};
+struct pw_slice_rule {
+    uint16_t care_mask;     /* bit i set -> slice i must match */
+    uint8_t  action;        /* enum pwfpga_action (TEST_RX for measured flows) */
+    uint8_t  egress;
+    uint32_t local_flow_id;
+    uint8_t  priority;      /* lower wins */
+};
+
 struct pw_card_program {
     uint16_t card_id;
 
@@ -33,6 +51,11 @@ struct pw_card_program {
 
     struct pw_flowid_map_entry     *map_entries;
     size_t                          n_map_entries;
+
+    struct pw_slice_config         *slice_cfgs;
+    size_t                          n_slice_cfgs;
+    struct pw_slice_rule           *slice_rules;
+    size_t                          n_slice_rules;
 };
 
 struct pw_program {

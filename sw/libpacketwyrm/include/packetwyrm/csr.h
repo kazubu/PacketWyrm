@@ -31,9 +31,11 @@ enum {
      * its bitstream from flash (PCIe drops; host must re-enumerate). */
     PWFPGA_REG_REBOOT               = 0x0120,
 
-    PWFPGA_REG_PORT0_BASE           = 0x0200,
-    PWFPGA_REG_PORT1_BASE           = 0x0300,
-    PWFPGA_REG_PORT_STRIDE          = 0x0100,
+    /* NOTE: 0x0200..0x03FF was an early per-port control/status placeholder
+     * that pw_csr_full never implemented (per-port status + stats are surfaced
+     * through the stats-snapshot window at 0xC000). The low half (0x0200..
+     * 0x02FF) now holds the generic slice-classifier windows (below);
+     * 0x0300..0x03FF stays reserved. */
 
     /* Wide map for 64 flows / 64 classifier rows. Commit-bearing
      * windows are 16 KB apart (8 KB data + commit reg above it); the
@@ -45,6 +47,14 @@ enum {
      * indexes this directly -> checker slot, so TEST_RX flows need no classifier
      * rule and scale past the classifier's ~16-entry routability limit. */
     PWFPGA_WIN_FLOWID_MAP           = 0x0400,  /* 0x0400..0x07FF */
+    /* Generic slice classifier (pw_slice_classifier): header-defined flows
+     * classified by arbitrary {offset,mask,value} slices + rules over the slice-
+     * match bits -- payload-agnostic (unlike the flow-id map). Slice configs are
+     * 16 B each (offset@+0, mask@+4, value@+8 -> commit); rules are 8 B each
+     * (word0@+0, local_flow_id@+4 -> commit). Both windows sit in the free
+     * 0x0200..0x03FF block. */
+    PWFPGA_WIN_SLICE_CFG            = 0x0200,  /* 0x0200..0x023F (4 x 16 B) */
+    PWFPGA_WIN_SLICE_RULE           = 0x0280,  /* 0x0280..0x02BF (8 x 8 B) */
     PWFPGA_WIN_CLASSIFIER           = 0x2000,  /* 0x2000..0x5FFF */
     PWFPGA_WIN_FLOW_TABLE           = 0x6000,  /* 0x6000..0x9FFF */
     PWFPGA_WIN_HISTOGRAM            = 0xA000,  /* 0xA000..0xBFFF (8 KB) */
@@ -55,6 +65,26 @@ enum {
 #define PWFPGA_FLOWID_MAP_DEPTH     256u
 #define PWFPGA_FLOWID_MAP_VALID     (1u << 31)
 #define PWFPGA_FLOWID_MAP_ENTRY(base, flow_id)  ((base) + (flow_id) * 4u)
+
+/* Generic slice classifier capacity + register layout. NUM_SLICE distinct
+ * header matches (each {offset,mask,value}); NUM_SRULE rules over the slice
+ * bits. Must match the RTL params (pwfpga_top_phase3 NUM_SLICE/NUM_SRULE). */
+#define PWFPGA_NUM_SLICE            4u
+#define PWFPGA_NUM_SRULE            8u
+/* Slice config: write offset(@+0, low 16b), mask(@+4), value(@+8 commits). */
+#define PWFPGA_SLICE_CFG_OFFSET(base, i)  ((base) + (i) * 16u + 0u)
+#define PWFPGA_SLICE_CFG_MASK(base, i)    ((base) + (i) * 16u + 4u)
+#define PWFPGA_SLICE_CFG_VALUE(base, i)   ((base) + (i) * 16u + 8u)
+/* Rule: write word0(@+0), then local_flow_id(@+4 commits). word0 packs the
+ * care mask, action, egress, priority + enable: */
+#define PWFPGA_SRULE_WORD0(base, i)       ((base) + (i) * 8u + 0u)
+#define PWFPGA_SRULE_LFID(base, i)        ((base) + (i) * 8u + 4u)
+#define PWFPGA_SRULE_W0(care, action, egress, prio, enable)            \
+    (((uint32_t)(care)   & 0xFFu)        |                             \
+     (((uint32_t)(action) & 0x7u)  << 8) |                             \
+     (((uint32_t)(egress) & 0xFu)  << 11)|                             \
+     (((uint32_t)(prio)   & 0xFFu) << 15)|                             \
+     ((enable) ? (1u << 31) : 0u))
 
 /* global_control bits */
 enum {

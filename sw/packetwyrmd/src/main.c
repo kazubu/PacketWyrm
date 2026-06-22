@@ -245,6 +245,24 @@ static void program_backends(const struct pw_program *prog,
                     PWFPGA_WIN_FLOWID_MAP + cp->map_entries[m].flow_id * 4u,
                     PWFPGA_FLOWID_MAP_VALID | cp->map_entries[m].local_flow_id);
         }
+        /* Generic slice classifier: header-defined flows. Program each slice's
+         * {offset,mask,value} (value commits the slice) then each rule (lfid
+         * commits the rule). */
+        if (b->ops->write32) {
+            for (size_t i = 0; i < cp->n_slice_cfgs; i++) {
+                const struct pw_slice_config *sc = &cp->slice_cfgs[i];
+                (void)b->ops->write32(b->ctx, PWFPGA_SLICE_CFG_OFFSET(PWFPGA_WIN_SLICE_CFG, i), sc->offset);
+                (void)b->ops->write32(b->ctx, PWFPGA_SLICE_CFG_MASK  (PWFPGA_WIN_SLICE_CFG, i), sc->mask);
+                (void)b->ops->write32(b->ctx, PWFPGA_SLICE_CFG_VALUE (PWFPGA_WIN_SLICE_CFG, i), sc->value);
+            }
+            for (size_t i = 0; i < cp->n_slice_rules; i++) {
+                const struct pw_slice_rule *rl = &cp->slice_rules[i];
+                (void)b->ops->write32(b->ctx, PWFPGA_SRULE_WORD0(PWFPGA_WIN_SLICE_RULE, i),
+                    PWFPGA_SRULE_W0(rl->care_mask, rl->action, rl->egress, rl->priority, 1));
+                (void)b->ops->write32(b->ctx, PWFPGA_SRULE_LFID(PWFPGA_WIN_SLICE_RULE, i),
+                    rl->local_flow_id);
+            }
+        }
         if (any_err) {
             fprintf(stderr,
                 "  card%u(%s): some table writes returned not-implemented; "

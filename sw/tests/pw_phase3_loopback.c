@@ -80,8 +80,25 @@ int main(int argc, char **argv) {
         if (o->write32)
             o->write32(be.ctx, PWFPGA_WIN_FLOWID_MAP + cp->map_entries[m].flow_id * 4u,
                        PWFPGA_FLOWID_MAP_VALID | cp->map_entries[m].local_flow_id);
-    printf("programmed %zu classifier rows, %zu flow rows, %zu flow-id map entries; generator running\n",
-           cp->n_classifier_rows, cp->n_flow_rows, cp->n_map_entries);
+    /* Generic slice classifier: header-defined flows (payload-agnostic). */
+    if (o->write32) {
+        for (size_t i = 0; i < cp->n_slice_cfgs; i++) {
+            const struct pw_slice_config *sc = &cp->slice_cfgs[i];
+            o->write32(be.ctx, PWFPGA_SLICE_CFG_OFFSET(PWFPGA_WIN_SLICE_CFG, i), sc->offset);
+            o->write32(be.ctx, PWFPGA_SLICE_CFG_MASK  (PWFPGA_WIN_SLICE_CFG, i), sc->mask);
+            o->write32(be.ctx, PWFPGA_SLICE_CFG_VALUE (PWFPGA_WIN_SLICE_CFG, i), sc->value);
+        }
+        for (size_t i = 0; i < cp->n_slice_rules; i++) {
+            const struct pw_slice_rule *rl = &cp->slice_rules[i];
+            o->write32(be.ctx, PWFPGA_SRULE_WORD0(PWFPGA_WIN_SLICE_RULE, i),
+                       PWFPGA_SRULE_W0(rl->care_mask, rl->action, rl->egress, rl->priority, 1));
+            o->write32(be.ctx, PWFPGA_SRULE_LFID(PWFPGA_WIN_SLICE_RULE, i), rl->local_flow_id);
+        }
+    }
+    printf("programmed %zu classifier rows, %zu flow rows, %zu flow-id map entries, "
+           "%zu slices/%zu rules; generator running\n",
+           cp->n_classifier_rows, cp->n_flow_rows, cp->n_map_entries,
+           cp->n_slice_cfgs, cp->n_slice_rules);
 
     /* --- debug: write-path self-test on GLOBAL_CONTROL (0x100, RW) --- */
     if (o->write32 && o->read32) {

@@ -462,6 +462,49 @@ static void test_background_and_match_mask(void) {
     pw_config_free(cfg);
 }
 
+/* A flow with `classify: header` is lowered to generic slice-classifier configs
+ * + a rule (NOT a flow-id map entry), so it is classified by its header fields
+ * with no dependency on the payload. */
+static void test_header_classify_compiles(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n"
+        "  - id: 0\n"
+        "    pci: \"0000:07:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "flows:\n"
+        "  - id: 1\n"
+        "    classify: header\n"
+        "    tx_global_port: 0\n"
+        "    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv4: { src: \"192.0.2.1\", dst: \"192.0.2.2\" }\n"
+        "    udp:  { src_port: 49152, dst_port: 50007 }\n"
+        "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
+        "    match: { ipv4_dst: 0 }\n";   /* match udp_dst only (1 slice) */
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    PW_ASSERT(cfg->flows[0].classify_header);
+    PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
+    /* header-classified -> no map entry; one slice (udp_dst) + one rule. */
+    PW_ASSERT_EQ(prog->per_card[0].n_map_entries, 0);
+    PW_ASSERT_EQ(prog->per_card[0].n_slice_cfgs, 1);
+    PW_ASSERT_EQ(prog->per_card[0].n_slice_rules, 1);
+    /* udp_dst slice: offset 22 (L3+20+2), value 50007 in the upper 16 bits. */
+    PW_ASSERT_EQ(prog->per_card[0].slice_cfgs[0].offset, 22);
+    PW_ASSERT_EQ(prog->per_card[0].slice_cfgs[0].mask, 0xFFFF0000u);
+    PW_ASSERT_EQ(prog->per_card[0].slice_cfgs[0].value, (uint32_t)50007 << 16);
+    /* rule cares about slice 0, action TEST_RX, lfid 0. */
+    PW_ASSERT_EQ(prog->per_card[0].slice_rules[0].care_mask, 0x1);
+    PW_ASSERT_EQ(prog->per_card[0].slice_rules[0].action, PWFPGA_ACT_TEST_RX);
+    PW_ASSERT_EQ(prog->per_card[0].slice_rules[0].local_flow_id, 0);
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
 static void test_encap_flow_compiles(void) {
     const char *yaml =
         "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
@@ -1076,6 +1119,7 @@ int main(void) {
         { "reject_cross_card_forward", test_reject_cross_card_forward },
         { "flow_field_modifiers", test_flow_field_modifiers },
         { "background_and_match_mask", test_background_and_match_mask },
+        { "header_classify_compiles", test_header_classify_compiles },
         { "encap_flow_compiles", test_encap_flow_compiles },
         { "fake_backend", test_fake_backend },
         { "bar_backend_path", test_bar_backend_path },

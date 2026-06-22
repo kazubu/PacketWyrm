@@ -40,6 +40,8 @@ DPA_RTL := \
     $(REPO)/rtl/phase3/pw_flow_table_bram.sv \
     $(REPO)/rtl/phase3/pw_parser_axis.sv \
     $(REPO)/rtl/phase3/pw_classifier.sv \
+    $(REPO)/rtl/phase3/pw_slice_match.sv \
+    $(REPO)/rtl/phase3/pw_slice_classifier.sv \
     $(REPO)/rtl/phase3/pw_test_rx_checker_bram.sv \
     $(REPO)/rtl/phase3/pw_flowid_map.sv \
     $(REPO)/rtl/phase3/pw_lat_histogram.sv \
@@ -101,6 +103,8 @@ TOP_RTL := \
     $(REPO)/rtl/phase3/pw_csr_full.sv \
     $(REPO)/rtl/phase3/pw_parser_axis.sv \
     $(REPO)/rtl/phase3/pw_classifier.sv \
+    $(REPO)/rtl/phase3/pw_slice_match.sv \
+    $(REPO)/rtl/phase3/pw_slice_classifier.sv \
     $(REPO)/rtl/phase3/pw_test_rx_checker_bram.sv \
     $(REPO)/rtl/phase3/pw_flowid_map.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_axis.sv \
@@ -167,6 +171,9 @@ sim_chk: sim_build/test_rx_checker_bram
 sim_slice: sim_build/slice_match
 	./sim_build/slice_match
 
+sim_sclass: sim_build/slice_classifier
+	./sim_build/slice_classifier
+
 sim_fidmap: sim_build/flowid_map
 	./sim_build/flowid_map
 
@@ -222,7 +229,7 @@ vectors_clean:
 sim_vec: sim_build/wire_vectors $(VECTORS)
 	./sim_build/wire_vectors
 
-sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_icap sim_tsi sim_full sim_fga sim_fgm sim_fge sim_pax sim_saf sim_punt sim_inj sim_dpa sim_top sim_vec
+sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_chk sim_slice sim_sclass sim_fidmap sim_spi sim_icap sim_tsi sim_full sim_fga sim_fgm sim_fge sim_pax sim_saf sim_punt sim_inj sim_dpa sim_top sim_vec
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
@@ -284,6 +291,13 @@ sim_build/slice_match: $(REPO)/rtl/phase3/pw_slice_match.sv slice_match_tb/tb_sl
 	    --top-module tb_slice_match \
 	    -o slice_match \
 	    $(REPO)/rtl/phase3/pw_slice_match.sv slice_match_tb/tb_slice_match.sv
+
+sim_build/slice_classifier: $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_slice_match.sv $(REPO)/rtl/phase3/pw_slice_classifier.sv slice_classifier_tb/tb_slice_classifier.sv
+	$(VERILATOR) $(VFLAGS) \
+	    -Mdir sim_build \
+	    --top-module tb_slice_classifier \
+	    -o slice_classifier \
+	    $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_slice_match.sv $(REPO)/rtl/phase3/pw_slice_classifier.sv slice_classifier_tb/tb_slice_classifier.sv
 
 sim_build/flowid_map: $(REPO)/rtl/phase3/pw_flowid_map.sv flowid_map_tb/tb_flowid_map.sv
 	$(VERILATOR) $(VFLAGS) \

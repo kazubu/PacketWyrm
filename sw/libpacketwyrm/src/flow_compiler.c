@@ -17,6 +17,8 @@ void pw_program_free(struct pw_program *p) {
         free(p->per_card[i].classifier_rows);
         free(p->per_card[i].flow_rows);
         free(p->per_card[i].map_entries);
+        free(p->per_card[i].slice_cfgs);
+        free(p->per_card[i].slice_rules);
     }
     free(p->per_card);
     free(p->flow_meta);
@@ -58,6 +60,72 @@ static pw_status append_map(struct pw_card_program *cp,
     cp->map_entries[cp->n_map_entries++] =
         (struct pw_flowid_map_entry){ .flow_id = flow_id, .local_flow_id = local_flow_id };
     return PW_OK;
+}
+
+/* Append a slice config, deduping identical {offset,mask,value}. Returns the
+ * slice index in *idx_out, or PW_E_NO_RESOURCES past PWFPGA_NUM_SLICE. */
+static pw_status append_slice_cfg(struct pw_card_program *cp,
+                                  uint16_t offset, uint32_t mask, uint32_t value,
+                                  size_t *idx_out) {
+    for (size_t i = 0; i < cp->n_slice_cfgs; i++)
+        if (cp->slice_cfgs[i].offset == offset && cp->slice_cfgs[i].mask == mask &&
+            cp->slice_cfgs[i].value == value) { *idx_out = i; return PW_OK; }
+    if (cp->n_slice_cfgs >= PWFPGA_NUM_SLICE) return PW_E_NO_RESOURCES;
+    struct pw_slice_config *na = realloc(
+        cp->slice_cfgs, sizeof(*cp->slice_cfgs) * (cp->n_slice_cfgs + 1));
+    if (!na) return PW_E_NO_RESOURCES;
+    cp->slice_cfgs = na;
+    cp->slice_cfgs[cp->n_slice_cfgs] =
+        (struct pw_slice_config){ .offset = offset, .mask = mask, .value = value };
+    *idx_out = cp->n_slice_cfgs++;
+    return PW_OK;
+}
+
+static pw_status append_slice_rule(struct pw_card_program *cp,
+                                   const struct pw_slice_rule *rule) {
+    if (cp->n_slice_rules >= PWFPGA_NUM_SRULE) return PW_E_NO_RESOURCES;
+    struct pw_slice_rule *na = realloc(
+        cp->slice_rules, sizeof(*cp->slice_rules) * (cp->n_slice_rules + 1));
+    if (!na) return PW_E_NO_RESOURCES;
+    cp->slice_rules = na;
+    cp->slice_rules[cp->n_slice_rules++] = *rule;
+    return PW_OK;
+}
+
+/* Build a header-classified RX flow: emit slice configs for the flow's matched
+ * header fields (udp_dst / ipv4_dst, narrowed by the match masks) + one rule ->
+ * TEST_RX @ rx_lfid. Offsets are relative to the inner-frame (L3) base the
+ * parser provides. Payload is irrelevant to this classification. */
+static pw_status compile_header_classify(struct pw_card_program *rx_cp,
+                                         const struct pw_flow *f, uint32_t rx_lfid) {
+    uint16_t care = 0;
+    size_t   idx;
+    pw_status r;
+    /* IPv4 destination (4 bytes at L3+16). */
+    if (f->ipv4.present && f->match_ipv4_dst_mask != 0) {
+        if ((r = append_slice_cfg(rx_cp, 16, f->match_ipv4_dst_mask,
+                                  f->ipv4.dst & f->match_ipv4_dst_mask, &idx)) != PW_OK) return r;
+        care |= (uint16_t)(1u << idx);
+    }
+    /* UDP destination port (2 bytes; the slice extracts 4 BE bytes starting at
+     * the port, so it sits in the upper 16 bits -> mask/value << 16). Offset is
+     * ip_hlen+2 from L3 (20+2 for IPv4, 40+2 for IPv6). */
+    if (f->match_udp_dst_mask != 0) {
+        uint16_t udp_off = (uint16_t)((f->ipv6.present ? 40 : 20) + 2);
+        uint32_t m = (uint32_t)f->match_udp_dst_mask << 16;
+        uint32_t v = (uint32_t)(f->udp.dst_port & f->match_udp_dst_mask) << 16;
+        if ((r = append_slice_cfg(rx_cp, udp_off, m, v, &idx)) != PW_OK) return r;
+        care |= (uint16_t)(1u << idx);
+    }
+    if (care == 0) return PW_E_INVAL;   /* nothing to classify on */
+    struct pw_slice_rule rule = {
+        .care_mask     = care,
+        .action        = PWFPGA_ACT_TEST_RX,
+        .egress        = 0,
+        .local_flow_id = rx_lfid,
+        .priority      = 32,
+    };
+    return append_slice_rule(rx_cp, &rule);
 }
 
 static void mac_set(uint8_t *dst, const uint8_t *src) { memcpy(dst, src, 6); }
@@ -224,8 +292,16 @@ static pw_status compile_one_flow(struct pw_program *out,
      * udp_dst / ipv4 / ipv6 match fields were redundant. The mask vars (for the
      * old bitwise classifier compare) are no longer needed here. */
     (void)udp_dst_mask; (void)ipv4_dst_mask;
-    if (f->id >= PWFPGA_FLOWID_MAP_DEPTH) return PW_E_INVAL;  // flow_id out of map range
-    if ((r = append_map(rx_cp, f->id, rx_lfid)) != PW_OK) return r;
+    if (f->classify_header) {
+        /* Header-defined classification (generic slice classifier): match on
+         * the flow's header fields, so the payload carries no classification
+         * dependency. Caps at the slice-classifier capacity. */
+        if ((r = compile_header_classify(rx_cp, f, rx_lfid)) != PW_OK) return r;
+    } else {
+        /* Default: TEST_RX flow-id map keyed on the test header flow_id. */
+        if (f->id >= PWFPGA_FLOWID_MAP_DEPTH) return PW_E_INVAL;  // flow_id out of map range
+        if ((r = append_map(rx_cp, f->id, rx_lfid)) != PW_OK) return r;
+    }
 
     out->flow_meta[flow_index] = (struct pw_flow_meta){
         .global_flow_id = f->id,

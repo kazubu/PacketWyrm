@@ -44,13 +44,21 @@ the initial proposal; concrete field bit definitions are owned by the
 0x0114  irq_status             W1C   sticky interrupt sources (future)
 0x0118  irq_mask               RW    interrupt mask (future)
 
-0x0200  port0_control          RW    [0] enable, [1] reset, [4] loopback
-0x0204  port0_status           R     [0] link_up, [1] block_lock,
-                                     [2] sfp_present, [3] rx_fault
-0x0208..0x02fc port0 stats     R     see "port stats block"
-0x0300  port1_control          RW
-0x0304  port1_status           R
-0x0308..0x03fc port1 stats     R
+# 0x0200..0x02ff: generic slice classifier (pw_slice_classifier). Header-defined
+# flows classified by arbitrary {offset,mask,value} slices + rules over the
+# slice-match bits -- payload-agnostic (unlike the flowid_map, which keys on the
+# test header flow_id). Offsets are relative to the parser's inner-frame (L3)
+# base, so matching is encap-aware. (This block was a never-implemented per-port
+# control placeholder; per-port status/stats are in the stats snapshot window.)
+0x0200..0x023f  slice_cfg_window   4 slices x 16 B: per slice +0x0 offset[15:0],
+                                   +0x4 mask[31:0], +0x8 value[31:0] (writing
+                                   value commits the slice). mask 0 = wildcard.
+                                   Match window is the first 48 inner-frame bytes.
+0x0280..0x02bf  slice_rule_window  8 rules x 8 B: per rule +0x0 word0
+                                   {[7:0] care, [10:8] action, [14:11] egress,
+                                   [22:15] priority, [31] enable}, +0x4
+                                   local_flow_id (writing lfid commits the rule).
+0x0240..0x027f, 0x02c0..0x03ff  reserved
 
 0x0120  reboot                 W     write 0x52424F54 ("RBOT") -> ICAP IPROG
                                      (reload bitstream from flash; PCIe drops)

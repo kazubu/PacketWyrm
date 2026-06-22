@@ -29,8 +29,10 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
         +-- pw_flow_table_bram   BRAM flow table (commit-walk decode; per-port
         |                        read port + compact scheduling FF array)
         +-- per ingress port: pw_parser_axis -> pw_classifier (RESULT_STAGES=2,
-        |                      non-test rules only) + pw_flowid_map (TEST_RX
-        |                      flow_id -> checker slot) -> pw_frame_saf (S&F)
+        |                      non-test rules) + pw_flowid_map (TEST_RX flow_id
+        |                      -> checker slot) + pw_slice_classifier (header-
+        |                      defined flows by arbitrary slices) -> pw_frame_saf
+        |                      (effective result: map > slice > classifier)
         +-- per ingress port: pw_test_rx_checker (loss/dup/ooo/min/max/sum +
         |                      RFC-3393 IPDV jitter min/max/sum)
         +-- link health: per-port 2-FF sync + edge count of MAC link_up /
@@ -259,13 +261,37 @@ Output: a flat "header descriptor" with all extracted fields plus a
   combined `rx_eff`.
 - Programmed before traffic via the CSR window (the compiler emits one entry
   per TEST_RX flow). Keying on the stable `flow_id` makes header-field modifiers
-  irrelevant to RX classification. First back-end of the generic slice
-  classifier — see `docs/design/generic-classifier.md`. The flexible front-end
-  (`pw_slice_match`, programmable offset/mask/value extractor) is also landed.
+  irrelevant to RX classification. The high-count fast path for *structured*
+  test frames — see `docs/design/generic-classifier.md`.
+
+### slice_classifier (`pw_slice_classifier` + `pw_slice_match`)
+
+- Generic, payload-agnostic classification: flows defined by **arbitrary header
+  fields**, not the test-header `flow_id` (which the flow-id map needs at a fixed
+  payload offset). This is what lets the payload be filled freely, or external
+  DUT traffic with no test header be classified and counted.
+- Two cheap, routable stages: `NSLICE` shared `pw_slice_match` units each do one
+  `{offset,mask,value}` exact match over the parser's captured inner-frame header
+  window → a slice-match bit; `NRULE` rules each AND a `care` subset of those
+  bits → a priority-selected `{action, local_flow_id, egress}`. The per-rule
+  compare is only `NSLICE` bits, so `NRULE` scales far past the ~16 the wide-key
+  `pw_classifier` was capped at. Latency 2 (matches `pw_classifier`).
+- Offsets are relative to the parser's inner-frame (L3) base (`base_o`), so
+  matching is encap-aware. The parser exposes the header byte-window (`window_o`)
+  + `base_o` aligned with `key_valid_o`.
+- Data-plane precedence: flow-id **map > slice classifier > legacy classifier**.
+  Programmed via `PWFPGA_WIN_SLICE_CFG` / `PWFPGA_WIN_SLICE_RULE`; the compiler
+  lowers a `classify: header` flow to slices + a rule. See
+  `docs/design/generic-classifier.md`.
 
 ### test_rx_checker
 
 - Triggered on `TEST_RX` action.
+- Counts `rx_frames` for **every** classified frame; sequence (loss/dup/ooo)
+  and latency/jitter are derived only when the frame carries a test header
+  (`is_test`). So a header-defined flow with arbitrary payload (slice-classified,
+  no test header) still gets frame counts — loss is then the tx-vs-rx count
+  difference — while structured test frames get full stats.
 - Verifies the `pwfpga_test_hdr` magic.
 - Tracks per-flow expected sequence, increments
   `lost / duplicate / out_of_order / late` counters.

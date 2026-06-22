@@ -1,0 +1,66 @@
+# Phase 3 HW: generic slice-classifier test over the SFP+ DAC loopback.
+# Four UDP/IPv4 flows classified by HEADER (udp_dst) via the generic slice
+# classifier (classify: header) -- NOT the test-header flow_id / flow-id map.
+# This proves RX classification is payload-agnostic: the flows still carry a
+# test header for seq/latency, but RX keys on udp_dst, so the flow_id field is
+# free. TX p0 -> DAC -> RX p1; expect loss=0 on every flow.
+# Bounded by the slice-classifier capacity (8 slices / 16 rules per card).
+system: { name: "pw-hdrclass", mode: "multi-card", default_speed: "10g",
+          control_socket: "/tmp/pw-phase3.sock" }
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+flows:
+  - id: 1
+    name: "h1"
+    classify: header                 # classify by header (udp_dst), not flow_id
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:01:01", dst_mac: "02:a5:02:00:01:02" }
+    ipv4: { src: "192.0.2.1", dst: "198.51.100.1" }
+    udp:  { src_port: 49152, dst_port: 50001 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    match: { ipv4_dst: 0 }           # key on udp_dst only (1 slice/flow)
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 2
+    name: "h2"
+    classify: header
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:02:01", dst_mac: "02:a5:02:00:02:02" }
+    ipv4: { src: "192.0.2.2", dst: "198.51.100.2" }
+    udp:  { src_port: 49152, dst_port: 50002 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    match: { ipv4_dst: 0 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 3
+    name: "h3"
+    classify: header
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:03:01", dst_mac: "02:a5:02:00:03:02" }
+    ipv4: { src: "192.0.2.3", dst: "198.51.100.3" }
+    udp:  { src_port: 49152, dst_port: 50003 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    match: { ipv4_dst: 0 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 4
+    name: "h4"
+    classify: header
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:04:01", dst_mac: "02:a5:02:00:04:02" }
+    ipv4: { src: "192.0.2.4", dst: "198.51.100.4" }
+    udp:  { src_port: 49152, dst_port: 50004 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    match: { ipv4_dst: 0 }
+    measurements: { loss: true, latency: true, jitter: true }

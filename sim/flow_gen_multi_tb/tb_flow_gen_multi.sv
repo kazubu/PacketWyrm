@@ -45,7 +45,7 @@ module tb_flow_gen_multi;
     pw_parser_axis dut (
         .clk(clk), .rst_n(rst_n),
         .s_tdata(td), .s_tkeep(tk), .s_tvalid(tv), .s_tready(), .s_tlast(tl),
-        .ingress_port_i(4'd0), .key_o(key), .key_valid_o(key_valid)
+        .ingress_port_i(4'd0), .key_o(key), .key_valid_o(key_valid), .window_o(), .base_o()
     );
 
     int  g_pass = 0, g_fail = 0;

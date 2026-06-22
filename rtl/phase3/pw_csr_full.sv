@@ -33,7 +33,9 @@ module pw_csr_full #(
     parameter int          NUM_LOGICAL_IFS = 0,
     parameter int          NUM_CLASSIFIER  = 8,
     parameter int          NUM_HIST_BINS   = 16,
-    parameter int          MAP_DEPTH       = 256
+    parameter int          MAP_DEPTH       = 256,
+    parameter int          NSLICE          = 8,
+    parameter int          NRULE           = 16
 ) (
     input  wire              s_axi_aclk,
     input  wire              s_axi_aresetn,
@@ -108,6 +110,23 @@ module pw_csr_full #(
     output logic [$clog2(MAP_DEPTH)-1:0]  map_wr_addr_o,
     output logic                          map_wr_valid_o,
     output logic [$clog2(NUM_FLOWS)-1:0]  map_wr_lfid_o,
+
+    // Generic slice-classifier programming (pw_slice_classifier). Slice configs
+    // and rules are written field-by-field; the entry commits (a *_wr_en pulse)
+    // on the last sub-word so the classifier latches the whole entry at once.
+    output logic                          slice_wr_en_o,
+    output logic [$clog2(NSLICE)-1:0]     slice_wr_idx_o,
+    output logic [15:0]                   slice_wr_offset_o,
+    output logic [31:0]                   slice_wr_mask_o,
+    output logic [31:0]                   slice_wr_value_o,
+    output logic                          rule_wr_en_o,
+    output logic [$clog2(NRULE)-1:0]      rule_wr_idx_o,
+    output logic [NSLICE-1:0]             rule_wr_care_o,
+    output logic [2:0]                    rule_wr_action_o,
+    output logic [3:0]                    rule_wr_egress_o,
+    output logic [31:0]                   rule_wr_lfid_o,
+    output logic [7:0]                    rule_wr_prio_o,
+    output logic                          rule_wr_enable_o,
 
     // Live latency-histogram read port into the data plane's BRAM
     // (pw_lat_histogram). Flat (flow*NUM_HIST_BINS+bucket) address out,
@@ -184,6 +203,13 @@ module pw_csr_full #(
     localparam logic [15:0] WIN_FLOW_BASE      = 16'h6000;  // 0x6000..0x9FFF
     localparam logic [15:0] WIN_FIDMAP_BASE    = 16'h0400;  // 0x0400..0x07FF (TEST_RX flow-id map)
     localparam logic [15:0] WIN_FIDMAP_END     = 16'h0800;
+    // Generic slice-classifier windows (in the free 0x0200..0x03FF block; the
+    // 0x0800.. region is the SPI flash window). Slice cfg: 16B/slice (off@+0,
+    // mask@+4, value@+8 -> commit). Rule: 8B/rule (word0@+0, lfid@+4 -> commit).
+    localparam logic [15:0] WIN_SLICE_BASE     = 16'h0200;  // 0x0200..0x027F (slice configs, 8x16B)
+    localparam logic [15:0] WIN_SLICE_END      = 16'h0280;
+    localparam logic [15:0] WIN_SRULE_BASE     = 16'h0280;  // 0x0280..0x02FF (slice rules, 16x8B)
+    localparam logic [15:0] WIN_SRULE_END      = 16'h0300;
     localparam logic [15:0] WIN_HIST_BASE      = 16'hA000;  // 0xA000..0xBFFF (8 KB)
     localparam logic [15:0] WIN_STATS_BASE     = 16'hC000;  // 0xC000..0xFFFF
     localparam logic [15:0] WIN_SPAN_16K       = 16'h4000;
@@ -225,6 +251,16 @@ module pw_csr_full #(
     logic [ADDR_W-1:0] wr_addr;
     logic [31:0]       wr_data;
 
+    // Slice-classifier write accumulators (offset/mask staged before value
+    // commit; rule word0 staged before lfid commit).
+    logic [15:0]       slice_acc_offset;
+    logic [31:0]       slice_acc_mask;
+    logic [NSLICE-1:0] rule_acc_care;
+    logic [2:0]        rule_acc_action;
+    logic [3:0]        rule_acc_egress;
+    logic [7:0]        rule_acc_prio;
+    logic              rule_acc_enable;
+
     // Snapshot trigger (write 1 to STATS_TRIGGER_ADDR latches the
     // stats + histogram shadows in lockstep).
     logic              snapshot_trigger;
@@ -250,6 +286,8 @@ module pw_csr_full #(
         end else begin
             wr_en            <= 1'b0;
             map_wr_en_o      <= 1'b0;
+            slice_wr_en_o    <= 1'b0;
+            rule_wr_en_o     <= 1'b0;
             snapshot_trigger <= 1'b0;
             stats_clear_o    <= 1'b0;
             dp_soft_rst_o    <= 1'b0;
@@ -294,6 +332,42 @@ module pw_csr_full #(
                     map_wr_addr_o  <= ($clog2(MAP_DEPTH))'((awaddr_q - WIN_FIDMAP_BASE) >> 2);
                     map_wr_valid_o <= s_axi_wdata[31];
                     map_wr_lfid_o  <= s_axi_wdata[$clog2(NUM_FLOWS)-1:0];
+                end
+                // Generic slice-classifier: slice cfg (16B/slice). Stage offset
+                // (+0) and mask (+4); commit the whole slice on the value (+8) write.
+                if (awaddr_q >= WIN_SLICE_BASE && awaddr_q < WIN_SLICE_END) begin
+                    case ((awaddr_q - WIN_SLICE_BASE) & 16'hF)
+                        16'h0: slice_acc_offset <= s_axi_wdata[15:0];
+                        16'h4: slice_acc_mask   <= s_axi_wdata;
+                        16'h8: begin
+                            slice_wr_en_o     <= 1'b1;
+                            slice_wr_idx_o    <= ($clog2(NSLICE))'((awaddr_q - WIN_SLICE_BASE) >> 4);
+                            slice_wr_offset_o <= slice_acc_offset;
+                            slice_wr_mask_o   <= slice_acc_mask;
+                            slice_wr_value_o  <= s_axi_wdata;
+                        end
+                        default: ;
+                    endcase
+                end
+                // Slice rules (8B/rule). word0 (+0) carries care/action/egress/
+                // prio/enable; commit on the lfid (+4) write.
+                if (awaddr_q >= WIN_SRULE_BASE && awaddr_q < WIN_SRULE_END) begin
+                    if (((awaddr_q - WIN_SRULE_BASE) & 16'h7) == 16'h0) begin
+                        rule_acc_care   <= s_axi_wdata[NSLICE-1:0];
+                        rule_acc_action <= s_axi_wdata[10:8];
+                        rule_acc_egress <= s_axi_wdata[14:11];
+                        rule_acc_prio   <= s_axi_wdata[22:15];
+                        rule_acc_enable <= s_axi_wdata[31];
+                    end else begin
+                        rule_wr_en_o     <= 1'b1;
+                        rule_wr_idx_o    <= ($clog2(NRULE))'((awaddr_q - WIN_SRULE_BASE) >> 3);
+                        rule_wr_care_o   <= rule_acc_care;
+                        rule_wr_action_o <= rule_acc_action;
+                        rule_wr_egress_o <= rule_acc_egress;
+                        rule_wr_prio_o   <= rule_acc_prio;
+                        rule_wr_enable_o <= rule_acc_enable;
+                        rule_wr_lfid_o   <= s_axi_wdata;
+                    end
                 end
                 aw_captured  <= 1'b0;
             end else begin

@@ -119,6 +119,22 @@ module tb_data_plane_axis;
     logic [7:0]  map_wr_addr  = 8'h0;     // MAP_DEPTH=256 default
     logic        map_wr_valid = 1'b0;
     logic [$clog2(FLOWS)-1:0] map_wr_lfid = '0;
+    // Generic slice-classifier programming (additive: default off).
+    localparam int NSLICE = 8;
+    localparam int NRULE  = 16;
+    logic                      slice_wr_en     = 1'b0;
+    logic [$clog2(NSLICE)-1:0] slice_wr_idx    = '0;
+    logic [15:0]               slice_wr_offset = '0;
+    logic [31:0]               slice_wr_mask   = '0;
+    logic [31:0]               slice_wr_value  = '0;
+    logic                      rule_wr_en      = 1'b0;
+    logic [$clog2(NRULE)-1:0]  rule_wr_idx     = '0;
+    logic [NSLICE-1:0]         rule_wr_care    = '0;
+    logic [2:0]                rule_wr_action  = '0;
+    logic [3:0]                rule_wr_egress  = '0;
+    logic [31:0]               rule_wr_lfid    = '0;
+    logic [7:0]                rule_wr_prio    = '0;
+    logic                      rule_wr_enable  = 1'b0;
     localparam logic [15:0] FBASE   = 16'h6000;          // FLOW_WIN_BASE
     localparam logic [15:0] FCOMMIT = FBASE + 16'h3FFC;
 
@@ -156,6 +172,8 @@ module tb_data_plane_axis;
         .PW_NUM_FLOWS     (FLOWS),
         .PW_NUM_BUCKETS   (BUCKETS),
         .HDR_BYTES        (100),
+        .NSLICE           (NSLICE),
+        .NRULE            (NRULE),
         .FRAME_LEN_PAYLOAD(32)
     ) dut (
         .clk              (clk),
@@ -197,6 +215,19 @@ module tb_data_plane_axis;
         .map_wr_addr_i    (map_wr_addr),
         .map_wr_valid_i   (map_wr_valid),
         .map_wr_lfid_i    (map_wr_lfid),
+        .slice_wr_en_i    (slice_wr_en),
+        .slice_wr_idx_i   (slice_wr_idx),
+        .slice_wr_offset_i(slice_wr_offset),
+        .slice_wr_mask_i  (slice_wr_mask),
+        .slice_wr_value_i (slice_wr_value),
+        .rule_wr_en_i     (rule_wr_en),
+        .rule_wr_idx_i    (rule_wr_idx),
+        .rule_wr_care_i   (rule_wr_care),
+        .rule_wr_action_i (rule_wr_action),
+        .rule_wr_egress_i (rule_wr_egress),
+        .rule_wr_lfid_i   (rule_wr_lfid),
+        .rule_wr_prio_i   (rule_wr_prio),
+        .rule_wr_enable_i (rule_wr_enable),
         .flow_rd_addr_i   (flow_rd_addr),
         .flow_rx          (dp_rx),
         .flow_lost        (dp_lost),
@@ -425,6 +456,23 @@ module tb_data_plane_axis;
         map_wr_en = 1'b1; map_wr_addr = fid[7:0];
         map_wr_valid = 1'b1; map_wr_lfid = lf[$clog2(FLOWS)-1:0];
         @(negedge clk); map_wr_en = 1'b0; map_wr_valid = 1'b0;
+    endtask
+
+    // Generic slice-classifier programming.
+    task automatic prog_slice(input int idx, input int off,
+                              input logic [31:0] mask, input logic [31:0] val);
+        @(negedge clk);
+        slice_wr_en=1'b1; slice_wr_idx=idx[$clog2(NSLICE)-1:0];
+        slice_wr_offset=off[15:0]; slice_wr_mask=mask; slice_wr_value=val;
+        @(negedge clk); slice_wr_en=1'b0;
+    endtask
+    task automatic prog_rule(input int idx, input logic [NSLICE-1:0] care,
+                             input int act, input int lf, input int prio);
+        @(negedge clk);
+        rule_wr_en=1'b1; rule_wr_idx=idx[$clog2(NRULE)-1:0]; rule_wr_care=care;
+        rule_wr_action=act[2:0]; rule_wr_egress=4'd0;
+        rule_wr_lfid=lf; rule_wr_prio=prio[7:0]; rule_wr_enable=1'b1;
+        @(negedge clk); rule_wr_en=1'b0;
     endtask
 
     // -------------- main --------------
@@ -825,6 +873,27 @@ module tb_data_plane_axis;
         snap_all();
         check_eq("fidmap rx (no cls rule)", flow_rx[6], 4);
         check_eq("fidmap lost",             flow_lost[6], 0);
+
+        // ---- scenario 14: generic slice classifier (header-defined, free payload) ----
+        // A PLAIN UDP frame (NO test header / magic / flow_id) is classified into
+        // a checker slot purely by its udp_dst -- proving header-based, payload-
+        // agnostic classification (the flow-id map can't do this, it keys on the
+        // test_flow_id in the payload). udp_dst is at inner-base(14) + 22 = abs 36.
+        scenario = "slice";
+        prog_slice(0, 22, 32'hFFFF_0000, 32'hC357_0000);    // udp_dst == 50007 (0xC357)
+        prog_rule (0, 8'b0000_0001, 1 /*TEST_RX*/, 5 /*slot*/, 10);
+        for (int s = 0; s < 3; s++) begin
+            build_plain_udp(16'd50007);
+            inject(1);
+        end
+        repeat (16) @(posedge clk);
+        snap_all();
+        check_eq("slice rx (header-defined)", flow_rx[5], 3);
+        check_eq("slice lost",                flow_lost[5], 0);
+        // a non-matching udp_dst must NOT land in slot 5.
+        build_plain_udp(16'd40000); inject(1);
+        repeat (16) @(posedge clk); snap_all();
+        check_eq("slice no false-positive",   flow_rx[5], 3);
 
         if (errors == 0) begin
             $display("ALL DATA PLANE AXIS SCENARIOS PASS");

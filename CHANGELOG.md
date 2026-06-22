@@ -9,6 +9,30 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Generic slice-based classifier — payload-agnostic flow classification**
+    (`pw_slice_classifier` + `pw_slice_match`; CSR windows
+    `PWFPGA_WIN_SLICE_CFG` @ 0x0200 / `PWFPGA_WIN_SLICE_RULE` @ 0x0280). Flows
+    can now be classified by **arbitrary header fields** (offset/mask/value
+    slices) instead of the test-header `flow_id` — so the payload is free of any
+    classification dependency (the flow-id map keys on `flow_id`, which lives at
+    a fixed payload offset). RMT/P4-style two-stage engine: `NSLICE` (4) shared
+    `{offset,mask,value}` match units over the first 48 bytes of the parser's
+    captured inner-frame header window → match bits; `NRULE` (8) rules each AND a
+    `care` subset of those bits → a priority-selected result. The per-rule
+    compare is only
+    `NSLICE` bits, so it routes far past the wide-key classifier's ~16-entry
+    wall. The parser now exposes the header byte-window (`window_o`) + inner-L3
+    base (`base_o`) aligned with `key_valid_o`; offsets are inner-frame-relative
+    (encap-aware). Data-plane precedence: flow-id **map > slice classifier >
+    legacy classifier**. A new `classify: header` flow option lowers (in the
+    compiler) to deduped slice configs + a rule on the flow's `match` fields
+    (udp_dst / ipv4_dst). The RX checker now counts **non-test** frames too
+    (rx_frames only; loss = tx-vs-rx count), so arbitrary-payload or external
+    DUT traffic is countable, while structured test frames keep full
+    seq/latency/jitter. Completes Phases 1–4 + 6 of
+    `docs/design/generic-classifier.md`. (The legacy 0x0200–0x03FF per-port
+    control placeholder, never implemented in `pw_csr_full`, is reclaimed for
+    the slice windows; per-port stats remain in the snapshot window.)
   - **TEST_RX flow-id map — scalable flow classification** (`pw_flowid_map`,
     `PWFPGA_WIN_FLOWID_MAP` @ 0x0400). A test frame's parsed `test_flow_id`
     directly indexes a BRAM table → its checker slot (gated by the parser's
