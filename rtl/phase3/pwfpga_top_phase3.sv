@@ -199,6 +199,10 @@ module pwfpga_top_phase3 #(
         .flow_wr_en_o        (flow_wr_en_w),
         .flow_wr_addr_o      (flow_wr_addr_w),
         .flow_wr_data_o      (flow_wr_data_w),
+        .map_wr_en_o         (map_wr_en_w),
+        .map_wr_addr_o       (map_wr_addr_w),
+        .map_wr_valid_o      (map_wr_valid_w),
+        .map_wr_lfid_o       (map_wr_lfid_w),
         .stats_clear_o       (stats_clear_w),
         .dp_soft_rst_o       (dp_soft_rst_w),
         .spi_sck_o           (spi_sck_o),
@@ -257,6 +261,10 @@ module pwfpga_top_phase3 #(
     logic              flow_wr_en_w;
     logic [15:0]       flow_wr_addr_w;
     logic [31:0]       flow_wr_data_w;
+    logic                          map_wr_en_w;
+    logic [7:0]                    map_wr_addr_w;   // MAP_DEPTH=256
+    logic                          map_wr_valid_w;
+    logic [$clog2(NUM_FLOWS)-1:0]  map_wr_lfid_w;
     logic         stats_clear_w;
     logic         dp_soft_rst_w;
 
@@ -300,13 +308,11 @@ module pwfpga_top_phase3 #(
         .flow_wr_en_i      (flow_wr_en_w),
         .flow_wr_addr_i    (flow_wr_addr_w),
         .flow_wr_data_i    (flow_wr_data_w),
-        // TEST_RX flow-id map: tied off for now (map empty -> classifier-only,
-        // backward-compatible). The CSR window + compiler that program it (to
-        // lift the flow ceiling past the classifier) are the next step.
-        .map_wr_en_i       (1'b0),
-        .map_wr_addr_i     ('0),
-        .map_wr_valid_i    (1'b0),
-        .map_wr_lfid_i     ('0),
+        // TEST_RX flow-id map programming (from the CSR map window via csr_full).
+        .map_wr_en_i       (map_wr_en_w),
+        .map_wr_addr_i     (map_wr_addr_w),
+        .map_wr_valid_i    (map_wr_valid_w),
+        .map_wr_lfid_i     (map_wr_lfid_w),
         .flow_rd_addr_i    (flow_rd_addr_w),
         .flow_rx           (flow_rx_w),
         .flow_lost         (flow_lost_w),

@@ -74,8 +74,14 @@ int main(int argc, char **argv) {
     for (size_t r = 0; r < cp->n_flow_rows; r++)
         if (o->flow_write) o->flow_write(be.ctx, (uint32_t)r, &cp->flow_rows[r]);
     if (o->flow_commit) o->flow_commit(be.ctx);
-    printf("programmed %zu classifier rows, %zu flow rows; generator running\n",
-           cp->n_classifier_rows, cp->n_flow_rows);
+    /* TEST_RX flow-id map: test flows are classified by the flow-id map, not a
+     * classifier rule, so program one entry per test flow (flow_id -> slot). */
+    for (size_t m = 0; m < cp->n_map_entries; m++)
+        if (o->write32)
+            o->write32(be.ctx, PWFPGA_WIN_FLOWID_MAP + cp->map_entries[m].flow_id * 4u,
+                       PWFPGA_FLOWID_MAP_VALID | cp->map_entries[m].local_flow_id);
+    printf("programmed %zu classifier rows, %zu flow rows, %zu flow-id map entries; generator running\n",
+           cp->n_classifier_rows, cp->n_flow_rows, cp->n_map_entries);
 
     /* --- debug: write-path self-test on GLOBAL_CONTROL (0x100, RW) --- */
     if (o->write32 && o->read32) {

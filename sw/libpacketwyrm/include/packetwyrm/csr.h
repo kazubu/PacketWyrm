@@ -39,11 +39,22 @@ enum {
      * windows are 16 KB apart (8 KB data + commit reg above it); the
      * live-read histogram gets 8 KB. Fills the 64 KB BAR; the former
      * SLOW_RX/TX placeholders (0x8000/0x9000) are reclaimed. */
+    /* TEST_RX flow-id map: 256 entries x 4 B = 0x0400..0x07FF (between the
+     * identity regs and the SPI window). entry[flow_id] at base + flow_id*4,
+     * data = {[31] valid, [15:0] local_flow_id}. A test frame's test_flow_id
+     * indexes this directly -> checker slot, so TEST_RX flows need no classifier
+     * rule and scale past the classifier's ~16-entry routability limit. */
+    PWFPGA_WIN_FLOWID_MAP           = 0x0400,  /* 0x0400..0x07FF */
     PWFPGA_WIN_CLASSIFIER           = 0x2000,  /* 0x2000..0x5FFF */
     PWFPGA_WIN_FLOW_TABLE           = 0x6000,  /* 0x6000..0x9FFF */
     PWFPGA_WIN_HISTOGRAM            = 0xA000,  /* 0xA000..0xBFFF (8 KB) */
     PWFPGA_WIN_STATS_SNAPSHOT       = 0xC000,  /* 0xC000..0xFFFF */
 };
+
+/* pw_flowid_map entry: valid bit + local checker slot. */
+#define PWFPGA_FLOWID_MAP_DEPTH     256u
+#define PWFPGA_FLOWID_MAP_VALID     (1u << 31)
+#define PWFPGA_FLOWID_MAP_ENTRY(base, flow_id)  ((base) + (flow_id) * 4u)
 
 /* global_control bits */
 enum {

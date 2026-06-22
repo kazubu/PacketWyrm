@@ -80,6 +80,9 @@ the initial proposal; concrete field bit definitions are owned by the
 # commit-bearing windows are 16 KB apart so their commit / trigger /
 # clear registers sit above the 8 KB data region; the live-read
 # histogram gets 8 KB. Fills the 64 KB BAR.
+0x0400..0x07ff  flowid_map_window         (TEST_RX flow-id -> checker slot;
+                                           entry[flow_id] at +flow_id*4,
+                                           data {[31]valid,[15:0]local_flow_id})
 0x2000..0x5fff  classifier_table_window   (rows @128 B; commit @+0x3FFC)
 0x6000..0x9fff  flow_table_window         (rows @256 B; commit @+0x3FFC)
 0xa000..0xbfff  histogram_window          (per-flow @128 B = 16 bins; live read)

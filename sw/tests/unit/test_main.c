@@ -265,7 +265,8 @@ static void test_cross_card_flow_compiles(void) {
     /* Both cards should have at least one row for this single flow. */
     PW_ASSERT_EQ(prog->per_card[0].n_flow_rows, 1);
     PW_ASSERT_EQ(prog->per_card[1].n_flow_rows, 1);
-    PW_ASSERT(prog->per_card[1].n_classifier_rows >= 1);
+    /* RX classification is via the flow-id map now, not a classifier rule. */
+    PW_ASSERT(prog->per_card[1].n_map_entries >= 1);
     pw_program_free(prog);
     pw_config_free(cfg);
 }
@@ -444,13 +445,19 @@ static void test_background_and_match_mask(void) {
     PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
     struct pw_program *prog = pw_program_new();
     PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
-    /* 3 TX flow rows, but only 2 classifier rules (background flow has none). */
+    /* 3 TX flow rows. TEST_RX flows are now classified by the flow-id map, not
+     * the classifier, so there are 0 classifier rows and 2 map entries (the 2
+     * non-background test flows; the background flow has neither). Keying on the
+     * stable test_flow_id makes udp_dst modifiers/masks irrelevant to RX
+     * classification -- the old per-flow classifier bitwise-mask relax is moot. */
     PW_ASSERT_EQ(prog->per_card[0].n_flow_rows, 3);
-    PW_ASSERT_EQ(prog->per_card[0].n_classifier_rows, 2);
-    /* flow 1: udp_dst modifier (mask 0x00ff) auto-relaxes the match mask. */
-    PW_ASSERT_EQ(prog->per_card[0].classifier_rows[0].mask.udp_dst_port, 0xff00);
-    /* flow 2: explicit partial match mask. */
-    PW_ASSERT_EQ(prog->per_card[0].classifier_rows[1].mask.udp_dst_port, 0xff00);
+    PW_ASSERT_EQ(prog->per_card[0].n_classifier_rows, 0);
+    PW_ASSERT_EQ(prog->per_card[0].n_map_entries, 2);
+    /* flow_id -> local checker slot (rx_lfid assigned 0,1 in order). */
+    PW_ASSERT_EQ(prog->per_card[0].map_entries[0].flow_id, 1);
+    PW_ASSERT_EQ(prog->per_card[0].map_entries[0].local_flow_id, 0);
+    PW_ASSERT_EQ(prog->per_card[0].map_entries[1].flow_id, 2);
+    PW_ASSERT_EQ(prog->per_card[0].map_entries[1].local_flow_id, 1);
     pw_program_free(prog);
     pw_config_free(cfg);
 }
