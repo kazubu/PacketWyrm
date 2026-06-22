@@ -47,43 +47,95 @@ enum {
      * indexes this directly -> checker slot, so TEST_RX flows need no classifier
      * rule and scale past the classifier's ~16-entry routability limit. */
     PWFPGA_WIN_FLOWID_MAP           = 0x0400,  /* 0x0400..0x07FF */
-    /* Generic slice classifier (pw_slice_classifier): header-defined flows
-     * classified by arbitrary {offset,mask,value} slices + rules over the slice-
-     * match bits -- payload-agnostic (unlike the flow-id map). Slice configs are
-     * 16 B each (offset@+0, mask@+4, value@+8 -> commit); rules are 8 B each
-     * (word0@+0, local_flow_id@+4 -> commit). Both windows sit in the free
-     * 0x0200..0x03FF block. */
-    PWFPGA_WIN_SLICE_CFG            = 0x0200,  /* 0x0200..0x023F (4 x 16 B) */
-    PWFPGA_WIN_SLICE_RULE           = 0x0280,  /* 0x0280..0x02BF (8 x 8 B) */
-    PWFPGA_WIN_CLASSIFIER           = 0x2000,  /* 0x2000..0x5FFF */
+    /* Unified field+UDF classifier (pw_field_classifier; the legacy classifier
+     * is retired). Comparators source the parser's canonical fields (field
+     * comparators) or a raw inner-frame window (UDF comparators); rules combine
+     * the comparator bits into {action,egress,lfid,lif}. Occupies the old
+     * classifier window region. 16 B/entry, last sub-word commits:
+     *   cmp  (0x2000): src@+0, mask@+4, value@+8
+     *   udf  (0x2100): offset@+0, mask@+4, value@+8
+     *   rule (0x2200): word0@+0, lfid@+4, lif@+8 */
+    PWFPGA_WIN_FC_CMP               = 0x2000,  /* NCMP x 16 B */
+    PWFPGA_WIN_FC_UDF               = 0x2100,  /* NUDF x 16 B */
+    PWFPGA_WIN_FC_RULE              = 0x2200,  /* NRULE x 16 B */
     PWFPGA_WIN_FLOW_TABLE           = 0x6000,  /* 0x6000..0x9FFF */
     PWFPGA_WIN_HISTOGRAM            = 0xA000,  /* 0xA000..0xBFFF (8 KB) */
     PWFPGA_WIN_STATS_SNAPSHOT       = 0xC000,  /* 0xC000..0xFFFF */
 };
+
+/* LEGACY alias: the parallel pw_classifier is retired (replaced by the field+UDF
+ * classifier, which now owns 0x2000). Kept only so the legacy classifier_write
+ * backend op + the standalone pw_phase3_{punt,forward,modgen,inject,ipv6gen}
+ * tools (which target the old bitstream) still compile. Those tools must be
+ * migrated to the field-classifier programming (PWFPGA_WIN_FC_*) to run on the
+ * new bitstream; the daemon + pw_phase3_loopback already use it. */
+#define PWFPGA_WIN_CLASSIFIER          0x2000u
 
 /* pw_flowid_map entry: valid bit + local checker slot. */
 #define PWFPGA_FLOWID_MAP_DEPTH     256u
 #define PWFPGA_FLOWID_MAP_VALID     (1u << 31)
 #define PWFPGA_FLOWID_MAP_ENTRY(base, flow_id)  ((base) + (flow_id) * 4u)
 
-/* Generic slice classifier capacity + register layout. NUM_SLICE distinct
- * header matches (each {offset,mask,value}); NUM_SRULE rules over the slice
- * bits. Must match the RTL params (pwfpga_top_phase3 NUM_SLICE/NUM_SRULE). */
-#define PWFPGA_NUM_SLICE            4u
-#define PWFPGA_NUM_SRULE            8u
-/* Slice config: write offset(@+0, low 16b), mask(@+4), value(@+8 commits). */
-#define PWFPGA_SLICE_CFG_OFFSET(base, i)  ((base) + (i) * 16u + 0u)
-#define PWFPGA_SLICE_CFG_MASK(base, i)    ((base) + (i) * 16u + 4u)
-#define PWFPGA_SLICE_CFG_VALUE(base, i)   ((base) + (i) * 16u + 8u)
-/* Rule: write word0(@+0), then local_flow_id(@+4 commits). word0 packs the
- * care mask, action, egress, priority + enable: */
-#define PWFPGA_SRULE_WORD0(base, i)       ((base) + (i) * 8u + 0u)
-#define PWFPGA_SRULE_LFID(base, i)        ((base) + (i) * 8u + 4u)
-#define PWFPGA_SRULE_W0(care, action, egress, prio, enable)            \
-    (((uint32_t)(care)   & 0xFFu)        |                             \
-     (((uint32_t)(action) & 0x7u)  << 8) |                             \
-     (((uint32_t)(egress) & 0xFu)  << 11)|                             \
-     (((uint32_t)(prio)   & 0xFFu) << 15)|                             \
+/* Unified field+UDF classifier capacity + register layout. Must match the RTL
+ * params (pwfpga_top_phase3 NUM_CMP/NUM_UDF/NUM_RULE). NCMP field comparators
+ * (each sources one canonical key field), NUDF UDF comparators (raw window),
+ * NRULE rules over the NCMP+NUDF comparator bits. */
+#define PWFPGA_NUM_CMP              12u
+#define PWFPGA_NUM_UDF              2u
+#define PWFPGA_NUM_RULE             32u
+/* Comparator source selectors (pw_field_classifier src_lane). 32-bit lanes. */
+enum pwfpga_fc_src {
+    PWFPGA_FC_SRC_L4_DST     = 0,   /* udp/tcp dst port (low 16b)             */
+    PWFPGA_FC_SRC_L4_SRC     = 1,
+    PWFPGA_FC_SRC_IPV4_DST   = 2,
+    PWFPGA_FC_SRC_IPV4_SRC   = 3,
+    PWFPGA_FC_SRC_IPV6_DST_3 = 4,   /* ipv6_dst[127:96]                       */
+    PWFPGA_FC_SRC_IPV6_DST_2 = 5,   /* ipv6_dst[95:64]                        */
+    PWFPGA_FC_SRC_IPV6_DST_1 = 6,   /* ipv6_dst[63:32]                        */
+    PWFPGA_FC_SRC_IPV6_DST_0 = 7,   /* ipv6_dst[31:0]                         */
+    PWFPGA_FC_SRC_ETHERTYPE  = 8,   /* (low 16b)                              */
+    PWFPGA_FC_SRC_L3_PROTO   = 9,   /* (low 8b)                               */
+    PWFPGA_FC_SRC_VLAN       = 10,  /* [11:0] vlan_id, [12] inner-vlan present*/
+    PWFPGA_FC_SRC_FLOW_ID    = 11,  /* test_flow_id                           */
+    PWFPGA_FC_SRC_FLAGS      = 12,  /* see PWFPGA_FC_FLAG_* below             */
+    PWFPGA_FC_SRC_INGRESS    = 13,  /* ingress_port (low 4b)                  */
+    PWFPGA_FC_SRC_IPV6_SRC_0 = 14,  /* ipv6_src[31:0]                         */
+    PWFPGA_FC_SRC_IPV6_SRC_3 = 15,  /* ipv6_src[127:96]                       */
+};
+/* Bit positions in the FLAGS source lane. */
+enum {
+    PWFPGA_FC_FLAG_IS_TEST   = 1u << 0,
+    PWFPGA_FC_FLAG_IS_ARP    = 1u << 1,
+    PWFPGA_FC_FLAG_IS_IPV4   = 1u << 2,
+    PWFPGA_FC_FLAG_IS_IPV6   = 1u << 3,
+    PWFPGA_FC_FLAG_IS_TCP    = 1u << 4,
+    PWFPGA_FC_FLAG_IS_UDP    = 1u << 5,
+    PWFPGA_FC_FLAG_IS_ICMP   = 1u << 6,
+    PWFPGA_FC_FLAG_IS_ICMP6  = 1u << 7,
+    PWFPGA_FC_FLAG_IS_OSPF   = 1u << 8,
+    PWFPGA_FC_FLAG_VLAN_VLD  = 1u << 9,
+    PWFPGA_FC_FLAG_VALID     = 1u << 10,
+};
+/* Comparator: write src(@+0), mask(@+4), value(@+8 commits). UDF replaces src
+ * with the byte offset (relative to the inner-frame base). */
+#define PWFPGA_FC_CMP_SRC(base, i)    ((base) + (i) * 16u + 0u)
+#define PWFPGA_FC_CMP_MASK(base, i)   ((base) + (i) * 16u + 4u)
+#define PWFPGA_FC_CMP_VALUE(base, i)  ((base) + (i) * 16u + 8u)
+#define PWFPGA_FC_UDF_OFFSET(base, i) ((base) + (i) * 16u + 0u)
+#define PWFPGA_FC_UDF_MASK(base, i)   ((base) + (i) * 16u + 4u)
+#define PWFPGA_FC_UDF_VALUE(base, i)  ((base) + (i) * 16u + 8u)
+/* Rule: write word0(@+0), local_flow_id(@+4), logical_if_id(@+8 commits).
+ * word0 packs {[13:0] care, [16:14] action, [20:17] egress, [28:21] prio,
+ * [31] enable}. care bit i = field comparator i (0..NCMP-1); UDF comparator j
+ * = bit NCMP+j. */
+#define PWFPGA_FC_RULE_WORD0(base, i) ((base) + (i) * 16u + 0u)
+#define PWFPGA_FC_RULE_LFID(base, i)  ((base) + (i) * 16u + 4u)
+#define PWFPGA_FC_RULE_LIF(base, i)   ((base) + (i) * 16u + 8u)
+#define PWFPGA_FC_RULE_W0(care, action, egress, prio, enable)          \
+    (((uint32_t)(care)    & 0x3FFFu)        |                          \
+     (((uint32_t)(action) & 0x7u)   << 14)  |                          \
+     (((uint32_t)(egress) & 0xFu)   << 17)  |                          \
+     (((uint32_t)(prio)   & 0xFFu)  << 21)  |                          \
      ((enable) ? (1u << 31) : 0u))
 
 /* global_control bits */

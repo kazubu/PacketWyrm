@@ -65,40 +65,43 @@ int main(int argc, char **argv) {
            bdf, info.device_id, info.version,
            info.num_local_ports, info.num_local_flows, info.num_classifier_entries);
 
-    /* 4. program card 0: classifier rows then flow rows (flow tx_enable
-     *    starts the generator). Mirrors packetwyrmd's program path. */
+    /* 4. program card 0: flow rows (flow tx_enable starts the generator),
+     *    the flow-id map, then the field+UDF classifier. Mirrors packetwyrmd. */
     const struct pw_card_program *cp = &prog->per_card[0];
-    for (size_t r = 0; r < cp->n_classifier_rows; r++)
-        if (o->classifier_write) o->classifier_write(be.ctx, (uint32_t)r, &cp->classifier_rows[r]);
-    if (o->classifier_commit) o->classifier_commit(be.ctx);
     for (size_t r = 0; r < cp->n_flow_rows; r++)
         if (o->flow_write) o->flow_write(be.ctx, (uint32_t)r, &cp->flow_rows[r]);
     if (o->flow_commit) o->flow_commit(be.ctx);
-    /* TEST_RX flow-id map: test flows are classified by the flow-id map, not a
-     * classifier rule, so program one entry per test flow (flow_id -> slot). */
+    /* TEST_RX flow-id map: structured test flows -> direct checker-slot index. */
     for (size_t m = 0; m < cp->n_map_entries; m++)
         if (o->write32)
             o->write32(be.ctx, PWFPGA_WIN_FLOWID_MAP + cp->map_entries[m].flow_id * 4u,
                        PWFPGA_FLOWID_MAP_VALID | cp->map_entries[m].local_flow_id);
-    /* Generic slice classifier: header-defined flows (payload-agnostic). */
+    /* Unified field+UDF classifier: header-defined flows + punt + forward. */
     if (o->write32) {
-        for (size_t i = 0; i < cp->n_slice_cfgs; i++) {
-            const struct pw_slice_config *sc = &cp->slice_cfgs[i];
-            o->write32(be.ctx, PWFPGA_SLICE_CFG_OFFSET(PWFPGA_WIN_SLICE_CFG, i), sc->offset);
-            o->write32(be.ctx, PWFPGA_SLICE_CFG_MASK  (PWFPGA_WIN_SLICE_CFG, i), sc->mask);
-            o->write32(be.ctx, PWFPGA_SLICE_CFG_VALUE (PWFPGA_WIN_SLICE_CFG, i), sc->value);
+        for (size_t i = 0; i < cp->n_fc_cmps; i++) {
+            const struct pw_fc_cmp *c = &cp->fc_cmps[i];
+            o->write32(be.ctx, PWFPGA_FC_CMP_SRC(PWFPGA_WIN_FC_CMP, i), c->src);
+            o->write32(be.ctx, PWFPGA_FC_CMP_MASK(PWFPGA_WIN_FC_CMP, i), c->mask);
+            o->write32(be.ctx, PWFPGA_FC_CMP_VALUE(PWFPGA_WIN_FC_CMP, i), c->value);
         }
-        for (size_t i = 0; i < cp->n_slice_rules; i++) {
-            const struct pw_slice_rule *rl = &cp->slice_rules[i];
-            o->write32(be.ctx, PWFPGA_SRULE_WORD0(PWFPGA_WIN_SLICE_RULE, i),
-                       PWFPGA_SRULE_W0(rl->care_mask, rl->action, rl->egress, rl->priority, 1));
-            o->write32(be.ctx, PWFPGA_SRULE_LFID(PWFPGA_WIN_SLICE_RULE, i), rl->local_flow_id);
+        for (size_t i = 0; i < cp->n_fc_udfs; i++) {
+            const struct pw_fc_udf *u = &cp->fc_udfs[i];
+            o->write32(be.ctx, PWFPGA_FC_UDF_OFFSET(PWFPGA_WIN_FC_UDF, i), u->offset);
+            o->write32(be.ctx, PWFPGA_FC_UDF_MASK(PWFPGA_WIN_FC_UDF, i), u->mask);
+            o->write32(be.ctx, PWFPGA_FC_UDF_VALUE(PWFPGA_WIN_FC_UDF, i), u->value);
+        }
+        for (size_t i = 0; i < cp->n_fc_rules; i++) {
+            const struct pw_fc_rule *rl = &cp->fc_rules[i];
+            o->write32(be.ctx, PWFPGA_FC_RULE_WORD0(PWFPGA_WIN_FC_RULE, i),
+                       PWFPGA_FC_RULE_W0(rl->care, rl->action, rl->egress, rl->priority, 1));
+            o->write32(be.ctx, PWFPGA_FC_RULE_LFID(PWFPGA_WIN_FC_RULE, i), rl->local_flow_id);
+            o->write32(be.ctx, PWFPGA_FC_RULE_LIF(PWFPGA_WIN_FC_RULE, i), rl->logical_if_id);
         }
     }
-    printf("programmed %zu classifier rows, %zu flow rows, %zu flow-id map entries, "
-           "%zu slices/%zu rules; generator running\n",
-           cp->n_classifier_rows, cp->n_flow_rows, cp->n_map_entries,
-           cp->n_slice_cfgs, cp->n_slice_rules);
+    printf("programmed %zu flow rows, %zu flow-id map entries, "
+           "%zu cmp/%zu udf/%zu rules; generator running\n",
+           cp->n_flow_rows, cp->n_map_entries,
+           cp->n_fc_cmps, cp->n_fc_udfs, cp->n_fc_rules);
 
     /* --- debug: write-path self-test on GLOBAL_CONTROL (0x100, RW) --- */
     if (o->write32 && o->read32) {

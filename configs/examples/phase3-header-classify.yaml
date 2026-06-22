@@ -1,10 +1,11 @@
-# Phase 3 HW: generic slice-classifier test over the SFP+ DAC loopback.
+# Phase 3 HW: generic field-classifier test over the SFP+ DAC loopback.
 # Four UDP/IPv4 flows classified by HEADER (udp_dst) via the generic slice
 # classifier (classify: header) -- NOT the test-header flow_id / flow-id map.
 # This proves RX classification is payload-agnostic: the flows still carry a
 # test header for seq/latency, but RX keys on udp_dst, so the flow_id field is
 # free. TX p0 -> DAC -> RX p1; expect loss=0 on every flow.
-# Bounded by the slice-classifier capacity (8 slices / 16 rules per card).
+# Bounded by the field-classifier capacity (12 comparators / 32 rules per card,
+# shared with punt + forward rules).
 system: { name: "pw-hdrclass", mode: "multi-card", default_speed: "10g",
           control_socket: "/tmp/pw-phase3.sock" }
 

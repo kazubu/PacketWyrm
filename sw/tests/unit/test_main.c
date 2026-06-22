@@ -161,7 +161,7 @@ static void test_parse_single_card(void) {
     PW_ASSERT_EQ(r, PW_OK);
     PW_ASSERT_EQ(prog->n_cards, 1);
     PW_ASSERT_EQ(prog->per_card[0].n_flow_rows, 1);
-    PW_ASSERT(prog->per_card[0].n_classifier_rows >= 1);
+    PW_ASSERT(prog->per_card[0].n_map_entries >= 1);   /* test flow -> flow-id map */
     PW_ASSERT_EQ(prog->flow_meta[0].latency_valid, 1);
 
     pw_program_free(prog);
@@ -295,20 +295,26 @@ static void test_forward_rule_compiles(void) {
     PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
     struct pw_program *prog = pw_program_new();
     PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
-    /* find the FORWARD_PORT row */
+    /* find the FORWARD_PORT rule + verify its comparators */
     bool found = false;
-    for (size_t i = 0; i < prog->per_card[0].n_classifier_rows; i++) {
-        const struct pwfpga_classifier_entry *e = &prog->per_card[0].classifier_rows[i];
-        if (e->action == PWFPGA_ACT_FORWARD_PORT) {
+    const struct pw_card_program *cp = &prog->per_card[0];
+    for (size_t i = 0; i < cp->n_fc_rules; i++) {
+        const struct pw_fc_rule *rl = &cp->fc_rules[i];
+        if (rl->action == PWFPGA_ACT_FORWARD_PORT) {
             found = true;
-            PW_ASSERT_EQ(e->egress_local_port, 1);
-            PW_ASSERT_EQ(e->key.ingress_local_port, 0);
-            PW_ASSERT_EQ(e->key.ethertype, 0x0800);
-            PW_ASSERT_EQ(e->key.udp_dst_port, 5000);
-            PW_ASSERT(e->flags & PWFPGA_CLS_FLAG_ENABLE);
+            PW_ASSERT_EQ(rl->egress, 1);
         }
     }
     PW_ASSERT(found);
+    /* comparators for ingress==0, ethertype==0x0800, udp_dst==5000 exist */
+    bool have_eth = false, have_udp = false, have_ing = false;
+    for (size_t i = 0; i < cp->n_fc_cmps; i++) {
+        const struct pw_fc_cmp *c = &cp->fc_cmps[i];
+        if (c->src == PWFPGA_FC_SRC_ETHERTYPE && c->value == 0x0800) have_eth = true;
+        if (c->src == PWFPGA_FC_SRC_L4_DST    && c->value == 5000)   have_udp = true;
+        if (c->src == PWFPGA_FC_SRC_INGRESS   && c->value == 0)      have_ing = true;
+    }
+    PW_ASSERT(have_eth); PW_ASSERT(have_udp); PW_ASSERT(have_ing);
     pw_program_free(prog);
     pw_config_free(cfg);
 }
@@ -451,7 +457,7 @@ static void test_background_and_match_mask(void) {
      * stable test_flow_id makes udp_dst modifiers/masks irrelevant to RX
      * classification -- the old per-flow classifier bitwise-mask relax is moot. */
     PW_ASSERT_EQ(prog->per_card[0].n_flow_rows, 3);
-    PW_ASSERT_EQ(prog->per_card[0].n_classifier_rows, 0);
+    PW_ASSERT_EQ(prog->per_card[0].n_fc_rules, 0);   /* test flows use the map */
     PW_ASSERT_EQ(prog->per_card[0].n_map_entries, 2);
     /* flow_id -> local checker slot (rx_lfid assigned 0,1 in order). */
     PW_ASSERT_EQ(prog->per_card[0].map_entries[0].flow_id, 1);
@@ -489,18 +495,18 @@ static void test_header_classify_compiles(void) {
     PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
     struct pw_program *prog = pw_program_new();
     PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
-    /* header-classified -> no map entry; one slice (udp_dst) + one rule. */
+    /* header-classified -> no map entry; one field comparator (udp_dst) + rule. */
     PW_ASSERT_EQ(prog->per_card[0].n_map_entries, 0);
-    PW_ASSERT_EQ(prog->per_card[0].n_slice_cfgs, 1);
-    PW_ASSERT_EQ(prog->per_card[0].n_slice_rules, 1);
-    /* udp_dst slice: offset 22 (L3+20+2), value 50007 in the upper 16 bits. */
-    PW_ASSERT_EQ(prog->per_card[0].slice_cfgs[0].offset, 22);
-    PW_ASSERT_EQ(prog->per_card[0].slice_cfgs[0].mask, 0xFFFF0000u);
-    PW_ASSERT_EQ(prog->per_card[0].slice_cfgs[0].value, (uint32_t)50007 << 16);
-    /* rule cares about slice 0, action TEST_RX, lfid 0. */
-    PW_ASSERT_EQ(prog->per_card[0].slice_rules[0].care_mask, 0x1);
-    PW_ASSERT_EQ(prog->per_card[0].slice_rules[0].action, PWFPGA_ACT_TEST_RX);
-    PW_ASSERT_EQ(prog->per_card[0].slice_rules[0].local_flow_id, 0);
+    PW_ASSERT_EQ(prog->per_card[0].n_fc_cmps, 1);
+    PW_ASSERT_EQ(prog->per_card[0].n_fc_rules, 1);
+    /* udp_dst comparator: src = L4_DST, value 50001 (config dst_port). */
+    PW_ASSERT_EQ(prog->per_card[0].fc_cmps[0].src, PWFPGA_FC_SRC_L4_DST);
+    PW_ASSERT_EQ(prog->per_card[0].fc_cmps[0].mask, 0xFFFFu);
+    PW_ASSERT_EQ(prog->per_card[0].fc_cmps[0].value, 50007);
+    /* rule cares about comparator 0, action TEST_RX, lfid 0. */
+    PW_ASSERT_EQ(prog->per_card[0].fc_rules[0].care, 0x1);
+    PW_ASSERT_EQ(prog->per_card[0].fc_rules[0].action, PWFPGA_ACT_TEST_RX);
+    PW_ASSERT_EQ(prog->per_card[0].fc_rules[0].local_flow_id, 0);
     pw_program_free(prog);
     pw_config_free(cfg);
 }

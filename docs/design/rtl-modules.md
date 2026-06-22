@@ -18,9 +18,9 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
 +-- ICAPE3     <- pw_icap_reboot                 in-band IPROG reload
 +-- pwfpga_top_phase3            board-agnostic core
     +-- pw_csr_full              AXI-Lite slave: identity + windows +
-    |   +-- pw_classifier_window /  pw_stats_snapshot  (flow table moved to
-    |   |                            the data plane; csr_full just forwards the
-    |   |                            decoded flow-window write strobe)
+    |   +-- pw_stats_snapshot   (flow + field-classifier tables moved to the
+    |   |                            data plane; csr_full decodes their write
+    |   |                            strobes -- flow window + fc cmp/udf/rule)
     |   +-- pw_spi_flash         CSR SPI master (live config-flash access)
     |   +-- DP_RESET / REBOOT / STATS_CLEAR / SNAPSHOT triggers
     +-- pw_punt_rx_window        punt AXIS -> CSR-polled frame buffer (host RX)
@@ -28,11 +28,11 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
     +-- pw_data_plane_axis       64-bit AXIS streaming data plane
         +-- pw_flow_table_bram   BRAM flow table (commit-walk decode; per-port
         |                        read port + compact scheduling FF array)
-        +-- per ingress port: pw_parser_axis -> pw_classifier (RESULT_STAGES=2,
-        |                      non-test rules) + pw_flowid_map (TEST_RX flow_id
-        |                      -> checker slot) + pw_slice_classifier (header-
-        |                      defined flows by arbitrary slices) -> pw_frame_saf
-        |                      (effective result: map > slice > classifier)
+        +-- per ingress port: pw_parser_axis -> pw_field_classifier (field+UDF
+        |                      comparators + rules; TEST_RX/punt/forward) +
+        |                      pw_flowid_map (structured TEST_RX flow_id ->
+        |                      checker slot) -> pw_frame_saf
+        |                      (effective result: map > field classifier)
         +-- per ingress port: pw_test_rx_checker (loss/dup/ooo/min/max/sum +
         |                      RFC-3393 IPDV jitter min/max/sum)
         +-- link health: per-port 2-FF sync + edge count of MAC link_up /
@@ -46,8 +46,8 @@ Module notes: `pw_parser_axis` is pipelined (3-stage: L2+decap-descent / inner L
 auto-decapsulates recognized tunnels (outer IP proto 4/41/47/97 →
 IPIP/GRE/EtherIP), re-basing the L3/L4 parse onto the inner frame so the
 classifier keys on the inner test flow (header capture grew to 160 B);
-`pw_classifier` uses RESULT_STAGES + a parallel priority winner;
-`pw_lat_histogram` replaced the FF histogram; `pw_frame_saf`
+`pw_field_classifier` (latency-2, parallel priority winner) replaced the legacy
+`pw_classifier`; `pw_lat_histogram` replaced the FF histogram; `pw_frame_saf`
 is BRAM-backed (reset-less write + registered read-ahead drain) — freed
 ~24% FF / ~14% LUT vs the former register array. `pw_flow_gen_multi`
 applies per-field modifiers (static/increment/random + bitmask on
@@ -220,33 +220,11 @@ Output: a flat "header descriptor" with all extracted fields plus a
 
 ### classifier
 
-- Priority-ordered linear table (Phase 1).
-- **TEST_RX flows are NOT in the classifier** — they are classified by
-  `pw_flowid_map` (below), so the classifier carries only the few non-test
-  rules (PUNT/FORWARD/DROP) and stays small (16 entries) and routable. A wider
-  parallel match is route-congestion-bound on the xcku3p (~16 is the wall);
-  moving the many per-flow TEST_RX rules out is what lifts the flow ceiling.
-- Each entry: match key + mask, action, priority,
-  `local_flow_id`, `logical_if_id`, `egress_local_port`.
-- The dst port (`l4_dst`/`udp_dst`) and dst IPv4 address match **bitwise**
-  (TCAM-style): `(key & mask) == (rule_key & mask)`, so a partial mask
-  matches only part of a field — letting a generator modifier rotate the
-  unmatched bits, or classifying arbitrary-payload traffic by header bits.
-  An all-ones mask is exact match (back-compatible); 0 is wildcard. Other
-  fields remain boolean match/ignore.
-- **IPv6 dst address** matches **exactly** (`==`, not bitwise): the 40-byte
-  wire `match_key` has no room for a 128-bit address, so the dst key + mask
-  live in the row tail (bytes 96..127, decoded by `pw_classifier_window` in
-  network byte order to match the parser). The compiler enables it for IPv6
-  TEST_RX flows unless a dst modifier rotates the address.
-- Actions: `DROP`, `TEST_RX`, `PUNT_TO_HOST`, `MIRROR_TO_HOST`,
-  `FORWARD_PORT`.
-- `FORWARD_PORT` uses `egress_local_port` (byte 92 of the wire row,
-  decoded in `pw_classifier_window`) to pick the egress port the SAF
-  drains to; the data plane routes by the result's `egress_port`. See
-  `docs/design/csr-map.md` (classifier window).
-- Double-buffered: stage row, then write `commit` to swap.
-- Returns the matched action + IDs to the rest of the RX pipeline.
+The legacy priority-ordered linear `pw_classifier` (N×~600-bit parallel masked
+key compare) is **retired** — it was the xcku3p route wall (~16 entries). It is
+replaced by `pw_field_classifier` (see below), with structured high-count
+TEST_RX on `pw_flowid_map`. Actions are unchanged: `DROP`, `TEST_RX`,
+`PUNT_TO_HOST`, `MIRROR_TO_HOST`, `FORWARD_PORT`.
 
 ### flowid_map (`pw_flowid_map`)
 
@@ -264,24 +242,34 @@ Output: a flat "header descriptor" with all extracted fields plus a
   irrelevant to RX classification. The high-count fast path for *structured*
   test frames — see `docs/design/generic-classifier.md`.
 
-### slice_classifier (`pw_slice_classifier` + `pw_slice_match`)
+### field_classifier (`pw_field_classifier` + `pw_slice_match`)
 
-- Generic, payload-agnostic classification: flows defined by **arbitrary header
-  fields**, not the test-header `flow_id` (which the flow-id map needs at a fixed
-  payload offset). This is what lets the payload be filled freely, or external
-  DUT traffic with no test header be classified and counted.
-- Two cheap, routable stages: `NSLICE` shared `pw_slice_match` units each do one
-  `{offset,mask,value}` exact match over the parser's captured inner-frame header
-  window → a slice-match bit; `NRULE` rules each AND a `care` subset of those
-  bits → a priority-selected `{action, local_flow_id, egress}`. The per-rule
-  compare is only `NSLICE` bits, so `NRULE` scales far past the ~16 the wide-key
-  `pw_classifier` was capped at. Latency 2 (matches `pw_classifier`).
-- Offsets are relative to the parser's inner-frame (L3) base (`base_o`), so
-  matching is encap-aware. The parser exposes the header byte-window (`window_o`)
-  + `base_o` aligned with `key_valid_o`.
-- Data-plane precedence: flow-id **map > slice classifier > legacy classifier**.
-  Programmed via `PWFPGA_WIN_SLICE_CFG` / `PWFPGA_WIN_SLICE_RULE`; the compiler
-  lowers a `classify: header` flow to slices + a rule. See
+Replaces the legacy `pw_classifier` (an N×~600-bit parallel masked-key compare
+that hit the xcku3p route wall at ~16 entries) AND the interim slice classifier.
+Two cheap, routable stages:
+
+- **Comparators** (the cheap part): `NCMP` (12) *field comparators*, each a
+  `{src,mask,value}` over a 32-bit lane selected from the parser's canonical
+  fields (`pw_match_key_t`). The fields are already extracted + position-
+  normalized by the parser, so a comparator is a mux-of-fixed-lanes + a masked
+  compare — **no byte-mux over the raw frame**. A 128-bit IPv6 address is matched
+  with 4 comparators over its 4 lanes. Plus `NUDF` (2) *UDF comparators*
+  (`pw_slice_match`) over the raw inner-frame window for fields the parser
+  doesn't name (DSCP/TTL/flow-label/TCP-flags/arbitrary bytes); bounded byte-mux
+  (`SLICE_WIN` = 48). → NCMP+NUDF match bits.
+- **Rules** (the scalable part): `NRULE` (32), each `{care, action, egress,
+  local_flow_id, logical_if_id, prio, enable}`. A rule hits iff enabled & valid &
+  `(cmatch & care) == care`; priority winner. Per-rule compare is only NCMP+NUDF
+  bits, so NRULE scales far past the legacy ~16 wall. Latency 2.
+- Handles every action the legacy classifier did (TEST_RX / PUNT / MIRROR /
+  FORWARD / DROP). **Retiring the legacy 600-bit classifier frees the RX-region
+  routing budget**, which is what lets the engine + the 32-flow data plane fit on
+  the xcku3p. Payload-agnostic: a header-classified flow carries no dependency on
+  the test `flow_id`.
+- Data-plane precedence: flow-id **map > field classifier**. Programmed via
+  `PWFPGA_WIN_FC_CMP` / `_UDF` / `_RULE` (0x2000); the compiler lowers
+  `classify: header` test flows + punt + forward to comparators + rules, while
+  structured high-count TEST_RX rides the map. See
   `docs/design/generic-classifier.md`.
 
 ### test_rx_checker

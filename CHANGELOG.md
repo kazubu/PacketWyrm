@@ -9,30 +9,34 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
-  - **Generic slice-based classifier — payload-agnostic flow classification**
-    (`pw_slice_classifier` + `pw_slice_match`; CSR windows
-    `PWFPGA_WIN_SLICE_CFG` @ 0x0200 / `PWFPGA_WIN_SLICE_RULE` @ 0x0280). Flows
-    can now be classified by **arbitrary header fields** (offset/mask/value
-    slices) instead of the test-header `flow_id` — so the payload is free of any
-    classification dependency (the flow-id map keys on `flow_id`, which lives at
-    a fixed payload offset). RMT/P4-style two-stage engine: `NSLICE` (4) shared
-    `{offset,mask,value}` match units over the first 48 bytes of the parser's
-    captured inner-frame header window → match bits; `NRULE` (8) rules each AND a
-    `care` subset of those bits → a priority-selected result. The per-rule
-    compare is only
-    `NSLICE` bits, so it routes far past the wide-key classifier's ~16-entry
-    wall. The parser now exposes the header byte-window (`window_o`) + inner-L3
-    base (`base_o`) aligned with `key_valid_o`; offsets are inner-frame-relative
-    (encap-aware). Data-plane precedence: flow-id **map > slice classifier >
-    legacy classifier**. A new `classify: header` flow option lowers (in the
-    compiler) to deduped slice configs + a rule on the flow's `match` fields
-    (udp_dst / ipv4_dst). The RX checker now counts **non-test** frames too
-    (rx_frames only; loss = tx-vs-rx count), so arbitrary-payload or external
-    DUT traffic is countable, while structured test frames keep full
-    seq/latency/jitter. Completes Phases 1–4 + 6 of
-    `docs/design/generic-classifier.md`. (The legacy 0x0200–0x03FF per-port
-    control placeholder, never implemented in `pw_csr_full`, is reclaimed for
-    the slice windows; per-port stats remain in the snapshot window.)
+  - **Classifier redesign — unified field+UDF comparator engine; legacy
+    classifier retired** (`pw_field_classifier` + `pw_slice_match`; CSR windows
+    `PWFPGA_WIN_FC_CMP`/`_UDF`/`_RULE` @ 0x2000). Replaces the parallel
+    `pw_classifier` (an N×~600-bit masked-key compare that hit the xcku3p route
+    wall at ~16 entries) AND the interim slice classifier with one engine:
+    `NCMP` (12) **field comparators** each `{src,mask,value}` over a 32-bit lane
+    selected from the parser's canonical fields (mux-free — the parser already
+    extracts + position-normalizes them, so a 128-bit IPv6 addr is 4 comparators
+    over its lanes); `NUDF` (2) **UDF comparators** `{offset,mask,value}` over the
+    raw inner-frame window (for DSCP/TTL/flow-label/TCP-flags/arbitrary bytes);
+    and `NRULE` (32) **rules** that AND a `care` subset of the comparator bits
+    into `{action,egress,lfid,lif}`. The per-rule compare is only NCMP+NUDF bits,
+    so it routes far past the legacy ~16 wall — and **retiring the legacy 600-bit
+    classifier frees the RX-region routing budget** so the engine + the 32-flow
+    data plane fit together on the xcku3p (the interim slice classifier could not
+    route at 32 flows alongside the legacy one). Handles every action the legacy
+    did (TEST_RX / PUNT / MIRROR / FORWARD / DROP); the compiler lowers
+    header-defined test flows (`classify: header`) + punt + forward rules to
+    comparators + rules, while structured high-count TEST_RX still rides the
+    flow-id map. **Payload-agnostic**: a flow classified by header carries no
+    dependency on the test `flow_id`, so its payload is free. The parser exposes
+    the header byte-window (`window_o`) + inner-L3 base (`base_o`) aligned with
+    `key_valid_o` (encap-aware UDF offsets). The RX checker now counts
+    **non-test** frames too (rx_frames only; loss = tx-vs-rx count), so
+    arbitrary-payload or external DUT traffic is countable, while structured test
+    frames keep full seq/latency/jitter. (The standalone `pw_phase3_{punt,
+    forward,modgen,inject,ipv6gen}` tools still target the legacy classifier and
+    need migration to the field-classifier programming.)
   - **TEST_RX flow-id map — scalable flow classification** (`pw_flowid_map`,
     `PWFPGA_WIN_FLOWID_MAP` @ 0x0400). A test frame's parsed `test_flow_id`
     directly indexes a BRAM table → its checker slot (gated by the parser's

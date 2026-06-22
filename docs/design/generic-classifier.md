@@ -1,19 +1,34 @@
-# Generic slice-based classifier (design spec)
+# Generic classifier (design spec)
 
-Status: **implemented + HW-bound (Phases 1–4 + 6).** A programmable,
-protocol-agnostic match engine that classifies flows by **arbitrary header
-slices** (payload-agnostic), running *alongside* the fixed-field classifier
-(`pw_classifier`, kept for non-test forward/punt) and the high-count flow-id map
-(`pw_flowid_map`, kept for structured test traffic) on the *fixed* xcku3p (there
-is no larger-FPGA plan). The hash exact table (Phase 5) remains optional/future.
+Status: **implemented + HW-bound — v2 unified field+UDF engine; legacy
+classifier retired.** A programmable, protocol-agnostic match engine
+(`pw_field_classifier`) that **replaces** the fixed-field parallel `pw_classifier`
+(the xcku3p route wall) and the interim `pw_slice_classifier`, with the
+high-count flow-id map (`pw_flowid_map`) kept for structured test traffic. On
+the *fixed* xcku3p (no larger-FPGA plan). The hash exact table (Phase 5) remains
+optional/future.
 
-Implemented modules: `pw_slice_match` (one `{offset,mask,value}` match unit),
-`pw_slice_classifier` (NSLICE shared units → NRULE care-mask rules → priority
-result), parser `window_o`/`base_o` outputs, data-plane integration (precedence
-**map > slice > classifier**), CSR windows `PWFPGA_WIN_SLICE_CFG` /
-`PWFPGA_WIN_SLICE_RULE`, and the compiler `classify: header` lowering. The
+**v2 architecture (the "rethink").** The dominant cost of arbitrary-offset
+matching is the variable byte-mux — and the parser *already* pays it to extract
+named fields. So v2 sources comparators from the parser's canonical, position-
+normalized fields (`pw_match_key_t`) — **mux-free** — and only falls back to a
+bounded raw-window byte-mux for true UDF (fields the parser doesn't name). And
+retiring the legacy 600-bit×N classifier frees the RX-region routing budget so
+the engine + the 32-flow data plane fit together (the interim slice classifier,
+*added alongside* the legacy one, could not route at 32 flows).
+
+Implemented: `pw_field_classifier` = `NCMP`(12) field comparators (each
+`{src,mask,value}` over a canonical-field lane; IPv6 addr = 4 comparators) +
+`NUDF`(2) UDF comparators (`pw_slice_match` over the raw inner-frame window,
+`SLICE_WIN`=48) → `NRULE`(32) care-mask rules → priority `{action,egress,lfid,
+lif}`. Parser `window_o`/`base_o` outputs; data-plane precedence **map > field
+classifier**; CSR windows `PWFPGA_WIN_FC_CMP`/`_UDF`/`_RULE` @ 0x2000; compiler
+lowers `classify: header` test flows + punt + forward to comparators+rules. The
 checker counts non-test frames (rx only) so arbitrary-payload / external DUT
 traffic is countable; structured test frames still get full seq/latency stats.
+Capacity note: header-defined flows + punt + forward share the 12 comparators /
+32 rules per card (comparators dedup); high-count structured TEST_RX uses the
+256-entry flow-id map.
 
 ## Why
 

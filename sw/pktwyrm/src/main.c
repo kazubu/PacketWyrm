@@ -191,10 +191,14 @@ static int cmd_load(int argc, char **argv) {
     printf("Configuration OK: %zu cards, %zu logical interfaces, %zu flows.\n",
            cfg->n_cards, cfg->n_logical_if, cfg->n_flows);
     for (size_t i = 0; i < prog->n_cards; i++)
-        printf("  card%u program: %zu classifier rows, %zu flow rows\n",
+        printf("  card%u program: %zu flow rows, %zu map entries, "
+               "%zu cmp/%zu udf/%zu rules\n",
                prog->per_card[i].card_id,
-               prog->per_card[i].n_classifier_rows,
-               prog->per_card[i].n_flow_rows);
+               prog->per_card[i].n_flow_rows,
+               prog->per_card[i].n_map_entries,
+               prog->per_card[i].n_fc_cmps,
+               prog->per_card[i].n_fc_udfs,
+               prog->per_card[i].n_fc_rules);
     pw_program_free(prog); pw_config_free(cfg);
 
     if (!sock) return 0;

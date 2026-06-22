@@ -27,9 +27,10 @@ module pwfpga_top_phase3 #(
     parameter int          NUM_LOGICAL_IFS = 0,
     parameter int          NUM_CLASSIFIER  = 8,
     parameter int          NUM_HIST_BINS   = 16,
-    parameter int          NUM_SLICE       = 4,    // generic slice-classifier extractors
-    parameter int          NUM_SRULE       = 8,    // generic slice-classifier rules
-    parameter int          SLICE_WIN       = 48     // slice-classifier match window depth
+    parameter int          NUM_CMP         = 12,   // field-classifier field comparators
+    parameter int          NUM_UDF         = 2,    // field-classifier UDF comparators
+    parameter int          NUM_RULE        = 32,   // field-classifier combine rules
+    parameter int          SLICE_WIN       = 48     // UDF match window depth
 ) (
     input  wire              clk,
     input  wire              rst_n,
@@ -95,7 +96,6 @@ module pwfpga_top_phase3 #(
 );
 
     // --- Data-plane <-> CSR_full wiring -------------------------
-    pw_classifier_table_t          cls_table;
 
     // Per-port and per-flow counters from the data plane back into
     // the CSR for snapshot exposure.
@@ -150,8 +150,9 @@ module pwfpga_top_phase3 #(
         .NUM_LOGICAL_IFS (NUM_LOGICAL_IFS),
         .NUM_CLASSIFIER  (NUM_CLASSIFIER),
         .NUM_HIST_BINS   (NUM_HIST_BINS),
-        .NSLICE          (NUM_SLICE),
-        .NRULE           (NUM_SRULE)
+        .NCMP            (NUM_CMP),
+        .NUDF            (NUM_UDF),
+        .NRULE           (NUM_RULE)
     ) u_csr (
         .s_axi_aclk          (clk),
         .s_axi_aresetn       (rst_n),
@@ -200,7 +201,6 @@ module pwfpga_top_phase3 #(
         .flow_tx_i           (flow_tx_w),
         .hist_rd_addr_o      (hist_rd_addr_w),
         .hist_rd_data_i      (hist_rd_data_w),
-        .cls_table_o         (cls_table),
         .flow_wr_en_o        (flow_wr_en_w),
         .flow_wr_addr_o      (flow_wr_addr_w),
         .flow_wr_data_o      (flow_wr_data_w),
@@ -208,17 +208,23 @@ module pwfpga_top_phase3 #(
         .map_wr_addr_o       (map_wr_addr_w),
         .map_wr_valid_o      (map_wr_valid_w),
         .map_wr_lfid_o       (map_wr_lfid_w),
-        .slice_wr_en_o       (slice_wr_en_w),
-        .slice_wr_idx_o      (slice_wr_idx_w),
-        .slice_wr_offset_o   (slice_wr_offset_w),
-        .slice_wr_mask_o     (slice_wr_mask_w),
-        .slice_wr_value_o    (slice_wr_value_w),
+        .cmp_wr_en_o         (cmp_wr_en_w),
+        .cmp_wr_idx_o        (cmp_wr_idx_w),
+        .cmp_wr_src_o        (cmp_wr_src_w),
+        .cmp_wr_mask_o       (cmp_wr_mask_w),
+        .cmp_wr_value_o      (cmp_wr_value_w),
+        .udf_wr_en_o         (udf_wr_en_w),
+        .udf_wr_idx_o        (udf_wr_idx_w),
+        .udf_wr_offset_o     (udf_wr_offset_w),
+        .udf_wr_mask_o       (udf_wr_mask_w),
+        .udf_wr_value_o      (udf_wr_value_w),
         .rule_wr_en_o        (rule_wr_en_w),
         .rule_wr_idx_o       (rule_wr_idx_w),
         .rule_wr_care_o      (rule_wr_care_w),
         .rule_wr_action_o    (rule_wr_action_w),
         .rule_wr_egress_o    (rule_wr_egress_w),
         .rule_wr_lfid_o      (rule_wr_lfid_w),
+        .rule_wr_lif_o       (rule_wr_lif_w),
         .rule_wr_prio_o      (rule_wr_prio_w),
         .rule_wr_enable_o    (rule_wr_enable_w),
         .stats_clear_o       (stats_clear_w),
@@ -284,17 +290,23 @@ module pwfpga_top_phase3 #(
     logic                          map_wr_valid_w;
     logic [$clog2(NUM_FLOWS)-1:0]  map_wr_lfid_w;
     // Generic slice-classifier programming (csr_full -> data plane).
-    logic                          slice_wr_en_w;
-    logic [$clog2(NUM_SLICE)-1:0]  slice_wr_idx_w;
-    logic [15:0]                   slice_wr_offset_w;
-    logic [31:0]                   slice_wr_mask_w;
-    logic [31:0]                   slice_wr_value_w;
+    logic                          cmp_wr_en_w;
+    logic [$clog2(NUM_CMP)-1:0]    cmp_wr_idx_w;
+    logic [4:0]                    cmp_wr_src_w;
+    logic [31:0]                   cmp_wr_mask_w;
+    logic [31:0]                   cmp_wr_value_w;
+    logic                          udf_wr_en_w;
+    logic [$clog2(NUM_UDF)-1:0]    udf_wr_idx_w;
+    logic [15:0]                   udf_wr_offset_w;
+    logic [31:0]                   udf_wr_mask_w;
+    logic [31:0]                   udf_wr_value_w;
     logic                          rule_wr_en_w;
-    logic [$clog2(NUM_SRULE)-1:0]  rule_wr_idx_w;
-    logic [NUM_SLICE-1:0]          rule_wr_care_w;
+    logic [$clog2(NUM_RULE)-1:0]   rule_wr_idx_w;
+    logic [NUM_CMP+NUM_UDF-1:0]    rule_wr_care_w;
     logic [2:0]                    rule_wr_action_w;
     logic [3:0]                    rule_wr_egress_w;
     logic [31:0]                   rule_wr_lfid_w;
+    logic [31:0]                   rule_wr_lif_w;
     logic [7:0]                    rule_wr_prio_w;
     logic                          rule_wr_enable_w;
     logic         stats_clear_w;
@@ -304,8 +316,9 @@ module pwfpga_top_phase3 #(
         .PW_PORTS      (NUM_PORTS),
         .PW_NUM_FLOWS  (NUM_FLOWS),
         .PW_NUM_BUCKETS(NUM_HIST_BINS),
-        .NSLICE        (NUM_SLICE),
-        .NRULE         (NUM_SRULE),
+        .NCMP          (NUM_CMP),
+        .NUDF          (NUM_UDF),
+        .NRULE         (NUM_RULE),
         .SLICE_WIN     (SLICE_WIN)
     ) u_dp (
         .clk               (clk),
@@ -313,7 +326,6 @@ module pwfpga_top_phase3 #(
         .timestamp_i       (timestamp_i),
         .stats_clear_i     (stats_clear_w),
         .dp_soft_rst_i     (dp_soft_rst_w),
-        .cls_table_i       (cls_table),
         .s_axis_rx_tdata   (s_axis_rx_tdata),
         .s_axis_rx_tkeep   (s_axis_rx_tkeep),
         .s_axis_rx_tvalid  (s_axis_rx_tvalid),
@@ -349,17 +361,23 @@ module pwfpga_top_phase3 #(
         .map_wr_valid_i    (map_wr_valid_w),
         .map_wr_lfid_i     (map_wr_lfid_w),
         // Generic slice-classifier programming (from the CSR slice/rule windows).
-        .slice_wr_en_i     (slice_wr_en_w),
-        .slice_wr_idx_i    (slice_wr_idx_w),
-        .slice_wr_offset_i (slice_wr_offset_w),
-        .slice_wr_mask_i   (slice_wr_mask_w),
-        .slice_wr_value_i  (slice_wr_value_w),
+        .cmp_wr_en_i       (cmp_wr_en_w),
+        .cmp_wr_idx_i      (cmp_wr_idx_w),
+        .cmp_wr_src_i      (cmp_wr_src_w),
+        .cmp_wr_mask_i     (cmp_wr_mask_w),
+        .cmp_wr_value_i    (cmp_wr_value_w),
+        .udf_wr_en_i       (udf_wr_en_w),
+        .udf_wr_idx_i      (udf_wr_idx_w),
+        .udf_wr_offset_i   (udf_wr_offset_w),
+        .udf_wr_mask_i     (udf_wr_mask_w),
+        .udf_wr_value_i    (udf_wr_value_w),
         .rule_wr_en_i      (rule_wr_en_w),
         .rule_wr_idx_i     (rule_wr_idx_w),
         .rule_wr_care_i    (rule_wr_care_w),
         .rule_wr_action_i  (rule_wr_action_w),
         .rule_wr_egress_i  (rule_wr_egress_w),
         .rule_wr_lfid_i    (rule_wr_lfid_w),
+        .rule_wr_lif_i     (rule_wr_lif_w),
         .rule_wr_prio_i    (rule_wr_prio_w),
         .rule_wr_enable_i  (rule_wr_enable_w),
         .flow_rd_addr_i    (flow_rd_addr_w),

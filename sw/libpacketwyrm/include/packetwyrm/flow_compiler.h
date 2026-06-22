@@ -22,29 +22,33 @@ struct pw_flowid_map_entry {
     uint32_t local_flow_id;
 };
 
-/* Generic slice-classifier programming (header-defined / payload-agnostic
- * flows). A slice config is one {offset,mask,value} exact-match unit over the
- * parser's inner-frame header window; a rule ANDs a set of slice-match bits
- * (care mask) into a TEST_RX result for a checker slot. The compiler dedups
- * identical slices and caps at PWFPGA_NUM_SLICE / PWFPGA_NUM_SRULE. */
-struct pw_slice_config {
+/* Unified field+UDF classifier programming (pw_field_classifier). A field
+ * comparator sources one canonical key field (enum pwfpga_fc_src); a UDF
+ * comparator matches a raw inner-frame window slice. A rule ANDs a care subset
+ * of the comparator bits into a {action,egress,lfid,lif} result. The compiler
+ * dedups identical comparators and caps at PWFPGA_NUM_CMP / _UDF / _RULE.
+ * care bit i = field comparator i; UDF comparator j = bit PWFPGA_NUM_CMP+j. */
+struct pw_fc_cmp {
+    uint8_t  src;           /* enum pwfpga_fc_src */
+    uint32_t mask;
+    uint32_t value;
+};
+struct pw_fc_udf {
     uint16_t offset;        /* byte offset from the inner-frame (L3) base */
     uint32_t mask;
     uint32_t value;
 };
-struct pw_slice_rule {
-    uint16_t care_mask;     /* bit i set -> slice i must match */
-    uint8_t  action;        /* enum pwfpga_action (TEST_RX for measured flows) */
+struct pw_fc_rule {
+    uint16_t care;          /* bit i set -> comparator i must match */
+    uint8_t  action;        /* enum pwfpga_action */
     uint8_t  egress;
     uint32_t local_flow_id;
+    uint32_t logical_if_id;
     uint8_t  priority;      /* lower wins */
 };
 
 struct pw_card_program {
     uint16_t card_id;
-
-    struct pwfpga_classifier_entry *classifier_rows;
-    size_t                          n_classifier_rows;
 
     struct pwfpga_flow_config      *flow_rows;
     size_t                          n_flow_rows;
@@ -52,10 +56,12 @@ struct pw_card_program {
     struct pw_flowid_map_entry     *map_entries;
     size_t                          n_map_entries;
 
-    struct pw_slice_config         *slice_cfgs;
-    size_t                          n_slice_cfgs;
-    struct pw_slice_rule           *slice_rules;
-    size_t                          n_slice_rules;
+    struct pw_fc_cmp               *fc_cmps;
+    size_t                          n_fc_cmps;
+    struct pw_fc_udf               *fc_udfs;
+    size_t                          n_fc_udfs;
+    struct pw_fc_rule              *fc_rules;
+    size_t                          n_fc_rules;
 };
 
 struct pw_program {

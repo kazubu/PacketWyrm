@@ -223,13 +223,6 @@ static void program_backends(const struct pw_program *prog,
          * and we re-commit it immediately below). */
         if (b->ops->write32)
             (void)b->ops->write32(b->ctx, PWFPGA_REG_DP_RESET, 1u);
-        for (size_t r = 0; r < cp->n_classifier_rows; r++) {
-            pw_status s = b->ops->classifier_write
-                ? b->ops->classifier_write(b->ctx, (uint32_t)r, &cp->classifier_rows[r])
-                : PW_E_NOT_IMPLEMENTED;
-            if (s != PW_OK) any_err = true;
-        }
-        if (b->ops->classifier_commit) (void)b->ops->classifier_commit(b->ctx);
         for (size_t r = 0; r < cp->n_flow_rows; r++) {
             pw_status s = b->ops->flow_write
                 ? b->ops->flow_write(b->ctx, (uint32_t)r, &cp->flow_rows[r])
@@ -245,22 +238,28 @@ static void program_backends(const struct pw_program *prog,
                     PWFPGA_WIN_FLOWID_MAP + cp->map_entries[m].flow_id * 4u,
                     PWFPGA_FLOWID_MAP_VALID | cp->map_entries[m].local_flow_id);
         }
-        /* Generic slice classifier: header-defined flows. Program each slice's
-         * {offset,mask,value} (value commits the slice) then each rule (lfid
-         * commits the rule). */
+        /* Unified field+UDF classifier: header-defined test flows + punt +
+         * forward. Program each comparator ({src/offset,mask,value}; value
+         * commits) then each rule (lif commits). */
         if (b->ops->write32) {
-            for (size_t i = 0; i < cp->n_slice_cfgs; i++) {
-                const struct pw_slice_config *sc = &cp->slice_cfgs[i];
-                (void)b->ops->write32(b->ctx, PWFPGA_SLICE_CFG_OFFSET(PWFPGA_WIN_SLICE_CFG, i), sc->offset);
-                (void)b->ops->write32(b->ctx, PWFPGA_SLICE_CFG_MASK  (PWFPGA_WIN_SLICE_CFG, i), sc->mask);
-                (void)b->ops->write32(b->ctx, PWFPGA_SLICE_CFG_VALUE (PWFPGA_WIN_SLICE_CFG, i), sc->value);
+            for (size_t i = 0; i < cp->n_fc_cmps; i++) {
+                const struct pw_fc_cmp *c = &cp->fc_cmps[i];
+                (void)b->ops->write32(b->ctx, PWFPGA_FC_CMP_SRC(PWFPGA_WIN_FC_CMP, i), c->src);
+                (void)b->ops->write32(b->ctx, PWFPGA_FC_CMP_MASK(PWFPGA_WIN_FC_CMP, i), c->mask);
+                (void)b->ops->write32(b->ctx, PWFPGA_FC_CMP_VALUE(PWFPGA_WIN_FC_CMP, i), c->value);
             }
-            for (size_t i = 0; i < cp->n_slice_rules; i++) {
-                const struct pw_slice_rule *rl = &cp->slice_rules[i];
-                (void)b->ops->write32(b->ctx, PWFPGA_SRULE_WORD0(PWFPGA_WIN_SLICE_RULE, i),
-                    PWFPGA_SRULE_W0(rl->care_mask, rl->action, rl->egress, rl->priority, 1));
-                (void)b->ops->write32(b->ctx, PWFPGA_SRULE_LFID(PWFPGA_WIN_SLICE_RULE, i),
-                    rl->local_flow_id);
+            for (size_t i = 0; i < cp->n_fc_udfs; i++) {
+                const struct pw_fc_udf *u = &cp->fc_udfs[i];
+                (void)b->ops->write32(b->ctx, PWFPGA_FC_UDF_OFFSET(PWFPGA_WIN_FC_UDF, i), u->offset);
+                (void)b->ops->write32(b->ctx, PWFPGA_FC_UDF_MASK(PWFPGA_WIN_FC_UDF, i), u->mask);
+                (void)b->ops->write32(b->ctx, PWFPGA_FC_UDF_VALUE(PWFPGA_WIN_FC_UDF, i), u->value);
+            }
+            for (size_t i = 0; i < cp->n_fc_rules; i++) {
+                const struct pw_fc_rule *rl = &cp->fc_rules[i];
+                (void)b->ops->write32(b->ctx, PWFPGA_FC_RULE_WORD0(PWFPGA_WIN_FC_RULE, i),
+                    PWFPGA_FC_RULE_W0(rl->care, rl->action, rl->egress, rl->priority, 1));
+                (void)b->ops->write32(b->ctx, PWFPGA_FC_RULE_LFID(PWFPGA_WIN_FC_RULE, i), rl->local_flow_id);
+                (void)b->ops->write32(b->ctx, PWFPGA_FC_RULE_LIF(PWFPGA_WIN_FC_RULE, i), rl->logical_if_id);
             }
         }
         if (any_err) {
@@ -412,14 +411,12 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
     json_object_object_add(resp, "ok", json_object_new_boolean(true));
     json_object_object_add(resp, "n_flows",
                            json_object_new_int((int)new_cfg->n_flows));
-    json_object_object_add(resp, "n_classifier_rows",
-                           json_object_new_int(0));   /* recomputed below */
     {
-        size_t total_cls = 0;
+        size_t total_rules = 0;
         for (size_t ci = 0; ci < new_prog->n_cards; ci++)
-            total_cls += new_prog->per_card[ci].n_classifier_rows;
-        json_object_object_add(resp, "n_classifier_rows",
-                               json_object_new_int((int)total_cls));
+            total_rules += new_prog->per_card[ci].n_fc_rules;
+        json_object_object_add(resp, "n_classifier_rules",
+                               json_object_new_int((int)total_rules));
     }
     return resp;
 

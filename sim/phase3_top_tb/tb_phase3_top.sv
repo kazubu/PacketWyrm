@@ -276,32 +276,24 @@ module tb_phase3_top;
         //      (GLOBAL_FLOW_ID=1) and an ARP punt rule -----------
         scenario = "program";
         begin
-            row_bytes_t cls;
-            cls = row_zero();
-            cls = put_u8 (cls, W_KEY_OFF  + 5,  8'd17);    // l3_proto=UDP
-            cls = put_u16(cls, W_KEY_OFF  + 10, 16'd50001);
-            cls = put_u32(cls, W_KEY_OFF  + 32, 32'hA5027E57); // test magic
-            cls = put_u32(cls, W_KEY_OFF  + 36, 32'd1);    // flow_id=1
-            cls = put_u8 (cls, W_MASK_OFF + 5,  8'hFF);
-            cls = put_u16(cls, W_MASK_OFF + 10, 16'hFFFF);
-            cls = put_u32(cls, W_MASK_OFF + 32, 32'hFFFFFFFF);
-            cls = put_u32(cls, W_MASK_OFF + 36, 32'hFFFFFFFF);
-            cls = put_u8 (cls, W_ACTION,   8'd1);          // TEST_RX
-            cls = put_u8 (cls, W_PRIORITY, 8'd5);
-            cls = put_u16(cls, W_FLAGS,    16'h0001);
-            cls = put_u32(cls, W_LOCAL_FLOW, 32'd0);
-            write_row(WIN_CLS, 0, cls);
+            logic [31:0] w0;
+            // TEST_RX for GLOBAL_FLOW_ID=1 -> checker slot 0 via the flow-id map
+            // (entry[flow_id] at 0x0400 + flow_id*4, data {[31]valid,[15:0]lfid}).
+            axi_write(16'h0400 + 16'(1*4), 32'h8000_0000 | 32'd0);
 
-            cls = row_zero();
-            cls = put_u16(cls, W_KEY_OFF  + 0, 16'h0806);  // ARP
-            cls = put_u16(cls, W_MASK_OFF + 0, 16'hFFFF);
-            cls = put_u8 (cls, W_ACTION,   8'd2);          // PUNT_TO_HOST
-            cls = put_u8 (cls, W_PRIORITY, 8'd10);
-            cls = put_u16(cls, W_FLAGS,    16'h0001);
-            cls = put_u32(cls, W_LIF,      32'h0000_0099); // logical_if_id -> punt tuser
-            write_row(WIN_CLS, 1, cls);
-
-            axi_write(CLS_COMMIT, 32'h1);
+            // ARP punt via the field classifier: comparator 0 on the flags lane
+            // (src 12), is_arp = bit 1 -> mask/value 0x2; rule 0 -> PUNT, lif 0x99.
+            axi_write(16'h2000 + 16'h0, 32'd12);          // cmp0 src = flags lane
+            axi_write(16'h2000 + 16'h4, 32'h0000_0002);   // cmp0 mask = is_arp bit
+            axi_write(16'h2000 + 16'h8, 32'h0000_0002);   // cmp0 value (commit)
+            w0 = 32'd0;
+            w0[13:0]  = 14'h0001;   // care = cmp0
+            w0[16:14] = 3'd2;       // action PUNT_TO_HOST
+            w0[28:21] = 8'd10;      // priority
+            w0[31]    = 1'b1;       // enable
+            axi_write(16'h2200 + 16'h0, w0);              // rule0 word0
+            axi_write(16'h2200 + 16'h4, 32'd0);           // rule0 lfid
+            axi_write(16'h2200 + 16'h8, 32'h0000_0099);   // rule0 lif (commit)
         end
 
         // ---- program a flow row binding port 0 to flow_gen -----

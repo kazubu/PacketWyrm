@@ -168,10 +168,11 @@ flows:
                                      #            (payload carries NO classification
                                      #            dependency -- fill it freely).
                                      #            Bounded by the slice-classifier
-                                     #            capacity (4 distinct header
-                                     #            matches / 8 rules per card; the
-                                     #            match window is the first 48
-                                     #            inner-frame bytes -> L3/L4).
+                                     #            capacity: the field+UDF
+                                     #            classifier (12 comparators / 32
+                                     #            rules per card, shared with punt
+                                     #            + forward rules). Matched on the
+                                     #            parser's canonical header fields.
 
     match:                           # optional: narrow the RX match (the fields
       udp_dst: 0xff00                # the slice classifier keys on when classify:

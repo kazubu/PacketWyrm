@@ -95,7 +95,30 @@ module tb_csr_full;
     logic [15:0] h_flow [1];
     logic [15:0] h_bkt  [1];
 
-    pw_classifier_table_t          cls_table;
+    // Field-classifier programming outputs captured from the CSR.
+    localparam int NCMP = 12, NUDF = 2, NRULE = 32, NTOTAL = NCMP + NUDF;
+    logic                     cmp_wr_en;  logic [$clog2(NCMP)-1:0] cmp_wr_idx;
+    logic [4:0]               cmp_wr_src; logic [31:0] cmp_wr_mask, cmp_wr_value;
+    logic                     rule_wr_en; logic [$clog2(NRULE)-1:0] rule_wr_idx;
+    logic [NTOTAL-1:0]        rule_wr_care; logic [2:0] rule_wr_action;
+    logic [31:0]              rule_wr_lfid; logic rule_wr_enable;
+    // Sticky capture of the 1-cycle commit pulses.
+    logic                     cmp_seen = 0; logic [$clog2(NCMP)-1:0] cap_cmp_idx;
+    logic [4:0]               cap_cmp_src; logic [31:0] cap_cmp_mask, cap_cmp_value;
+    logic                     rule_seen = 0; logic [$clog2(NRULE)-1:0] cap_rule_idx;
+    logic [NTOTAL-1:0]        cap_rule_care; logic [2:0] cap_rule_action;
+    logic [31:0]              cap_rule_lfid; logic cap_rule_enable;
+    always @(posedge clk) begin
+        if (cmp_wr_en) begin
+            cmp_seen <= 1; cap_cmp_idx <= cmp_wr_idx; cap_cmp_src <= cmp_wr_src;
+            cap_cmp_mask <= cmp_wr_mask; cap_cmp_value <= cmp_wr_value;
+        end
+        if (rule_wr_en) begin
+            rule_seen <= 1; cap_rule_idx <= rule_wr_idx; cap_rule_care <= rule_wr_care;
+            cap_rule_action <= rule_wr_action; cap_rule_lfid <= rule_wr_lfid;
+            cap_rule_enable <= rule_wr_enable;
+        end
+    end
 
     pw_csr_full #(
         .ADDR_W         (ADDR_W),
@@ -151,7 +174,6 @@ module tb_csr_full;
         .flow_tx_i           (48'd0),
         .hist_rd_addr_o      (hist_rd_addr_w),
         .hist_rd_data_i      (hist_rd_data_w),
-        .cls_table_o         (cls_table),
         .flow_wr_en_o        (),
         .flow_wr_addr_o      (),
         .flow_wr_data_o      (),
@@ -159,19 +181,25 @@ module tb_csr_full;
         .map_wr_addr_o       (),
         .map_wr_valid_o      (),
         .map_wr_lfid_o       (),
-        .slice_wr_en_o       (),
-        .slice_wr_idx_o      (),
-        .slice_wr_offset_o   (),
-        .slice_wr_mask_o     (),
-        .slice_wr_value_o    (),
-        .rule_wr_en_o        (),
-        .rule_wr_idx_o       (),
-        .rule_wr_care_o      (),
-        .rule_wr_action_o    (),
+        .cmp_wr_en_o         (cmp_wr_en),
+        .cmp_wr_idx_o        (cmp_wr_idx),
+        .cmp_wr_src_o        (cmp_wr_src),
+        .cmp_wr_mask_o       (cmp_wr_mask),
+        .cmp_wr_value_o      (cmp_wr_value),
+        .udf_wr_en_o         (),
+        .udf_wr_idx_o        (),
+        .udf_wr_offset_o     (),
+        .udf_wr_mask_o       (),
+        .udf_wr_value_o      (),
+        .rule_wr_en_o        (rule_wr_en),
+        .rule_wr_idx_o       (rule_wr_idx),
+        .rule_wr_care_o      (rule_wr_care),
+        .rule_wr_action_o    (rule_wr_action),
         .rule_wr_egress_o    (),
-        .rule_wr_lfid_o      (),
+        .rule_wr_lfid_o      (rule_wr_lfid),
+        .rule_wr_lif_o       (),
         .rule_wr_prio_o      (),
-        .rule_wr_enable_o    (),
+        .rule_wr_enable_o    (rule_wr_enable),
         .stats_clear_o       (),
         .dp_soft_rst_o       (),
         .spi_sck_o           (),
@@ -321,28 +349,42 @@ module tb_csr_full;
             check_eq("num_flows", v, NUM_FLOWS);
         end
 
-        // ---- classifier row write+commit through AXI ----
-        scenario = "cls_commit";
+        // ---- field-classifier programming through AXI ----
+        // Comparator 3 = {src=0 (l4_dst), mask=0xFFFF, value=50001}; the entry
+        // commits on the value (+8) write -> cmp_wr_en pulse with the fields.
+        scenario = "fc_cmp";
         begin
-            row_bytes_t cls;
-            cls = row_zero();
-            cls = put_u8 (cls, W_KEY_OFF  + 5,  8'd17);
-            cls = put_u16(cls, W_KEY_OFF  + 10, 16'd50001);
-            cls = put_u8 (cls, W_MASK_OFF + 5,  8'hFF);
-            cls = put_u16(cls, W_MASK_OFF + 10, 16'hFFFF);
-            cls = put_u8 (cls, W_ACTION,   8'd1);    // TEST_RX
-            cls = put_u8 (cls, W_PRIORITY, 8'd5);
-            cls = put_u16(cls, W_FLAGS,    16'h0001);
-            cls = put_u32(cls, W_LOCAL_FLOW, 32'd2);
-            write_cls_row(2, cls);
-            check_eq("pre-commit row2 enable", cls_table[2].enable ? 1 : 0, 0);
-            axi_write(REG_CLS_COMMIT, 32'h1);
+            axi_write(16'h2000 + 16'(3*16) + 16'h0, 32'd0);        // src
+            axi_write(16'h2000 + 16'(3*16) + 16'h4, 32'h0000_FFFF); // mask
+            axi_write(16'h2000 + 16'(3*16) + 16'h8, 32'd50001);     // value (commit)
             @(posedge clk);
+            check_eq("cmp_wr_en pulsed", cmp_seen ? 1 : 0, 1);
+            check_eq("cmp idx",   cap_cmp_idx, 3);
+            check_eq("cmp src",   cap_cmp_src, 0);
+            check_eq("cmp mask",  cap_cmp_mask, 32'h0000_FFFF);
+            check_eq("cmp value", cap_cmp_value, 50001);
+        end
+        // Rule 1: care = cmp3 (bit 3), action TEST_RX, lfid 2. word0 packs
+        // {care[13:0], action[16:14], egress[20:17], prio[28:21], enable[31]};
+        // commit on lif (+8).
+        scenario = "fc_rule";
+        begin
+            logic [31:0] w0;
+            w0 = 32'd0;
+            w0[13:0]  = 14'h0008;   // care = bit 3
+            w0[16:14] = 3'd1;       // action TEST_RX
+            w0[28:21] = 8'd5;       // priority
+            w0[31]    = 1'b1;       // enable
+            axi_write(16'h2200 + 16'(1*16) + 16'h0, w0);
+            axi_write(16'h2200 + 16'(1*16) + 16'h4, 32'd2);   // lfid
+            axi_write(16'h2200 + 16'(1*16) + 16'h8, 32'd0);   // lif (commit)
             @(posedge clk);
-            check_eq("post-commit row2 enable", cls_table[2].enable ? 1 : 0, 1);
-            check_eq("post-commit row2 action", longint'(cls_table[2].action), 1);
-            check_eq("post-commit row2 l4_dst", cls_table[2].key.l4_dst, 50001);
-            check_eq("post-commit row2 lfid",   cls_table[2].local_flow_id, 2);
+            check_eq("rule_wr_en pulsed", rule_seen ? 1 : 0, 1);
+            check_eq("rule idx",    cap_rule_idx, 1);
+            check_eq("rule care",   cap_rule_care, 14'h0008);
+            check_eq("rule action", longint'(cap_rule_action), 1);
+            check_eq("rule lfid",   cap_rule_lfid, 2);
+            check_eq("rule enable", cap_rule_enable ? 1 : 0, 1);
         end
 
         // ---- stats snapshot trigger ----
