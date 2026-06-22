@@ -52,7 +52,7 @@ struct pw_fc_rule {
  * computes); index is the bucket the SW chose with the collision-free seed. */
 struct pw_fc_hash_entry {
     uint16_t index;
-    uint32_t key_word[6];
+    uint32_t key_word[11];      /* already masked (key & hash_mask) */
     uint32_t local_flow_id;
 };
 
@@ -73,8 +73,10 @@ struct pw_card_program {
     size_t                          n_fc_rules;
 
     /* Hash exact table: header-keyed high-count TEST_RX flows. hash_seed is the
-     * collision-free seed the compiler found for this card's hash entries. */
+     * collision-free seed the compiler found; hash_mask is the global key mask
+     * (11 words) -- keyed-field bits set, modifier-randomized/cleared bits 0. */
     uint32_t                        hash_seed;
+    uint32_t                        hash_mask[11];
     struct pw_fc_hash_entry        *hash_entries;
     size_t                          n_hash_entries;
 };

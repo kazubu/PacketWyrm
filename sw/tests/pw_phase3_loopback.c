@@ -99,10 +99,12 @@ int main(int argc, char **argv) {
         }
         // hash exact table: seed + per-bucket entries (header-keyed TEST_RX)
         if (cp->n_hash_entries > 0) {
+            for (unsigned w = 0; w < PWFPGA_HASH_KEY_WORDS; w++)
+                o->write32(be.ctx, PWFPGA_HASH_MASK_WORD(PWFPGA_WIN_HASH_MASK, w), cp->hash_mask[w]);
             o->write32(be.ctx, PWFPGA_REG_HASH_SEED, cp->hash_seed);
             for (size_t i = 0; i < cp->n_hash_entries; i++) {
                 const struct pw_fc_hash_entry *he = &cp->hash_entries[i];
-                for (int w = 0; w < 6; w++)
+                for (unsigned w = 0; w < PWFPGA_HASH_KEY_WORDS; w++)
                     o->write32(be.ctx, PWFPGA_HASH_KEY_WORD(PWFPGA_WIN_FC_HASH, he->index, w),
                                he->key_word[w]);
                 o->write32(be.ctx, PWFPGA_HASH_CTRL(PWFPGA_WIN_FC_HASH, he->index),

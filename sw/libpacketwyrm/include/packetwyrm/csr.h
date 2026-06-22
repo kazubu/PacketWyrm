@@ -61,8 +61,9 @@ enum {
     /* Hash exact table (pw_hash_classifier): header-keyed high-count TEST_RX.
      * 32 B/entry: key words @+0x0..+0x14, control {[31]valid,[lfw-1:0]lfid}
      * @+0x18 (commit). Indexed by the SW-computed bucket. seed reg just below. */
+    PWFPGA_WIN_HASH_MASK            = 0x2F00,  /* 11 words: global key mask */
     PWFPGA_REG_HASH_SEED            = 0x2FFC,
-    PWFPGA_WIN_FC_HASH              = 0x3000,  /* HASH_DEPTH x 32 B (0x3000..0x3FFF) */
+    PWFPGA_WIN_FC_HASH              = 0x3000,  /* HASH_DEPTH x 64 B (0x3000..0x4FFF) */
     PWFPGA_WIN_FLOW_TABLE           = 0x6000,  /* 0x6000..0x9FFF */
     PWFPGA_WIN_HISTOGRAM            = 0xA000,  /* 0xA000..0xBFFF (8 KB) */
     PWFPGA_WIN_STATS_SNAPSHOT       = 0xC000,  /* 0xC000..0xFFFF */
@@ -88,12 +89,18 @@ enum {
 #define PWFPGA_NUM_CMP              12u
 #define PWFPGA_NUM_UDF              2u
 #define PWFPGA_NUM_RULE             32u
-/* Hash exact table: HASH_DEPTH buckets, 32 B/entry. Key word w @+w*4 (w=0..5);
- * control word @+0x18 {[31] valid, [lfw-1:0] local_flow_id} commits the entry. */
+/* Hash exact table: HASH_DEPTH buckets, 64 B/entry. The key is 11 field-aligned
+ * 32-bit words: l3_dst (w0..3, IPv4 dst in w0), l3_src (w4..7), {l4_src,l4_dst}
+ * (w8), {vlan,ethertype} (w9), {0,proto} (w10). Key word w @+w*4 (w=0..10);
+ * control word @+0x2C {[31] valid, [lfw-1:0] local_flow_id} commits. A GLOBAL
+ * key mask (PWFPGA_WIN_HASH_MASK, 11 words) is ANDed in before hashing + verify
+ * -- mask out a field/bits the generator randomizes so the flow still classes. */
 #define PWFPGA_HASH_DEPTH          128u
-#define PWFPGA_HASH_KEY_WORD(base, i, w) ((base) + (i) * 32u + (w) * 4u)
-#define PWFPGA_HASH_CTRL(base, i)        ((base) + (i) * 32u + 0x18u)
+#define PWFPGA_HASH_KEY_WORDS      11u
+#define PWFPGA_HASH_KEY_WORD(base, i, w) ((base) + (i) * 64u + (w) * 4u)
+#define PWFPGA_HASH_CTRL(base, i)        ((base) + (i) * 64u + 0x2Cu)
 #define PWFPGA_HASH_CTRL_VALID           (1u << 31)
+#define PWFPGA_HASH_MASK_WORD(base, w)   ((base) + (w) * 4u)
 /* Comparator source selectors (pw_field_classifier src_lane). 32-bit lanes. */
 enum pwfpga_fc_src {
     PWFPGA_FC_SRC_L4_DST     = 0,   /* udp/tcp dst port (low 16b)             */

@@ -88,12 +88,15 @@ the initial proposal; concrete field bit definitions are owned by the
                                   relative), mask@+4, value@+8 (commit).
 0x2200..0x25ff  fc_rule_window    NRULE(32) rules: word0@+0, lfid@+4, lif@+8 (commit)
 # Hash exact table (pw_hash_classifier): header-keyed high-count TEST_RX. Bucket
-# = multiply-shift hash of the 168-bit key {l3dst,l4_dst,l4_src,proto}; full-key
-# verify on read. SW finds a collision-free seed + writes mem[bucket].
+# = multiply-shift hash of an 11-word (masked) key {l3_dst,l3_src,l4_dst,l4_src,
+# vlan,ethertype,proto}; full-key verify on read. A global key mask is ANDed in
+# before hash + verify (mask out randomized/unwanted bits). SW finds a
+# collision-free seed + writes mem[bucket].
+0x2f00..0x2f2b  hash_key_mask     RW    11 words: global key mask (word w @+w*4)
 0x2ffc          hash_seed         RW    hash multiplier seed (odd-forced in HW)
-0x3000..0x3fff  hash_table        HASH_DEPTH(128) x 32 B: key word w @+w*4
-                                  (w=0..5), control {[31]valid,[lfw-1:0]lfid} @+0x18
-                                  (commit). Indexed by the SW-computed bucket.
+0x3000..0x4fff  hash_table        HASH_DEPTH(128) x 64 B: key word w @+w*4
+                                  (w=0..10), control {[31]valid,[lfw-1:0]lfid}
+                                  @+0x2C (commit). Indexed by the SW bucket.
 0x6000..0x9fff  flow_table_window         (rows @256 B; commit @+0x3FFC)
 0xa000..0xbfff  histogram_window          (per-flow @128 B = 16 bins; live read)
 0xc000..0xffff  stats_snapshot_window     (trigger @+0x3FFC, clear @+0x3FF8,

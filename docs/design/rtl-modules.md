@@ -233,15 +233,19 @@ TEST_RX on `pw_flowid_map`. Actions are unchanged: `DROP`, `TEST_RX`,
   (no test `flow_id`). Lifts the header-defined-flow cap from the field
   classifier's ~`NCMP` to the checker ceiling.
 - Direct-indexed BRAM hash table — **1 read + 1 compare**, not an N-way parallel
-  match, so it routes: assemble a 168-bit key `{l3_dst, l4_dst, l4_src,
-  l3_proto}` from the parser's canonical fields; XOR-fold to 32 bits; bucket =
+  match, so it routes: assemble a **wide** key — 11 field-aligned 32-bit words
+  covering the full IPv4/IPv6 5-tuple + VLAN + ethertype — from the parser's
+  canonical fields; AND a **global key mask**; XOR-fold to 32 bits; bucket =
   `(k32 * (seed|1)) >> (32-log2 DEPTH)` (Dietzfelbinger multiply-shift); read
-  `mem[bucket]`; hit = `valid && stored_key == key` (FULL-key verify, so no
-  misclassification — the hash only picks the bucket). Latency 2.
-- SW computes the identical hash to place entries and searches a **seed** that
-  makes the configured keys collision-free (`mem[bucket]` written by index).
-  The compiler routes `classify: header` flows here; the field classifier then
-  carries only punt/forward. CSR: `PWFPGA_WIN_FC_HASH` @ 0x3000 + seed reg.
+  `mem[bucket]`; hit = `valid && stored_key == masked_key` (FULL masked-key
+  verify, so no misclassification — the hash only picks the bucket). Latency 2.
+- The global key mask (ANDed into hash input + verify) selects which bits
+  participate; masking a field/bits lets a generator **modifier randomize** them
+  while the flow still classifies. SW computes the identical hash + key + mask,
+  builds the mask (relaxing modifier-randomized / match-narrowed bits), and
+  searches a **seed** that places the masked keys collision-free. The compiler
+  routes `classify: header` flows here; the field classifier carries punt/
+  forward. CSR: `PWFPGA_WIN_FC_HASH` @ 0x3000 + mask window @ 0x2F00 + seed reg.
 
 ### flowid_map (`pw_flowid_map`)
 

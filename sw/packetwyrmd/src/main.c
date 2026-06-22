@@ -264,10 +264,13 @@ static void program_backends(const struct pw_program *prog,
             /* Hash exact table: seed first, then each entry (key words, then the
              * control word commits at the SW-chosen bucket index). */
             if (cp->n_hash_entries > 0) {
+                for (unsigned w = 0; w < PWFPGA_HASH_KEY_WORDS; w++)
+                    (void)b->ops->write32(b->ctx,
+                        PWFPGA_HASH_MASK_WORD(PWFPGA_WIN_HASH_MASK, w), cp->hash_mask[w]);
                 (void)b->ops->write32(b->ctx, PWFPGA_REG_HASH_SEED, cp->hash_seed);
                 for (size_t i = 0; i < cp->n_hash_entries; i++) {
                     const struct pw_fc_hash_entry *he = &cp->hash_entries[i];
-                    for (int w = 0; w < 6; w++)
+                    for (unsigned w = 0; w < PWFPGA_HASH_KEY_WORDS; w++)
                         (void)b->ops->write32(b->ctx,
                             PWFPGA_HASH_KEY_WORD(PWFPGA_WIN_FC_HASH, he->index, w), he->key_word[w]);
                     (void)b->ops->write32(b->ctx,

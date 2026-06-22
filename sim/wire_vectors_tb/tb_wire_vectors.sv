@@ -156,6 +156,7 @@ module tb_wire_vectors;
         .rule_wr_prio_o      (),
         .rule_wr_enable_o    (),
         .hash_seed_o         (),
+        .hash_mask_o         (),
         .hash_wr_en_o        (),
         .hash_wr_index_o     (),
         .hash_wr_valid_o     (),

@@ -1,0 +1,62 @@
+# Phase 3 HW: hash classifier with a RANDOMIZED header field. 4 UDP/IPv4 flows
+# classified by header (classify: header) while each TX-randomizes its source
+# port (udp_src modifier). The compiler masks the randomized bits out of the
+# hash key automatically, so the flows still classify (by dst IP + dst port +
+# proto) -- demonstrating that randomizing part of the header is fine as long as
+# it is excluded from the key. TX p0 -> DAC -> RX p1; expect loss=0 per flow.
+system: { name: "pw-hashrand", mode: "multi-card", default_speed: "10g",
+          control_socket: "/tmp/pw-phase3.sock" }
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+flows:
+  - id: 1
+    name: "r1"
+    classify: header
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:01:01", dst_mac: "02:a5:02:00:01:02" }
+    ipv4: { src: "192.0.2.1", dst: "198.51.100.1" }
+    udp:  { src_port: 49152, dst_port: 50001 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    modifiers: { udp_src: { mode: random, mask: 0xffff } }   # randomize src port
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 2
+    name: "r2"
+    classify: header
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:02:01", dst_mac: "02:a5:02:00:02:02" }
+    ipv4: { src: "192.0.2.2", dst: "198.51.100.2" }
+    udp:  { src_port: 49152, dst_port: 50002 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    modifiers: { udp_src: { mode: random, mask: 0xffff } }   # randomize src port
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 3
+    name: "r3"
+    classify: header
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:03:01", dst_mac: "02:a5:02:00:03:02" }
+    ipv4: { src: "192.0.2.3", dst: "198.51.100.3" }
+    udp:  { src_port: 49152, dst_port: 50003 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    modifiers: { udp_src: { mode: random, mask: 0xffff } }   # randomize src port
+    measurements: { loss: true, latency: true, jitter: true }
+  - id: 4
+    name: "r4"
+    classify: header
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:04:01", dst_mac: "02:a5:02:00:04:02" }
+    ipv4: { src: "192.0.2.4", dst: "198.51.100.4" }
+    udp:  { src_port: 49152, dst_port: 50004 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    modifiers: { udp_src: { mode: random, mask: 0xffff } }   # randomize src port
+    measurements: { loss: true, latency: true, jitter: true }

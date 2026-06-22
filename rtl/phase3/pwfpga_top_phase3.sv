@@ -230,6 +230,7 @@ module pwfpga_top_phase3 #(
         .rule_wr_prio_o      (rule_wr_prio_w),
         .rule_wr_enable_o    (rule_wr_enable_w),
         .hash_seed_o         (hash_seed_w),
+        .hash_mask_o         (hash_mask_w),
         .hash_wr_en_o        (hash_wr_en_w),
         .hash_wr_index_o     (hash_wr_index_w),
         .hash_wr_valid_o     (hash_wr_valid_w),
@@ -318,10 +319,11 @@ module pwfpga_top_phase3 #(
     logic [7:0]                    rule_wr_prio_w;
     logic                          rule_wr_enable_w;
     logic [31:0]                   hash_seed_w;
+    logic [351:0]                  hash_mask_w;
     logic                          hash_wr_en_w;
     logic [$clog2(HASH_DEPTH)-1:0] hash_wr_index_w;
     logic                          hash_wr_valid_w;
-    logic [167:0]                  hash_wr_key_w;
+    logic [351:0]                  hash_wr_key_w;
     logic [$clog2(NUM_FLOWS)-1:0]  hash_wr_lfid_w;
     logic         stats_clear_w;
     logic         dp_soft_rst_w;
@@ -396,6 +398,7 @@ module pwfpga_top_phase3 #(
         .rule_wr_prio_i    (rule_wr_prio_w),
         .rule_wr_enable_i  (rule_wr_enable_w),
         .hash_seed_i       (hash_seed_w),
+        .hash_mask_i       (hash_mask_w),
         .hash_wr_en_i      (hash_wr_en_w),
         .hash_wr_index_i   (hash_wr_index_w),
         .hash_wr_valid_i   (hash_wr_valid_w),

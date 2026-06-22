@@ -161,10 +161,11 @@ module pw_data_plane_axis #(
     // flows, scaling payload-agnostic classification to NUM_FLOWS. SW computes
     // the bucket with the same hash (seed) and writes {valid, key, lfid}.
     input  wire [31:0]                       hash_seed_i,
+    input  wire [351:0]                      hash_mask_i,   // global key mask (11 words)
     input  wire                              hash_wr_en_i,
     input  wire [$clog2(HASH_DEPTH)-1:0]     hash_wr_index_i,
     input  wire                              hash_wr_valid_i,
-    input  wire [167:0]                      hash_wr_key_i,
+    input  wire [351:0]                      hash_wr_key_i,
     input  wire [$clog2(PW_NUM_FLOWS)-1:0]   hash_wr_lfid_i,
 
     // Per-flow checker counters: BRAM-backed (pw_test_rx_checker_bram), read
@@ -326,6 +327,7 @@ module pw_data_plane_axis #(
             pw_hash_classifier #(.NUM_FLOWS(PW_NUM_FLOWS), .DEPTH(HASH_DEPTH)) u_hclass (
                 .clk(clk), .rst_n(rst_n),
                 .key_i(rx_key[gp]), .key_valid_i(rx_kv[gp]), .seed_i(hash_seed_i),
+                .mask_i(hash_mask_i),
                 .wr_en(hash_wr_en_i), .wr_index(hash_wr_index_i), .wr_valid(hash_wr_valid_i),
                 .wr_key(hash_wr_key_i), .wr_lfid(hash_wr_lfid_i),
                 .valid_o(hcv), .local_flow_id_o(hcl)

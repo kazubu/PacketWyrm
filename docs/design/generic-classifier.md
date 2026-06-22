@@ -148,9 +148,12 @@ and removed.
    NRULE care-mask rules → priority result. Replaced the legacy `pw_classifier`
    (the 600-bit route wall); carries punt/forward + few-rule wildcard matching.
 5. **[DONE]** Hash exact table (`pw_hash_classifier`) — multiply-shift hash of a
-   168-bit header tuple → BRAM bucket → full-key verify. Payload-agnostic
-   classification scaling to NUM_FLOWS, beyond the field comparators' cap. SW
-   finds a collision-free seed. Data-plane precedence map > hash > field.
+   WIDE 11-word header key (full IPv4/IPv6 5-tuple + VLAN + ethertype) → BRAM
+   bucket → full masked-key verify. A global key mask (ANDed in before hash +
+   verify) selects which bits participate, so a generator modifier can randomize
+   the masked-out bits and the flow still classifies. Payload-agnostic, scaling
+   to NUM_FLOWS. SW builds the mask (relaxing modifier/match bits) + a collision-
+   free seed. Data-plane precedence map > hash > field.
 6. **[DONE]** Compiler: `classify: header` → hash entries (collision-free seed
    search); punt/forward → field comparators + rules; structured TEST_RX → map.
 
