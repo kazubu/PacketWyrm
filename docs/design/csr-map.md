@@ -44,13 +44,8 @@ the initial proposal; concrete field bit definitions are owned by the
 0x0114  irq_status             W1C   sticky interrupt sources (future)
 0x0118  irq_mask               RW    interrupt mask (future)
 
-0x0200  port0_control          RW    [0] enable, [1] reset, [4] loopback
-0x0204  port0_status           R     [0] link_up, [1] block_lock,
-                                     [2] sfp_present, [3] rx_fault
-0x0208..0x02fc port0 stats     R     see "port stats block"
-0x0300  port1_control          RW
-0x0304  port1_status           R
-0x0308..0x03fc port1 stats     R
+0x0200..0x03ff  reserved  (was an unimplemented per-port control placeholder;
+                           per-port status/stats live in the stats snapshot window)
 
 0x0120  reboot                 W     write 0x52424F54 ("RBOT") -> ICAP IPROG
                                      (reload bitstream from flash; PCIe drops)
@@ -83,7 +78,15 @@ the initial proposal; concrete field bit definitions are owned by the
 0x0400..0x07ff  flowid_map_window         (TEST_RX flow-id -> checker slot;
                                            entry[flow_id] at +flow_id*4,
                                            data {[31]valid,[15:0]local_flow_id})
-0x2000..0x5fff  classifier_table_window   (rows @128 B; commit @+0x3FFC)
+# Unified field+UDF classifier (pw_field_classifier; legacy classifier retired).
+# 16 B/entry, last sub-word commits. care bit i = field comparator i; UDF
+# comparator j = bit NCMP+j. rule word0 = {[13:0]care,[16:14]action,
+# [20:17]egress,[28:21]prio,[31]enable}.
+0x2000..0x20ff  fc_cmp_window     NCMP(12) field comparators: src@+0, mask@+4,
+                                  value@+8 (commit). src = enum pwfpga_fc_src.
+0x2100..0x21ff  fc_udf_window     NUDF(2) UDF comparators: offset@+0 (inner-frame
+                                  relative), mask@+4, value@+8 (commit).
+0x2200..0x25ff  fc_rule_window    NRULE(32) rules: word0@+0, lfid@+4, lif@+8 (commit)
 0x6000..0x9fff  flow_table_window         (rows @256 B; commit @+0x3FFC)
 0xa000..0xbfff  histogram_window          (per-flow @128 B = 16 bins; live read)
 0xc000..0xffff  stats_snapshot_window     (trigger @+0x3FFC, clear @+0x3FF8,

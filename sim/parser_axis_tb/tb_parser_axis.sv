@@ -36,7 +36,7 @@ module tb_parser_axis;
         .clk(clk), .rst_n(rst_n),
         .s_tdata(td), .s_tkeep(tk), .s_tvalid(tv), .s_tready(), .s_tlast(tl),
         .ingress_port_i(4'd3),
-        .key_o(key), .key_valid_o(key_valid)
+        .key_o(key), .key_valid_o(key_valid), .window_o(), .base_o()
     );
 
     int seen = 0;

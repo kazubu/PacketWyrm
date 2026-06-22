@@ -6,7 +6,7 @@
 //
 //   * per ingress port: pw_parser_axis (snoops the RX stream, emits a
 //                       registered pw_match_key_t one cycle after EOF)
-//                       + pw_classifier (combinational lookup)
+//                       + pw_field_classifier (field+UDF comparator engine)
 //                       + pw_frame_saf (store-and-forward buffer for
 //                       FORWARD/PUNT/MIRROR -- the decision lands a
 //                       cycle after tlast, so the frame must be buffered)
@@ -43,6 +43,10 @@ module pw_data_plane_axis #(
                                             // an encapsulated frame; see parser)
     parameter int FRAME_LEN_PAYLOAD = 32,   // flow_gen L4 payload bytes
     parameter int MAP_DEPTH         = 256,   // TEST_RX flow-id map index range
+    parameter int NCMP              = 12,    // field comparators (canonical-field sourced)
+    parameter int NUDF              = 2,     // UDF slice comparators (raw window)
+    parameter int NRULE             = 32,    // classifier combine rules
+    parameter int SLICE_WIN         = 48,    // UDF match window depth
     parameter int SAF_DEPTH_BEATS   = 512,   // per-ingress forward buffer (x8 bytes)
     parameter int FLOW_ADDR_W       = 16,    // CSR address width for the flow window
     parameter logic [15:0] FLOW_WIN_BASE      = 16'h6000,   // matches pw_csr_full
@@ -67,7 +71,6 @@ module pw_data_plane_axis #(
     // stats_clear_i for those).
     input  wire                   dp_soft_rst_i,
 
-    input  pw_classifier_table_t  cls_table_i,
 
     // Per-port AXIS RX (MAC -> data plane ingress). The parser snoops
     // and the SAF drops on overflow, so RX is never backpressured here.
@@ -127,6 +130,31 @@ module pw_data_plane_axis #(
     input  wire [$clog2(MAP_DEPTH)-1:0]      map_wr_addr_i,
     input  wire                              map_wr_valid_i,
     input  wire [$clog2(PW_NUM_FLOWS)-1:0]   map_wr_lfid_i,
+
+    // Unified field+UDF classifier programming (pw_field_classifier). Replaces
+    // the legacy pw_classifier table: comparators source the parser's canonical
+    // fields (field comparators) or a raw inner-frame window (UDF comparators);
+    // rules combine the comparator bits into {action,egress,lfid,lif}. Same
+    // program is broadcast to every port's classifier.
+    input  wire                              cmp_wr_en_i,
+    input  wire [$clog2(NCMP)-1:0]           cmp_wr_idx_i,
+    input  wire [4:0]                        cmp_wr_src_i,
+    input  wire [31:0]                       cmp_wr_mask_i,
+    input  wire [31:0]                       cmp_wr_value_i,
+    input  wire                              udf_wr_en_i,
+    input  wire [$clog2(NUDF)-1:0]           udf_wr_idx_i,
+    input  wire [15:0]                       udf_wr_offset_i,
+    input  wire [31:0]                       udf_wr_mask_i,
+    input  wire [31:0]                       udf_wr_value_i,
+    input  wire                              rule_wr_en_i,
+    input  wire [$clog2(NRULE)-1:0]          rule_wr_idx_i,
+    input  wire [NCMP+NUDF-1:0]              rule_wr_care_i,
+    input  wire [2:0]                        rule_wr_action_i,
+    input  wire [3:0]                        rule_wr_egress_i,
+    input  wire [31:0]                       rule_wr_lfid_i,
+    input  wire [31:0]                       rule_wr_lif_i,
+    input  wire [7:0]                        rule_wr_prio_i,
+    input  wire                              rule_wr_enable_i,
 
     // Per-flow checker counters: BRAM-backed (pw_test_rx_checker_bram), read
     // one flow at a time. Drive flow_rd_addr_i; the merged (across ports)
@@ -201,15 +229,18 @@ module pw_data_plane_axis #(
     // bites (the same one the wide-bus plane dodged).
     pw_match_key_t    [PW_PORTS-1:0] rx_key;
     logic             [PW_PORTS-1:0] rx_kv;
-    pw_class_result_t [PW_PORTS-1:0] rx_res;   // classifier result (non-test rules)
+    pw_class_result_t [PW_PORTS-1:0] rx_fc;    // unified field+UDF classifier result
+    // Parser header byte-window + inner base per port (feed the UDF comparators).
+    logic [HDR_BYTES-1:0][7:0]       rx_win  [PW_PORTS];
+    logic [15:0]                     rx_base [PW_PORTS];
     // Effective result = classifier, overridden by the TEST_RX flow-id map for
     // test frames (the map gives TEST_RX + the mapped checker slot directly).
-    // All downstream consumers (checker / SAF / drop) use rx_eff, not rx_res.
+    // All downstream consumers (checker / SAF / drop) use rx_eff, not rx_fc.
     pw_class_result_t [PW_PORTS-1:0] rx_eff;
 
-    // The classifier is pipelined (RESULT_STAGES=2: match register + result
-    // register) to break the long cls_table -> field-compare -> select ->
-    // checker/histogram path, so rx_res lands TWO cycles after rx_kv/rx_key.
+    // The classifier is pipelined (latency 2: comparator register + result
+    // register) to break the long source -> compare -> select -> checker path,
+    // so rx_fc lands TWO cycles after rx_kv/rx_key.
     // Delay the key + key_valid that feed the checker arbiter, the SAF
     // decision, and the drop counter by two cycles to realign with it.
     logic             [PW_PORTS-1:0] rx_kv_d1, rx_kv_d;
@@ -250,16 +281,31 @@ module pw_data_plane_axis #(
                 .s_tlast        (s_axis_rx_tlast[gp]),
                 .ingress_port_i (4'(gp)),
                 .key_o          (rx_key[gp]),
-                .key_valid_o    (rx_kv[gp])
+                .key_valid_o    (rx_kv[gp]),
+                .window_o       (rx_win[gp]),
+                .base_o         (rx_base[gp])
             );
 
-            pw_classifier #(.RESULT_STAGES(2)) u_cls (
-                .clk         (clk),
-                .rst_n       (rst_n),
-                .table_i     (cls_table_i),
-                .key_i       (rx_key[gp]),
-                .key_valid_i (rx_kv[gp]),
-                .result_o    (rx_res[gp])
+            // Unified field+UDF classifier (replaces pw_classifier + the interim
+            // pw_slice_classifier). Comparators source the parser's canonical
+            // fields (mux-free) or the raw inner-frame window (UDF); rules combine
+            // them. Latency 2 from key_valid. window/base are parser outputs
+            // already aligned with key_valid_o (UDF uses the low SLICE_WIN bytes).
+            pw_field_classifier #(.HDR_BYTES(HDR_BYTES), .SLICE_WIN(SLICE_WIN),
+                                  .NCMP(NCMP), .NUDF(NUDF), .NRULE(NRULE)) u_fclass (
+                .clk(clk), .rst_n(rst_n),
+                .key_i(rx_key[gp]), .window_i(rx_win[gp][SLICE_WIN-1:0]),
+                .base_i(rx_base[gp]), .key_valid_i(rx_kv[gp]),
+                .cmp_wr_en(cmp_wr_en_i), .cmp_wr_idx(cmp_wr_idx_i), .cmp_wr_src(cmp_wr_src_i),
+                .cmp_wr_mask(cmp_wr_mask_i), .cmp_wr_value(cmp_wr_value_i),
+                .udf_wr_en(udf_wr_en_i), .udf_wr_idx(udf_wr_idx_i), .udf_wr_offset(udf_wr_offset_i),
+                .udf_wr_mask(udf_wr_mask_i), .udf_wr_value(udf_wr_value_i),
+                .rule_wr_en(rule_wr_en_i), .rule_wr_idx(rule_wr_idx_i),
+                .rule_wr_care(rule_wr_care_i), .rule_wr_action(rule_wr_action_i),
+                .rule_wr_egress(rule_wr_egress_i), .rule_wr_lfid(rule_wr_lfid_i),
+                .rule_wr_lif(rule_wr_lif_i), .rule_wr_prio(rule_wr_prio_i),
+                .rule_wr_enable(rule_wr_enable_i),
+                .result_o(rx_fc[gp])
             );
 
             // TEST_RX flow-id map: a frame's test_flow_id directly indexes the
@@ -278,10 +324,12 @@ module pw_data_plane_axis #(
                 if (!rst_n) begin mv2 <= 1'b0; ml2 <= '0; end
                 else        begin mv2 <= mv1;  ml2 <= ml1; end
             end
-            // Effective result (aligned to the classifier at +2): map hit ->
-            // TEST_RX @ mapped slot; else the classifier's result.
+            // Effective result (all aligned at +2). Precedence:
+            //   flow-id map (structured test, most specific)
+            //     > unified field+UDF classifier (rx_fc: header-defined test,
+            //       punt, forward, drop).
             always_comb begin
-                rx_eff[gp] = rx_res[gp];
+                rx_eff[gp] = rx_fc[gp];
                 if (mv2) begin
                     rx_eff[gp].hit           = 1'b1;
                     rx_eff[gp].action        = PW_ACT_TEST_RX;

@@ -14,9 +14,11 @@ struct pw_program *pw_program_new(void) {
 void pw_program_free(struct pw_program *p) {
     if (!p) return;
     for (size_t i = 0; i < p->n_cards; i++) {
-        free(p->per_card[i].classifier_rows);
         free(p->per_card[i].flow_rows);
         free(p->per_card[i].map_entries);
+        free(p->per_card[i].fc_cmps);
+        free(p->per_card[i].fc_udfs);
+        free(p->per_card[i].fc_rules);
     }
     free(p->per_card);
     free(p->flow_meta);
@@ -27,16 +29,6 @@ static struct pw_card_program *card_slot(struct pw_program *p, uint16_t card_id)
     for (size_t i = 0; i < p->n_cards; i++)
         if (p->per_card[i].card_id == card_id) return &p->per_card[i];
     return NULL;
-}
-
-static pw_status append_classifier(struct pw_card_program *cp,
-                                   const struct pwfpga_classifier_entry *e) {
-    struct pwfpga_classifier_entry *na = realloc(
-        cp->classifier_rows, sizeof(*cp->classifier_rows) * (cp->n_classifier_rows + 1));
-    if (!na) return PW_E_NO_RESOURCES;
-    cp->classifier_rows = na;
-    cp->classifier_rows[cp->n_classifier_rows++] = *e;
-    return PW_OK;
 }
 
 static pw_status append_flow(struct pw_card_program *cp,
@@ -58,6 +50,75 @@ static pw_status append_map(struct pw_card_program *cp,
     cp->map_entries[cp->n_map_entries++] =
         (struct pw_flowid_map_entry){ .flow_id = flow_id, .local_flow_id = local_flow_id };
     return PW_OK;
+}
+
+/* Append a field comparator, deduping identical {src,mask,value}. Returns the
+ * comparator-bit index (= field comparator index) in *bit_out. */
+static pw_status append_fc_cmp(struct pw_card_program *cp, uint8_t src,
+                               uint32_t mask, uint32_t value, size_t *bit_out) {
+    for (size_t i = 0; i < cp->n_fc_cmps; i++)
+        if (cp->fc_cmps[i].src == src && cp->fc_cmps[i].mask == mask &&
+            cp->fc_cmps[i].value == value) { *bit_out = i; return PW_OK; }
+    if (cp->n_fc_cmps >= PWFPGA_NUM_CMP) return PW_E_NO_RESOURCES;
+    struct pw_fc_cmp *na = realloc(cp->fc_cmps, sizeof(*cp->fc_cmps) * (cp->n_fc_cmps + 1));
+    if (!na) return PW_E_NO_RESOURCES;
+    cp->fc_cmps = na;
+    cp->fc_cmps[cp->n_fc_cmps] = (struct pw_fc_cmp){ .src = src, .mask = mask, .value = value };
+    *bit_out = cp->n_fc_cmps++;
+    return PW_OK;
+}
+
+/* Append a UDF comparator (deduped). Returns the comparator-bit index
+ * (= PWFPGA_NUM_CMP + udf index) in *bit_out. */
+static pw_status append_fc_udf(struct pw_card_program *cp, uint16_t offset,
+                               uint32_t mask, uint32_t value, size_t *bit_out) {
+    for (size_t i = 0; i < cp->n_fc_udfs; i++)
+        if (cp->fc_udfs[i].offset == offset && cp->fc_udfs[i].mask == mask &&
+            cp->fc_udfs[i].value == value) { *bit_out = PWFPGA_NUM_CMP + i; return PW_OK; }
+    if (cp->n_fc_udfs >= PWFPGA_NUM_UDF) return PW_E_NO_RESOURCES;
+    struct pw_fc_udf *na = realloc(cp->fc_udfs, sizeof(*cp->fc_udfs) * (cp->n_fc_udfs + 1));
+    if (!na) return PW_E_NO_RESOURCES;
+    cp->fc_udfs = na;
+    cp->fc_udfs[cp->n_fc_udfs] = (struct pw_fc_udf){ .offset = offset, .mask = mask, .value = value };
+    *bit_out = PWFPGA_NUM_CMP + cp->n_fc_udfs++;
+    return PW_OK;
+}
+
+static pw_status append_fc_rule(struct pw_card_program *cp, const struct pw_fc_rule *rule) {
+    if (cp->n_fc_rules >= PWFPGA_NUM_RULE) return PW_E_NO_RESOURCES;
+    struct pw_fc_rule *na = realloc(cp->fc_rules, sizeof(*cp->fc_rules) * (cp->n_fc_rules + 1));
+    if (!na) return PW_E_NO_RESOURCES;
+    cp->fc_rules = na;
+    cp->fc_rules[cp->n_fc_rules++] = *rule;
+    return PW_OK;
+}
+
+/* Build a header-classified RX flow: emit field comparators for the flow's
+ * matched header fields (udp_dst / ipv4_dst, narrowed by the match masks) + one
+ * rule -> TEST_RX @ rx_lfid. Comparators source the parser's canonical fields,
+ * so the payload is irrelevant to this classification. */
+static pw_status compile_header_classify(struct pw_card_program *rx_cp,
+                                         const struct pw_flow *f, uint32_t rx_lfid) {
+    uint16_t care = 0;
+    size_t   bit;
+    pw_status r;
+    if (f->ipv4.present && f->match_ipv4_dst_mask != 0) {
+        if ((r = append_fc_cmp(rx_cp, PWFPGA_FC_SRC_IPV4_DST, f->match_ipv4_dst_mask,
+                               f->ipv4.dst & f->match_ipv4_dst_mask, &bit)) != PW_OK) return r;
+        care |= (uint16_t)(1u << bit);
+    }
+    if (f->match_udp_dst_mask != 0) {
+        if ((r = append_fc_cmp(rx_cp, PWFPGA_FC_SRC_L4_DST, f->match_udp_dst_mask,
+                               (uint32_t)(f->udp.dst_port & f->match_udp_dst_mask), &bit)) != PW_OK)
+            return r;
+        care |= (uint16_t)(1u << bit);
+    }
+    if (care == 0) return PW_E_INVAL;   /* nothing to classify on */
+    struct pw_fc_rule rule = {
+        .care = care, .action = PWFPGA_ACT_TEST_RX, .egress = 0,
+        .local_flow_id = rx_lfid, .logical_if_id = 0, .priority = 32,
+    };
+    return append_fc_rule(rx_cp, &rule);
 }
 
 static void mac_set(uint8_t *dst, const uint8_t *src) { memcpy(dst, src, 6); }
@@ -224,8 +285,16 @@ static pw_status compile_one_flow(struct pw_program *out,
      * udp_dst / ipv4 / ipv6 match fields were redundant. The mask vars (for the
      * old bitwise classifier compare) are no longer needed here. */
     (void)udp_dst_mask; (void)ipv4_dst_mask;
-    if (f->id >= PWFPGA_FLOWID_MAP_DEPTH) return PW_E_INVAL;  // flow_id out of map range
-    if ((r = append_map(rx_cp, f->id, rx_lfid)) != PW_OK) return r;
+    if (f->classify_header) {
+        /* Header-defined classification (generic slice classifier): match on
+         * the flow's header fields, so the payload carries no classification
+         * dependency. Caps at the slice-classifier capacity. */
+        if ((r = compile_header_classify(rx_cp, f, rx_lfid)) != PW_OK) return r;
+    } else {
+        /* Default: TEST_RX flow-id map keyed on the test header flow_id. */
+        if (f->id >= PWFPGA_FLOWID_MAP_DEPTH) return PW_E_INVAL;  // flow_id out of map range
+        if ((r = append_map(rx_cp, f->id, rx_lfid)) != PW_OK) return r;
+    }
 
     out->flow_meta[flow_index] = (struct pw_flow_meta){
         .global_flow_id = f->id,
@@ -247,19 +316,21 @@ static pw_status compile_punt_rules(struct pw_program *out, const struct pw_conf
         struct pw_card_program *cp = card_slot(out, ref.card_id);
         if (!cp) return PW_E_UNKNOWN_CARD;
 
-        /* Helper to emit one punt rule. */
+        /* Emit one punt rule: ingress (+ optional vlan/ethertype/l3_proto)
+         * field comparators ANDed into a PUNT rule carrying logical_if_id. */
         #define EMIT(eth, l3p, prio_) do { \
-            struct pwfpga_classifier_entry e = {0}; \
-            e.action = PWFPGA_ACT_PUNT_TO_HOST; \
-            e.flags  = PWFPGA_CLS_FLAG_ENABLE; \
-            e.priority = (prio_); \
-            e.logical_if_id = l->id; \
-            e.key.ingress_local_port = ref.local_port_id; \
-            e.mask.ingress_local_port = 0xff; \
-            if (l->vlan) { e.key.vlan_id = l->vlan; e.mask.vlan_id = 0x0FFF; } \
-            if ((eth)) { e.key.ethertype = (eth); e.mask.ethertype = 0xFFFF; } \
-            if ((l3p)) { e.key.l3_proto = (l3p); e.mask.l3_proto = 0xff; } \
-            pw_status er = append_classifier(cp, &e); \
+            uint16_t care = 0; size_t bit; pw_status er; \
+            er = append_fc_cmp(cp, PWFPGA_FC_SRC_INGRESS, 0xFu, ref.local_port_id, &bit); \
+            if (er != PW_OK) return er; care |= (uint16_t)(1u << bit); \
+            if (l->vlan) { er = append_fc_cmp(cp, PWFPGA_FC_SRC_VLAN, 0x0FFFu, l->vlan, &bit); \
+                           if (er != PW_OK) return er; care |= (uint16_t)(1u << bit); } \
+            if ((eth)) { er = append_fc_cmp(cp, PWFPGA_FC_SRC_ETHERTYPE, 0xFFFFu, (eth), &bit); \
+                         if (er != PW_OK) return er; care |= (uint16_t)(1u << bit); } \
+            if ((l3p)) { er = append_fc_cmp(cp, PWFPGA_FC_SRC_L3_PROTO, 0xFFu, (l3p), &bit); \
+                         if (er != PW_OK) return er; care |= (uint16_t)(1u << bit); } \
+            struct pw_fc_rule rule = { .care = care, .action = PWFPGA_ACT_PUNT_TO_HOST, \
+                .egress = 0, .local_flow_id = 0, .logical_if_id = l->id, .priority = (prio_) }; \
+            er = append_fc_rule(cp, &rule); \
             if (er != PW_OK) return er; \
         } while (0)
 
@@ -286,19 +357,22 @@ static pw_status compile_forward_rules(struct pw_program *out, const struct pw_c
         struct pw_card_program *cp = card_slot(out, ing.card_id);
         if (!cp) return PW_E_UNKNOWN_CARD;
 
-        struct pwfpga_classifier_entry e = {0};
-        e.action            = PWFPGA_ACT_FORWARD_PORT;
-        e.flags             = PWFPGA_CLS_FLAG_ENABLE;
-        e.priority          = fr->priority;
-        e.egress_local_port = egr.local_port_id;
-        e.key.ingress_local_port  = ing.local_port_id;
-        e.mask.ingress_local_port = 0xff;
-        if (fr->vlan)      { e.key.vlan_id    = fr->vlan;      e.mask.vlan_id    = 0x0FFF;   }
-        if (fr->ethertype) { e.key.ethertype  = fr->ethertype; e.mask.ethertype  = 0xFFFF;  }
-        if (fr->ip_proto)  { e.key.l3_proto   = fr->ip_proto;  e.mask.l3_proto   = 0xff;    }
-        if (fr->udp_dst)   { e.key.udp_dst_port = fr->udp_dst; e.mask.udp_dst_port = 0xFFFF; }
+        uint16_t care = 0; size_t bit; pw_status er;
+        er = append_fc_cmp(cp, PWFPGA_FC_SRC_INGRESS, 0xFu, ing.local_port_id, &bit);
+        if (er != PW_OK) return er; care |= (uint16_t)(1u << bit);
+        if (fr->vlan)      { er = append_fc_cmp(cp, PWFPGA_FC_SRC_VLAN, 0x0FFFu, fr->vlan, &bit);
+                             if (er != PW_OK) return er; care |= (uint16_t)(1u << bit); }
+        if (fr->ethertype) { er = append_fc_cmp(cp, PWFPGA_FC_SRC_ETHERTYPE, 0xFFFFu, fr->ethertype, &bit);
+                             if (er != PW_OK) return er; care |= (uint16_t)(1u << bit); }
+        if (fr->ip_proto)  { er = append_fc_cmp(cp, PWFPGA_FC_SRC_L3_PROTO, 0xFFu, fr->ip_proto, &bit);
+                             if (er != PW_OK) return er; care |= (uint16_t)(1u << bit); }
+        if (fr->udp_dst)   { er = append_fc_cmp(cp, PWFPGA_FC_SRC_L4_DST, 0xFFFFu, fr->udp_dst, &bit);
+                             if (er != PW_OK) return er; care |= (uint16_t)(1u << bit); }
 
-        pw_status er = append_classifier(cp, &e);
+        struct pw_fc_rule rule = { .care = care, .action = PWFPGA_ACT_FORWARD_PORT,
+            .egress = egr.local_port_id, .local_flow_id = 0, .logical_if_id = 0,
+            .priority = fr->priority };
+        er = append_fc_rule(cp, &rule);
         if (er != PW_OK) return er;
     }
     return PW_OK;

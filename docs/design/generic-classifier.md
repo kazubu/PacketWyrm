@@ -1,9 +1,34 @@
-# Generic slice-based classifier (design spec)
+# Generic classifier (design spec)
 
-Status: **proposed — design freeze before implementation.** Replaces the
-fixed-field parallel-TCAM classifier (`pw_classifier` / `pw_classifier_banked`)
-with a programmable, protocol-agnostic match engine that scales the flow count
-on the *fixed* xcku3p (there is no larger-FPGA plan).
+Status: **implemented + HW-bound — v2 unified field+UDF engine; legacy
+classifier retired.** A programmable, protocol-agnostic match engine
+(`pw_field_classifier`) that **replaces** the fixed-field parallel `pw_classifier`
+(the xcku3p route wall) and the interim `pw_slice_classifier`, with the
+high-count flow-id map (`pw_flowid_map`) kept for structured test traffic. On
+the *fixed* xcku3p (no larger-FPGA plan). The hash exact table (Phase 5) remains
+optional/future.
+
+**v2 architecture (the "rethink").** The dominant cost of arbitrary-offset
+matching is the variable byte-mux — and the parser *already* pays it to extract
+named fields. So v2 sources comparators from the parser's canonical, position-
+normalized fields (`pw_match_key_t`) — **mux-free** — and only falls back to a
+bounded raw-window byte-mux for true UDF (fields the parser doesn't name). And
+retiring the legacy 600-bit×N classifier frees the RX-region routing budget so
+the engine + the 32-flow data plane fit together (the interim slice classifier,
+*added alongside* the legacy one, could not route at 32 flows).
+
+Implemented: `pw_field_classifier` = `NCMP`(12) field comparators (each
+`{src,mask,value}` over a canonical-field lane; IPv6 addr = 4 comparators) +
+`NUDF`(2) UDF comparators (`pw_slice_match` over the raw inner-frame window,
+`SLICE_WIN`=48) → `NRULE`(32) care-mask rules → priority `{action,egress,lfid,
+lif}`. Parser `window_o`/`base_o` outputs; data-plane precedence **map > field
+classifier**; CSR windows `PWFPGA_WIN_FC_CMP`/`_UDF`/`_RULE` @ 0x2000; compiler
+lowers `classify: header` test flows + punt + forward to comparators+rules. The
+checker counts non-test frames (rx only) so arbitrary-payload / external DUT
+traffic is countable; structured test frames still get full seq/latency stats.
+Capacity note: header-defined flows + punt + forward share the 12 comparators /
+32 rules per card (comparators dedup); high-count structured TEST_RX uses the
+256-entry flow-id map.
 
 ## Why
 
@@ -106,24 +131,35 @@ extraction is no longer the parser's job — offsets are SW-programmed.
   the new engine before the old classifier is retired.
 
 ## Phased implementation
-Status: **Phase 1 + Phase 3 implemented + HW-bound** (pw_slice_match,
-pw_flowid_map + full data-plane/CSR/compiler integration; TEST_RX now rides the
-flow-id map, classifier stays at 16 for non-test rules). Phases 2 (parser →
-byte-window) + 4–6 (wildcard TCAM over slice bits, hash table, slice-driven
-compiler) remain for arbitrary DUT-traffic matching.
+Status: **Phases 1–4 + 6 implemented + HW-bound.** Phase 5 (hash exact table)
+is optional/future.
 
-1. **[DONE] Slice extractor unit** + unit tb (offset/width/mask/value → bit). Self-contained.
-2. **Parser → byte-window provider** (expose the decap'd window + inner base;
-   keep test-header fields). The blast-radius step.
-3. **[DONE] Direct-index exact path** for TEST_RX (flow_id → index, pw_flowid_map)
-   — unlocked the flow ceiling for test traffic; classifier dropped its TEST_RX
-   rules and the count is now checker/generator-bound.
-4. **Small wildcard TCAM** for PUNT/FORWARD over slice bits.
-5. (Optional) **hash exact table** for arbitrary DUT-traffic flows.
-6. Compiler: presets → slice configs + back-end entries; retire fixed-field path.
+1. **[DONE]** Slice extractor unit (`pw_slice_match`) + unit tb (offset/mask/value
+   → bit; width encoded in the mask). Self-contained.
+2. **[DONE]** Parser → byte-window provider: `pw_parser_axis` exposes `window_o`
+   (captured inner-frame header bytes) + `base_o` (inner L3 base), aligned with
+   `key_valid_o`. Named-field extraction is retained (the legacy classifier + the
+   checker's test-header read still use the key).
+3. **[DONE]** Direct-index exact path for TEST_RX (flow_id → index, `pw_flowid_map`)
+   — the high-count fast path for structured test traffic.
+4. **[DONE]** Rule engine over slice bits (`pw_slice_classifier`): NSLICE shared
+   match units → NRULE care-mask rules → priority result. Generalizes the
+   "wildcard over slice bits" idea — used for header-defined TEST_RX here, and
+   able to carry PUNT/FORWARD. Data-plane precedence map > slice > classifier.
+   Each slice folds its value in (exact match), so NSLICE bounds the number of
+   *distinct* header-match values; NRULE bounds the rules. CSR + compiler
+   (`classify: header`) + sims done.
+5. **(Optional/future)** hash exact table for many arbitrary DUT-traffic flows
+   (when > NSLICE distinct header values are needed without a per-flow slice).
+6. **[DONE]** Compiler: `classify: header` lowers a flow's `match` fields
+   (udp_dst / ipv4_dst, mask-narrowed) → deduped slice configs + a rule. The
+   flow-id map remains the default for structured test traffic.
 
-Each phase is sim-gated; (3) alone likely lifts the measured-flow ceiling well
-past 16 without the routing wall.
+Each phase is sim-gated. Capacity note: with each slice an exact match, header-
+defined flows are bounded by `NSLICE` distinct header values (4) / `NRULE` rules
+(8) per card, over a 48-byte match window (L3/L4 of a non-encapsulated frame) —
+sized so the byte-mux fits alongside the 32-flow data plane on the xcku3p; the
+flow-id map (256) remains for high-count structured test.
 
 ## Risks / open questions
 - **Arbitrary-offset byte mux** cost — bound offsets to the header window +

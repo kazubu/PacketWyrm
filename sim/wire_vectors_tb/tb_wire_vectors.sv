@@ -56,7 +56,6 @@ module tb_wire_vectors;
     // the register/window wire format only, so tie the read data low.
     logic [63:0] hist_rd_data_w = '0;
 
-    pw_classifier_table_t          cls_table;
     // The flow table is BRAM-backed (in the data plane). Feed csr_full's flow
     // write strobe into a flow_table_bram here so the C BAR image's flow-row
     // bytes are still cross-checked against the RTL decode.
@@ -130,7 +129,6 @@ module tb_wire_vectors;
         .flow_tx_i           (48'd0),
         .hist_rd_addr_o      (),
         .hist_rd_data_i      (hist_rd_data_w),
-        .cls_table_o         (cls_table),
         .flow_wr_en_o        (fwen),
         .flow_wr_addr_o      (fwaddr),
         .flow_wr_data_o      (fwdata),
@@ -138,6 +136,25 @@ module tb_wire_vectors;
         .map_wr_addr_o       (),
         .map_wr_valid_o      (),
         .map_wr_lfid_o       (),
+        .cmp_wr_en_o         (),
+        .cmp_wr_idx_o        (),
+        .cmp_wr_src_o        (),
+        .cmp_wr_mask_o       (),
+        .cmp_wr_value_o      (),
+        .udf_wr_en_o         (),
+        .udf_wr_idx_o        (),
+        .udf_wr_offset_o     (),
+        .udf_wr_mask_o       (),
+        .udf_wr_value_o      (),
+        .rule_wr_en_o        (),
+        .rule_wr_idx_o       (),
+        .rule_wr_care_o      (),
+        .rule_wr_action_o    (),
+        .rule_wr_egress_o    (),
+        .rule_wr_lfid_o      (),
+        .rule_wr_lif_o       (),
+        .rule_wr_prio_o      (),
+        .rule_wr_enable_o    (),
         .stats_clear_o       (),
         .dp_soft_rst_o       (),
         .spi_sck_o           (),
@@ -229,28 +246,12 @@ module tb_wire_vectors;
         // Give a couple cycles for commit pulses to land.
         repeat (4) @(posedge clk);
 
-        // ---- verify classifier row 1 ----
-        scenario = "classifier";
-        check_eq("row1 enable",     cls_table[1].enable ? 1 : 0, 1);
-        check_eq("row1 action",     longint'(cls_table[1].action), 1);
-        check_eq("row1 priority",   cls_table[1].priority_, 5);
-        check_eq("row1 egress",     cls_table[1].egress_port, 1);
-        check_eq("row1 lfid",       cls_table[1].local_flow_id, 3);
-        check_eq("row1 lif",        cls_table[1].logical_if_id, 1000);
-        check_eq("row1 l3_proto",   cls_table[1].key.l3_proto, 17);
-        check_eq("row1 l4_dst",     cls_table[1].key.l4_dst, 50001);
-        check_eq("row1 test_magic", cls_table[1].key.test_magic, 32'hA5027E57);
-        check_eq("row1 flow_id",    cls_table[1].key.test_flow_id, 42);
-        check_eq("row1 mask l3",    cls_table[1].mask.match_l3_proto ? 1:0, 1);
-        check_eq("row1 mask l4",    cls_table[1].mask.match_l4_dst ? 1:0, 1);
-        check_eq("row1 mask mg",    cls_table[1].mask.match_is_test ? 1:0, 1);
-        check_eq("row1 mask fl",    cls_table[1].mask.match_flow_id ? 1:0, 1);
-        // IPv6 dst (row-tail bytes 96..127, pattern 0x20..0x2F, network order)
-        check_eq("row1 v6dst mask", cls_table[1].mask.match_ipv6_dst ? 1:0, 1);
-        check_eq("row1 v6dst hi",   cls_table[1].key.ipv6_dst[127:64], 64'h2021222324252627);
-        check_eq("row1 v6dst lo",   cls_table[1].key.ipv6_dst[63:0],   64'h28292A2B2C2D2E2F);
-        // Row 0 stayed untouched (all zero).
-        check_eq("row0 enable",     cls_table[0].enable ? 1 : 0, 0);
+        // The legacy classifier table window (0x2000) is retired (replaced by the
+        // field+UDF classifier, programmed comparator/rule-wise -- exercised by
+        // tb_field_classifier + tb_data_plane_axis + tb_phase3_top). The golden
+        // image's old classifier bytes still replay harmlessly above (unconnected
+        // field-classifier write ports). This vector test now covers the flow
+        // window layout only.
 
         // ---- verify the C image's flow row decoded by the BRAM flow table ----
         scenario = "flow";

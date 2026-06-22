@@ -553,6 +553,16 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
         }
     }
 
+    /* RX classification mode: "map" (default, test flow-id map) or "header"
+     * (generic slice classifier on header fields -> payload-independent). */
+    f->classify_header = false;
+    if ((r = get_scalar(m, "classify", path, false, &s, diag)) != PW_OK) return r;
+    if (s) {
+        if (!strcmp(s, "header"))    f->classify_header = true;
+        else if (!strcmp(s, "map"))  f->classify_header = false;
+        else { diag_set(diag, PW_E_INVAL, path, "classify must be map|header"); return PW_E_INVAL; }
+    }
+
     return PW_OK;
 }
 

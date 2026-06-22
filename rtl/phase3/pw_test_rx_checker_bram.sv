@@ -122,11 +122,18 @@ module pw_test_rx_checker_bram #(
     wire             clear_busy = clearing;
 
     // ---- stage 0: event decode + issue port-A read ----
+    // A classified TEST_RX frame is counted whether or not it carries a
+    // PacketWyrm test header. With a test header (is_test) we also derive
+    // sequence (loss/dup/ooo) and latency/jitter; without one (e.g. a
+    // header-defined flow with arbitrary payload, classified by the generic
+    // slice classifier) we count rx_frames only -- loss is then the tx-vs-rx
+    // count difference. The is_test path is bit-for-bit unchanged.
     wire event_take = event_valid_i && result_i.hit &&
                       result_i.action == PW_ACT_TEST_RX &&
-                      key_i.is_test && result_i.local_flow_id < NUM_FLOWS;
+                      result_i.local_flow_id < NUM_FLOWS;
 
     logic                          s1_valid;
+    logic                          s1_is_test;
     logic [AW-1:0]                 s1_idx;
     logic [63:0]                   s1_seq;
     logic [63:0]                   s1_lat;
@@ -161,6 +168,7 @@ module pw_test_rx_checker_bram #(
             automatic int          b   = log2_bucket(lat);
             if (b >= NUM_BUCKETS) b = NUM_BUCKETS - 1;
             s1_valid  <= event_take;
+            s1_is_test<= key_i.is_test;
             s1_idx    <= result_i.local_flow_id[AW-1:0];
             s1_seq    <= key_i.test_sequence;
             s1_lat    <= lat;
@@ -197,35 +205,42 @@ module pw_test_rx_checker_bram #(
             jmax   = rec[OFF_JMAX +: 32];
             nr     = rec;
 
+            // rx_frames counts every classified frame (test or not).
             nr[OFF_RXF  +: 64] = rec[OFF_RXF  +: 64] + 64'd1;
-            nr[OFF_LAST +: 64] = s1_seq;
-            nr[OFF_SUML +: 64] = rec[OFF_SUML +: 64] + s1_lat;
-            nr[OFF_SAMP +: 64] = rec[OFF_SAMP +: 64] + 64'd1;
-            if (lat32 < curmin) nr[OFF_MINL +: 32] = lat32;
-            if (lat32 > curmax) nr[OFF_MAXL +: 32] = lat32;
 
-            // IPDV jitter once a prior sample exists.
-            if (seen) begin
-                jd = (lat32 >= prev) ? (lat32 - prev) : (prev - lat32);
-                nr[OFF_JSUM +: 64] = rec[OFF_JSUM +: 64] + 64'(jd);
-                if (jd < jmin) nr[OFF_JMIN +: 32] = jd;
-                if (jd > jmax) nr[OFF_JMAX +: 32] = jd;
-            end
-            nr[OFF_PREVL +: 32] = lat32;
+            // Sequence + latency + jitter need the test header; only update them
+            // for is_test frames. Header-defined flows with no test header count
+            // rx only (everything else holds its prior / blank value).
+            if (s1_is_test) begin
+                nr[OFF_LAST +: 64] = s1_seq;
+                nr[OFF_SUML +: 64] = rec[OFF_SUML +: 64] + s1_lat;
+                nr[OFF_SAMP +: 64] = rec[OFF_SAMP +: 64] + 64'd1;
+                if (lat32 < curmin) nr[OFF_MINL +: 32] = lat32;
+                if (lat32 > curmax) nr[OFF_MAXL +: 32] = lat32;
 
-            // sequence-gap classification (same as pw_test_rx_checker).
-            if (!seen) begin
-                nr[OFF_EXP +: 64] = s1_seq + 64'd1;
-                nr[OFF_SEEN]      = 1'b1;
-            end else if (s1_seq == exp) begin
-                nr[OFF_EXP +: 64] = exp + 64'd1;
-            end else if (s1_seq > exp) begin
-                nr[OFF_LOST +: 64] = rec[OFF_LOST +: 64] + (s1_seq - exp);
-                nr[OFF_EXP  +: 64] = s1_seq + 64'd1;
-            end else if (s1_seq == exp - 64'd1) begin
-                nr[OFF_DUP +: 64] = rec[OFF_DUP +: 64] + 64'd1;
-            end else begin
-                nr[OFF_OOO +: 64] = rec[OFF_OOO +: 64] + 64'd1;
+                // IPDV jitter once a prior sample exists.
+                if (seen) begin
+                    jd = (lat32 >= prev) ? (lat32 - prev) : (prev - lat32);
+                    nr[OFF_JSUM +: 64] = rec[OFF_JSUM +: 64] + 64'(jd);
+                    if (jd < jmin) nr[OFF_JMIN +: 32] = jd;
+                    if (jd > jmax) nr[OFF_JMAX +: 32] = jd;
+                end
+                nr[OFF_PREVL +: 32] = lat32;
+
+                // sequence-gap classification (same as pw_test_rx_checker).
+                if (!seen) begin
+                    nr[OFF_EXP +: 64] = s1_seq + 64'd1;
+                    nr[OFF_SEEN]      = 1'b1;
+                end else if (s1_seq == exp) begin
+                    nr[OFF_EXP +: 64] = exp + 64'd1;
+                end else if (s1_seq > exp) begin
+                    nr[OFF_LOST +: 64] = rec[OFF_LOST +: 64] + (s1_seq - exp);
+                    nr[OFF_EXP  +: 64] = s1_seq + 64'd1;
+                end else if (s1_seq == exp - 64'd1) begin
+                    nr[OFF_DUP +: 64] = rec[OFF_DUP +: 64] + 64'd1;
+                end else begin
+                    nr[OFF_OOO +: 64] = rec[OFF_OOO +: 64] + 64'd1;
+                end
             end
 
             a_we    = 1'b1;
@@ -252,7 +267,8 @@ module pw_test_rx_checker_bram #(
             s2_idx <= s1_idx;
             s2_rec <= a_wdata;     // == nr when s1_valid
             // histogram event one cycle behind the RMW, mirroring the event.
-            hist_ev_o     <= (!clearing) && s1_valid;
+            // Only test frames carry a latency, so non-test frames don't bin.
+            hist_ev_o     <= (!clearing) && s1_valid && s1_is_test;
             hist_flow_o   <= 16'(s1_idx);
             hist_bucket_o <= 16'(s1_bucket);
             rd_valid_o    <= rd_en_i;

@@ -33,7 +33,6 @@ module tb_data_plane_axis;
         else        ts <= ts + 64'd1;
     end
 
-    pw_classifier_table_t cls_table;
 
     // --- AXIS RX (driven from injector regs, port 1 may loop back) ---
     logic [63:0] rx_tdata  [PORTS];
@@ -119,6 +118,30 @@ module tb_data_plane_axis;
     logic [7:0]  map_wr_addr  = 8'h0;     // MAP_DEPTH=256 default
     logic        map_wr_valid = 1'b0;
     logic [$clog2(FLOWS)-1:0] map_wr_lfid = '0;
+    // Unified field+UDF classifier programming.
+    localparam int NCMP  = 12;
+    localparam int NUDF  = 2;
+    localparam int NRULE = 32;
+    localparam int NTOTAL = NCMP + NUDF;
+    logic                      cmp_wr_en     = 1'b0;
+    logic [$clog2(NCMP)-1:0]   cmp_wr_idx    = '0;
+    logic [4:0]                cmp_wr_src    = '0;
+    logic [31:0]               cmp_wr_mask   = '0;
+    logic [31:0]               cmp_wr_value  = '0;
+    logic                      udf_wr_en     = 1'b0;
+    logic [$clog2(NUDF)-1:0]   udf_wr_idx    = '0;
+    logic [15:0]               udf_wr_offset = '0;
+    logic [31:0]               udf_wr_mask   = '0;
+    logic [31:0]               udf_wr_value  = '0;
+    logic                      rule_wr_en      = 1'b0;
+    logic [$clog2(NRULE)-1:0]  rule_wr_idx     = '0;
+    logic [NTOTAL-1:0]         rule_wr_care    = '0;
+    logic [2:0]                rule_wr_action  = '0;
+    logic [3:0]                rule_wr_egress  = '0;
+    logic [31:0]               rule_wr_lfid    = '0;
+    logic [31:0]               rule_wr_lif     = '0;
+    logic [7:0]                rule_wr_prio    = '0;
+    logic                      rule_wr_enable  = 1'b0;
     localparam logic [15:0] FBASE   = 16'h6000;          // FLOW_WIN_BASE
     localparam logic [15:0] FCOMMIT = FBASE + 16'h3FFC;
 
@@ -156,6 +179,9 @@ module tb_data_plane_axis;
         .PW_NUM_FLOWS     (FLOWS),
         .PW_NUM_BUCKETS   (BUCKETS),
         .HDR_BYTES        (100),
+        .NCMP             (NCMP),
+        .NUDF             (NUDF),
+        .NRULE            (NRULE),
         .FRAME_LEN_PAYLOAD(32)
     ) dut (
         .clk              (clk),
@@ -163,7 +189,6 @@ module tb_data_plane_axis;
         .timestamp_i      (ts),
         .stats_clear_i    (stats_clear),
         .dp_soft_rst_i    (dp_soft_rst),
-        .cls_table_i      (cls_table),
         .s_axis_rx_tdata  (rx_tdata),
         .s_axis_rx_tkeep  (rx_tkeep),
         .s_axis_rx_tvalid (rx_tvalid),
@@ -197,6 +222,25 @@ module tb_data_plane_axis;
         .map_wr_addr_i    (map_wr_addr),
         .map_wr_valid_i   (map_wr_valid),
         .map_wr_lfid_i    (map_wr_lfid),
+        .cmp_wr_en_i      (cmp_wr_en),
+        .cmp_wr_idx_i     (cmp_wr_idx),
+        .cmp_wr_src_i     (cmp_wr_src),
+        .cmp_wr_mask_i    (cmp_wr_mask),
+        .cmp_wr_value_i   (cmp_wr_value),
+        .udf_wr_en_i      (udf_wr_en),
+        .udf_wr_idx_i     (udf_wr_idx),
+        .udf_wr_offset_i  (udf_wr_offset),
+        .udf_wr_mask_i    (udf_wr_mask),
+        .udf_wr_value_i   (udf_wr_value),
+        .rule_wr_en_i     (rule_wr_en),
+        .rule_wr_idx_i    (rule_wr_idx),
+        .rule_wr_care_i   (rule_wr_care),
+        .rule_wr_action_i (rule_wr_action),
+        .rule_wr_egress_i (rule_wr_egress),
+        .rule_wr_lfid_i   (rule_wr_lfid),
+        .rule_wr_lif_i    (rule_wr_lif),
+        .rule_wr_prio_i   (rule_wr_prio),
+        .rule_wr_enable_i (rule_wr_enable),
         .flow_rd_addr_i   (flow_rd_addr),
         .flow_rx          (dp_rx),
         .flow_lost        (dp_lost),
@@ -427,6 +471,30 @@ module tb_data_plane_axis;
         @(negedge clk); map_wr_en = 1'b0; map_wr_valid = 1'b0;
     endtask
 
+    // Field+UDF classifier programming.
+    task automatic prog_cmp(input int idx, input int src,
+                            input logic [31:0] mask, input logic [31:0] val);
+        @(negedge clk);
+        cmp_wr_en=1'b1; cmp_wr_idx=idx[$clog2(NCMP)-1:0]; cmp_wr_src=src[4:0];
+        cmp_wr_mask=mask; cmp_wr_value=val;
+        @(negedge clk); cmp_wr_en=1'b0;
+    endtask
+    task automatic prog_udf(input int idx, input int off,
+                            input logic [31:0] mask, input logic [31:0] val);
+        @(negedge clk);
+        udf_wr_en=1'b1; udf_wr_idx=idx[$clog2(NUDF)-1:0]; udf_wr_offset=off[15:0];
+        udf_wr_mask=mask; udf_wr_value=val;
+        @(negedge clk); udf_wr_en=1'b0;
+    endtask
+    task automatic prog_rule(input int idx, input logic [NTOTAL-1:0] care,
+                             input int act, input int egr, input int lf, input int lif, input int prio);
+        @(negedge clk);
+        rule_wr_en=1'b1; rule_wr_idx=idx[$clog2(NRULE)-1:0]; rule_wr_care=care;
+        rule_wr_action=act[2:0]; rule_wr_egress=egr[3:0];
+        rule_wr_lfid=lf; rule_wr_lif=lif; rule_wr_prio=prio[7:0]; rule_wr_enable=1'b1;
+        @(negedge clk); rule_wr_en=1'b0;
+    endtask
+
     // -------------- main --------------
     initial begin
         lb_en = 1'b0;
@@ -456,24 +524,14 @@ module tb_data_plane_axis;
             flow_rows[s].udp_sp    = 16'd49152;
             flow_rows[s].udp_dp    = 16'd50001;
         end
-        cls_table = '0;
-
         repeat (4) @(posedge clk);
         rst_n = 1'b1;
         @(posedge clk);
 
         // ---------------- scenario 1: loopback ----------------
         scenario = "loopback";
-        // gen[0] carries GLOBAL_FLOW_ID = 1; match it into checker flow 0.
-        cls_table[1].enable             = 1'b1;
-        cls_table[1].action             = PW_ACT_TEST_RX;
-        cls_table[1].priority_          = 8'd5;
-        cls_table[1].local_flow_id      = 32'd0;
-        cls_table[1].mask.match_udp_dst = 1'b1;
-        cls_table[1].mask.match_is_test = 1'b1;
-        cls_table[1].mask.match_flow_id = 1'b1;
-        cls_table[1].key.udp_dst        = 16'd50001;
-        cls_table[1].key.test_flow_id   = 32'd1;
+        // gen[0] carries GLOBAL_FLOW_ID = 1; map it into checker flow 0.
+        prog_map(1, 0);
 
         lb_en     = 1'b1;
         flow_rows[0].valid = 1'b1;
@@ -518,15 +576,7 @@ module tb_data_plane_axis;
 
         // ---------------- scenario 2: loss ----------------
         scenario = "loss";
-        cls_table[2].enable             = 1'b1;
-        cls_table[2].action             = PW_ACT_TEST_RX;
-        cls_table[2].priority_          = 8'd5;
-        cls_table[2].local_flow_id      = 32'd1;
-        cls_table[2].mask.match_udp_dst = 1'b1;
-        cls_table[2].mask.match_is_test = 1'b1;
-        cls_table[2].mask.match_flow_id = 1'b1;
-        cls_table[2].key.udp_dst        = 16'd50001;
-        cls_table[2].key.test_flow_id   = 32'd9;
+        prog_map(9, 1);
         @(posedge clk);
 
         for (int s = 0; s < 5; s++) inject_test(1, 32'd9, 64'(s));
@@ -551,15 +601,7 @@ module tb_data_plane_axis;
 
         // ---------------- scenario 4: out-of-order ----------------
         scenario = "ooo";
-        cls_table[3].enable             = 1'b1;
-        cls_table[3].action             = PW_ACT_TEST_RX;
-        cls_table[3].priority_          = 8'd5;
-        cls_table[3].local_flow_id      = 32'd3;
-        cls_table[3].mask.match_udp_dst = 1'b1;
-        cls_table[3].mask.match_is_test = 1'b1;
-        cls_table[3].mask.match_flow_id = 1'b1;
-        cls_table[3].key.udp_dst        = 16'd50001;
-        cls_table[3].key.test_flow_id   = 32'd30;
+        prog_map(30, 3);
         @(posedge clk);
 
         for (int s = 0; s < 4; s++) inject_test(1, 32'd30, 64'(s));
@@ -574,16 +616,7 @@ module tb_data_plane_axis;
 
         // ---------------- scenario 5: token-bucket rate ----------------
         scenario = "rate";
-        cls_table[1].enable             = 1'b0;   // free up gen[0]'s flow_id=1
-        cls_table[4].enable             = 1'b1;
-        cls_table[4].action             = PW_ACT_TEST_RX;
-        cls_table[4].priority_          = 8'd5;
-        cls_table[4].local_flow_id      = 32'd4;
-        cls_table[4].mask.match_udp_dst = 1'b1;
-        cls_table[4].mask.match_is_test = 1'b1;
-        cls_table[4].mask.match_flow_id = 1'b1;
-        cls_table[4].key.udp_dst        = 16'd50001;
-        cls_table[4].key.test_flow_id   = 32'd1;   // gen[0]
+        prog_map(1, 4);                 // re-map gen[0]'s flow_id=1 -> checker slot 4
         flow_rows[0].tokens_fp = 32'h00040000;  // 4.0 B/cyc
         flow_rows[0].burst     = 16'd256;
         commit_flows();
@@ -619,14 +652,10 @@ module tb_data_plane_axis;
         scenario = "forward";
         tx1_data.delete(); tx1_keep.delete(); tx1_last.delete();
         pn_data.delete();  pn_keep.delete();  pn_last.delete();
-        cls_table[5].enable                  = 1'b1;
-        cls_table[5].action                  = PW_ACT_FORWARD_PORT;
-        cls_table[5].priority_               = 8'd8;
-        cls_table[5].egress_port             = 4'd1;
-        cls_table[5].mask.match_ingress_port = 1'b1;
-        cls_table[5].mask.match_udp_dst      = 1'b1;
-        cls_table[5].key.ingress_port        = 4'd0;
-        cls_table[5].key.udp_dst             = 16'd60000;
+        // cmp0 = udp_dst==60000, cmp1 = ingress_port==0; rule0 -> FORWARD egress1.
+        prog_cmp(0, 0,  32'h0000_FFFF, 32'd60000);    // src 0 = l4_dst
+        prog_cmp(1, 13, 32'h0000_000F, 32'd0);        // src 13 = ingress_port
+        prog_rule(0, 14'h003, 4 /*FORWARD*/, 1 /*egr*/, 0, 0, 8);
         @(posedge clk);
 
         build_plain_udp(16'd60000);
@@ -643,13 +672,9 @@ module tb_data_plane_axis;
         scenario = "punt";
         tx1_data.delete(); tx1_keep.delete(); tx1_last.delete();
         pn_data.delete();  pn_keep.delete();  pn_last.delete();
-        cls_table[6].enable             = 1'b1;
-        cls_table[6].action             = PW_ACT_PUNT_TO_HOST;
-        cls_table[6].priority_          = 8'd8;
-        cls_table[6].logical_if_id      = 32'h0000_1234;   // carried out on punt tuser
-        cls_table[6].mask               = '0;
-        cls_table[6].mask.match_udp_dst = 1'b1;
-        cls_table[6].key.udp_dst        = 16'd179;
+        // cmp2 = udp_dst==179; rule1 -> PUNT, lif 0x1234.
+        prog_cmp(2, 0, 32'h0000_FFFF, 32'd179);
+        prog_rule(1, 14'h004, 2 /*PUNT*/, 0, 0, 32'h0000_1234, 8);
         @(posedge clk);
 
         build_plain_udp(16'd179);
@@ -667,8 +692,9 @@ module tb_data_plane_axis;
         scenario = "mirror";
         tx1_data.delete(); tx1_keep.delete(); tx1_last.delete();
         pn_data.delete();  pn_keep.delete();  pn_last.delete();
-        cls_table[6].action      = PW_ACT_MIRROR_TO_HOST;
-        cls_table[6].key.udp_dst = 16'd180;
+        // re-point cmp2 to udp_dst==180 and rule1 -> MIRROR (still lif 0x1234).
+        prog_cmp(2, 0, 32'h0000_FFFF, 32'd180);
+        prog_rule(1, 14'h004, 3 /*MIRROR*/, 0, 0, 32'h0000_1234, 8);
         @(posedge clk);
 
         build_plain_udp(16'd180);
@@ -684,25 +710,8 @@ module tb_data_plane_axis;
         // direction starves: both must count with lost==0. (The old single
         // arbiter starved the lower-index port here.)
         scenario = "bidir";
-        cls_table = '0;
-        cls_table[1].enable             = 1'b1;
-        cls_table[1].action             = PW_ACT_TEST_RX;
-        cls_table[1].priority_          = 8'd5;
-        cls_table[1].local_flow_id      = 32'd0;
-        cls_table[1].mask.match_udp_dst = 1'b1;
-        cls_table[1].mask.match_is_test = 1'b1;
-        cls_table[1].mask.match_flow_id = 1'b1;
-        cls_table[1].key.udp_dst        = 16'd50001;
-        cls_table[1].key.test_flow_id   = 32'd1;     // gen[0]
-        cls_table[2].enable             = 1'b1;
-        cls_table[2].action             = PW_ACT_TEST_RX;
-        cls_table[2].priority_          = 8'd5;
-        cls_table[2].local_flow_id      = 32'd1;
-        cls_table[2].mask.match_udp_dst = 1'b1;
-        cls_table[2].mask.match_is_test = 1'b1;
-        cls_table[2].mask.match_flow_id = 1'b1;
-        cls_table[2].key.udp_dst        = 16'd50001;
-        cls_table[2].key.test_flow_id   = 32'd2;     // gen[1]
+        prog_map(1, 0);     // gen[0] flow_id 1 -> slot 0
+        prog_map(2, 1);     // gen[1] flow_id 2 -> slot 1
         @(posedge clk);
 
         // Warm up, sample counters, run a measurement window, sample again.
@@ -825,6 +834,28 @@ module tb_data_plane_axis;
         snap_all();
         check_eq("fidmap rx (no cls rule)", flow_rx[6], 4);
         check_eq("fidmap lost",             flow_lost[6], 0);
+
+        // ---- scenario 14: field classifier UDF (header-defined, free payload) ----
+        // A PLAIN UDP frame (NO test header / magic / flow_id) is classified into
+        // a checker slot purely by its udp_dst via a UDF comparator -- proving
+        // header-based, payload-agnostic classification (the flow-id map can't do
+        // this, it keys on the test_flow_id in the payload). udp_dst is at
+        // inner-base(14) + 22 = abs 36; care bit NCMP+0 selects UDF comparator 0.
+        scenario = "slice";
+        prog_udf(0, 22, 32'hFFFF_0000, 32'hC357_0000);      // udp_dst == 50007 (0xC357)
+        prog_rule(2, (14'h1 << NCMP), 1 /*TEST_RX*/, 0, 5 /*slot*/, 0, 10);
+        for (int s = 0; s < 3; s++) begin
+            build_plain_udp(16'd50007);
+            inject(1);
+        end
+        repeat (16) @(posedge clk);
+        snap_all();
+        check_eq("slice rx (header-defined)", flow_rx[5], 3);
+        check_eq("slice lost",                flow_lost[5], 0);
+        // a non-matching udp_dst must NOT land in slot 5.
+        build_plain_udp(16'd40000); inject(1);
+        repeat (16) @(posedge clk); snap_all();
+        check_eq("slice no false-positive",   flow_rx[5], 3);
 
         if (errors == 0) begin
             $display("ALL DATA PLANE AXIS SCENARIOS PASS");

@@ -22,17 +22,46 @@ struct pw_flowid_map_entry {
     uint32_t local_flow_id;
 };
 
+/* Unified field+UDF classifier programming (pw_field_classifier). A field
+ * comparator sources one canonical key field (enum pwfpga_fc_src); a UDF
+ * comparator matches a raw inner-frame window slice. A rule ANDs a care subset
+ * of the comparator bits into a {action,egress,lfid,lif} result. The compiler
+ * dedups identical comparators and caps at PWFPGA_NUM_CMP / _UDF / _RULE.
+ * care bit i = field comparator i; UDF comparator j = bit PWFPGA_NUM_CMP+j. */
+struct pw_fc_cmp {
+    uint8_t  src;           /* enum pwfpga_fc_src */
+    uint32_t mask;
+    uint32_t value;
+};
+struct pw_fc_udf {
+    uint16_t offset;        /* byte offset from the inner-frame (L3) base */
+    uint32_t mask;
+    uint32_t value;
+};
+struct pw_fc_rule {
+    uint16_t care;          /* bit i set -> comparator i must match */
+    uint8_t  action;        /* enum pwfpga_action */
+    uint8_t  egress;
+    uint32_t local_flow_id;
+    uint32_t logical_if_id;
+    uint8_t  priority;      /* lower wins */
+};
+
 struct pw_card_program {
     uint16_t card_id;
-
-    struct pwfpga_classifier_entry *classifier_rows;
-    size_t                          n_classifier_rows;
 
     struct pwfpga_flow_config      *flow_rows;
     size_t                          n_flow_rows;
 
     struct pw_flowid_map_entry     *map_entries;
     size_t                          n_map_entries;
+
+    struct pw_fc_cmp               *fc_cmps;
+    size_t                          n_fc_cmps;
+    struct pw_fc_udf               *fc_udfs;
+    size_t                          n_fc_udfs;
+    struct pw_fc_rule              *fc_rules;
+    size_t                          n_fc_rules;
 };
 
 struct pw_program {

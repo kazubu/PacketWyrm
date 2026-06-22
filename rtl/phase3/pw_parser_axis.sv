@@ -28,7 +28,14 @@ module pw_parser_axis #(
     input  wire [3:0]     ingress_port_i,
 
     output pw_match_key_t key_o,
-    output logic          key_valid_o
+    output logic          key_valid_o,
+
+    // Captured header byte-window + inner-frame base offset, aligned with
+    // key_valid_o, for the generic slice classifier (pw_slice_classifier).
+    // window_o[b] is frame byte b (post-capture); base_o = inner L3 start so
+    // slice offsets are relative to the decapsulated inner frame.
+    output logic [HDR_BYTES-1:0][7:0] window_o,
+    output logic [15:0]               base_o
 );
     localparam logic [31:0] PW_TEST_HDR_MAGIC   = 32'hA502_7E57;
     localparam logic [15:0] ETHERTYPE_VLAN      = 16'h8100;
@@ -196,6 +203,7 @@ module pw_parser_axis #(
     logic                      validA2;
     logic                      test_eligA2;
     logic [15:0]               pay_offA2;
+    logic [15:0]               eff_offA2;   // inner base carried to Stage B
     logic [HDR_BYTES-1:0][7:0] hdrA2;
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -203,7 +211,7 @@ module pw_parser_axis #(
         automatic int            eff, flen, ip_hlen, udp_off, pay_off;
         automatic logic          telig, ok;
         if (!rst_n) begin
-            keyA2 <= '0; validA2 <= 1'b0; test_eligA2 <= 1'b0; pay_offA2 <= '0;
+            keyA2 <= '0; validA2 <= 1'b0; test_eligA2 <= 1'b0; pay_offA2 <= '0; eff_offA2 <= '0;
         end else begin
             k = keyA; ok = 1'b0; telig = 1'b0; ip_hlen = 20; udp_off = 0; pay_off = 0;
             eff = int'(eff_offA); flen = int'(flenA);
@@ -256,6 +264,7 @@ module pw_parser_axis #(
             validA2     <= ok;
             test_eligA2 <= telig;
             pay_offA2   <= pay_off[15:0];
+            eff_offA2   <= eff_offA;
             hdrA2       <= hdrA;
         end
     end
@@ -270,10 +279,12 @@ module pw_parser_axis #(
         automatic pw_match_key_t k;
         automatic int            po;
         if (!rst_n) begin
-            key_q <= '0; key_valid_q <= 1'b0;
+            key_q <= '0; key_valid_q <= 1'b0; window_o <= '0; base_o <= '0;
         end else begin
             k  = keyA2;
             po = int'(pay_offA2);
+            window_o <= hdrA2;
+            base_o   <= eff_offA2;
             if (test_eligA2) begin
                 k.test_magic    = {hdrA2[po+0], hdrA2[po+1], hdrA2[po+2], hdrA2[po+3]};
                 k.test_flow_id  = {hdrA2[po+8], hdrA2[po+9], hdrA2[po+10], hdrA2[po+11]};
