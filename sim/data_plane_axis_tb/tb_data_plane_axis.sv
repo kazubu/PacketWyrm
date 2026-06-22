@@ -142,6 +142,15 @@ module tb_data_plane_axis;
     logic [31:0]               rule_wr_lif     = '0;
     logic [7:0]                rule_wr_prio    = '0;
     logic                      rule_wr_enable  = 1'b0;
+    // Hash exact classifier programming.
+    localparam int HASH_DEPTH = 128;
+    localparam int HIDX_W = $clog2(HASH_DEPTH);
+    logic [31:0]               hash_seed       = 32'h9E3779B1;
+    logic                      hash_wr_en      = 1'b0;
+    logic [HIDX_W-1:0]         hash_wr_index   = '0;
+    logic                      hash_wr_valid   = 1'b0;
+    logic [167:0]              hash_wr_key     = '0;
+    logic [$clog2(FLOWS)-1:0]  hash_wr_lfid    = '0;
     localparam logic [15:0] FBASE   = 16'h6000;          // FLOW_WIN_BASE
     localparam logic [15:0] FCOMMIT = FBASE + 16'h3FFC;
 
@@ -182,6 +191,7 @@ module tb_data_plane_axis;
         .NCMP             (NCMP),
         .NUDF             (NUDF),
         .NRULE            (NRULE),
+        .HASH_DEPTH       (HASH_DEPTH),
         .FRAME_LEN_PAYLOAD(32)
     ) dut (
         .clk              (clk),
@@ -241,6 +251,12 @@ module tb_data_plane_axis;
         .rule_wr_lif_i    (rule_wr_lif),
         .rule_wr_prio_i   (rule_wr_prio),
         .rule_wr_enable_i (rule_wr_enable),
+        .hash_seed_i      (hash_seed),
+        .hash_wr_en_i     (hash_wr_en),
+        .hash_wr_index_i  (hash_wr_index),
+        .hash_wr_valid_i  (hash_wr_valid),
+        .hash_wr_key_i    (hash_wr_key),
+        .hash_wr_lfid_i   (hash_wr_lfid),
         .flow_rd_addr_i   (flow_rd_addr),
         .flow_rx          (dp_rx),
         .flow_lost        (dp_lost),
@@ -493,6 +509,20 @@ module tb_data_plane_axis;
         rule_wr_action=act[2:0]; rule_wr_egress=egr[3:0];
         rule_wr_lfid=lf; rule_wr_lif=lif; rule_wr_prio=prio[7:0]; rule_wr_enable=1'b1;
         @(negedge clk); rule_wr_en=1'b0;
+    endtask
+    // Hash exact classifier: compute the bucket with the same hash as the DUT.
+    function automatic logic [HIDX_W-1:0] hash_idx(input logic [167:0] k);
+        logic [191:0] kp; logic [31:0] k32, prod;
+        kp = {24'b0, k};
+        k32  = kp[31:0]^kp[63:32]^kp[95:64]^kp[127:96]^kp[159:128]^kp[191:160];
+        prod = k32 * (hash_seed | 32'd1);
+        return prod[31 -: HIDX_W];
+    endfunction
+    task automatic prog_hash(input logic [167:0] k, input int lf);
+        @(negedge clk);
+        hash_wr_en=1'b1; hash_wr_index=hash_idx(k); hash_wr_valid=1'b1;
+        hash_wr_key=k; hash_wr_lfid=lf[$clog2(FLOWS)-1:0];
+        @(negedge clk); hash_wr_en=1'b0;
     endtask
 
     // -------------- main --------------
@@ -856,6 +886,26 @@ module tb_data_plane_axis;
         build_plain_udp(16'd40000); inject(1);
         repeat (16) @(posedge clk); snap_all();
         check_eq("slice no false-positive",   flow_rx[5], 3);
+
+        // ---- scenario 15: hash exact classifier (header-keyed, high count) ----
+        // A PLAIN UDP frame classified into a slot by an EXACT header-key match
+        // via the hash table (payload-agnostic, scales to NUM_FLOWS). The tb
+        // computes the bucket with the same hash the DUT uses. build_plain_udp:
+        // ipv4_dst=192.0.2.1, udp src=49152, proto=17; key{l3dst,ldst,lsrc,proto}.
+        scenario = "hash";
+        begin
+            logic [167:0] hk;
+            hk = {96'b0, 32'hC000_0202, 16'd50123, 16'd49152, 8'd17};  // ipv4_dst 192.0.2.2
+            prog_hash(hk, 7);                       // -> checker slot 7
+            for (int s = 0; s < 4; s++) begin build_plain_udp(16'd50123); inject(1); end
+            repeat (16) @(posedge clk); snap_all();
+            check_eq("hash rx (exact header key)", flow_rx[7], 4);
+            check_eq("hash lost",                  flow_lost[7], 0);
+            // a frame with a different dst port -> different key -> not slot 7
+            build_plain_udp(16'd50124); inject(1);
+            repeat (16) @(posedge clk); snap_all();
+            check_eq("hash no false-positive",     flow_rx[7], 4);
+        end
 
         if (errors == 0) begin
             $display("ALL DATA PLANE AXIS SCENARIOS PASS");

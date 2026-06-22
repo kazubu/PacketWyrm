@@ -47,6 +47,7 @@ module pw_data_plane_axis #(
     parameter int NUDF              = 2,     // UDF slice comparators (raw window)
     parameter int NRULE             = 32,    // classifier combine rules
     parameter int SLICE_WIN         = 48,    // UDF match window depth
+    parameter int HASH_DEPTH        = 128,   // hash exact-table buckets (header-keyed)
     parameter int SAF_DEPTH_BEATS   = 512,   // per-ingress forward buffer (x8 bytes)
     parameter int FLOW_ADDR_W       = 16,    // CSR address width for the flow window
     parameter logic [15:0] FLOW_WIN_BASE      = 16'h6000,   // matches pw_csr_full
@@ -155,6 +156,16 @@ module pw_data_plane_axis #(
     input  wire [31:0]                       rule_wr_lif_i,
     input  wire [7:0]                        rule_wr_prio_i,
     input  wire                              rule_wr_enable_i,
+
+    // Hash exact-table programming (pw_hash_classifier): header-keyed TEST_RX
+    // flows, scaling payload-agnostic classification to NUM_FLOWS. SW computes
+    // the bucket with the same hash (seed) and writes {valid, key, lfid}.
+    input  wire [31:0]                       hash_seed_i,
+    input  wire                              hash_wr_en_i,
+    input  wire [$clog2(HASH_DEPTH)-1:0]     hash_wr_index_i,
+    input  wire                              hash_wr_valid_i,
+    input  wire [167:0]                      hash_wr_key_i,
+    input  wire [$clog2(PW_NUM_FLOWS)-1:0]   hash_wr_lfid_i,
 
     // Per-flow checker counters: BRAM-backed (pw_test_rx_checker_bram), read
     // one flow at a time. Drive flow_rd_addr_i; the merged (across ports)
@@ -308,6 +319,18 @@ module pw_data_plane_axis #(
                 .result_o(rx_fc[gp])
             );
 
+            // Hash exact classifier: header-keyed TEST_RX, high count (-> checker
+            // slot). Latency 2 from key_valid, aligned with rx_fc + the map.
+            logic                            hcv;
+            logic [$clog2(PW_NUM_FLOWS)-1:0] hcl;
+            pw_hash_classifier #(.NUM_FLOWS(PW_NUM_FLOWS), .DEPTH(HASH_DEPTH)) u_hclass (
+                .clk(clk), .rst_n(rst_n),
+                .key_i(rx_key[gp]), .key_valid_i(rx_kv[gp]), .seed_i(hash_seed_i),
+                .wr_en(hash_wr_en_i), .wr_index(hash_wr_index_i), .wr_valid(hash_wr_valid_i),
+                .wr_key(hash_wr_key_i), .wr_lfid(hash_wr_lfid_i),
+                .valid_o(hcv), .local_flow_id_o(hcl)
+            );
+
             // TEST_RX flow-id map: a frame's test_flow_id directly indexes the
             // checker slot (no per-flow comparator). valid 1 cycle after the key;
             // the classifier result is 2 cycles, so align the map result by +1.
@@ -325,11 +348,19 @@ module pw_data_plane_axis #(
                 else        begin mv2 <= mv1;  ml2 <= ml1; end
             end
             // Effective result (all aligned at +2). Precedence:
-            //   flow-id map (structured test, most specific)
-            //     > unified field+UDF classifier (rx_fc: header-defined test,
-            //       punt, forward, drop).
+            //   flow-id map (structured test)
+            //     > hash exact classifier (header-keyed high-count TEST_RX)
+            //       > field+UDF classifier (rx_fc: punt, forward, drop, few-rule).
             always_comb begin
                 rx_eff[gp] = rx_fc[gp];
+                if (hcv) begin
+                    rx_eff[gp].hit           = 1'b1;
+                    rx_eff[gp].action        = PW_ACT_TEST_RX;
+                    rx_eff[gp].local_flow_id = 32'(hcl);
+                    rx_eff[gp].egress_port   = '0;
+                    rx_eff[gp].logical_if_id = '0;
+                    rx_eff[gp].entry_index   = '0;
+                end
                 if (mv2) begin
                     rx_eff[gp].hit           = 1'b1;
                     rx_eff[gp].action        = PW_ACT_TEST_RX;

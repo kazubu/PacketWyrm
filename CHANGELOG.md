@@ -9,6 +9,23 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Hash exact classifier — high-count payload-agnostic flows**
+    (`pw_hash_classifier`; CSR window `PWFPGA_WIN_FC_HASH` @ 0x3000 + seed reg
+    `PWFPGA_REG_HASH_SEED`). Classifies a frame by an EXACT match on a multi-field
+    HEADER tuple `{l3_dst, l4_dst, l4_src, l3_proto}` (168-bit key), scaling
+    payload-agnostic classification to the checker's `NUM_FLOWS` (vs the field
+    comparators' ~`NCMP` cap) — and without the test-header `flow_id` the flow-id
+    map needs, so the payload stays free. Direct-indexed BRAM hash table (1 read
+    + 1 full-key verify, NOT an N-way parallel match, so it routes): the 168-bit
+    key XOR-folds to 32 bits, a Dietzfelbinger multiply-shift (with a seed)
+    chooses the bucket, and the stored full key is compared for an exact hit
+    (the hash only picks the bucket — no misclassification). The compiler routes
+    `classify: header` flows to this table and searches a hash **seed** that
+    places the configured keys collision-free; the field+UDF classifier then
+    carries only punt/forward. Data-plane precedence: flow-id **map > hash
+    classifier > field classifier**. Bit-identical HW/SW hash. Completes Phase 5
+    of `docs/design/generic-classifier.md`. (`configs/examples/
+    phase3-header-classify.yaml` is now a 24-flow header-keyed scale test.)
   - **Classifier redesign — unified field+UDF comparator engine; legacy
     classifier retired** (`pw_field_classifier` + `pw_slice_match`; CSR windows
     `PWFPGA_WIN_FC_CMP`/`_UDF`/`_RULE` @ 0x2000). Replaces the parallel

@@ -36,7 +36,8 @@ module pw_csr_full #(
     parameter int          MAP_DEPTH       = 256,
     parameter int          NCMP            = 12,
     parameter int          NUDF            = 2,
-    parameter int          NRULE           = 32
+    parameter int          NRULE           = 32,
+    parameter int          HASH_DEPTH      = 128
 ) (
     input  wire              s_axi_aclk,
     input  wire              s_axi_aresetn,
@@ -132,6 +133,16 @@ module pw_csr_full #(
     output logic [7:0]                    rule_wr_prio_o,
     output logic                          rule_wr_enable_o,
 
+    // Hash exact-table programming (pw_hash_classifier). The 168-bit key is
+    // staged over 6 words; the control word ({[31]valid,[lfw-1:0]lfid}) commits
+    // the entry at its bucket index. seed is a persistent register.
+    output logic [31:0]                   hash_seed_o,
+    output logic                          hash_wr_en_o,
+    output logic [$clog2(HASH_DEPTH)-1:0] hash_wr_index_o,
+    output logic                          hash_wr_valid_o,
+    output logic [167:0]                  hash_wr_key_o,
+    output logic [$clog2(NUM_FLOWS)-1:0]  hash_wr_lfid_o,
+
     // Live latency-histogram read port into the data plane's BRAM
     // (pw_lat_histogram). Flat (flow*NUM_HIST_BINS+bucket) address out,
     // 64-bit count back one cycle later.
@@ -213,6 +224,11 @@ module pw_csr_full #(
     localparam logic [15:0] WIN_FC_UDF_END    = 16'h2200;
     localparam logic [15:0] WIN_FC_RULE_BASE  = 16'h2200;  // 0x2200.. NRULE x 16B
     localparam logic [15:0] WIN_FC_RULE_END   = 16'h2600;
+    // Hash exact table: 32 B/entry (key words @+0..+0x14, control @+0x18 commits)
+    // indexed by the SW-computed bucket. seed reg just below the window.
+    localparam logic [15:0] REG_HASH_SEED     = 16'h2FFC;
+    localparam logic [15:0] WIN_HASH_BASE     = 16'h3000;  // 0x3000.. HASH_DEPTH x 32B
+    localparam logic [15:0] WIN_HASH_END      = 16'h4000;
     localparam logic [15:0] WIN_FLOW_BASE      = 16'h6000;  // 0x6000..0x9FFF
     localparam logic [15:0] WIN_FIDMAP_BASE    = 16'h0400;  // 0x0400..0x07FF (TEST_RX flow-id map)
     localparam logic [15:0] WIN_FIDMAP_END     = 16'h0800;
@@ -270,6 +286,7 @@ module pw_csr_full #(
     logic [7:0]            rule_acc_prio;
     logic                  rule_acc_enable;
     logic [31:0]           rule_acc_lfid;
+    logic [167:0]          hash_acc_key;       // 6 staged key words
 
     // Snapshot trigger (write 1 to STATS_TRIGGER_ADDR latches the
     // stats + histogram shadows in lockstep).
@@ -293,9 +310,11 @@ module pw_csr_full #(
             dp_soft_rst_o    <= 1'b0;
             icap_reboot_o    <= 1'b0;
             punt_pop_o       <= 1'b0;
+            hash_seed_o      <= '0;
         end else begin
             wr_en            <= 1'b0;
             map_wr_en_o      <= 1'b0;
+            hash_wr_en_o     <= 1'b0;
             cmp_wr_en_o      <= 1'b0;
             udf_wr_en_o      <= 1'b0;
             rule_wr_en_o     <= 1'b0;
@@ -398,6 +417,27 @@ module pw_csr_full #(
                             rule_wr_enable_o <= rule_acc_enable;
                             rule_wr_lfid_o   <= rule_acc_lfid;
                             rule_wr_lif_o    <= s_axi_wdata;
+                        end
+                        default: ;
+                    endcase
+                end
+                // Hash exact table: seed register + per-bucket entry (key staged
+                // over 6 words @+0..+0x14; control word @+0x18 commits).
+                if (awaddr_q == REG_HASH_SEED) hash_seed_o <= s_axi_wdata;
+                if (awaddr_q >= WIN_HASH_BASE && awaddr_q < WIN_HASH_END) begin
+                    case ((awaddr_q - WIN_HASH_BASE) & 16'h1F)
+                        16'h00: hash_acc_key[31:0]    <= s_axi_wdata;
+                        16'h04: hash_acc_key[63:32]   <= s_axi_wdata;
+                        16'h08: hash_acc_key[95:64]   <= s_axi_wdata;
+                        16'h0C: hash_acc_key[127:96]  <= s_axi_wdata;
+                        16'h10: hash_acc_key[159:128] <= s_axi_wdata;
+                        16'h14: hash_acc_key[167:160] <= s_axi_wdata[7:0];
+                        16'h18: begin
+                            hash_wr_en_o    <= 1'b1;
+                            hash_wr_index_o <= ($clog2(HASH_DEPTH))'((awaddr_q - WIN_HASH_BASE) >> 5);
+                            hash_wr_valid_o <= s_axi_wdata[31];
+                            hash_wr_key_o   <= hash_acc_key;
+                            hash_wr_lfid_o  <= s_axi_wdata[$clog2(NUM_FLOWS)-1:0];
                         end
                         default: ;
                     endcase
