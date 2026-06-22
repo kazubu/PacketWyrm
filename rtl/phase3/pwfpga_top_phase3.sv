@@ -300,6 +300,13 @@ module pwfpga_top_phase3 #(
         .flow_wr_en_i      (flow_wr_en_w),
         .flow_wr_addr_i    (flow_wr_addr_w),
         .flow_wr_data_i    (flow_wr_data_w),
+        // TEST_RX flow-id map: tied off for now (map empty -> classifier-only,
+        // backward-compatible). The CSR window + compiler that program it (to
+        // lift the flow ceiling past the classifier) are the next step.
+        .map_wr_en_i       (1'b0),
+        .map_wr_addr_i     ('0),
+        .map_wr_valid_i    (1'b0),
+        .map_wr_lfid_i     ('0),
         .flow_rd_addr_i    (flow_rd_addr_w),
         .flow_rx           (flow_rx_w),
         .flow_lost         (flow_lost_w),

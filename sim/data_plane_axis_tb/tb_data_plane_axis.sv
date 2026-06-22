@@ -114,6 +114,11 @@ module tb_data_plane_axis;
     logic         flow_wr_en   = 1'b0;
     logic [15:0]  flow_wr_addr = 16'h0;
     logic [31:0]  flow_wr_data = 32'h0;
+    // TEST_RX flow-id map programming (additive: default off -> classifier-only).
+    logic        map_wr_en    = 1'b0;
+    logic [7:0]  map_wr_addr  = 8'h0;     // MAP_DEPTH=256 default
+    logic        map_wr_valid = 1'b0;
+    logic [$clog2(FLOWS)-1:0] map_wr_lfid = '0;
     localparam logic [15:0] FBASE   = 16'h6000;          // FLOW_WIN_BASE
     localparam logic [15:0] FCOMMIT = FBASE + 16'h3FFC;
 
@@ -188,6 +193,10 @@ module tb_data_plane_axis;
         .flow_wr_en_i     (flow_wr_en),
         .flow_wr_addr_i   (flow_wr_addr),
         .flow_wr_data_i   (flow_wr_data),
+        .map_wr_en_i      (map_wr_en),
+        .map_wr_addr_i    (map_wr_addr),
+        .map_wr_valid_i   (map_wr_valid),
+        .map_wr_lfid_i    (map_wr_lfid),
         .flow_rd_addr_i   (flow_rd_addr),
         .flow_rx          (dp_rx),
         .flow_lost        (dp_lost),
@@ -408,6 +417,14 @@ module tb_data_plane_axis;
                                input logic [63:0] tseq);
         build_test_udp(1'b0, tflow, tseq);
         inject(port);
+    endtask
+
+    // Program a TEST_RX flow-id map entry: test_flow_id `fid` -> checker slot `lf`.
+    task automatic prog_map(input int fid, input int lf);
+        @(negedge clk);
+        map_wr_en = 1'b1; map_wr_addr = fid[7:0];
+        map_wr_valid = 1'b1; map_wr_lfid = lf[$clog2(FLOWS)-1:0];
+        @(negedge clk); map_wr_en = 1'b0; map_wr_valid = 1'b0;
     endtask
 
     // -------------- main --------------
@@ -797,6 +814,17 @@ module tb_data_plane_axis;
             check_eq("inject tx1 last@1", tx1_last[1], 1);
             check_eq("inject tx1 keep@1", tx1_keep[1], 8'h0F);
         end
+
+        // ---- scenario 13: TEST_RX flow-id map (direct index, no classifier rule) ----
+        // flow_id 99 has NO classifier rule -> only the flow-id map can classify
+        // it. Program map[99] -> checker slot 6, inject 4 test frames -> counted.
+        scenario = "fidmap";
+        prog_map(99, 6);
+        for (int s = 0; s < 4; s++) inject_test(1, 32'd99, 64'(s));
+        repeat (16) @(posedge clk);
+        snap_all();
+        check_eq("fidmap rx (no cls rule)", flow_rx[6], 4);
+        check_eq("fidmap lost",             flow_lost[6], 0);
 
         if (errors == 0) begin
             $display("ALL DATA PLANE AXIS SCENARIOS PASS");
