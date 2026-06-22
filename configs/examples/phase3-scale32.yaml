@@ -1,0 +1,344 @@
+# Phase 3 HW: 32-flow scale test over the SFP+ DAC loopback. Validates the
+# TEST_RX flow-id map (pw_flowid_map): 32 distinct UDP/IPv4 flows, each its own
+# flow_id + udp_dst, classified by the flow-id map (not classifier rules) ->
+# 32 measured flows past the classifier's ~16-entry limit. TX p0 -> DAC -> RX p1;
+# expect loss=0 on every flow. ~200 Mbps each (~6.4 G aggregate, under 10 G).
+system: { name: "pw-scale32", mode: "multi-card", default_speed: "10g",
+          control_socket: "/tmp/pw-phase3.sock" }
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+logical_interfaces:
+  - id: 1000
+    global_port: 0
+    vlan: 100
+    mac: "02:a5:02:00:00:64"
+    mtu: 9000
+    punt: { arp: false, ipv6_nd: false, lldp: false, icmp: false, bgp: false, ospf: false }
+
+flows:
+  - id: 1
+    name: "f1"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:01:01", dst_mac: "02:a5:02:00:01:02", vlan: 100 }
+    ipv4: { src: "192.0.2.1", dst: "198.51.100.1" }
+    udp:  { src_port: 49152, dst_port: 50001 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 2
+    name: "f2"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:02:01", dst_mac: "02:a5:02:00:02:02", vlan: 100 }
+    ipv4: { src: "192.0.2.2", dst: "198.51.100.2" }
+    udp:  { src_port: 49152, dst_port: 50002 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 3
+    name: "f3"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:03:01", dst_mac: "02:a5:02:00:03:02", vlan: 100 }
+    ipv4: { src: "192.0.2.3", dst: "198.51.100.3" }
+    udp:  { src_port: 49152, dst_port: 50003 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 4
+    name: "f4"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:04:01", dst_mac: "02:a5:02:00:04:02", vlan: 100 }
+    ipv4: { src: "192.0.2.4", dst: "198.51.100.4" }
+    udp:  { src_port: 49152, dst_port: 50004 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 5
+    name: "f5"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:05:01", dst_mac: "02:a5:02:00:05:02", vlan: 100 }
+    ipv4: { src: "192.0.2.5", dst: "198.51.100.5" }
+    udp:  { src_port: 49152, dst_port: 50005 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 6
+    name: "f6"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:06:01", dst_mac: "02:a5:02:00:06:02", vlan: 100 }
+    ipv4: { src: "192.0.2.6", dst: "198.51.100.6" }
+    udp:  { src_port: 49152, dst_port: 50006 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 7
+    name: "f7"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:07:01", dst_mac: "02:a5:02:00:07:02", vlan: 100 }
+    ipv4: { src: "192.0.2.7", dst: "198.51.100.7" }
+    udp:  { src_port: 49152, dst_port: 50007 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 8
+    name: "f8"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:08:01", dst_mac: "02:a5:02:00:08:02", vlan: 100 }
+    ipv4: { src: "192.0.2.8", dst: "198.51.100.8" }
+    udp:  { src_port: 49152, dst_port: 50008 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 9
+    name: "f9"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:09:01", dst_mac: "02:a5:02:00:09:02", vlan: 100 }
+    ipv4: { src: "192.0.2.9", dst: "198.51.100.9" }
+    udp:  { src_port: 49152, dst_port: 50009 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 10
+    name: "f10"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:0a:01", dst_mac: "02:a5:02:00:0a:02", vlan: 100 }
+    ipv4: { src: "192.0.2.10", dst: "198.51.100.10" }
+    udp:  { src_port: 49152, dst_port: 50010 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 11
+    name: "f11"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:0b:01", dst_mac: "02:a5:02:00:0b:02", vlan: 100 }
+    ipv4: { src: "192.0.2.11", dst: "198.51.100.11" }
+    udp:  { src_port: 49152, dst_port: 50011 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 12
+    name: "f12"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:0c:01", dst_mac: "02:a5:02:00:0c:02", vlan: 100 }
+    ipv4: { src: "192.0.2.12", dst: "198.51.100.12" }
+    udp:  { src_port: 49152, dst_port: 50012 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 13
+    name: "f13"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:0d:01", dst_mac: "02:a5:02:00:0d:02", vlan: 100 }
+    ipv4: { src: "192.0.2.13", dst: "198.51.100.13" }
+    udp:  { src_port: 49152, dst_port: 50013 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 14
+    name: "f14"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:0e:01", dst_mac: "02:a5:02:00:0e:02", vlan: 100 }
+    ipv4: { src: "192.0.2.14", dst: "198.51.100.14" }
+    udp:  { src_port: 49152, dst_port: 50014 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 15
+    name: "f15"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:0f:01", dst_mac: "02:a5:02:00:0f:02", vlan: 100 }
+    ipv4: { src: "192.0.2.15", dst: "198.51.100.15" }
+    udp:  { src_port: 49152, dst_port: 50015 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 16
+    name: "f16"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:10:01", dst_mac: "02:a5:02:00:10:02", vlan: 100 }
+    ipv4: { src: "192.0.2.16", dst: "198.51.100.16" }
+    udp:  { src_port: 49152, dst_port: 50016 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 17
+    name: "f17"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:11:01", dst_mac: "02:a5:02:00:11:02", vlan: 100 }
+    ipv4: { src: "192.0.2.17", dst: "198.51.100.17" }
+    udp:  { src_port: 49152, dst_port: 50017 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 18
+    name: "f18"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:12:01", dst_mac: "02:a5:02:00:12:02", vlan: 100 }
+    ipv4: { src: "192.0.2.18", dst: "198.51.100.18" }
+    udp:  { src_port: 49152, dst_port: 50018 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 19
+    name: "f19"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:13:01", dst_mac: "02:a5:02:00:13:02", vlan: 100 }
+    ipv4: { src: "192.0.2.19", dst: "198.51.100.19" }
+    udp:  { src_port: 49152, dst_port: 50019 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 20
+    name: "f20"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:14:01", dst_mac: "02:a5:02:00:14:02", vlan: 100 }
+    ipv4: { src: "192.0.2.20", dst: "198.51.100.20" }
+    udp:  { src_port: 49152, dst_port: 50020 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 21
+    name: "f21"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:15:01", dst_mac: "02:a5:02:00:15:02", vlan: 100 }
+    ipv4: { src: "192.0.2.21", dst: "198.51.100.21" }
+    udp:  { src_port: 49152, dst_port: 50021 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 22
+    name: "f22"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:16:01", dst_mac: "02:a5:02:00:16:02", vlan: 100 }
+    ipv4: { src: "192.0.2.22", dst: "198.51.100.22" }
+    udp:  { src_port: 49152, dst_port: 50022 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 23
+    name: "f23"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:17:01", dst_mac: "02:a5:02:00:17:02", vlan: 100 }
+    ipv4: { src: "192.0.2.23", dst: "198.51.100.23" }
+    udp:  { src_port: 49152, dst_port: 50023 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 24
+    name: "f24"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:18:01", dst_mac: "02:a5:02:00:18:02", vlan: 100 }
+    ipv4: { src: "192.0.2.24", dst: "198.51.100.24" }
+    udp:  { src_port: 49152, dst_port: 50024 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 25
+    name: "f25"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:19:01", dst_mac: "02:a5:02:00:19:02", vlan: 100 }
+    ipv4: { src: "192.0.2.25", dst: "198.51.100.25" }
+    udp:  { src_port: 49152, dst_port: 50025 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 26
+    name: "f26"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:1a:01", dst_mac: "02:a5:02:00:1a:02", vlan: 100 }
+    ipv4: { src: "192.0.2.26", dst: "198.51.100.26" }
+    udp:  { src_port: 49152, dst_port: 50026 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 27
+    name: "f27"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:1b:01", dst_mac: "02:a5:02:00:1b:02", vlan: 100 }
+    ipv4: { src: "192.0.2.27", dst: "198.51.100.27" }
+    udp:  { src_port: 49152, dst_port: 50027 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 28
+    name: "f28"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:1c:01", dst_mac: "02:a5:02:00:1c:02", vlan: 100 }
+    ipv4: { src: "192.0.2.28", dst: "198.51.100.28" }
+    udp:  { src_port: 49152, dst_port: 50028 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 29
+    name: "f29"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:1d:01", dst_mac: "02:a5:02:00:1d:02", vlan: 100 }
+    ipv4: { src: "192.0.2.29", dst: "198.51.100.29" }
+    udp:  { src_port: 49152, dst_port: 50029 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 30
+    name: "f30"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:1e:01", dst_mac: "02:a5:02:00:1e:02", vlan: 100 }
+    ipv4: { src: "192.0.2.30", dst: "198.51.100.30" }
+    udp:  { src_port: 49152, dst_port: 50030 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 31
+    name: "f31"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:1f:01", dst_mac: "02:a5:02:00:1f:02", vlan: 100 }
+    ipv4: { src: "192.0.2.31", dst: "198.51.100.31" }
+    udp:  { src_port: 49152, dst_port: 50031 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 32
+    name: "f32"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:20:01", dst_mac: "02:a5:02:00:20:02", vlan: 100 }
+    ipv4: { src: "192.0.2.32", dst: "198.51.100.32" }
+    udp:  { src_port: 49152, dst_port: 50032 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
