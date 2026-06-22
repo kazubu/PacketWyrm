@@ -32,7 +32,8 @@ module pw_csr_full #(
     parameter int          NUM_FLOWS       = 8,
     parameter int          NUM_LOGICAL_IFS = 0,
     parameter int          NUM_CLASSIFIER  = 8,
-    parameter int          NUM_HIST_BINS   = 16
+    parameter int          NUM_HIST_BINS   = 16,
+    parameter int          MAP_DEPTH       = 256
 ) (
     input  wire              s_axi_aclk,
     input  wire              s_axi_aresetn,
@@ -99,6 +100,14 @@ module pw_csr_full #(
     output logic                          flow_wr_en_o,
     output logic [ADDR_W-1:0]             flow_wr_addr_o,
     output logic [31:0]                   flow_wr_data_o,
+
+    // TEST_RX flow-id map programming (PWFPGA_WIN_FLOWID_MAP). A write to
+    // base + flow_id*4 with data {[31] valid, [15:0] local_flow_id} stages
+    // map[flow_id] in the data plane's pw_flowid_map.
+    output logic                          map_wr_en_o,
+    output logic [$clog2(MAP_DEPTH)-1:0]  map_wr_addr_o,
+    output logic                          map_wr_valid_o,
+    output logic [$clog2(NUM_FLOWS)-1:0]  map_wr_lfid_o,
 
     // Live latency-histogram read port into the data plane's BRAM
     // (pw_lat_histogram). Flat (flow*NUM_HIST_BINS+bucket) address out,
@@ -173,6 +182,8 @@ module pw_csr_full #(
     // BAR is used; the unused SLOW_RX/TX placeholders are reclaimed.
     localparam logic [15:0] WIN_CLS_BASE       = 16'h2000;  // 0x2000..0x5FFF
     localparam logic [15:0] WIN_FLOW_BASE      = 16'h6000;  // 0x6000..0x9FFF
+    localparam logic [15:0] WIN_FIDMAP_BASE    = 16'h0400;  // 0x0400..0x07FF (TEST_RX flow-id map)
+    localparam logic [15:0] WIN_FIDMAP_END     = 16'h0800;
     localparam logic [15:0] WIN_HIST_BASE      = 16'hA000;  // 0xA000..0xBFFF (8 KB)
     localparam logic [15:0] WIN_STATS_BASE     = 16'hC000;  // 0xC000..0xFFFF
     localparam logic [15:0] WIN_SPAN_16K       = 16'h4000;
@@ -238,6 +249,7 @@ module pw_csr_full #(
             punt_pop_o       <= 1'b0;
         end else begin
             wr_en            <= 1'b0;
+            map_wr_en_o      <= 1'b0;
             snapshot_trigger <= 1'b0;
             stats_clear_o    <= 1'b0;
             dp_soft_rst_o    <= 1'b0;
@@ -276,6 +288,13 @@ module pw_csr_full #(
                     icap_reboot_o <= 1'b1;
                 if (awaddr_q == PUNT_POP_ADDR && s_axi_wdata[0])
                     punt_pop_o <= 1'b1;
+                // TEST_RX flow-id map window: entry[flow_id] at base + flow_id*4.
+                if (awaddr_q >= WIN_FIDMAP_BASE && awaddr_q < WIN_FIDMAP_END) begin
+                    map_wr_en_o    <= 1'b1;
+                    map_wr_addr_o  <= ($clog2(MAP_DEPTH))'((awaddr_q - WIN_FIDMAP_BASE) >> 2);
+                    map_wr_valid_o <= s_axi_wdata[31];
+                    map_wr_lfid_o  <= s_axi_wdata[$clog2(NUM_FLOWS)-1:0];
+                end
                 aw_captured  <= 1'b0;
             end else begin
                 s_axi_wready <= 1'b0;

@@ -237,6 +237,14 @@ static void program_backends(const struct pw_program *prog,
             if (s != PW_OK) any_err = true;
         }
         if (b->ops->flow_commit) (void)b->ops->flow_commit(b->ctx);
+        /* TEST_RX flow-id map: test flows are classified by the flow-id map
+         * (not classifier rules), so program one entry per test flow. */
+        for (size_t m = 0; m < cp->n_map_entries; m++) {
+            if (b->ops->write32)
+                (void)b->ops->write32(b->ctx,
+                    PWFPGA_WIN_FLOWID_MAP + cp->map_entries[m].flow_id * 4u,
+                    PWFPGA_FLOWID_MAP_VALID | cp->map_entries[m].local_flow_id);
+        }
         if (any_err) {
             fprintf(stderr,
                 "  card%u(%s): some table writes returned not-implemented; "

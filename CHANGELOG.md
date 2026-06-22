@@ -9,6 +9,22 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **TEST_RX flow-id map — scalable flow classification** (`pw_flowid_map`,
+    `PWFPGA_WIN_FLOWID_MAP` @ 0x0400). A test frame's parsed `test_flow_id`
+    directly indexes a BRAM table → its checker slot (gated by the parser's
+    magic/`is_test`), so TEST_RX flows no longer need a per-flow classifier
+    rule. This removes the route-congestion wall that capped the parallel
+    classifier at ~16 entries on the xcku3p — test-flow count is now bounded by
+    the checker/generator (`NUM_FLOWS`), not classifier routability. The
+    parallel classifier (`pw_classifier`, 16) now carries only the few non-test
+    rules (PUNT/FORWARD/DROP) and routes comfortably. The compiler emits a map
+    entry per TEST_RX flow (`flow_id → local slot`) instead of a classifier
+    rule; the data plane overrides the classifier result for map-matched test
+    frames. Keying on the stable `flow_id` also makes header-field modifiers
+    (udp_dst/ip rotation) irrelevant to RX classification. First piece of the
+    generic slice-based classifier (`docs/design/generic-classifier.md`);
+    `pw_slice_match` (the programmable offset/mask/value extractor for the
+    flexible front-end) is also landed + unit-tested.
   - **Classifier IPv6 dst-address match** — a TEST_RX rule for an IPv6 flow now
     matches the inner IPv6 **destination** address exactly, in addition to
     udp_dst + l3_proto + magic + flow_id. The 40-byte `pwfpga_match_key` has no

@@ -22,8 +22,16 @@ and HW-validated:
 - **Full slow path**: PUNT/MIRROR RX (`pw_punt_rx_window`) and host→FPGA
   TX inject (`pw_inject_tx_window`), both HW round-tripped; the daemon
   `host_plane` bridges TAP ↔ wire in both directions
+- **BRAM RX checker** (`pw_test_rx_checker_bram`) + **per-flow jitter** +
+  **per-port link-health/FCS** stats; **TEST_RX flow-id map**
+  (`pw_flowid_map`): test flows are classified by a BRAM flow_id→slot index,
+  not classifier rules, so the measured-flow count is bounded by the
+  checker/generator (NUM_FLOWS), not the ~16-entry classifier routability wall.
+  The parallel classifier carries only non-test rules (PUNT/FORWARD). First
+  back-end of the generic slice classifier — `docs/design/generic-classifier.md`.
 
-As-built design: `docs/design/csr-map.md`, `docs/design/rtl-modules.md`.
+As-built design: `docs/design/csr-map.md`, `docs/design/rtl-modules.md`,
+`docs/design/generic-classifier.md`, `docs/design/hw-architecture-freeze.md`.
 
 ## Branch / tree state
 

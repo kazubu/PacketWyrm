@@ -41,6 +41,7 @@ DPA_RTL := \
     $(REPO)/rtl/phase3/pw_parser_axis.sv \
     $(REPO)/rtl/phase3/pw_classifier.sv \
     $(REPO)/rtl/phase3/pw_test_rx_checker_bram.sv \
+    $(REPO)/rtl/phase3/pw_flowid_map.sv \
     $(REPO)/rtl/phase3/pw_lat_histogram.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_axis.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_multi.sv \
@@ -101,6 +102,7 @@ TOP_RTL := \
     $(REPO)/rtl/phase3/pw_parser_axis.sv \
     $(REPO)/rtl/phase3/pw_classifier.sv \
     $(REPO)/rtl/phase3/pw_test_rx_checker_bram.sv \
+    $(REPO)/rtl/phase3/pw_flowid_map.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_axis.sv \
     $(REPO)/rtl/phase3/pw_flow_gen_multi.sv \
     $(REPO)/rtl/phase3/pw_frame_saf.sv \
@@ -161,6 +163,12 @@ sim_lat: sim_build/lat_histogram
 
 sim_chk: sim_build/test_rx_checker_bram
 	./sim_build/test_rx_checker_bram
+
+sim_slice: sim_build/slice_match
+	./sim_build/slice_match
+
+sim_fidmap: sim_build/flowid_map
+	./sim_build/flowid_map
 
 sim_spi: sim_build/spi_flash
 	./sim_build/spi_flash
@@ -269,6 +277,22 @@ sim_build/test_rx_checker_bram: $(CHK_RTL) $(TB_CHK)
 	    --top-module tb_test_rx_checker_bram \
 	    -o test_rx_checker_bram \
 	    $(CHK_RTL) $(TB_CHK)
+
+sim_build/slice_match: $(REPO)/rtl/phase3/pw_slice_match.sv slice_match_tb/tb_slice_match.sv
+	$(VERILATOR) $(VFLAGS) \
+	    -Mdir sim_build \
+	    --top-module tb_slice_match \
+	    -o slice_match \
+	    $(REPO)/rtl/phase3/pw_slice_match.sv slice_match_tb/tb_slice_match.sv
+
+sim_build/flowid_map: $(REPO)/rtl/phase3/pw_flowid_map.sv flowid_map_tb/tb_flowid_map.sv
+	$(VERILATOR) $(VFLAGS) \
+	    -Mdir sim_build \
+	    --top-module tb_flowid_map \
+	    -o flowid_map \
+	    $(REPO)/rtl/phase3/pw_flowid_map.sv flowid_map_tb/tb_flowid_map.sv
+
+
 
 sim_build/spi_flash: $(SPI_RTL) $(TB_SPI)
 	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET \

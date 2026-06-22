@@ -14,6 +14,14 @@ struct pw_flow_meta {
     bool     latency_valid;              /* false for cross-card */
 };
 
+/* TEST_RX flow-id map entry: a test flow's wire flow_id -> its local checker
+ * slot. Programmed into PWFPGA_WIN_FLOWID_MAP; replaces the per-flow classifier
+ * TEST_RX rule so test flows scale past the classifier's routability limit. */
+struct pw_flowid_map_entry {
+    uint32_t flow_id;
+    uint32_t local_flow_id;
+};
+
 struct pw_card_program {
     uint16_t card_id;
 
@@ -22,6 +30,9 @@ struct pw_card_program {
 
     struct pwfpga_flow_config      *flow_rows;
     size_t                          n_flow_rows;
+
+    struct pw_flowid_map_entry     *map_entries;
+    size_t                          n_map_entries;
 };
 
 struct pw_program {

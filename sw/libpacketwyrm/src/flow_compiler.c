@@ -16,6 +16,7 @@ void pw_program_free(struct pw_program *p) {
     for (size_t i = 0; i < p->n_cards; i++) {
         free(p->per_card[i].classifier_rows);
         free(p->per_card[i].flow_rows);
+        free(p->per_card[i].map_entries);
     }
     free(p->per_card);
     free(p->flow_meta);
@@ -45,6 +46,17 @@ static pw_status append_flow(struct pw_card_program *cp,
     if (!na) return PW_E_NO_RESOURCES;
     cp->flow_rows = na;
     cp->flow_rows[cp->n_flow_rows++] = *f;
+    return PW_OK;
+}
+
+static pw_status append_map(struct pw_card_program *cp,
+                            uint32_t flow_id, uint32_t local_flow_id) {
+    struct pw_flowid_map_entry *na = realloc(
+        cp->map_entries, sizeof(*cp->map_entries) * (cp->n_map_entries + 1));
+    if (!na) return PW_E_NO_RESOURCES;
+    cp->map_entries = na;
+    cp->map_entries[cp->n_map_entries++] =
+        (struct pw_flowid_map_entry){ .flow_id = flow_id, .local_flow_id = local_flow_id };
     return PW_OK;
 }
 
@@ -204,46 +216,16 @@ static pw_status compile_one_flow(struct pw_program *out,
     if (f->mod.dst_ipv4.mode != PWFPGA_FIELD_STATIC)
         ipv4_dst_mask &= ~(uint32_t)f->mod.dst_ipv4.mask;
 
-    /* RX classifier row */
-    struct pwfpga_classifier_entry ce = {0};
-    ce.action = PWFPGA_ACT_TEST_RX;
-    ce.flags = PWFPGA_CLS_FLAG_ENABLE;
-    ce.priority = 10;
-    ce.local_flow_id = rx_lfid;
-    ce.logical_if_id = f->logical_if_id;
-    ce.key.ingress_local_port = rx.local_port_id;
-    ce.mask.ingress_local_port = 0xff;
-    if (f->l2.vlan_set) {
-        ce.key.vlan_id = f->l2.vlan;
-        ce.mask.vlan_id = 0x0FFF;
-    }
-    ce.key.udp_dst_port = f->udp.dst_port;
-    ce.mask.udp_dst_port = udp_dst_mask;
-    if (!f->ipv6.present) {
-        ce.key.ipv4_dst = f->ipv4.dst;
-        ce.mask.ipv4_dst = ipv4_dst_mask;
-        ce.key.ip_version = 4;
-        ce.mask.ip_version = 0xff;
-    } else {
-        /* IPv6: match the inner dst address exactly (in addition to udp_dst +
-         * l3_proto + magic + flow_id). The v6 dst compare is exact (==), not
-         * bitwise, so skip it when a dst modifier rotates the address (shared
-         * dst_ipv4 field, low 32 bits of v6) -- then udp_dst+magic+flow_id
-         * still uniquely identify the flow, as before. */
-        ce.key.ip_version = 6;
-        ce.mask.ip_version = 0xff;
-        if (f->mod.dst_ipv4.mode == PWFPGA_FIELD_STATIC) {
-            memcpy(ce.ipv6_dst, f->ipv6.dst, 16);
-            memset(ce.ipv6_dst_mask, 0xFF, 16);
-        }
-    }
-    ce.key.l3_proto = 17; /* UDP (IPv6 next-header for our frames) */
-    ce.mask.l3_proto = 0xff;
-    ce.key.test_magic = PW_TEST_HDR_MAGIC;
-    ce.mask.test_magic = 0xFFFFFFFFu;
-    ce.key.global_flow_id = f->id;
-    ce.mask.global_flow_id = 0xFFFFFFFFu;
-    if ((r = append_classifier(rx_cp, &ce)) != PW_OK) return r;
+    /* RX TEST_RX: program the flow-id map (the generated test header carries a
+     * unique flow_id, so test_flow_id -> checker slot is a direct index) rather
+     * than a per-flow classifier rule. This is what lets test flows scale past
+     * the classifier's ~16-entry routability limit -- the parser's magic match
+     * (is_test) gates it, and the unique flow_id identifies the flow, so the
+     * udp_dst / ipv4 / ipv6 match fields were redundant. The mask vars (for the
+     * old bitwise classifier compare) are no longer needed here. */
+    (void)udp_dst_mask; (void)ipv4_dst_mask;
+    if (f->id >= PWFPGA_FLOWID_MAP_DEPTH) return PW_E_INVAL;  // flow_id out of map range
+    if ((r = append_map(rx_cp, f->id, rx_lfid)) != PW_OK) return r;
 
     out->flow_meta[flow_index] = (struct pw_flow_meta){
         .global_flow_id = f->id,

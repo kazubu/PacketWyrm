@@ -174,18 +174,16 @@ module pwfpga_top_phase3_board (
         .m_axi_rdata(drd), .m_axi_rresp(drresp), .m_axi_rvalid(drv), .m_axi_rready(drr)
     );
 
-    // Large scale: 32 flows / 16 classifier rules / 16 latency bins.
-    // Enabled by the BRAM-backed latency histogram (freed the FF wall)
-    // plus the wide CSR address map (16 KB classifier/flow/stats windows,
-    // 8 KB histogram, 128 B histogram stride). 64/64/16 overflows the
-    // xcku3p (LUTs 135%); 32/32/16 fits but is congestion-limited (WNS
-    // -1.58, 78% LUT, the 32-entry classifier key match fanout dominates
-    // the route delay). Halving the classifier to 16 rules relieves that
-    // congestion while keeping the 32-slot generator / checker / BRAM
-    // histogram (16 rules => up to 16 distinctly-classified flows).
+    // Scale: 32 flows / 16 classifier rules / 16 latency bins. TEST_RX flows no
+    // longer need a classifier rule -- they are classified by the BRAM flow-id
+    // map (pw_flowid_map: test_flow_id -> checker slot, scales to MAP_DEPTH=256),
+    // so the small 16-entry classifier (routable; a wider one is congestion-
+    // bound, WNS -1.58 at 32) now only carries non-test rules (PUNT/FORWARD).
+    // The flow count is bounded by the checker/generator (NUM_FLOWS), not the
+    // classifier -- 32 measured flows over the SFP+ loopback at loss=0.
     pwfpga_top_phase3 #(
         .ADDR_W(ADDR_W), .CAPABILITIES(PW_PHASE3_CAPABILITIES),
-        .NUM_PORTS(2), .NUM_FLOWS(24), .NUM_CLASSIFIER(16), .NUM_HIST_BINS(16)
+        .NUM_PORTS(2), .NUM_FLOWS(32), .NUM_CLASSIFIER(16), .NUM_HIST_BINS(16)
     ) u_dp (
         .clk(dp_clk), .rst_n(dp_aresetn),
         .s_axi_awaddr(daw), .s_axi_awvalid(dawv), .s_axi_awready(dawr),

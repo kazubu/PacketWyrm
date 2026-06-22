@@ -42,6 +42,7 @@ module pw_data_plane_axis #(
                                             // enough for the inner test header of
                                             // an encapsulated frame; see parser)
     parameter int FRAME_LEN_PAYLOAD = 32,   // flow_gen L4 payload bytes
+    parameter int MAP_DEPTH         = 256,   // TEST_RX flow-id map index range
     parameter int SAF_DEPTH_BEATS   = 512,   // per-ingress forward buffer (x8 bytes)
     parameter int FLOW_ADDR_W       = 16,    // CSR address width for the flow window
     parameter logic [15:0] FLOW_WIN_BASE      = 16'h6000,   // matches pw_csr_full
@@ -119,6 +120,14 @@ module pw_data_plane_axis #(
     input  wire [FLOW_ADDR_W-1:0] flow_wr_addr_i,
     input  wire [31:0]            flow_wr_data_i,
 
+    // TEST_RX flow-id map programming (pw_flowid_map): a frame's test_flow_id
+    // directly indexes the checker slot, replacing per-flow classifier rules so
+    // the classifier stays small. Programmed before traffic, like the tables.
+    input  wire                              map_wr_en_i,
+    input  wire [$clog2(MAP_DEPTH)-1:0]      map_wr_addr_i,
+    input  wire                              map_wr_valid_i,
+    input  wire [$clog2(PW_NUM_FLOWS)-1:0]   map_wr_lfid_i,
+
     // Per-flow checker counters: BRAM-backed (pw_test_rx_checker_bram), read
     // one flow at a time. Drive flow_rd_addr_i; the merged (across ports)
     // record is valid 2 cycles later. pw_stats_snapshot walks 0..NUM_FLOWS-1.
@@ -192,7 +201,11 @@ module pw_data_plane_axis #(
     // bites (the same one the wide-bus plane dodged).
     pw_match_key_t    [PW_PORTS-1:0] rx_key;
     logic             [PW_PORTS-1:0] rx_kv;
-    pw_class_result_t [PW_PORTS-1:0] rx_res;
+    pw_class_result_t [PW_PORTS-1:0] rx_res;   // classifier result (non-test rules)
+    // Effective result = classifier, overridden by the TEST_RX flow-id map for
+    // test frames (the map gives TEST_RX + the mapped checker slot directly).
+    // All downstream consumers (checker / SAF / drop) use rx_eff, not rx_res.
+    pw_class_result_t [PW_PORTS-1:0] rx_eff;
 
     // The classifier is pipelined (RESULT_STAGES=2: match register + result
     // register) to break the long cls_table -> field-compare -> select ->
@@ -249,15 +262,45 @@ module pw_data_plane_axis #(
                 .result_o    (rx_res[gp])
             );
 
+            // TEST_RX flow-id map: a frame's test_flow_id directly indexes the
+            // checker slot (no per-flow comparator). valid 1 cycle after the key;
+            // the classifier result is 2 cycles, so align the map result by +1.
+            logic                            mv1, mv2;
+            logic [$clog2(PW_NUM_FLOWS)-1:0] ml1, ml2;
+            pw_flowid_map #(.NUM_FLOWS(PW_NUM_FLOWS), .MAP_DEPTH(MAP_DEPTH)) u_fmap (
+                .clk(clk), .rst_n(rst_n),
+                .wr_en(map_wr_en_i), .wr_addr(map_wr_addr_i),
+                .wr_valid(map_wr_valid_i), .wr_lfid(map_wr_lfid_i),
+                .flowid_i(rx_key[gp].test_flow_id), .is_test_i(rx_key[gp].is_test),
+                .lookup_en_i(rx_kv[gp]), .valid_o(mv1), .local_flow_id_o(ml1)
+            );
+            always_ff @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin mv2 <= 1'b0; ml2 <= '0; end
+                else        begin mv2 <= mv1;  ml2 <= ml1; end
+            end
+            // Effective result (aligned to the classifier at +2): map hit ->
+            // TEST_RX @ mapped slot; else the classifier's result.
+            always_comb begin
+                rx_eff[gp] = rx_res[gp];
+                if (mv2) begin
+                    rx_eff[gp].hit           = 1'b1;
+                    rx_eff[gp].action        = PW_ACT_TEST_RX;
+                    rx_eff[gp].local_flow_id = 32'(ml2);
+                    rx_eff[gp].egress_port   = '0;
+                    rx_eff[gp].logical_if_id = '0;
+                    rx_eff[gp].entry_index   = '0;
+                end
+            end
+
             // Decision for the frame that just ended (pulsed on key_valid,
             // exactly one cycle after the frame's tlast -- the SAF's
             // timing contract). FORWARD to an in-range port, or PUNT /
             // MIRROR, is kept; everything else (TEST_RX, DROP, no match,
             // FORWARD to a bogus port) is rolled back.
-            wire act_fwd  = (rx_res[gp].action == PW_ACT_FORWARD_PORT) &&
-                            (int'(rx_res[gp].egress_port) < PW_PORTS);
-            wire act_punt = (rx_res[gp].action == PW_ACT_PUNT_TO_HOST) ||
-                            (rx_res[gp].action == PW_ACT_MIRROR_TO_HOST);
+            wire act_fwd  = (rx_eff[gp].action == PW_ACT_FORWARD_PORT) &&
+                            (int'(rx_eff[gp].egress_port) < PW_PORTS);
+            wire act_punt = (rx_eff[gp].action == PW_ACT_PUNT_TO_HOST) ||
+                            (rx_eff[gp].action == PW_ACT_MIRROR_TO_HOST);
 
             pw_frame_saf #(
                 .DEPTH_BEATS(SAF_DEPTH_BEATS),
@@ -272,10 +315,10 @@ module pw_data_plane_axis #(
                 .s_tvalid        (s_axis_rx_tvalid[gp]),
                 .s_tlast         (s_axis_rx_tlast[gp]),
                 .dec_valid_i     (rx_kv_d[gp]),
-                .dec_keep_i      (rx_kv_d[gp] && rx_res[gp].hit && (act_fwd || act_punt)),
+                .dec_keep_i      (rx_kv_d[gp] && rx_eff[gp].hit && (act_fwd || act_punt)),
                 .dec_route_i     (act_punt ? {1'b1, 4'd0}
-                                           : {1'b0, rx_res[gp].egress_port}),
-                .dec_meta_i      ({4'(gp), rx_res[gp].logical_if_id}),
+                                           : {1'b0, rx_eff[gp].egress_port}),
+                .dec_meta_i      ({4'(gp), rx_eff[gp].logical_if_id}),
                 .overflow_drop_o (saf_overflow[gp]),  // forward-buffer-full drop
                 .m_tdata         (saf_td[gp]),
                 .m_tkeep         (saf_tk[gp]),
@@ -315,8 +358,8 @@ module pw_data_plane_axis #(
 
     generate
         for (gp = 0; gp < PW_PORTS; gp++) begin : g_chk
-            wire chk_ev = rx_kv_d[gp] && rx_res[gp].hit &&
-                          (rx_res[gp].action == PW_ACT_TEST_RX);
+            wire chk_ev = rx_kv_d[gp] && rx_eff[gp].hit &&
+                          (rx_eff[gp].action == PW_ACT_TEST_RX);
             pw_test_rx_checker_bram #(
                 .NUM_FLOWS       (PW_NUM_FLOWS),
                 .NUM_BUCKETS     (PW_NUM_BUCKETS)
@@ -326,7 +369,7 @@ module pw_data_plane_axis #(
                 .clear_i         (stats_clear_i),
                 .timestamp_i     (timestamp_i),
                 .key_i           (rx_key_d[gp]),
-                .result_i        (rx_res[gp]),
+                .result_i        (rx_eff[gp]),
                 .event_valid_i   (chk_ev),
                 .hist_ev_o       (hev_v[gp]),
                 .hist_flow_o     (hev_fl[gp]),
@@ -438,9 +481,9 @@ module pw_data_plane_axis #(
             for (int p = 0; p < PW_PORTS; p++) begin
                 // total drops: no-match/DROP classifier decisions + SAF
                 // forward-buffer-full drops (previously silent).
-                if ((rx_kv_d[p] && rx_res[p].action == PW_ACT_DROP) || saf_overflow[p])
+                if ((rx_kv_d[p] && rx_eff[p].action == PW_ACT_DROP) || saf_overflow[p])
                     port_drops[p] <= port_drops[p]
-                        + 32'((rx_kv_d[p] && rx_res[p].action == PW_ACT_DROP) ? 1 : 0)
+                        + 32'((rx_kv_d[p] && rx_eff[p].action == PW_ACT_DROP) ? 1 : 0)
                         + 32'(saf_overflow[p] ? 1 : 0);
                 // RX edge: ingress AXIS is never backpressured (parser snoops,
                 // SAF drops on overflow), so a valid beat is always accepted.
