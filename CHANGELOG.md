@@ -8,6 +8,19 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ## Unreleased
 
+### Added
+  - **TCP SYN generator (`pw_tcp_syn`) over the slow-path inject.** Reuses the
+    existing `slow_path_tx` arbitrary-frame path: the host composes a complete
+    Ethernet/IPv4/TCP-SYN frame with the IPv4 + TCP checksums computed in
+    software and the FPGA emits it verbatim — no RTL/bitstream change. Per-packet
+    randomized src ip / src port / sequence (SYN-flood realism). HW-validated:
+    frames egress and arrive on the loopback (fcs=0, correct size); the SW IPv4
+    and TCP checksums fold to 0xFFFF (a DUT will accept them). This is the slow
+    path (one frame per CSR sequence, tens of k pps — fine for protocol/
+    functional SYN testing and low-rate floods); a *line-rate* TCP generator
+    would need the streaming generator (`pw_flow_gen_multi`) to emit a TCP header
+    + checksum, a separate RTL change.
+
 ### Fixed
   - **Punt rules narrowed; fake backend no longer a silent default.** BGP punt
     now matches **TCP port 179 only** (one rule per direction — listener dst:179,

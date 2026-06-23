@@ -109,6 +109,10 @@ pw_rfc2544: $(BUILD_DIR)/pw_rfc2544
 $(BUILD_DIR)/pw_rfc2544: tests/pw_rfc2544.c $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_rfc2544.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
+pw_tcp_syn: $(BUILD_DIR)/pw_tcp_syn
+$(BUILD_DIR)/pw_tcp_syn: tests/pw_tcp_syn.c $(LIBA) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_tcp_syn.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+
 pw_phase3_modgen: $(BUILD_DIR)/pw_phase3_modgen pw_phase3_ipv6gen
 $(BUILD_DIR)/pw_phase3_modgen: tests/pw_phase3_modgen.c $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_phase3_modgen.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
