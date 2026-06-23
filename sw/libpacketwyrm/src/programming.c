@@ -23,19 +23,21 @@ pw_status pw_program_card_tables(const struct pw_card_backend_ops *ops, void *ct
         if (_s != PW_OK && _s != PW_E_NOT_IMPLEMENTED && worst == PW_OK) worst = _s; \
     } while (0)
 
-    for (size_t r = 0; r < cp->n_flow_rows; r++)
-        CHK(ops->flow_write ? ops->flow_write(ctx, (uint32_t)r, &cp->flow_rows[r])
-                            : PW_E_NOT_IMPLEMENTED);
-    if (ops->flow_commit) CHK(ops->flow_commit(ctx));
-
-    /* Map / classifier / hash all program through write32. If the backend has no
-     * write32 but the program has entries for those windows, they would be
-     * silently skipped -- report it as not-implemented so a future window-less
-     * backend can't pass off an unprogrammed classifier as success. */
+    /* A backend that lacks an op the program needs can't be silently "ok" --
+     * report NOT_IMPLEMENTED so an incomplete backend is visible (and a staging
+     * flow_write whose commit never happens isn't passed off as programmed).
+     * Flow rows need flow_write + flow_commit; map/classifier/hash need write32. */
+    if (cp->n_flow_rows > 0 && (!ops->flow_write || !ops->flow_commit) && worst == PW_OK)
+        worst = PW_E_NOT_IMPLEMENTED;
     if (!ops->write32 &&
         (cp->n_map_entries || cp->n_fc_cmps || cp->n_fc_udfs ||
          cp->n_fc_rules || cp->n_hash_entries) && worst == PW_OK)
         worst = PW_E_NOT_IMPLEMENTED;
+
+    if (ops->flow_write)
+        for (size_t r = 0; r < cp->n_flow_rows; r++)
+            CHK(ops->flow_write(ctx, (uint32_t)r, &cp->flow_rows[r]));
+    if (ops->flow_commit) CHK(ops->flow_commit(ctx));
 
     if (ops->write32) {
         /* TEST_RX flow-id map: one entry per structured test flow. */

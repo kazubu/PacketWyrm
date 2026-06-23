@@ -838,6 +838,11 @@ static void test_program_card_tables(void) {
     struct pw_card_backend_ops no_w32 = *b.ops;
     no_w32.write32 = NULL;
     PW_ASSERT_EQ(pw_program_card_tables(&no_w32, b.ctx, cp), PW_E_NOT_IMPLEMENTED);
+    /* Flow rows present but no flow_commit (e.g. a staging backend) -> the writes
+     * would never commit; report NOT_IMPLEMENTED rather than "programmed". */
+    struct pw_card_backend_ops no_commit = *b.ops;
+    no_commit.flow_commit = NULL;
+    PW_ASSERT_EQ(pw_program_card_tables(&no_commit, b.ctx, cp), PW_E_NOT_IMPLEMENTED);
 
     pw_card_backend_close(&b);
     pw_program_free(prog);
