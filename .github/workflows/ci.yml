@@ -39,12 +39,40 @@ jobs:
   rtl-sim:
     name: RTL data-plane sim (Verilator)
     runs-on: ubuntu-24.04
+    env:
+      # Pin to the Verilator the project is developed + validated against.
+      # ubuntu-24.04's apt verilator is 5.020, which has bugs that break this
+      # suite (a -j thread-pool internal crash, BLKLOOPINIT on the large
+      # histogram-reset loops, and a block-RAM read-timing quirk that makes the
+      # histogram read back 0) -- none reproduce on 5.032 or on real hardware.
+      VERILATOR_VERSION: v5.032
     steps:
       - uses: actions/checkout@v4
-      - name: install verilator
+      - name: cache verilator
+        id: cache-verilator
+        uses: actions/cache@v4
+        with:
+          path: /opt/verilator
+          key: verilator-${{ env.VERILATOR_VERSION }}-ubuntu-24.04
+      - name: build verilator (cache miss)
+        if: steps.cache-verilator.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y verilator
+          sudo apt-get install -y git make autoconf g++ flex bison libfl-dev help2man python3
+          git clone --depth 1 --branch "$VERILATOR_VERSION" \
+            https://github.com/verilator/verilator /tmp/verilator
+          cd /tmp/verilator
+          autoconf && ./configure --prefix=/opt/verilator
+          make -j"$(nproc)"
+          sudo make install
+      - name: verilator on PATH + C++ toolchain + sim deps
+        run: |
+          echo "/opt/verilator/bin" >> "$GITHUB_PATH"
+          # build-essential for the Verilator-generated C++; the libyaml/json-c/
+          # pkg-config trio is for sw/build/gen_bar_vectors, which sim_all's
+          # wire-vector target builds to produce the golden BAR image.
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libyaml-dev libjson-c-dev
       - name: build + run sim (data plane + axis serial)
         working-directory: sim
         run: make sim_all
