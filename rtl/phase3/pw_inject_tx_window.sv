@@ -71,6 +71,9 @@ module pw_inject_tx_window #(
     // a latch-then-commit-on-odd scheme would strand that last low word.
     wire        is_data = (wr_addr >= DATA_OFF[ADDR_W-1:0]);
     wire [ADDR_W-1:0] wword = (wr_addr - DATA_OFF[ADDR_W-1:0]) >> 2;  // word index
+    // Guard the buffer index: wword[BAW:1] only carries the low bits, so an
+    // out-of-range DATA address would alias onto a valid beat. Drop it.
+    wire        data_in_range = (wword < (BUF_BYTES/4));
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -79,10 +82,14 @@ module pw_inject_tx_window #(
         end else begin
             if (wr_en && !busy) begin
                 if (is_data) begin
-                    if (!wword[0]) mem[wword[BAW:1]][31:0]  <= wr_data;  // even -> low half
-                    else           mem[wword[BAW:1]][63:32] <= wr_data;  // odd -> high half
+                    if (data_in_range) begin
+                        if (!wword[0]) mem[wword[BAW:1]][31:0]  <= wr_data;  // even -> low half
+                        else           mem[wword[BAW:1]][63:32] <= wr_data;  // odd -> high half
+                    end
                 end else if (wr_addr == INFO_OFF[ADDR_W-1:0]) begin
-                    byte_len <= wr_data[13:0];
+                    // Clamp byte_len to the buffer; larger injects are rejected.
+                    byte_len <= (wr_data[13:0] > BUF_BYTES[13:0]) ? BUF_BYTES[13:0]
+                                                                  : wr_data[13:0];
                     egress_q <= wr_data[19:16];
                 end
             end

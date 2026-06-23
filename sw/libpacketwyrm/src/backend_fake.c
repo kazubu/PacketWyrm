@@ -125,7 +125,7 @@ static pw_status fake_write32(void *vctx, uint32_t off, uint32_t v) {
     if      (off >= PWFPGA_WIN_FLOWID_MAP && off < PWFPGA_WIN_FLOWID_MAP + 0x400u) c->wr.flowid_map++;
     else if (off >= PWFPGA_WIN_FC_CMP     && off < PWFPGA_WIN_FC_UDF)              c->wr.fc_cmp++;
     else if (off >= PWFPGA_WIN_FC_UDF     && off < PWFPGA_WIN_FC_RULE)             c->wr.fc_udf++;
-    else if (off >= PWFPGA_WIN_FC_RULE    && off < PWFPGA_WIN_FC_RULE + 0x100u)    c->wr.fc_rule++;
+    else if (off >= PWFPGA_WIN_FC_RULE    && off < PWFPGA_WIN_FC_RULE + PWFPGA_NUM_RULE * 16u) c->wr.fc_rule++;
     else if ((off >= PWFPGA_WIN_HASH_MASK && off < PWFPGA_WIN_FC_HASH + 0x2000u))  c->wr.hash++;
     return PW_OK;
 }

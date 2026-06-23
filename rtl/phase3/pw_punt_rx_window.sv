@@ -18,7 +18,9 @@
 //   0x004 PUNT_INFO    RO  [13:0]=byte_len   [19:16]=ingress_port
 //   0x008 PUNT_LIF     RO  [31:0]=logical_if_id
 //   0x00C PUNT_POP     WO  write 1 -> release the current frame
-//   0x010.. PUNT_DATA  RO  frame word i at 0x010 + i*4
+//   0x010 PUNT_TS_LO   RO  RX wire timestamp (low 32b, servo-facing)
+//   0x014 PUNT_TS_HI   RO  RX wire timestamp (high 32b)
+//   0x020.. PUNT_DATA  RO  frame word i at 0x020 + i*4
 //
 // All CSR reads are registered (1-cycle latency); pw_csr_full defers
 // rvalid one cycle for this window (same as the histogram).

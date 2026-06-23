@@ -9,6 +9,22 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Fixed
+  - **Reloads no longer leave stale classifier / flow / hash / map entries.**
+    `pw_program_card_tables` now writes every table to its full capacity on each
+    load: configured entries enabled, all remaining slots invalidated (flow rows
+    zeroed, rules `enable=0`, hash buckets + flow-id-map entries `valid=0`).
+    Previously a reload that *shrank* the config left the deleted flows / punt /
+    forward / TEST_RX entries live, since the RTL commit only copies
+    shadow→live without touching un-written slots. HW-validated on the loopback
+    (4-flow multiflow, lost_est=0, correct per-slot classification).
+  - **Slow-path inject window bounds-checks its inputs** (`pw_inject_tx_window`):
+    `byte_len` is clamped to the 512 B buffer and out-of-range DATA word writes
+    are dropped, so a malformed host inject can't alias onto a valid beat or emit
+    a frame longer than the buffer. (RTL; ships in the next bitstream.)
+  - **TX-arbiter source-select width** (`pw_data_plane_axis` `SELW`) widened to
+    `$clog2(PW_PORTS + 2)` to cover the host-inject source index (`PW_PORTS+1`);
+    the old `+1` was correct only by luck at `PW_PORTS=2`. (RTL; future-proofs
+    `PW_PORTS≥3`.)
   - **config.load now rolls back on a staging failure** instead of swapping the
     daemon's view to a config the FPGA may not actually hold. If programming a
     card hard-fails (BAR error / card drop), the daemon re-programs the previous
