@@ -749,7 +749,7 @@ static void test_fake_backend_slow_path(void) {
 
     uint8_t got[64] = {0};
     uint32_t lif = 0;
-    int n = b.ops->slow_path_rx(b.ctx, got, sizeof(got), &lif);
+    int n = b.ops->slow_path_rx(b.ctx, got, sizeof(got), &lif, NULL);
     PW_ASSERT_EQ(n, (int)sizeof(frame));
     PW_ASSERT_EQ(lif, 1000);
     PW_ASSERT(memcmp(frame, got, sizeof(frame)) == 0);

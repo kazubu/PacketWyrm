@@ -80,7 +80,7 @@ int main(int argc, char **argv) {
     uint32_t seen[64]; int n_seen=0;
     uint8_t buf[2048];
     for (long s=0; s<50000000L && got<want; s++) {
-        uint32_t lif=0; int n = o->slow_path_rx(be.ctx, buf, sizeof(buf), &lif);
+        uint32_t lif=0; int n = o->slow_path_rx(be.ctx, buf, sizeof(buf), &lif, NULL);
         if (n <= 0) continue;
         got++;
         uint32_t dip = ((uint32_t)buf[30]<<24)|((uint32_t)buf[31]<<16)|((uint32_t)buf[32]<<8)|buf[33];

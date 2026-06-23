@@ -99,23 +99,26 @@ int main(int argc, char **argv) {
     int    got = 0, lif_ok = 0, len_ok = 0;
     size_t min_len = (size_t)-1, max_len = 0;
     uint8_t buf[PWFPGA_PUNT_MAX_FRAME];
+    uint64_t prev_ts = 0; int ts_mono = 1;
     for (long spins = 0; got < want && spins < 50000000L; spins++) {
-        uint32_t got_lif = 0;
-        int n = o->slow_path_rx(be.ctx, buf, sizeof(buf), &got_lif);
+        uint32_t got_lif = 0; uint64_t rx_ts = 0;
+        int n = o->slow_path_rx(be.ctx, buf, sizeof(buf), &got_lif, &rx_ts);
         if (n > 0) {
             got++;
             if (got_lif == lif) lif_ok++;
             if (n >= 60)        len_ok++;     /* a full test frame is well over 60 B */
             if ((size_t)n < min_len) min_len = (size_t)n;
             if ((size_t)n > max_len) max_len = (size_t)n;
+            if (got > 1 && rx_ts < prev_ts) ts_mono = 0;   /* RX timestamps must advance */
+            prev_ts = rx_ts;
             if (got <= 4)
-                printf("  frame %d: %d bytes, lif=0x%x, first=%02x%02x%02x%02x\n",
-                       got, n, got_lif, buf[0], buf[1], buf[2], buf[3]);
+                printf("  frame %d: %d bytes, lif=0x%x, rx_ts=%llu, first=%02x%02x%02x%02x\n",
+                       got, n, got_lif, (unsigned long long)rx_ts, buf[0], buf[1], buf[2], buf[3]);
         }
     }
 
-    printf("RESULT: punted=%d/%d  lif_ok=%d  len>=60=%d  len[min..max]=%zu..%zu\n",
-           got, want, lif_ok, len_ok, (got ? min_len : 0), max_len);
+    printf("RESULT: punted=%d/%d  lif_ok=%d  len>=60=%d  len[min..max]=%zu..%zu  rx_ts_monotonic=%d\n",
+           got, want, lif_ok, len_ok, (got ? min_len : 0), max_len, ts_mono);
 
     /* Stop the generator so it does not keep flooding after we exit. */
     f.tx_enable = 0; f.enable = 0;
@@ -123,5 +126,5 @@ int main(int argc, char **argv) {
     if (o->flow_commit) o->flow_commit(be.ctx);
 
     pw_card_backend_close(&be);
-    return (got >= want && lif_ok == got) ? 0 : 1;
+    return (got >= want && lif_ok == got && ts_mono) ? 0 : 1;
 }

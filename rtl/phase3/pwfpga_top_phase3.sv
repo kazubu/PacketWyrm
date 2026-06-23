@@ -134,7 +134,7 @@ module pwfpga_top_phase3 #(
     // Punt path: data plane punt AXIS -> pw_punt_rx_window; CSR read/pop.
     logic [63:0] punt_td_w;  logic [7:0] punt_tk_w;
     logic        punt_tv_w,  punt_tr_w,  punt_tl_w;
-    logic [35:0] punt_tu_w;
+    logic [99:0] punt_tu_w;   // {rx_ts[63:0], ingress[3:0], lif[31:0]}
     logic        punt_rd_en_w; logic [15:0] punt_rd_addr_w; logic [31:0] punt_rd_data_w;
     logic        punt_pop_w;
 

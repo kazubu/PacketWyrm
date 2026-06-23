@@ -9,6 +9,16 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Punt RX wire-timestamp (servo-facing PTP hook)** — punted frames now carry
+    a 64-bit RX timestamp: the free-running counter latched at the frame's SOF in
+    the data plane, threaded through the SAF in the punt metadata and exposed at
+    `PWFPGA_REG_PUNT_RX_TS_LOW`/`_HIGH` (0x1010/0x1014; `PWFPGA_PUNT_DATA` moved
+    to 0x1020). `slow_path_rx()` gained an `out_rx_ts` argument (read before the
+    POP releases the slot). This is the RX-event capture a software PTP servo
+    needs (e.g. Sync arrival time); the TX (inject) egress timestamp + the full
+    two-clock servo loop follow (the latter gated on a second card). Validated:
+    `tb_punt_window` RX_TS readback + `pw_phase3_punt` reports a monotonic
+    `rx_ts` per punted frame.
   - **Hash exact classifier — high-count payload-agnostic flows, wide masked
     key** (`pw_hash_classifier`; CSR window `PWFPGA_WIN_FC_HASH` @ 0x3000, mask
     window `PWFPGA_WIN_HASH_MASK` @ 0x2F00, seed reg `PWFPGA_REG_HASH_SEED`).

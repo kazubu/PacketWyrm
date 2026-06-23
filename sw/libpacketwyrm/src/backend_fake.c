@@ -186,8 +186,9 @@ static pw_status fake_flow_hist_read(void *vctx, uint32_t lfid,
 }
 
 static int fake_slow_path_rx(void *vctx, void *buf, size_t buflen,
-                             uint32_t *out_lif) {
+                             uint32_t *out_lif, uint64_t *out_rx_ts) {
     struct fake_ctx *c = vctx;
+    if (out_rx_ts) *out_rx_ts = 0;                    /* fake backend: no wire clock */
     return slow_pop(&c->punt_rx, buf, buflen, out_lif, NULL);
 }
 

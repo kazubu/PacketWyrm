@@ -69,7 +69,9 @@ the initial proposal; concrete field bit definitions are owned by the
   0x1004  punt_info    R:[13:0]byte_len [19:16]ingress_port
   0x1008  punt_lif     R: logical_if_id of the punted frame
   0x100c  punt_pop     W:1 -> release the current frame
-  0x1010  punt_data    R: frame word i at +i*4 (little-endian; up to 2 KB)
+  0x1010  punt_rx_ts_lo R: RX wire timestamp [31:0] (free-running counter latched
+  0x1014  punt_rx_ts_hi R: at the frame's SOF -- servo-facing PTP RX event time)
+  0x1020  punt_data    R: frame word i at +i*4 (little-endian; up to 2 KB)
 
 # Wide table windows (64 flows / 64 classifier rows max). The
 # commit-bearing windows are 16 KB apart so their commit / trigger /

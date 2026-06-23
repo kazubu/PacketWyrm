@@ -11,13 +11,13 @@ module tb_punt_window;
 
     localparam int ADDR_W   = 16;
     localparam int BUF_BEATS = 8;          // tiny, to exercise overflow
-    localparam int DATA_OFF = 16'h0010;
+    localparam int DATA_OFF = 16'h0020;   // production: 0x10/0x14 = RX timestamp
 
     logic clk = 0; always #5 clk = ~clk;
     logic rst_n = 0;
 
     logic [63:0] s_tdata; logic [7:0] s_tkeep; logic s_tvalid, s_tlast;
-    logic [35:0] s_tuser; wire s_tready;
+    logic [99:0] s_tuser; wire s_tready;   // {rx_ts[63:0], ingress[3:0], lif[31:0]}
     logic        rd_en;   logic [ADDR_W-1:0] rd_addr; logic [31:0] rd_data;
     logic        pop;     wire frame_valid;
 
@@ -60,7 +60,7 @@ module tb_punt_window;
         // --- scenario 1: push a 2.5-beat frame (20 bytes), drain it ---
         scen = "capture";
         chk("tready idle", s_tready, 1);
-        s_tuser = {4'd1, 32'h0000_ABCD};        // ingress 1, lif 0xABCD
+        s_tuser = {64'hCAFE_0000_1234_5678, 4'd1, 32'h0000_ABCD};  // rx_ts, ingress 1, lif 0xABCD
         send_beat(64'h1122334455667788, 8'hFF, 1'b0);
         send_beat(64'h99AABBCCDDEEFF00, 8'hFF, 1'b0);
         send_beat(64'h00000000DEADBEEF, 8'h0F, 1'b1);  // 4 valid bytes -> 20 total
@@ -72,6 +72,8 @@ module tb_punt_window;
         rdreg(16'h004, d); chk("INFO byte_len",  d[13:0], 20);
         rdreg(16'h004, d); chk("INFO ingress",   d[19:16], 1);
         rdreg(16'h008, d); chk("LIF",            d, 32'h0000_ABCD);
+        rdreg(16'h010, d); chk("RX_TS low",      d, 32'h1234_5678);
+        rdreg(16'h014, d); chk("RX_TS high",     d, 32'hCAFE_0000);
         chk("tready backpressured", s_tready, 0);
 
         // data words (little-endian within each 64-bit beat)
