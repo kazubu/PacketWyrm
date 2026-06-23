@@ -70,8 +70,10 @@ int main(int argc, char **argv) {
 
     /* Field-classifier PUNT rule on ingress 1, keyed on udp_dst (NOT modified --
      * the dst-IP modifier rotates a different field). */
-    pw_tool_fc_ing_udp(o, be.ctx, 0, 0, /*ingress*/1, /*udp_dst*/50001,
-                       PWFPGA_ACT_PUNT_TO_HOST, /*egress*/0, /*lfid*/0, /*lif*/0x42);
+    if (pw_tool_fc_ing_udp(o, be.ctx, 0, 0, /*ingress*/1, /*udp_dst*/50001,
+                       PWFPGA_ACT_PUNT_TO_HOST, /*egress*/0, /*lfid*/0, /*lif*/0x42) != PW_OK) {
+        fprintf(stderr, "FATAL: classifier programming failed (BAR write error?)\n"); return 1;
+    }
     o->flow_write(be.ctx, 0, &f); o->flow_commit(be.ctx);
 
     printf("gen egress0 dst_ip=198.51.100.0 mod=increment mask=0x3ff; PUNT(ingress1) -> host\n");

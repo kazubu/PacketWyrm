@@ -28,6 +28,15 @@ pw_status pw_program_card_tables(const struct pw_card_backend_ops *ops, void *ct
                             : PW_E_NOT_IMPLEMENTED);
     if (ops->flow_commit) CHK(ops->flow_commit(ctx));
 
+    /* Map / classifier / hash all program through write32. If the backend has no
+     * write32 but the program has entries for those windows, they would be
+     * silently skipped -- report it as not-implemented so a future window-less
+     * backend can't pass off an unprogrammed classifier as success. */
+    if (!ops->write32 &&
+        (cp->n_map_entries || cp->n_fc_cmps || cp->n_fc_udfs ||
+         cp->n_fc_rules || cp->n_hash_entries) && worst == PW_OK)
+        worst = PW_E_NOT_IMPLEMENTED;
+
     if (ops->write32) {
         /* TEST_RX flow-id map: one entry per structured test flow. */
         for (size_t m = 0; m < cp->n_map_entries; m++)

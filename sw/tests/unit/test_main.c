@@ -832,6 +832,13 @@ static void test_program_card_tables(void) {
                      cp->n_hash_entries * (PWFPGA_HASH_KEY_WORDS + 1u))
         : 0u;
     PW_ASSERT_EQ(wc.hash, exp_hash);
+
+    /* A backend without write32 but a program that needs the classifier windows
+     * must report PW_E_NOT_IMPLEMENTED, not silently "succeed". */
+    struct pw_card_backend_ops no_w32 = *b.ops;
+    no_w32.write32 = NULL;
+    PW_ASSERT_EQ(pw_program_card_tables(&no_w32, b.ctx, cp), PW_E_NOT_IMPLEMENTED);
+
     pw_card_backend_close(&b);
     pw_program_free(prog);
     pw_config_free(cfg);

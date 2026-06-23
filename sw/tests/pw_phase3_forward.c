@@ -107,15 +107,21 @@ int main(int argc, char **argv) {
 
     /* Field-classifier rule 0: FORWARD frames (ingress fwd_ingr, udp_dst 50001)
      * to egress fe; rule 1: TEST_RX the re-emitted copies on ingress chk_ingr. */
-    pw_tool_fc_ing_udp(o, be.ctx, /*cmp0*/0, /*rule*/0, (uint8_t)fwd_ingr, 50001,
-                       PWFPGA_ACT_FORWARD_PORT, /*egress*/(uint8_t)fe, /*lfid*/0, /*lif*/0);
-    pw_tool_fc_ing_udp(o, be.ctx, /*cmp0*/2, /*rule*/1, (uint8_t)chk_ingr, 50001,
-                       PWFPGA_ACT_TEST_RX, /*egress*/0, /*lfid*/0, /*lif*/0);
+    if (pw_tool_fc_ing_udp(o, be.ctx, /*cmp0*/0, /*rule*/0, (uint8_t)fwd_ingr, 50001,
+                       PWFPGA_ACT_FORWARD_PORT, /*egress*/(uint8_t)fe, /*lfid*/0, /*lif*/0) != PW_OK ||
+        pw_tool_fc_ing_udp(o, be.ctx, /*cmp0*/2, /*rule*/1, (uint8_t)chk_ingr, 50001,
+                       PWFPGA_ACT_TEST_RX, /*egress*/0, /*lfid*/0, /*lif*/0) != PW_OK) {
+        fprintf(stderr, "FATAL: classifier programming failed (BAR write error?)\n");
+        return 1;
+    }
 
     /* Start the generator only after the classifier is committed, so no
      * frames arrive before the FORWARD rule exists (else they'd DROP). */
-    if (o->flow_write) o->flow_write(be.ctx, 0, &f);
-    if (o->flow_commit) o->flow_commit(be.ctx);
+    if (!o->flow_write || o->flow_write(be.ctx, 0, &f) != PW_OK ||
+        !o->flow_commit || o->flow_commit(be.ctx) != PW_OK) {
+        fprintf(stderr, "FATAL: flow_write/commit failed\n");
+        return 1;
+    }
 
     printf("programmed: gen on egress %d (flow_id 2), FORWARD(ingress%d->egress%d) + "
            "TEST_RX(ingress%d, lf=0)\n", gen_egr, fwd_ingr, fe, chk_ingr);

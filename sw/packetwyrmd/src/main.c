@@ -599,18 +599,26 @@ static struct json_object *build_flow_stats(const struct pw_config *cfg,
             if (cfg->cards[ci].id == m->tx_card_id) { tx_ci = ci; break; }
 
         struct pw_flow_stats rs = {0}, ts = {0};
+        /* read_ok=false whenever a counter source can't be read: card not found
+         * for the flow, card not open, no stats op, or a failed snapshot/read.
+         * Otherwise a dropped card / missing window reads as a genuine "0
+         * traffic" result. (flow.hist reports the same via "backend not ready".) */
         bool read_ok = true;
         if (rx_ci != (size_t)-1 && cards[rx_ci].open &&
             cards[rx_ci].backend.ops->flow_stats_read) {
             read_ok &= (rx_ci < MAX_CARDS ? snap_ok[rx_ci] : true);
             read_ok &= (cards[rx_ci].backend.ops->flow_stats_read(
                 cards[rx_ci].backend.ctx, m->rx_local_flow_id, &rs) == PW_OK);
+        } else {
+            read_ok = false;   // rx counters unreadable (no card / closed / no op)
         }
         if (tx_ci != (size_t)-1 && cards[tx_ci].open &&
             cards[tx_ci].backend.ops->flow_stats_read) {
             read_ok &= (tx_ci < MAX_CARDS ? snap_ok[tx_ci] : true);
             read_ok &= (cards[tx_ci].backend.ops->flow_stats_read(
                 cards[tx_ci].backend.ctx, m->tx_local_flow_id, &ts) == PW_OK);
+        } else {
+            read_ok = false;   // tx counters unreadable
         }
 
         struct json_object *f = json_object_new_object();
