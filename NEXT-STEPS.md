@@ -57,7 +57,7 @@ adding more dp_clk logic.
 Standalone HW tools (`sw/tests/`, run via `sudo env PW_BACKEND=vfio
 sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
 `pw_phase3_loopback`, `pw_phase3_forward`, `pw_phase3_punt`,
-`pw_phase3_inject`, `pw_rfc2544`, `pw_flash`, `pw_reboot`.
+`pw_phase3_inject`, `pw_rfc2544`, `pw_tcp_syn`, `pw_flash`, `pw_reboot`.
 
 ## Remaining / next
 
