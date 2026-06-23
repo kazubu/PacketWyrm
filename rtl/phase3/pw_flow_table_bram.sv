@@ -110,11 +110,22 @@ module pw_flow_table_bram #(
         if (!rst_n) begin
             for (int s = 0; s < DEPTH; s++) flow_sched_o[s] <= '0;
         end else if (wwe) begin
+            // Token cost meters by the smallest legal frame of this flow: the
+            // minimum-payload frame, or the configured frame_len_min if larger.
+            // Exact for a fixed size (RFC2544, min==max); a min<max sweep meters
+            // by min (slight over-rate on the larger frames -- IMIX only).
+            automatic int min_legal = pw_frame_bytes(wrow, FRAME_LEN_PAYLOAD);
+            automatic int cfg_min    = int'(wrow.frame_len_min);
+            automatic int cost_b     = (cfg_min > min_legal) ? cfg_min : min_legal;
             flow_sched_o[waddr].valid     <= wrow.valid;
             flow_sched_o[waddr].egress    <= wrow.egress;
             flow_sched_o[waddr].tokens_fp <= wrow.tokens_fp;
             flow_sched_o[waddr].cap       <= {wrow.burst, 16'h0};
-            flow_sched_o[waddr].cost      <= {16'(pw_frame_bytes(wrow, FRAME_LEN_PAYLOAD)), 16'h0};
+            flow_sched_o[waddr].cost      <= {16'(cost_b), 16'h0};
+            flow_sched_o[waddr].len_min   <= wrow.frame_len_min;
+            flow_sched_o[waddr].len_max   <= wrow.frame_len_max;
+            flow_sched_o[waddr].len_step  <= wrow.frame_len_step;
+            flow_sched_o[waddr].ovh       <= 12'(pw_frame_bytes(wrow, 0));
         end
     end
 

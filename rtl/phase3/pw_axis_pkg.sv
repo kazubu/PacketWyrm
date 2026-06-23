@@ -43,6 +43,16 @@ package pw_axis_pkg;
         logic [31:0] tokens_fp;   // Q16.16 bytes/cycle (token refill rate)
         logic [31:0] cap;         // token-bucket cap, Q16.16 (burst<<16)
         logic [31:0] cost;        // one frame's token cost, Q16.16 (bytes<<16)
+        // Variable frame length: the generator sweeps the emitted total L2
+        // frame length len_min -> len_max by len_step (wrapping). RFC2544 uses
+        // a fixed size (min==max); a min<max range gives IMIX/staircase sizing.
+        // Held in the (FF) scheduling descriptor so the per-slot sweep needs no
+        // BRAM read. 0 / sub-minimum values clamp to the minimum legal frame.
+        logic [15:0] len_min;
+        logic [15:0] len_max;
+        logic [15:0] len_step;
+        logic [11:0] ovh;         // header overhead bytes (0-payload frame); the
+                                  // generator derives L4 payload = frame_len - ovh
     } pw_flow_sched_t;
 
     // One generator flow slot, decoded from a flow-window row. The
@@ -65,6 +75,14 @@ package pw_axis_pkg;
         logic [7:0]  dscp;      // 6-bit DSCP in [7:2]; emitted as IPv4 TOS /
                                 // IPv6 traffic class (no effect on UDP csum).
         logic [7:0]  ttl;       // IPv4 TTL / IPv6 hop limit.
+        // Variable total L2 frame length: emitted length sweeps min->max by
+        // step (wrapping). min==max gives a fixed size (RFC2544). The L4 payload
+        // is (frame_len - headers); the pad beyond the 32-byte test header is
+        // zero, so it adds nothing to the UDP checksum (only the length fields
+        // change). Sub-minimum values clamp to the smallest legal frame.
+        logic [15:0] frame_len_min;
+        logic [15:0] frame_len_max;
+        logic [15:0] frame_len_step;
         // Per-field modifiers (commercial-gen "field modifier"): vary the
         // masked bits of a header field per emitted frame so one slot looks
         // like many flows to the DUT. mode: 0=static, 1=increment, 2=random.
@@ -133,6 +151,9 @@ package pw_axis_pkg;
         f.udp_dp    = {row[44*8 +: 8], row[43*8 +: 8]};
         f.dscp      = row[39*8 +: 8];
         f.ttl       = row[40*8 +: 8];
+        f.frame_len_min  = {row[46*8 +: 8], row[45*8 +: 8]};
+        f.frame_len_max  = {row[48*8 +: 8], row[47*8 +: 8]};
+        f.frame_len_step = {row[50*8 +: 8], row[49*8 +: 8]};
         f.sip_mod   = row[92*8 +: 2];
         f.sip_mask  = {row[96*8 +: 8], row[95*8 +: 8], row[94*8 +: 8], row[93*8 +: 8]};
         f.dip_mod   = row[97*8 +: 2];

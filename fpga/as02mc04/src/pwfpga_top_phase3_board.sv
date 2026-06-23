@@ -114,7 +114,11 @@ module pwfpga_top_phase3_board (
     wire dprx_v[2], dprx_r[2], dprx_l[2], dprx_u[2];
     wire dptx_v[2], dptx_r[2], dptx_l[2], dptx_u[2];
 
-    pw_mac_axis_cdc #(.PORTS(2), .DATA_W(64), .DEPTH(1024)) u_cdc (
+    // DEPTH is the per-direction MAC<->dp_clk frame-FIFO byte capacity (taxi
+    // FRAME_FIFO + DROP_OVERSIZE). It must hold a whole frame, so 2048 covers a
+    // full 1518 B Ethernet frame + margin (1024 dropped frames > ~1024 B, which
+    // capped the test generator's variable frame length at ~1 KB).
+    pw_mac_axis_cdc #(.PORTS(2), .DATA_W(64), .DEPTH(2048)) u_cdc (
         .dp_clk(dp_clk), .dp_rst(dp_rst),
         .rx_clk(sfp_rx_clk), .rx_rst(sfp_rx_rst), .tx_clk(sfp_tx_clk), .tx_rst(sfp_tx_rst),
         .mac_rx_tdata(mac_rx_d), .mac_rx_tkeep(mac_rx_k), .mac_rx_tvalid(mac_rx_v),

@@ -105,6 +105,10 @@ pw_phase3_punt: $(BUILD_DIR)/pw_phase3_punt
 $(BUILD_DIR)/pw_phase3_punt: tests/pw_phase3_punt.c $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_phase3_punt.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
+pw_rfc2544: $(BUILD_DIR)/pw_rfc2544
+$(BUILD_DIR)/pw_rfc2544: tests/pw_rfc2544.c $(LIBA) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_rfc2544.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+
 pw_phase3_modgen: $(BUILD_DIR)/pw_phase3_modgen pw_phase3_ipv6gen
 $(BUILD_DIR)/pw_phase3_modgen: tests/pw_phase3_modgen.c $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_phase3_modgen.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)

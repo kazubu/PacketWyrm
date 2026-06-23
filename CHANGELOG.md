@@ -9,6 +9,26 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Variable frame length in the generator + RFC 2544 driver** — the test
+    generator (`pw_flow_gen_multi`) now honors `frame_len_min/max/step`: each
+    slot emits a total L2 frame length that is fixed (`min==max`, RFC 2544) or
+    sweeps `min→max` by `step` (IMIX). Previously these fields were plumbed
+    through the config/window but ignored — every flow emitted a fixed 74 B
+    frame regardless of `frame_len`. The L4 payload pad is generated on the fly
+    (the 176 B header buffer is unchanged; the FSM streams zero pad out to the
+    frame length), and the IPv4/IPv6/UDP length fields + length-dependent
+    checksum terms track the per-frame size. New `pw_rfc2544` tool automates the
+    RFC 2544 methodology (throughput binary-search to zero sequence loss,
+    latency at throughput, loss@line-rate) across the standard frame sizes on
+    the loopback/DUT. Also bumped the MAC↔dp_clk frame FIFO (`pw_mac_axis_cdc`
+    DEPTH 1024→2048 B): the taxi FRAME_FIFO drops oversize frames, so the 1 KB
+    buffer silently capped frame size at ~1 KB — invisible while the generator
+    only ever emitted 74 B. Validated: `tb_flow_gen_multi` sweeps {128,192,256}
+    with matching IPv4 total_len + valid header checksum; full Verilator suite
+    green; on HW the loopback shows real per-size results — latency scaling
+    493/698/1107 ns for 128/256/512 B at ~line rate, loss=0 (1280/1518 B need
+    the 2048 B FIFO). (64 B is below the 74 B test-frame floor — eth+IPv4+UDP+
+    32 B test header — so it reports n/a.)
   - **Punt RX wire-timestamp (servo-facing PTP hook)** — punted frames now carry
     a 64-bit RX timestamp: the free-running counter latched at the frame's SOF in
     the data plane, threaded through the SAF in the punt metadata and exposed at
