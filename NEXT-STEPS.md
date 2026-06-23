@@ -124,12 +124,12 @@ no timing gate, so `write_bitstream` completing does NOT imply closure.
 
 | Command                       | Result                              |
 |-------------------------------|-------------------------------------|
-| `make -C sw test`             | **172 / 172** unit assertions       |
-| `make -C sw e2e`              | daemon ↔ CLI smoke (18 checks)      |
-| `make -C sim sim_all`         | **19 testbenches** (~441 assertions); see `sim/README.md` |
+| `make -C sw test`             | host unit assertions                |
+| `make -C sw e2e`              | daemon ↔ CLI smoke                  |
+| `make -C sim sim_all`         | Verilator testbench sweep; see `sim/README.md` |
 | `make -C fpga/as02mc04 lint`  | clean (Verilator + Xilinx blackbox) |
-| `make -C sim/cocotb all`      | 17 parser/classifier/flow_gen checks (Icarus) |
-| `make -C tools/pktwyrm-tinet test` | 35 lab generator / orchestrator checks |
+| `make -C sim/cocotb all`      | parser/classifier/flow_gen checks (Icarus) |
+| `make -C tools/pktwyrm-tinet test` | lab generator / orchestrator checks |
 
 CI (`.github/workflows/ci.yml`) runs the host job (build + test + e2e +
 staged install) and the rtl-sim job (`sim_all` + AS02MC04 lint).

@@ -90,11 +90,11 @@ Test surface today (all green):
 
 | Command                            | Result                                          |
 |------------------------------------|-------------------------------------------------|
-| `make -C sw test`                  | 276 / 276 unit assertions                       |
-| `make -C sw e2e`                   | 18 / 18 daemon &harr; CLI smoke                 |
-| `make -C sim sim_all`              | 19 testbenches green: data plane, parser (2-stage), classifier, flow gen, BRAM histogram, SPI flash, ICAP, egress TS, punt RX, TX inject, end-to-end |
-| `make -C sim/cocotb all`           | 17 / 17 Scapy-driven parser/classifier/flow_gen |
-| `make -C tools/pktwyrm-tinet test` | 35 / 35 generator + lifecycle orchestrator      |
+| `make -C sw test`                  | host unit assertions (all pass)                 |
+| `make -C sw e2e`                   | daemon &harr; CLI smoke                         |
+| `make -C sim sim_all`              | Verilator suite green: data plane, parser (2-stage), classifier, flow gen, BRAM histogram, SPI flash, ICAP, egress TS, punt RX, TX inject, end-to-end |
+| `make -C sim/cocotb all`           | Scapy-driven parser/classifier/flow_gen         |
+| `make -C tools/pktwyrm-tinet test` | generator + lifecycle orchestrator              |
 | `make -C fpga/as02mc04 lint`       | clean (Verilator + Xilinx blackbox)             |
 | `make -C kernel`                   | builds with `linux-headers-$(uname -r)`         |
 
@@ -183,8 +183,8 @@ first (it holds the device).
 ```sh
 # Host stack
 make -C sw            # libpacketwyrm + packetwyrmd + pktwyrm
-make -C sw test       # 276/276 assertions
-make -C sw e2e        # 18/18 daemon <-> CLI smoke
+make -C sw test       # host unit tests
+make -C sw e2e        # daemon <-> CLI smoke
 
 # Daemon against the example single-card config (uses the fake backend)
 sudo ./sw/build/packetwyrmd -v -c configs/examples/single-card.yaml &
@@ -192,13 +192,13 @@ sudo ./sw/build/pktwyrm stats          # pretty table, refresh with --watch MS
 ./sw/build/pktwyrm rpc cards           # raw JSON RPC
 
 # RTL (Verilator >= 5 for sim_all; Icarus >= 12 + cocotb 2 for sim/cocotb)
-make -C sim sim_all                    # ~441 assertions, 19 SV testbenches
-make -C sim/cocotb all                 # 17 assertions, Scapy-driven units
+make -C sim sim_all                    # SystemVerilog testbenches (Verilator)
+make -C sim/cocotb all                 # Scapy-driven units
 
 # Lab / container integration (no FPGA still works for the
 # generator + wiring smoke; docker + tinet are only needed at
 # bring-up time)
-make -C tools/pktwyrm-tinet test       # 35/35 generator + orchestrator
+make -C tools/pktwyrm-tinet test       # generator + orchestrator
 sudo python3 tools/pktwyrm-tinet/pktwyrm-tinet up \
     configs/examples/lab-frr-2node/lab.yaml -o /tmp/lab-frr/
 ```

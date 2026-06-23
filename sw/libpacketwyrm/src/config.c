@@ -479,8 +479,11 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
      * standard Ethernet maximum (1518 B on the wire => <=1514 B emitted; we
      * accept up to 1518 for the field and let the gen clamp). Below the test-
      * frame floor the generator clamps up to the minimum legal frame. */
-    if (f->traffic.frame_len_fixed_set && pw_yaml_map_get(tr, "frame_len_min")) {
-        diag_set(diag, PW_E_INVAL, tp, "frame_len and frame_len_min/max are mutually exclusive");
+    if (f->traffic.frame_len_fixed_set &&
+        (pw_yaml_map_get(tr, "frame_len_min") || pw_yaml_map_get(tr, "frame_len_max") ||
+         pw_yaml_map_get(tr, "frame_len_step"))) {
+        diag_set(diag, PW_E_INVAL, tp,
+                 "frame_len and frame_len_min/max/step are mutually exclusive");
         return PW_E_INVAL;
     }
     {

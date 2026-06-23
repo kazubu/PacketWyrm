@@ -123,6 +123,19 @@ struct pw_card_backend {
  * laptop). */
 pw_status pw_fake_backend_open(const char *pci_bdf, struct pw_card_backend *out);
 
+/* Per-classification-window CSR write counts recorded by the fake backend, so
+ * daemon-programming tests can confirm the map / field-classifier / hash tables
+ * were actually written (the real BAR backend just does the writes; the fake
+ * otherwise silently accepts them, hiding a forgotten or misaddressed window). */
+struct pw_fake_wr_counts {
+    uint32_t flowid_map;
+    uint32_t fc_cmp;
+    uint32_t fc_udf;
+    uint32_t fc_rule;
+    uint32_t hash;
+};
+void pw_fake_backend_wr_counts(void *ctx, struct pw_fake_wr_counts *out);
+
 /* Fake-backend-only helpers exercised by the host_plane tests:
  *
  *   pw_fake_backend_inject_punt  - simulate an FPGA punt event; the
