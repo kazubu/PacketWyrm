@@ -21,10 +21,14 @@ loop (`epoll`) with a small number of long-running threads:
 - **stats aggregator** &mdash; thread (or main-thread timer) that
   snapshots each card's stats and merges them into the global view.
 
-Locking: the daemon avoids cross-thread mutation. Card state is owned
-by its worker; the main thread pushes work via lock-free SPSC
-command queues. Global tables (logical interface map, flow map) are
-read-mostly, updated only on config reload via RCU-style swap.
+Locking — **as implemented today:** each card's host-plane worker owns its TAP
+fds and runs independently; control RPCs (including `config.load`'s
+compile/program/swap) are handled synchronously on the main thread, which owns
+the `pw_config`/`pw_program` pointers, so there is no cross-thread mutation of
+them while a worker runs. **Design intent (not yet implemented):** decouple the
+two with lock-free SPSC command queues and an RCU-style swap of the global
+tables, so a reload never briefly blocks the workers. The current synchronous
+swap is fine at today's reload cadence.
 
 ## Subsystems
 

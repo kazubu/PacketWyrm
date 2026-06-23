@@ -1,7 +1,7 @@
 # PacketWyrm host-side build.
 #
 # - libpacketwyrm: static + shared library
-# - packetwyrmd:   daemon (Phase 0 dry-run skeleton)
+# - packetwyrmd:   daemon (per-card host-plane workers + JSON-RPC control socket)
 # - pktwyrm:       command-line client
 # - tests:         unit tests linking the static library
 #

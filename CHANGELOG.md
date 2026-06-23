@@ -8,6 +8,14 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ## Unreleased
 
+### Fixed
+  - **config.load now rolls back on a staging failure** instead of swapping the
+    daemon's view to a config the FPGA may not actually hold. If programming a
+    card hard-fails (BAR error / card drop), the daemon re-programs the previous
+    config, keeps it running, and rejects the load with an error — matching the
+    documented behavior (`docs/design/daemon.md`). A half-applied config (daemon
+    view != FPGA) was the worst failure mode for a tester.
+
 ### Changed
   - **dp_clk timing + LUT optimization (WNS -0.001 → +0.132 ns; LUT 89.2% →
     87.9%).** Two targeted changes recovered the razor-thin timing the
