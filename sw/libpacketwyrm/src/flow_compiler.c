@@ -94,33 +94,40 @@ static pw_status append_fc_rule(struct pw_card_program *cp, const struct pw_fc_r
     return PW_OK;
 }
 
-/* Build the 168-bit hash key (the 6 CSR words) from a flow's header tuple:
- * {l3_dst(128b; IPv4 dst in low 32), l4_dst, l4_src, l3_proto}. Matches
- * pw_hash_classifier's assemble() exactly. Exact-tuple (no masks). */
-static void pw_fc_hash_words(const struct pw_flow *f, uint32_t w[6]) {
-    unsigned __int128 l3 = 0;
-    if (f->ipv6.present)
-        for (int i = 0; i < 16; i++) l3 = (l3 << 8) | f->ipv6.dst[i];  /* dst[0] = MSB */
-    else
-        l3 = f->ipv4.dst;
-    uint32_t ld = f->udp.dst_port, ls = f->udp.src_port, proto = 17u;   /* UDP */
-    w[0] = proto | ((uint32_t)ls << 8) | ((ld & 0xFFu) << 24);
-    w[1] = ((ld >> 8) & 0xFFu) | (uint32_t)((l3 & 0xFFFFFFu) << 8);
-    w[2] = (uint32_t)((l3 >> 24)  & 0xFFFFFFFFu);
-    w[3] = (uint32_t)((l3 >> 56)  & 0xFFFFFFFFu);
-    w[4] = (uint32_t)((l3 >> 88)  & 0xFFFFFFFFu);
-    w[5] = (uint32_t)((l3 >> 120) & 0xFFu);
+/* Build the 11 field-aligned hash key words from a flow's header tuple:
+ * l3_dst (w0..3, IPv4 dst in w0), l3_src (w4..7), {l4_src,l4_dst} (w8),
+ * {vlan,ethertype} (w9), {0,proto} (w10). Bit-identical to the RTL assemble(). */
+static void pw_fc_l3_words(unsigned __int128 a, uint32_t w[4]) {
+    w[0] = (uint32_t)(a & 0xFFFFFFFFu);
+    w[1] = (uint32_t)((a >> 32) & 0xFFFFFFFFu);
+    w[2] = (uint32_t)((a >> 64) & 0xFFFFFFFFu);
+    w[3] = (uint32_t)((a >> 96) & 0xFFFFFFFFu);
 }
-/* XOR-fold + multiply-shift -> bucket index. Bit-identical to the RTL. */
-static uint16_t pw_fc_hash_index(const uint32_t w[6], uint32_t seed) {
-    uint32_t k32  = w[0] ^ w[1] ^ w[2] ^ w[3] ^ w[4] ^ w[5];
+static void pw_fc_hash_words(const struct pw_flow *f, uint32_t w[11]) {
+    unsigned __int128 dst = 0, src = 0;
+    if (f->ipv6.present) {
+        for (int i = 0; i < 16; i++) dst = (dst << 8) | f->ipv6.dst[i];  /* dst[0] = MSB */
+        for (int i = 0; i < 16; i++) src = (src << 8) | f->ipv6.src[i];
+    } else { dst = f->ipv4.dst; src = f->ipv4.src; }
+    pw_fc_l3_words(dst, &w[0]);
+    pw_fc_l3_words(src, &w[4]);
+    w[8]  = ((uint32_t)f->udp.src_port << 16) | f->udp.dst_port;
+    uint32_t eth   = f->ipv6.present ? 0x86DDu : 0x0800u;
+    uint32_t vlan16 = f->l2.vlan_set ? (f->l2.vlan & 0x0FFFu) : 0u;
+    w[9]  = (vlan16 << 16) | eth;
+    w[10] = 17u;   /* UDP */
+}
+/* XOR-fold the 11 (masked) words + multiply-shift -> bucket. Identical to RTL. */
+static uint16_t pw_fc_hash_index(const uint32_t w[11], uint32_t seed) {
+    uint32_t k32 = 0;
+    for (int i = 0; i < 11; i++) k32 ^= w[i];
     uint32_t prod = k32 * (seed | 1u);
     int idx_w = 0; for (unsigned d = PWFPGA_HASH_DEPTH; d > 1; d >>= 1) idx_w++;
     return (uint16_t)(prod >> (32 - idx_w));
 }
 
 static pw_status append_hash_entry(struct pw_card_program *cp,
-                                   const uint32_t w[6], uint32_t lfid) {
+                                   const uint32_t w[11], uint32_t lfid) {
     if (cp->n_hash_entries >= PWFPGA_HASH_DEPTH) return PW_E_NO_RESOURCES;
     struct pw_fc_hash_entry *na = realloc(
         cp->hash_entries, sizeof(*cp->hash_entries) * (cp->n_hash_entries + 1));
@@ -128,19 +135,35 @@ static pw_status append_hash_entry(struct pw_card_program *cp,
     cp->hash_entries = na;
     struct pw_fc_hash_entry *e = &cp->hash_entries[cp->n_hash_entries++];
     e->index = 0; e->local_flow_id = lfid;
-    for (int i = 0; i < 6; i++) e->key_word[i] = w[i];
+    for (int i = 0; i < 11; i++) e->key_word[i] = w[i];   /* unmasked; masked in post-pass */
     return PW_OK;
 }
 
-/* Header-classified RX flow: classify by an EXACT header tuple via the hash
- * exact table -- payload-agnostic, scaling to NUM_FLOWS (vs the field
- * comparators' ~NCMP cap). The bucket index is assigned later (per-card seed
- * search) so the configured keys land collision-free. */
+/* Header-classified RX flow: classify by an EXACT (masked) header key via the
+ * hash exact table -- payload-agnostic, scaling to NUM_FLOWS. The bucket index
+ * + the global key mask are assigned in a per-card post-pass (so randomized /
+ * unmatched bits are masked out and the keys land collision-free). */
 static pw_status compile_header_classify(struct pw_card_program *rx_cp,
                                          const struct pw_flow *f, uint32_t rx_lfid) {
-    uint32_t w[6];
+    uint32_t w[11];
     pw_fc_hash_words(f, w);
     return append_hash_entry(rx_cp, w, rx_lfid);
+}
+
+/* Clear the bits a flow's modifiers randomize (and narrow by its match masks)
+ * from the global hash key mask, so those bits don't break classification. */
+static void pw_fc_relax_mask(uint32_t mask[11], const struct pw_flow *f) {
+    /* l3_dst (w0, IPv4 dst low 32 / IPv6 low 32) */
+    if (f->mod.dst_ipv4.mode != PWFPGA_FIELD_STATIC) mask[0] &= ~(uint32_t)f->mod.dst_ipv4.mask;
+    if (f->match_ipv4_dst_mask != 0xFFFFFFFFu)       mask[0] &=  f->match_ipv4_dst_mask;
+    /* l3_src (w4) */
+    if (f->mod.src_ipv4.mode != PWFPGA_FIELD_STATIC) mask[4] &= ~(uint32_t)f->mod.src_ipv4.mask;
+    /* l4_dst (w8 low 16) / l4_src (w8 high 16) */
+    if (f->mod.udp_dst.mode != PWFPGA_FIELD_STATIC)  mask[8] &= ~((uint32_t)f->mod.udp_dst.mask & 0xFFFFu);
+    if (f->match_udp_dst_mask != 0xFFFFu)            mask[8] &= (0xFFFF0000u | f->match_udp_dst_mask);
+    if (f->mod.udp_src.mode != PWFPGA_FIELD_STATIC)  mask[8] &= ~(((uint32_t)f->mod.udp_src.mask & 0xFFFFu) << 16);
+    /* vlan (w9 high 16) */
+    if (f->mod.vlan.mode != PWFPGA_FIELD_STATIC)     mask[9] &= ~(((uint32_t)f->mod.vlan.mask & 0x0FFFu) << 16);
 }
 
 static void mac_set(uint8_t *dst, const uint8_t *src) { memcpy(dst, src, 6); }
@@ -435,6 +458,50 @@ pw_status pw_flow_compile(const struct pw_config *cfg, struct pw_program *out,
     for (size_t c = 0; c < out->n_cards; c++) {
         struct pw_card_program *cp = &out->per_card[c];
         if (cp->n_hash_entries == 0) continue;
+
+        /* Global key mask: start keying on every field, then relax the bits any
+         * header-classified flow on this card randomizes (modifiers) or narrows
+         * (match masks), so those bits don't break the exact match. */
+        for (int w = 0; w < 11; w++) cp->hash_mask[w] = 0xFFFFFFFFu;
+        for (size_t i = 0; i < cfg->n_flows; i++) {
+            const struct pw_flow *f = &cfg->flows[i];
+            if (!f->classify_header) continue;
+            struct pwfpga_port_ref rx;
+            if (pw_config_resolve_port(cfg, f->rx_global_port, &rx) != PW_OK) continue;
+            if (rx.card_id != cp->card_id) continue;
+            pw_fc_relax_mask(cp->hash_mask, f);
+        }
+        /* Apply the mask to each stored key (HW masks the frame key the same). */
+        for (size_t i = 0; i < cp->n_hash_entries; i++)
+            for (int w = 0; w < 11; w++)
+                cp->hash_entries[i].key_word[w] &= cp->hash_mask[w];
+
+        /* Two flows with IDENTICAL masked keys can never be separated by any
+         * seed -- this happens when a field that distinguishes them is
+         * randomized by some flow's modifier (the global mask drops it) or
+         * cleared by a match mask. Report it clearly rather than as a generic
+         * "table full" after the seed search. */
+        for (size_t i = 0; i < cp->n_hash_entries; i++)
+            for (size_t j = 0; j < i; j++)
+                if (memcmp(cp->hash_entries[i].key_word, cp->hash_entries[j].key_word,
+                           sizeof cp->hash_entries[i].key_word) == 0) {
+                    if (diag) {
+                        diag->code = PW_E_INVAL;
+                        snprintf(diag->path, sizeof diag->path,
+                                 "card[%u].hash", cp->card_id);
+                        snprintf(diag->message, sizeof diag->message,
+                                 "header-classify flows in slots %u and %u are "
+                                 "indistinguishable under the hash key mask (a "
+                                 "field that separates them is randomized by a "
+                                 "modifier or cleared by match); make them differ "
+                                 "in a non-randomized field, or use classify: map",
+                                 cp->hash_entries[j].local_flow_id,
+                                 cp->hash_entries[i].local_flow_id);
+                    }
+                    return PW_E_INVAL;
+                }
+
+        /* Seed search: place the masked keys collision-free. */
         bool placed = false;
         for (uint32_t attempt = 0; attempt < 4096 && !placed; attempt++) {
             uint32_t seed = 0x9E3779B1u * (attempt + 1u) + 1u;   /* odd, well-mixed */
@@ -448,7 +515,7 @@ pw_status pw_flow_compile(const struct pw_config *cfg, struct pw_program *out,
             }
             if (!collision) { cp->hash_seed = seed; placed = true; }
         }
-        if (!placed) return PW_E_NO_RESOURCES;   /* couldn't place collision-free */
+        if (!placed) return PW_E_NO_RESOURCES;   /* keys collide even varying the seed */
     }
     return PW_OK;
 }

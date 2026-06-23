@@ -9,23 +9,29 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
-  - **Hash exact classifier — high-count payload-agnostic flows**
-    (`pw_hash_classifier`; CSR window `PWFPGA_WIN_FC_HASH` @ 0x3000 + seed reg
-    `PWFPGA_REG_HASH_SEED`). Classifies a frame by an EXACT match on a multi-field
-    HEADER tuple `{l3_dst, l4_dst, l4_src, l3_proto}` (168-bit key), scaling
-    payload-agnostic classification to the checker's `NUM_FLOWS` (vs the field
-    comparators' ~`NCMP` cap) — and without the test-header `flow_id` the flow-id
-    map needs, so the payload stays free. Direct-indexed BRAM hash table (1 read
-    + 1 full-key verify, NOT an N-way parallel match, so it routes): the 168-bit
-    key XOR-folds to 32 bits, a Dietzfelbinger multiply-shift (with a seed)
-    chooses the bucket, and the stored full key is compared for an exact hit
-    (the hash only picks the bucket — no misclassification). The compiler routes
-    `classify: header` flows to this table and searches a hash **seed** that
-    places the configured keys collision-free; the field+UDF classifier then
-    carries only punt/forward. Data-plane precedence: flow-id **map > hash
-    classifier > field classifier**. Bit-identical HW/SW hash. Completes Phase 5
-    of `docs/design/generic-classifier.md`. (`configs/examples/
-    phase3-header-classify.yaml` is now a 24-flow header-keyed scale test.)
+  - **Hash exact classifier — high-count payload-agnostic flows, wide masked
+    key** (`pw_hash_classifier`; CSR window `PWFPGA_WIN_FC_HASH` @ 0x3000, mask
+    window `PWFPGA_WIN_HASH_MASK` @ 0x2F00, seed reg `PWFPGA_REG_HASH_SEED`).
+    Classifies a frame by an EXACT, MASKED match on a WIDE header key — 11
+    field-aligned 32-bit words covering the full IPv4/IPv6 **5-tuple** (src+dst
+    IP, src+dst port, proto) **+ VLAN + ethertype** — scaling payload-agnostic
+    classification to the checker's `NUM_FLOWS` (vs the field comparators' ~`NCMP`
+    cap) and without the test-header `flow_id`, so the payload stays free.
+    Direct-indexed BRAM hash table (1 read + 1 full-key verify, NOT an N-way
+    parallel match, so it routes): the key XOR-folds to 32 bits, a Dietzfelbinger
+    multiply-shift (seed) chooses the bucket, and the stored full key is compared
+    for an exact hit (the hash only picks the bucket — no misclassification). A
+    **global key mask** (ANDed into both the hash input and the verify) selects
+    which bits participate: masking out a field/bits lets a generator **modifier
+    randomize** them while the flow still classifies. The compiler routes
+    `classify: header` flows here, builds the global mask (key everything, then
+    relax the bits any flow randomizes via modifiers or narrows via match masks),
+    and searches a hash **seed** that places the masked keys collision-free; the
+    field+UDF classifier then carries only punt/forward. Data-plane precedence:
+    flow-id **map > hash classifier > field classifier**. Bit-identical HW/SW
+    hash + key build. Completes Phase 5 of `docs/design/generic-classifier.md`.
+    Examples: `phase3-header-classify.yaml` (24-flow exact scale test),
+    `phase3-header-random.yaml` (randomized src port, masked out of the key).
   - **Classifier redesign — unified field+UDF comparator engine; legacy
     classifier retired** (`pw_field_classifier` + `pw_slice_match`; CSR windows
     `PWFPGA_WIN_FC_CMP`/`_UDF`/`_RULE` @ 0x2000). Replaces the parallel

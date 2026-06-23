@@ -486,8 +486,7 @@ static void test_header_classify_compiles(void) {
         "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
         "    ipv4: { src: \"192.0.2.1\", dst: \"192.0.2.2\" }\n"
         "    udp:  { src_port: 49152, dst_port: 50007 }\n"
-        "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
-        "    match: { ipv4_dst: 0 }\n";   /* match udp_dst only (1 slice) */
+        "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n";  /* full tuple */
     struct pw_config *cfg = pw_config_new();
     struct pw_diag d = {0};
     PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
@@ -503,8 +502,52 @@ static void test_header_classify_compiles(void) {
     PW_ASSERT_EQ(prog->per_card[0].n_hash_entries, 1);
     PW_ASSERT_EQ(prog->per_card[0].hash_entries[0].local_flow_id, 0);
     PW_ASSERT(prog->per_card[0].hash_seed != 0);   /* a collision-free seed found */
-    /* key word0 = proto(17) | l4_src(49152)<<8 | (l4_dst(50007)&0xFF)<<24. */
-    PW_ASSERT_EQ(prog->per_card[0].hash_entries[0].key_word[0], 0x57C00011u);
+    /* no modifiers / full match -> key mask is all-ones (key everything). */
+    PW_ASSERT_EQ(prog->per_card[0].hash_mask[0], 0xFFFFFFFFu);
+    /* wide field-aligned key words: w0 = l3_dst (192.0.2.2), w4 = l3_src
+     * (192.0.2.1), w8 = {l4_src 49152, l4_dst 50007}, w10 = proto 17. */
+    PW_ASSERT_EQ(prog->per_card[0].hash_entries[0].key_word[0], 0xC0000202u);
+    PW_ASSERT_EQ(prog->per_card[0].hash_entries[0].key_word[4], 0xC0000201u);
+    PW_ASSERT_EQ(prog->per_card[0].hash_entries[0].key_word[8], ((uint32_t)49152u << 16) | 50007u);
+    PW_ASSERT_EQ(prog->per_card[0].hash_entries[0].key_word[10], 17u);
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
+/* Two header-classify flows that differ ONLY in a field they both randomize
+ * (src port) collapse to the same masked hash key -> the compiler must reject
+ * the config with a clear diagnostic, not silently misclassify. */
+static void test_header_classify_mask_collision(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n"
+        "  - id: 0\n"
+        "    pci: \"0000:07:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "flows:\n"
+        "  - id: 1\n"
+        "    classify: header\n"
+        "    tx_global_port: 0\n    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv4: { src: \"192.0.2.1\", dst: \"198.51.100.1\" }\n"
+        "    udp:  { src_port: 1000, dst_port: 50001 }\n"
+        "    traffic: { frame_len: 256, rate_bps: 100000000 }\n"
+        "    modifiers: { udp_src: { mode: random, mask: 0xffff } }\n"
+        "  - id: 2\n"
+        "    classify: header\n"
+        "    tx_global_port: 0\n    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv4: { src: \"192.0.2.1\", dst: \"198.51.100.1\" }\n"
+        "    udp:  { src_port: 2000, dst_port: 50001 }\n"     /* differs only in src port */
+        "    traffic: { frame_len: 256, rate_bps: 100000000 }\n"
+        "    modifiers: { udp_src: { mode: random, mask: 0xffff } }\n";
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    struct pw_program *prog = pw_program_new();
+    /* both flows differ only in src port, which is randomized + masked out ->
+     * identical masked keys -> compile rejects with PW_E_INVAL. */
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_E_INVAL);
     pw_program_free(prog);
     pw_config_free(cfg);
 }
@@ -1124,6 +1167,7 @@ int main(void) {
         { "flow_field_modifiers", test_flow_field_modifiers },
         { "background_and_match_mask", test_background_and_match_mask },
         { "header_classify_compiles", test_header_classify_compiles },
+        { "header_classify_mask_collision", test_header_classify_mask_collision },
         { "encap_flow_compiles", test_encap_flow_compiles },
         { "fake_backend", test_fake_backend },
         { "bar_backend_path", test_bar_backend_path },
