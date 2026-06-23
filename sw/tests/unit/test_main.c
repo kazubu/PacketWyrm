@@ -823,14 +823,19 @@ static void test_program_card_tables(void) {
     PW_ASSERT_EQ(pw_program_card_tables(b.ops, b.ctx, cp), PW_OK);
     struct pw_fake_wr_counts wc;
     pw_fake_backend_wr_counts(b.ctx, &wc);
-    PW_ASSERT_EQ(wc.flowid_map, (uint32_t)cp->n_map_entries);
+    /* Counts include the invalidate-to-capacity writes (the whole point: a
+     * reload writes every slot so stale entries can't survive). */
+    PW_ASSERT_EQ(wc.flowid_map, PWFPGA_FLOWID_MAP_DEPTH + (uint32_t)cp->n_map_entries);
     PW_ASSERT_EQ(wc.fc_cmp,     (uint32_t)cp->n_fc_cmps * 3u);
     PW_ASSERT_EQ(wc.fc_udf,     (uint32_t)cp->n_fc_udfs * 3u);
-    PW_ASSERT_EQ(wc.fc_rule,    (uint32_t)cp->n_fc_rules * 3u);
-    uint32_t exp_hash = cp->n_hash_entries
+    /* configured rules: WORD0+LFID+LIF (3); disabled tail rules: WORD0 (1). */
+    PW_ASSERT_EQ(wc.fc_rule,
+                 (uint32_t)cp->n_fc_rules * 3u + (PWFPGA_NUM_RULE - (uint32_t)cp->n_fc_rules));
+    /* HASH_DEPTH bucket invalidations + (if any) mask + seed + per-entry writes. */
+    uint32_t exp_hash = PWFPGA_HASH_DEPTH + (cp->n_hash_entries
         ? (uint32_t)(PWFPGA_HASH_KEY_WORDS + 1u +
                      cp->n_hash_entries * (PWFPGA_HASH_KEY_WORDS + 1u))
-        : 0u;
+        : 0u);
     PW_ASSERT_EQ(wc.hash, exp_hash);
 
     /* A backend without write32 but a program that needs the classifier windows

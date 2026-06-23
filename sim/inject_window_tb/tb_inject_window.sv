@@ -104,6 +104,20 @@ module tb_inject_window;
         chk("odd beat1 keep 4B", keeps[1], 8'h0F);
         chk("odd last on beat1", lasts[1], 1);
 
+        // --- scenario 3: oversized byte_len is clamped to BUF_BYTES (512).
+        //     A host that asks for more than the buffer holds must not emit a
+        //     frame longer than the buffer (the doc promises "len clamped"). ---
+        scen = "clamp_len";
+        beats.delete(); keeps.delete(); lasts.delete();
+        wr(INFO_OFF, (0 << 16) | 32'd600);    // egress=0, byte_len=600 (> 512)
+        wr(CTRL_OFF, 32'h1);
+        @(negedge clk); m_tready = 1'b1; repeat (80) @(posedge clk); m_tready = 1'b0;
+        chk("clamped to 64 beats", beats.size(), 512/8);   // ceil(512/8) = 64
+        chk("clamp last beat full", keeps[beats.size()-1], 8'hFF);
+        chk("clamp last flagged",   lasts[beats.size()-1], 1);
+        rd_addr = CTRL_OFF; repeat(2) @(posedge clk);
+        chk("clamp busy clear", rd_data[0], 0);
+
         if (errors == 0) $display("ALL INJECT_WINDOW SCENARIOS PASS");
         else begin $display("FAILED with %0d error(s)", errors); $fatal; end
         $finish;

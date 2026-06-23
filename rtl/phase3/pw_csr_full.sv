@@ -1,23 +1,25 @@
 // PacketWyrm Phase 3 full CSR fabric.
 //
 // AXI4-Lite slave (16-bit address space, covering BAR0's first
-// 64 KB) that wraps:
+// 64 KB) that wraps (window bases per packetwyrm/csr.h):
 //   - The identity / global control / timestamp registers from
 //     pw_csr_min.
-//   - The classifier table window (0x1000..0x1FFF) via
-//     pw_classifier_window.
-//   - The flow table window (0x2000..0x2FFF) via pw_flow_window.
-//   - The stats snapshot window (0x3000..0x3FFF) via
-//     pw_stats_snapshot.
-//   - The latency-histogram window (0x4000..0x4FFF) as an addressed
+//   - The TEST_RX flow-id map (0x0400..0x07FF).
+//   - The unified field+UDF+hash classifier programming: comparators
+//     (0x2000), UDFs (0x2100), rules (0x2200), hash key-mask (0x2F00)
+//     and the hash exact table (0x3000..0x4FFF). (The legacy
+//     pw_classifier_window has been retired.)
+//   - The flow table window (0x6000..0x9FFF) via pw_flow_window.
+//   - The latency-histogram window (0xA000..0xBFFF) as an addressed
 //     pass-through to the data plane's BRAM histogram
 //     (pw_lat_histogram): the read address decodes to a flat
 //     (flow,bucket) BRAM address and the 64-bit count returns one
 //     cycle later.
+//   - The stats snapshot window (0xC000..0xFFFF) via pw_stats_snapshot.
 //
 // A single AXI-Lite write decode produces the `wr_en/wr_addr/wr_data`
 // strobe that the classifier and flow windows consume. Writes to
-// PWFPGA_REG_STATS_SNAPSHOT_TRIGGER (0x3FFC) trigger the stats shadow;
+// PWFPGA_REG_STATS_SNAPSHOT_TRIGGER trigger the stats shadow;
 // the histogram is read live (not snapshotted).
 
 `default_nettype none

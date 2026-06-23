@@ -215,8 +215,9 @@ module pw_data_plane_axis #(
 );
 
     // Source-select index space for the TX arbiter: 0..PW_PORTS-1 select
-    // ingress SAFs, PW_PORTS selects the local flow generator.
-    localparam int SELW  = $clog2(PW_PORTS + 1);
+    // ingress SAFs, PW_PORTS selects the local flow generator, PW_PORTS+1
+    // selects the host inject source -- so the index space is PW_PORTS+2 wide.
+    localparam int SELW  = $clog2(PW_PORTS + 2);
     localparam int RW    = 5;            // route tag: {is_punt, egress[3:0]}
     localparam int MW    = 100;          // punt metadata: {rx_ts[63:0], ingress[3:0], logical_if_id[31:0]}
 
@@ -321,7 +322,8 @@ module pw_data_plane_axis #(
             );
 
             // Hash exact classifier: header-keyed TEST_RX, high count (-> checker
-            // slot). Latency 2 from key_valid, aligned with rx_fc + the map.
+            // slot). Latency 3 from key_valid (masked-key register stage); the
+            // map and field results are realigned to +3 to match (see below).
             logic                            hcv;
             logic [$clog2(PW_NUM_FLOWS)-1:0] hcl;
             pw_hash_classifier #(.NUM_FLOWS(PW_NUM_FLOWS), .DEPTH(HASH_DEPTH)) u_hclass (

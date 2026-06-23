@@ -223,6 +223,12 @@ Phase 0; access is gated by socket permissions.
   cross-card latency requests, unknown cards.
 - `compile` produces per-card `pw_card_program` records.
 - `stage` writes classifier / flow rows into the FPGA shadow regions.
+  Each table is written to its **full capacity**: the configured entries
+  are enabled and every remaining slot is invalidated (flow rows zeroed,
+  rules `enable=0`, hash buckets + flow-id-map entries `valid=0`). This is
+  what makes a reload that *shrinks* the config safe — the RTL commit only
+  copies shadow&rarr;live, so without invalidating the un-written slots the
+  old (now-deleted) flows / rules / classifier entries would stay live.
 - `commit` toggles the commit bits on each affected card.
 - On any failure during `stage`, the daemon rolls back: it restores
   the previous shadow rows and refuses to commit. The previous active
