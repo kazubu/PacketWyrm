@@ -1,9 +1,11 @@
 # CSR / register map
 
-All control / status registers live in **BAR0**. Phase 1 ships BAR-only
-access; Phase 2 adds a slow-path DMA ring (TX and RX). The map below is
-the initial proposal; concrete field bit definitions are owned by the
-`fpga/as02mc04/` sources and the matching `libpacketwyrm` headers.
+All control / status registers live in **BAR0**. **Implemented today is BAR-only
+access** — including the slow path, which is the BAR-polled punt-RX / inject-TX
+windows (below), *not* a DMA ring. The "Slow-path DMA rings" section near the end
+is a **future design sketch, not implemented**. Concrete field bit definitions
+are owned by the `fpga/as02mc04/` sources and the matching `libpacketwyrm`
+headers (those are authoritative; this map is intent).
 
 ## Conventions
 
@@ -312,7 +314,11 @@ sequence (write words -> INFO -> GO -> poll busy). Verified on HW by
 `pw_phase3_inject`: a frame injected out egress 0 loops over the DAC to
 RX1, is PUNTed back, and read by `slow_path_rx` byte-identical.
 
-## Slow-path DMA rings (Phase 2)
+## Slow-path DMA rings (future design — NOT implemented)
+
+> The slow path in the shipping design is the BAR-polled punt-RX / inject-TX
+> windows documented above. The DMA ring below is a forward-looking sketch for
+> when slow-path throughput outgrows BAR polling; no RTL or driver implements it.
 
 ```
 slow_rx_base_low/high  RW   descriptor ring physical base

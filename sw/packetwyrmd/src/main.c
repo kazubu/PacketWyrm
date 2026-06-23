@@ -1,8 +1,9 @@
-/* packetwyrmd: load config, open backends, create TAPs, run the
- * host packet plane until SIGINT/SIGTERM. The full control socket
- * + per-card workers ship later; this is the minimum that
- * presents PacketWyrm to the rest of the host (Linux sees TAPs,
- * fake or real backend sees flow programming). */
+/* packetwyrmd: load + compile the config, open backends, program the cards,
+ * create TAPs, and serve control RPCs until SIGINT/SIGTERM. Runs one host-plane
+ * worker thread per card (punt RX -> TAP, TAP -> slow-path inject), a JSON-RPC
+ * control socket (config.load with rollback, flow/test control, stats/hist
+ * reads), and an optional Prometheus exporter. Works against the real BAR
+ * backend or, with -F, the no-op fake backend. */
 
 #include <errno.h>
 #include <getopt.h>
@@ -375,35 +376,41 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
                               (*prog_pp)->flow_meta[k].global_flow_id, false);
     }
 
-    /* Push the new program into every open backend, then swap. The FPGA has
-     * now been written, so we swap the daemon's view regardless; but a hard
-     * programming fault (card drop / BAR error) is surfaced in the response so
-     * the operator knows the FPGA may not match the loaded config. */
+    /* Stage: program the new config into every open backend. On a hard fault
+     * (card drop / BAR error) ROLL BACK -- re-program the previous config so the
+     * FPGA matches the daemon's unchanged view, keep the old config running, and
+     * reject the load. A half-applied config (daemon view != FPGA) is the worst
+     * failure mode for a tester; see docs/design/daemon.md. */
     pw_status prog_st = program_backends(new_prog, new_cfg, cards);
+    if (prog_st != PW_OK) {
+        fprintf(stderr, "load: stage failed (%s) -- rolling back to the previous "
+                "config (still running)\n", pw_strerror(prog_st));
+        (void)program_backends(*prog_pp, *cfg_pp, cards);   /* restore the FPGA */
+        pw_program_free(new_prog);
+        pw_config_free(new_cfg);
+        char msg[160];
+        snprintf(msg, sizeof msg,
+                 "stage failed (%s); rolled back, previous config still running",
+                 pw_strerror(prog_st));
+        return build_error(msg);
+    }
 
+    /* Success: swap the daemon's view to the new (now-programmed) config. */
     pw_program_free(*prog_pp);
     pw_config_free(*cfg_pp);
     *cfg_pp  = new_cfg;
     *prog_pp = new_prog;
 
-    if (prog_st != PW_OK)
-        fprintf(stderr, "load: FPGA programming hard-failed (%s) -- "
-                "config swapped but device may be out of sync\n", pw_strerror(prog_st));
-
     resp = json_object_new_object();
-    json_object_object_add(resp, "ok", json_object_new_boolean(prog_st == PW_OK));
-    if (prog_st != PW_OK)
-        json_object_object_add(resp, "program_error",
-                               json_object_new_string(pw_strerror(prog_st)));
+    json_object_object_add(resp, "ok", json_object_new_boolean(true));
     json_object_object_add(resp, "n_flows",
                            json_object_new_int((int)new_cfg->n_flows));
     {
         size_t total_rules = 0;
         for (size_t ci = 0; ci < new_prog->n_cards; ci++)
             total_rules += new_prog->per_card[ci].n_fc_rules;
-        /* Key name matches the CLI + docs/design/rpc-protocol.md contract
-         * (n_classifier_rows); a prior n_classifier_rules typo made the CLI
-         * print 0 rows. */
+        /* Key name matches the CLI + docs/design/rpc-protocol.md contract;
+         * a prior n_classifier_rules typo made the CLI print 0 rows. */
         json_object_object_add(resp, "n_classifier_rows",
                                json_object_new_int((int)total_rules));
     }
