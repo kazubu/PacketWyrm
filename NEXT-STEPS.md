@@ -35,25 +35,29 @@ As-built design: `docs/design/csr-map.md`, `docs/design/rtl-modules.md`,
 
 ## Branch / tree state
 
-Working branch **`phase3-timing-recovery`**, 9 commits ahead of `main`
-(not merged — the user pushes/merges). Tip-first:
+All work is **merged to `main`** (the user pushes — `main` is unpushed).
+Recent tip (newest first):
 
 ```
-8e2e89c docs: SAF BRAM-backing future task
-d03d437 config: FORWARD rules from YAML
-f600ab1 phase3: advertise capabilities (0x6C)
-36e115e docs: parity sweep (slow-path / FORWARD)
-4e3889f phase3: slow-path TX inject (host -> FPGA)
-6eb84e9 phase3: PUNT / slow-path RX (FPGA -> host)
-7c93ffe phase3: host-selectable FORWARD egress + doc parity
-7008e4e docs: FORWARD validated on silicon
-9c2a706 phase3: recover timing margin (2-stage parser)
+Merge phase3-varlen-rfc2544: variable frame length + RFC 2544 driver
+Merge phase3-inject-txts: inject TX wire-timestamp -> completes #60
+Merge phase3-punt-rxts: punt RX wire-timestamp (servo PTP hook) [#60]
+Merge phase3-tool-migration: standalone HW tools -> field classifier
+(earlier) hash exact classifier, unified field+UDF classifier, IPv4/IPv6 parity
 ```
+
+Three classification paths coexist (precedence map > hash > field): the flow-id
+map (structured test flows), the hash exact table (high-count payload-agnostic),
+and the field+UDF comparator classifier (punt/forward/few-rule). The generator
+honors `frame_len_min/max/step` (fixed RFC2544 size + IMIX sweep). HW state:
+WNS ~0 (design at its Fmax ceiling, 89% LUT) — a dedicated timing-recovery pass
+(pipeline the hash multiply->BRAM + token-bucket paths) is recommended before
+adding more dp_clk logic.
 
 Standalone HW tools (`sw/tests/`, run via `sudo env PW_BACKEND=vfio
 sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
 `pw_phase3_loopback`, `pw_phase3_forward`, `pw_phase3_punt`,
-`pw_phase3_inject`, `pw_flash`, `pw_reboot`.
+`pw_phase3_inject`, `pw_rfc2544`, `pw_flash`, `pw_reboot`.
 
 ## Remaining / next
 

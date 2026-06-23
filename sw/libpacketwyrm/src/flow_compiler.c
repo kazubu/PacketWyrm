@@ -272,7 +272,18 @@ static pw_status compile_one_flow(struct pw_program *out,
      * 32-bit Q16.16 maximum (= 65535.99 bytes/cycle, well beyond
      * any line rate we target). */
     {
-        unsigned __int128 num = (unsigned __int128)f->traffic.rate_bps * 65536u;
+        /* The token bucket meters frame bytes. rate_bps is that byte rate (x8);
+         * rate_pps is realized as pps x (metered frame bytes) x 8, where the
+         * metered frame is the min/fixed size (matches the bucket cost, which
+         * also uses the minimum frame). Exactly one of the two is set (validated
+         * at parse time). */
+        uint64_t eff_rate_bps = f->traffic.rate_bps;
+        if (eff_rate_bps == 0 && f->traffic.rate_pps) {
+            uint32_t flen = f->traffic.frame_len_fixed_set ? f->traffic.frame_len_fixed
+                                                           : f->traffic.frame_len_min;
+            eff_rate_bps = f->traffic.rate_pps * (uint64_t)flen * 8u;
+        }
+        unsigned __int128 num = (unsigned __int128)eff_rate_bps * 65536u;
         unsigned __int128 den = (unsigned __int128)PWFPGA_DATA_PLANE_CLOCK_HZ * 8u;
         unsigned __int128 q   = den ? (num / den) : 0;
         tx_row.tokens_per_tick_fp = (q > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)q;

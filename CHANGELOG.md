@@ -8,6 +8,21 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ## Unreleased
 
+### Fixed
+  - **Code-review hardening (config/validation/daemon).** `rate_pps` is now
+    realized (compiler computes pps × frame bytes → token rate; a pps-only flow
+    transmitted 0 frames before — HW-validated tx>0, loss=0). The config parser
+    now validates traffic: exactly one of `rate_bps`/`rate_pps`, frame-length
+    range [64,1518], `frame_len_min ≤ frame_len_max`, `frame_len_step ≥ 1`, and
+    `frame_len` vs the `frame_len_min/max/step` triple are mutually exclusive
+    (schema gained the matching `oneOf`; max tightened 9216→1518 to the FIFO/RTL
+    limit). `program_backends` returns the worst hard status (card drop / BAR
+    error), and `config.load` reports it (`ok=false` + `program_error`) instead
+    of always succeeding. RPC `config.load` response key fixed
+    `n_classifier_rules`→`n_classifier_rows` (matches the CLI + docs; the CLI
+    printed 0 rows). `pw_rfc2544` now aborts on any CSR op failure (naming the
+    failing access) and validates `trial_ms`.
+
 ### Added
   - **Variable frame length in the generator + RFC 2544 driver** — the test
     generator (`pw_flow_gen_multi`) now honors `frame_len_min/max/step`: each

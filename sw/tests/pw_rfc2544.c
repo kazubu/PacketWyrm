@@ -66,18 +66,29 @@ static void build_flow(struct pwfpga_flow_config *f, uint64_t rate_bps, int fram
 
 struct trial { uint64_t tx, rx, lost; double min_ns, avg_ns, max_ns; };
 
+/* Abort the whole measurement on any CSR failure: a benchmark that silently
+ * continues past a failed write/read reports meaningless numbers. */
+#define MUST(call, what) do { \
+    pw_status _s = (call); \
+    if (_s != PW_OK) { \
+        fprintf(stderr, "FATAL: %s failed (%d) -- aborting (card dropped / BAR error?)\n", \
+                (what), (int)_s); \
+        exit(1); \
+    } } while (0)
+
 /* Program {rate, frame}, re-baseline, run trial_ms, snapshot slot 0. */
 static void run_trial(const struct pw_card_backend_ops *o, void *ctx,
                       uint64_t rate_bps, int frame, int trial_ms, struct trial *t) {
     struct pwfpga_flow_config f;
     build_flow(&f, rate_bps, frame);
-    o->flow_write(ctx, 0, &f); o->flow_commit(ctx);
+    MUST(o->flow_write(ctx, 0, &f), "flow_write");
+    MUST(o->flow_commit(ctx), "flow_commit");
     usleep(30000);                                 /* let the new rate settle (token bucket drain) */
-    if (o->write32) o->write32(ctx, PWFPGA_REG_STATS_CLEAR, 1u);  /* re-baseline */
+    MUST(o->write32(ctx, PWFPGA_REG_STATS_CLEAR, 1u), "STATS_CLEAR");  /* re-baseline */
     usleep((useconds_t)trial_ms * 1000);
-    o->stats_snapshot(ctx);
+    MUST(o->stats_snapshot(ctx), "stats_snapshot");
     struct pw_flow_stats st = {0};
-    o->flow_stats_read(ctx, 0, &st);
+    MUST(o->flow_stats_read(ctx, 0, &st), "flow_stats_read");
     const double NS = 1e9 / (double)PWFPGA_DATA_PLANE_CLOCK_HZ;   /* 6.4 ns/tick */
     t->tx = st.tx_frames; t->rx = st.rx_frames; t->lost = st.lost_packets_estimated;
     t->min_ns = st.min_latency * NS; t->max_ns = st.max_latency * NS;
@@ -100,12 +111,17 @@ int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s <bdf> [trial_ms]\n", argv[0]); return 2; }
     const char *bdf = argv[1];
     int trial_ms = (argc >= 3) ? atoi(argv[2]) : 100;
+    if (trial_ms < 1 || trial_ms > 60000) {
+        fprintf(stderr, "trial_ms must be in [1, 60000] (got %d)\n", trial_ms);
+        return 2;
+    }
 
     pw_vfio_bind(bdf);
     struct pw_card_backend be;
     if (pw_bar_backend_open(bdf, &be) != PW_OK) { fprintf(stderr, "backend open failed\n"); return 1; }
     const struct pw_card_backend_ops *o = be.ops;
-    if (!o->flow_write || !o->stats_snapshot || !o->flow_stats_read) {
+    if (!o->flow_write || !o->flow_commit || !o->stats_snapshot ||
+        !o->flow_stats_read || !o->write32) {
         fprintf(stderr, "backend lacks flow/stats ops\n"); return 1;
     }
     /* Clear any stale flow rows left by a prior run/config so only our single

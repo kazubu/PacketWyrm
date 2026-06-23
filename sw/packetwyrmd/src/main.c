@@ -206,12 +206,19 @@ static uint64_t now_ms(void) {
 
 /* ---- Backend programming -------------------------------------------- */
 
-/* Push the compiled per-card program into each open backend. Errors
- * (e.g. NOT_IMPLEMENTED on the BAR backend whose RTL has no flow
- * table yet) are logged but not fatal. */
-static void program_backends(const struct pw_program *prog,
-                             const struct pw_config *cfg,
-                             struct card_runtime cards[]) {
+/* Push the compiled per-card program into each open backend. Returns the worst
+ * *hard* status seen (PW_OK if all writes succeeded or only returned
+ * NOT_IMPLEMENTED, which is the legacy soft case for a bitstream lacking a
+ * window). A real fault (BAR write error, card drop) is returned so the caller
+ * can report that the FPGA is NOT in sync with the daemon's config. */
+#define PB_CHK(call) do { \
+    pw_status _s = (call); \
+    if (_s != PW_OK && _s != PW_E_NOT_IMPLEMENTED && worst == PW_OK) worst = _s; \
+} while (0)
+static pw_status program_backends(const struct pw_program *prog,
+                                  const struct pw_config *cfg,
+                                  struct card_runtime cards[]) {
+    pw_status worst = PW_OK;
     for (size_t ci = 0; ci < prog->n_cards; ci++) {
         const struct pw_card_program *cp = &prog->per_card[ci];
         if (!cards[ci].open) continue;
@@ -222,14 +229,15 @@ static void program_backends(const struct pw_program *prog,
          * running data plane cannot wedge it (configuration is preserved,
          * and we re-commit it immediately below). */
         if (b->ops->write32)
-            (void)b->ops->write32(b->ctx, PWFPGA_REG_DP_RESET, 1u);
+            PB_CHK(b->ops->write32(b->ctx, PWFPGA_REG_DP_RESET, 1u));
         for (size_t r = 0; r < cp->n_flow_rows; r++) {
             pw_status s = b->ops->flow_write
                 ? b->ops->flow_write(b->ctx, (uint32_t)r, &cp->flow_rows[r])
                 : PW_E_NOT_IMPLEMENTED;
             if (s != PW_OK) any_err = true;
+            if (s != PW_OK && s != PW_E_NOT_IMPLEMENTED && worst == PW_OK) worst = s;
         }
-        if (b->ops->flow_commit) (void)b->ops->flow_commit(b->ctx);
+        if (b->ops->flow_commit) PB_CHK(b->ops->flow_commit(b->ctx));
         /* TEST_RX flow-id map: test flows are classified by the flow-id map
          * (not classifier rules), so program one entry per test flow. */
         for (size_t m = 0; m < cp->n_map_entries; m++) {
@@ -286,7 +294,9 @@ static void program_backends(const struct pw_program *prog,
                 (unsigned)cfg->cards[ci].id, cards[ci].which);
         }
     }
+    return worst;
 }
+#undef PB_CHK
 
 /* Look up the (tx) row index for a given global_flow_id. */
 static int find_tx_row(const struct pw_program *prog,
@@ -416,23 +426,36 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
                               (*prog_pp)->flow_meta[k].global_flow_id, false);
     }
 
-    /* Push the new program into every open backend, then swap. */
-    program_backends(new_prog, new_cfg, cards);
+    /* Push the new program into every open backend, then swap. The FPGA has
+     * now been written, so we swap the daemon's view regardless; but a hard
+     * programming fault (card drop / BAR error) is surfaced in the response so
+     * the operator knows the FPGA may not match the loaded config. */
+    pw_status prog_st = program_backends(new_prog, new_cfg, cards);
 
     pw_program_free(*prog_pp);
     pw_config_free(*cfg_pp);
     *cfg_pp  = new_cfg;
     *prog_pp = new_prog;
 
+    if (prog_st != PW_OK)
+        fprintf(stderr, "load: FPGA programming hard-failed (%s) -- "
+                "config swapped but device may be out of sync\n", pw_strerror(prog_st));
+
     resp = json_object_new_object();
-    json_object_object_add(resp, "ok", json_object_new_boolean(true));
+    json_object_object_add(resp, "ok", json_object_new_boolean(prog_st == PW_OK));
+    if (prog_st != PW_OK)
+        json_object_object_add(resp, "program_error",
+                               json_object_new_string(pw_strerror(prog_st)));
     json_object_object_add(resp, "n_flows",
                            json_object_new_int((int)new_cfg->n_flows));
     {
         size_t total_rules = 0;
         for (size_t ci = 0; ci < new_prog->n_cards; ci++)
             total_rules += new_prog->per_card[ci].n_fc_rules;
-        json_object_object_add(resp, "n_classifier_rules",
+        /* Key name matches the CLI + docs/design/rpc-protocol.md contract
+         * (n_classifier_rows); a prior n_classifier_rules typo made the CLI
+         * print 0 rows. */
+        json_object_object_add(resp, "n_classifier_rows",
                                json_object_new_int((int)total_rules));
     }
     return resp;
