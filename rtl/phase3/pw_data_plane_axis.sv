@@ -334,9 +334,11 @@ module pw_data_plane_axis #(
             );
 
             // TEST_RX flow-id map: a frame's test_flow_id directly indexes the
-            // checker slot (no per-flow comparator). valid 1 cycle after the key;
-            // the hash classifier is latency 3, so align the map result (+1 of
-            // its own) and the field result to +3 with one extra register each.
+            // checker slot (no per-flow comparator). Latencies are all measured
+            // from rx_kv (the cycle the key is presented): the map is +1, the
+            // field classifier +2, the hash classifier +3. Realign the map (+2)
+            // and field (+1) results so all three land at +3 -- matching the
+            // hash -- at the precedence mux below.
             logic                            mv1, mv2, mv3;
             logic [$clog2(PW_NUM_FLOWS)-1:0] ml1, ml2, ml3;
             pw_flowid_map #(.NUM_FLOWS(PW_NUM_FLOWS), .MAP_DEPTH(MAP_DEPTH)) u_fmap (

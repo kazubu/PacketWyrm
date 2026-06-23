@@ -96,4 +96,11 @@ void               pw_program_free(struct pw_program *p);
  * Returns PW_OK or a negative pw_status; on error, *diag may be filled. */
 pw_status pw_flow_compile(const struct pw_config *cfg, struct pw_program *out, struct pw_diag *diag);
 
+/* Write one compiled per-card program's tables (flow rows + commit, flow-id map,
+ * field+UDF classifier, hash table) into a backend. Returns the worst hard
+ * status (NOT_IMPLEMENTED treated as soft). Shared by the daemon + tests. */
+struct pw_card_backend_ops;
+pw_status pw_program_card_tables(const struct pw_card_backend_ops *ops, void *ctx,
+                                 const struct pw_card_program *cp);
+
 #endif

@@ -186,8 +186,10 @@ make -C sw            # libpacketwyrm + packetwyrmd + pktwyrm
 make -C sw test       # host unit tests
 make -C sw e2e        # daemon <-> CLI smoke
 
-# Daemon against the example single-card config (uses the fake backend)
-sudo ./sw/build/packetwyrmd -v -c configs/examples/single-card.yaml &
+# Daemon against the example single-card config. -F/--allow-fake permits the
+# no-op fake backend when no card's BAR can be opened (without it a BAR-open
+# failure is a hard error, so -F is required for a no-FPGA run).
+sudo ./sw/build/packetwyrmd -v -F -c configs/examples/single-card.yaml &
 sudo ./sw/build/pktwyrm stats          # pretty table, refresh with --watch MS
 ./sw/build/pktwyrm rpc cards           # raw JSON RPC
 

@@ -61,64 +61,44 @@ sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
 
 ## Remaining / next
 
-1. **RX ingress timestamping** (optional) — move RX timestamping to the
-   ingress MAC for absolute one-way latency. RTL + bitstream rebuild.
-   Deferred by the user ("RX side is fine for now").
-2. **Multi-card** — cross-card flows, multi-card orchestration. Needs a
-   second card on the bench.
-3. **Field modifiers — extend** (v1 + IPv6 + MAC/VLAN done): generator field
-   modifiers (inc/random/mask) on `src/dst_ipv4` (or `src/dst_ipv6`, low 32
-   bits) + `udp_src/dst` + `src/dst_mac` (48-bit) + `vlan` (12-bit), test
-   header kept fixed, correct IPv4/IPv6 checksum. Remaining extensions: full
-   128-bit IPv6-address rotation (v1 rotates the low 32 bits; user said not
-   needed); independent per-field rotation (cross-product rather than the
-   current shared-sequence, correlated rotation). **Classifier partial-field
-   bitmask is DONE** for dst port + dst IPv4 (bitwise TCAM match + YAML
-   `match:` + modifier auto-relax); extending it to other fields / IPv6
-   address (needs the 256-B classifier row) is mechanical.
-4. **IPv6 — at full generator parity** (done): generation + egress HW
-   timestamping + UDP checksum, DSCP/traffic-class, TTL/hop-limit, and
-   src/dst address field modifiers all work for IPv6 (YAML `ipv6:` block,
-   `src/dst_ipv6` modifiers). **Classifier IPv6 dst-address matching is DONE**
-   (exact `==` match): the dst key + mask landed in the classifier row tail
-   (bytes 96..127 — the entry was only 96 B of the 128 B stride, so it fit
-   *without* growing to 256 B), decoded by `pw_classifier_window`; the compiler
-   enables it for IPv6 TEST_RX flows except when a dst modifier rotates the
-   address (the match is exact, not bitwise). Remaining (optional): bitwise v6
-   dst masking (would need `ipv6_dst_bits` like the v4 path) and v6 *src* match.
-   Also: IPv6 in the wide-bus legacy sim if ever needed.
-4. **Minor**: the `CAPABILITIES` parameter advertises `0x6C` (the
-   currently-flashed build reports it).
+Gated on a **second card** (can't proceed on the single-card rig):
 
-Timing: the full feature stack (IPv6 + IPv4/IPv6 parity + MAC/VLAN modifiers +
-background flows + bitwise classifier masking) closes at **post-route WNS
-+0.114 ns @156.25 MHz** (LUT ~75% / FF 60% / BRAM 16% on the KU3P). The
-classifier-mask build first landed at a razor-thin +0.000; **margin was
-recovered by splitting the generator `udp6_csum` into a 2-stage pipeline** (two
-~15-term half-sums registered between the precompute stages, final fold in
-build() -- halves the per-stage adder depth and drops a register mid-route on
-the route-dominated path that had been the perennial limiter). The MAC/VLAN
-build closed at +0.066; the IPv6/parity stack at +0.066. The
-parity round had thinned it to +0.037; a `pw_ts_insert` optimization (pre-sum
-the tx_ts words at SOF + register the csum lane/beat so the egress
-csum-finalize no longer feeds the MAC CRC through a deep adder) recovered it
-to +0.167. Adding the MAC/VLAN field modifiers (eth-header only, off the
-checksum cone, but ~110 bits of mask + mod48 logic at LUT ~75%) tightened it
-to **+0.066** via congestion — still positive. Watch it before adding to the
-generator. The earlier IPv6-only stack closed at +0.116. IPv6
-(256-byte flow rows + the mandatory IPv6 UDP checksum) cost ~0.83 ns and
-was recovered without cutting flows/scale by, in order of impact: (1) a
-**row-latch split** in `pw_flow_gen_multi` — the 32:1 mux of the wide flow
-rows was fused with the checksum logic in one cycle (route-bound,
-~-0.6 ns); isolating the mux into its own register so it drives only a
-register, and feeding the checksum from that compact local latch, was the
-decisive fix; (2) a **checksum/field precompute** stage (off the
-registered `pick_q`, NOT the combinational pick); (3) **registering the
-flow-table decode** (`pw_flow_window`). The margin is thin again — watch
-it when adding to the `dp_clk` data plane. Note: timing must be read
-**post-route** (`report_timing` on the routed dcp); the post-*place*
-estimate ran ~0.5 ns optimistic during this work, and the project tcl has
-no timing gate, so `write_bitstream` completing does NOT imply closure.
+1. **RX ingress wire-stamp + full two-clock PTP servo.** The servo-facing
+   TX/RX wire-timestamp exposure is done (#60: punt RX SOF stamp + inject TX
+   egress stamp); the servo loop (offset/delay + disciplining) and a true RX
+   ingress stamp in the MAC clock domain need a second card.
+2. **Multi-card** — cross-card flows + orchestration.
+
+Optional RTL features (each a bitstream rebuild):
+
+3. **Line-rate TCP generation.** `pw_tcp_syn` generates TCP SYNs via the
+   slow-path inject (SW-built frame + SW checksum, ~tens of k pps). Line rate
+   needs `pw_flow_gen_multi` to emit a TCP header + checksum (like the UDP/test
+   path) — the bigger item.
+4. **Field-modifier extensions:** full 128-bit IPv6-address rotation (low 32
+   bits done) and independent per-field rotation (currently a shared,
+   correlated sequence).
+5. **Classifier extensions:** bitwise IPv6 dst masking + IPv6 *src* match (v4
+   bitwise + v6 dst-exact are done; the field/UDF + hash engines replaced the
+   old single `pw_classifier`).
+6. **Further LUT reduction** if headroom is needed: the parser (~36K LUT over
+   2 ports) is now the largest consumer (generator ~27K, field classifier
+   ~15K, flow table ~15K).
+
+Classification is three coexisting paths (precedence map > hash > field): the
+flow-id map (structured test flows), the hash exact table (high-count,
+payload-agnostic), and the field+UDF comparator classifier (punt/forward/
+few-rule). Variable frame length (RFC2544 + IMIX), the RFC2544 driver, and the
+slow-path TCP SYN generator are done.
+
+**Timing:** post-route **WNS +0.132 ns @156.25 MHz, LUT ~88%** after the
+timing-recovery pass (hash classifier pipelined + SPI flash buffers → block
+RAM). The design sits near its Fmax ceiling, so multiple `dp_clk` paths hover
+near zero; cutting LUT (congestion) lifts them all, while pipelining fixes one
+named path. Read timing **post-route** (`report_timing` on the routed dcp) —
+the post-*place* estimate runs ~0.5 ns optimistic and the project tcl has no
+timing gate, so `write_bitstream` completing does NOT imply closure. Full
+hard-won detail is in the `dp-clk-timing-lessons` memory.
 
 ## Test surface
 
