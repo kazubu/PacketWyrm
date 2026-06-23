@@ -87,8 +87,10 @@ int main(int argc, char **argv) {
     { uint8_t tmp[2048]; uint32_t l; for (int i = 0; i < 256; i++)
         if (o->slow_path_rx(be.ctx, tmp, sizeof tmp, &l, NULL) <= 0) break; }
 
-    pw_tool_fc_ing_udp(o, be.ctx, 0, 0, /*ingress*/1, /*udp_dst*/50001,
-                       PWFPGA_ACT_PUNT_TO_HOST, /*egress*/0, /*lfid*/0, /*lif*/0x66);
+    if (pw_tool_fc_ing_udp(o, be.ctx, 0, 0, /*ingress*/1, /*udp_dst*/50001,
+                       PWFPGA_ACT_PUNT_TO_HOST, /*egress*/0, /*lfid*/0, /*lif*/0x66) != PW_OK) {
+        fprintf(stderr, "FATAL: classifier programming failed (BAR write error?)\n"); return 1;
+    }
     o->flow_write(be.ctx, 0, &f); o->flow_commit(be.ctx);
 
     printf("gen IPv6/UDP egress0 (src 2001:db8::1 dst ::2); PUNT(ingress1) -> host\n");

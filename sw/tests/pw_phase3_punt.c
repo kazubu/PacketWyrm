@@ -86,11 +86,16 @@ int main(int argc, char **argv) {
     }
 
     /* --- field-classifier rule 0: PUNT frames (ingress 1, udp_dst 50001) --- */
-    pw_tool_fc_ing_udp(o, be.ctx, /*cmp0*/0, /*rule*/0, /*ingress*/1, /*udp_dst*/50001,
-                       PWFPGA_ACT_PUNT_TO_HOST, /*egress*/0, /*lfid*/0, lif);
-
-    if (o->flow_write) o->flow_write(be.ctx, 0, &f);
-    if (o->flow_commit) o->flow_commit(be.ctx);
+    if (pw_tool_fc_ing_udp(o, be.ctx, /*cmp0*/0, /*rule*/0, /*ingress*/1, /*udp_dst*/50001,
+                       PWFPGA_ACT_PUNT_TO_HOST, /*egress*/0, /*lfid*/0, lif) != PW_OK) {
+        fprintf(stderr, "FATAL: classifier programming failed (BAR write error?)\n");
+        return 1;
+    }
+    if (!o->flow_write || o->flow_write(be.ctx, 0, &f) != PW_OK ||
+        !o->flow_commit || o->flow_commit(be.ctx) != PW_OK) {
+        fprintf(stderr, "FATAL: flow_write/commit failed\n");
+        return 1;
+    }
 
     printf("programmed: gen on egress 0 (flow_id 2), PUNT(ingress1, lif=0x%x)\n", lif);
     printf("path: gen[0] -> RX1 -[PUNT]-> punt window -> slow_path_rx\n");

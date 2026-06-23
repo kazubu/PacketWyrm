@@ -53,8 +53,10 @@ int main(int argc, char **argv) {
     }
 
     /* Field-classifier rule: PUNT UDP/0xBEEF arriving on ingress 1. */
-    pw_tool_fc_ing_udp(o, be.ctx, 0, 0, /*ingress*/1, /*udp_dst*/UDP_DST,
-                       PWFPGA_ACT_PUNT_TO_HOST, /*egress*/0, /*lfid*/0, LIF);
+    if (pw_tool_fc_ing_udp(o, be.ctx, 0, 0, /*ingress*/1, /*udp_dst*/UDP_DST,
+                       PWFPGA_ACT_PUNT_TO_HOST, /*egress*/0, /*lfid*/0, LIF) != PW_OK) {
+        fprintf(stderr, "FATAL: classifier programming failed (BAR write error?)\n"); return 1;
+    }
 
     /* Compose a plain Eth/IPv4/UDP frame (no FCS -- the MAC appends it). */
     uint8_t f[64]; memset(f, 0, sizeof(f));
