@@ -213,6 +213,66 @@ static void test_reject_unknown_gport_in_flow(void) {
     pw_config_free(cfg);
 }
 
+/* Parse a single-flow config whose `traffic:` block is the given line; return
+ * the parse status. Used by the frame-length / rate validation tests. */
+static pw_status parse_with_traffic(const char *traffic_line) {
+    char yaml[768];
+    snprintf(yaml, sizeof(yaml),
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n  - id: 0\n    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "flows:\n  - id: 1\n    tx_global_port: 0\n    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv4: { src: \"192.0.2.1\", dst: \"192.0.2.2\" }\n"
+        "    udp:  { src_port: 1, dst_port: 2 }\n"
+        "    traffic: { %s }\n", traffic_line);
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    pw_status r = pw_config_parse_string(yaml, strlen(yaml), cfg, &d);
+    pw_config_free(cfg);
+    return r;
+}
+
+static void test_traffic_validation(void) {
+    /* Valid: fixed size + rate_bps; range + rate_pps. */
+    PW_ASSERT_EQ(parse_with_traffic("frame_len: 512, rate_bps: 1000000000"), PW_OK);
+    PW_ASSERT_EQ(parse_with_traffic("frame_len: 512, rate_pps: 100000"), PW_OK);
+    PW_ASSERT_EQ(parse_with_traffic("frame_len_min: 64, frame_len_max: 1518, rate_bps: 1"), PW_OK);
+    /* rate: neither and both are rejected. */
+    PW_ASSERT_EQ(parse_with_traffic("frame_len: 512"), PW_E_INVAL);
+    PW_ASSERT_EQ(parse_with_traffic("frame_len: 512, rate_bps: 1, rate_pps: 1"), PW_E_INVAL);
+    /* frame length: fixed+range exclusivity, range ordering, out-of-range. */
+    PW_ASSERT_EQ(parse_with_traffic("frame_len: 512, frame_len_min: 64, frame_len_max: 128, rate_bps: 1"), PW_E_INVAL);
+    PW_ASSERT_EQ(parse_with_traffic("frame_len_min: 1000, frame_len_max: 128, rate_bps: 1"), PW_E_INVAL);
+    PW_ASSERT_EQ(parse_with_traffic("frame_len: 9000, rate_bps: 1"), PW_E_INVAL);
+    PW_ASSERT_EQ(parse_with_traffic("frame_len: 32, rate_bps: 1"), PW_E_INVAL);
+}
+
+/* rate_pps must compile to a non-zero token rate (else the flow never TX). */
+static void test_rate_pps_compiles_nonzero(void) {
+    char yaml[768];
+    snprintf(yaml, sizeof(yaml),
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n  - id: 0\n    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "flows:\n  - id: 1\n    tx_global_port: 0\n    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv4: { src: \"192.0.2.1\", dst: \"192.0.2.2\" }\n"
+        "    udp:  { src_port: 1, dst_port: 2 }\n"
+        "    traffic: { frame_len: 512, rate_pps: 100000 }\n");
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
+    /* TX row 0 must have a non-zero token rate (pps x frame bytes). */
+    PW_ASSERT(prog->per_card[0].n_flow_rows > 0);
+    PW_ASSERT(prog->per_card[0].flow_rows[0].tokens_per_tick_fp != 0);
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
 static void test_resolve_port_multi_card(void) {
     const char *yaml =
         "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
@@ -1129,6 +1189,8 @@ int main(void) {
         { "tap_name", test_tap_name },
         { "parse_single_card", test_parse_single_card },
         { "reject_cross_card_latency", test_reject_cross_card_latency },
+        { "traffic_validation", test_traffic_validation },
+        { "rate_pps_compiles_nonzero", test_rate_pps_compiles_nonzero },
         { "reject_dup_card", test_reject_dup_card },
         { "reject_dup_gport", test_reject_dup_gport },
         { "reject_unknown_gport_in_flow", test_reject_unknown_gport_in_flow },

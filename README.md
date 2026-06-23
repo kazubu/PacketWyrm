@@ -90,7 +90,7 @@ Test surface today (all green):
 
 | Command                            | Result                                          |
 |------------------------------------|-------------------------------------------------|
-| `make -C sw test`                  | 156 / 156 unit assertions                       |
+| `make -C sw test`                  | 276 / 276 unit assertions                       |
 | `make -C sw e2e`                   | 18 / 18 daemon &harr; CLI smoke                 |
 | `make -C sim sim_all`              | 19 testbenches green: data plane, parser (2-stage), classifier, flow gen, BRAM histogram, SPI flash, ICAP, egress TS, punt RX, TX inject, end-to-end |
 | `make -C sim/cocotb all`           | 17 / 17 Scapy-driven parser/classifier/flow_gen |
@@ -183,7 +183,7 @@ first (it holds the device).
 ```sh
 # Host stack
 make -C sw            # libpacketwyrm + packetwyrmd + pktwyrm
-make -C sw test       # 164/164 assertions
+make -C sw test       # 276/276 assertions
 make -C sw e2e        # 18/18 daemon <-> CLI smoke
 
 # Daemon against the example single-card config (uses the fake backend)

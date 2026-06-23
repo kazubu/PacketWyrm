@@ -472,6 +472,41 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
     if (s && !pw_parse_u64(s, &f->traffic.rate_bps)) { diag_set(diag, PW_E_PARSE, tp, "rate_bps"); return PW_E_PARSE; }
     if ((r = get_scalar(tr, "rate_pps", tp, false, &s, diag)) != PW_OK) return r;
     if (s && !pw_parse_u64(s, &f->traffic.rate_pps)) { diag_set(diag, PW_E_PARSE, tp, "rate_pps"); return PW_E_PARSE; }
+
+    /* Frame-length validation: fixed XOR range, ordering, and HW limits. The
+     * generator emits the pre-FCS frame length; the MAC appends FCS and the
+     * MAC<->dp_clk frame FIFO drops oversize frames, so cap at the validated
+     * standard Ethernet maximum (1518 B on the wire => <=1514 B emitted; we
+     * accept up to 1518 for the field and let the gen clamp). Below the test-
+     * frame floor the generator clamps up to the minimum legal frame. */
+    if (f->traffic.frame_len_fixed_set && pw_yaml_map_get(tr, "frame_len_min")) {
+        diag_set(diag, PW_E_INVAL, tp, "frame_len and frame_len_min/max are mutually exclusive");
+        return PW_E_INVAL;
+    }
+    {
+        uint16_t flo = f->traffic.frame_len_fixed_set ? f->traffic.frame_len_fixed
+                                                      : f->traffic.frame_len_min;
+        uint16_t fhi = f->traffic.frame_len_fixed_set ? f->traffic.frame_len_fixed
+                                                      : f->traffic.frame_len_max;
+        if (flo < 64 || fhi > 1518) {
+            diag_set(diag, PW_E_INVAL, tp, "frame length out of range [64,1518]");
+            return PW_E_INVAL;
+        }
+        if (flo > fhi) {
+            diag_set(diag, PW_E_INVAL, tp, "frame_len_min exceeds frame_len_max");
+            return PW_E_INVAL;
+        }
+        if (!f->traffic.frame_len_fixed_set && f->traffic.frame_len_step == 0) {
+            diag_set(diag, PW_E_INVAL, tp, "frame_len_step must be >= 1");
+            return PW_E_INVAL;
+        }
+    }
+    /* Exactly one of rate_bps / rate_pps (a flow with neither never transmits;
+     * rate_pps is realized in the compiler as pps x frame bytes). */
+    if ((f->traffic.rate_bps == 0) == (f->traffic.rate_pps == 0)) {
+        diag_set(diag, PW_E_INVAL, tp, "exactly one of rate_bps / rate_pps required");
+        return PW_E_INVAL;
+    }
     if ((r = get_scalar(tr, "burst_size", tp, false, &s, diag)) != PW_OK) return r;
     f->traffic.burst_size = 1;
     if (s && !pw_parse_u32(s, &f->traffic.burst_size)) { diag_set(diag, PW_E_PARSE, tp, "burst_size"); return PW_E_PARSE; }
