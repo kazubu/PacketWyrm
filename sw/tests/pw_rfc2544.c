@@ -132,12 +132,12 @@ int main(int argc, char **argv) {
         if (o->card_info) o->card_info(be.ctx, &info);
         unsigned nf = info.num_local_flows ? info.num_local_flows : 32;
         struct pwfpga_flow_config zf = {0};
-        for (unsigned r = 0; r < nf; r++) o->flow_write(be.ctx, r, &zf);
-        if (o->flow_commit) o->flow_commit(be.ctx);
+        for (unsigned r = 0; r < nf; r++) MUST(o->flow_write(be.ctx, r, &zf), "flow_write(clear)");
+        MUST(o->flow_commit(be.ctx), "flow_commit(clear)");
     }
     /* Classify the test flow (flow_id 1) into checker slot 0 via the flow-id map. */
-    if (o->write32) o->write32(be.ctx, PWFPGA_WIN_FLOWID_MAP + 1u * 4u,
-                               PWFPGA_FLOWID_MAP_VALID | 0u);
+    MUST(o->write32(be.ctx, PWFPGA_WIN_FLOWID_MAP + 1u * 4u,
+                    PWFPGA_FLOWID_MAP_VALID | 0u), "flowid_map write");
 
     printf("RFC 2544 (trial %d ms/point, 10 GbE line rate, loopback/DUT on p1->p0)\n", trial_ms);
     printf("%-6s %12s %10s %8s  %8s %8s %8s\n",

@@ -52,11 +52,31 @@ int main(int argc, char **argv) {
         return 2;
     }
     const char *bdf = argv[1];
-    int      count    = (argc >= 3) ? atoi(argv[2]) : 16;
-    uint32_t dst_ip   = (argc >= 4) ? ntohl(inet_addr(argv[3])) : 0xC0000202u;  /* 192.0.2.2 */
-    uint16_t dst_port = (argc >= 5) ? (uint16_t)atoi(argv[4]) : 80;
-    uint8_t  egress   = (argc >= 6) ? (uint8_t)atoi(argv[5]) : 1;
-    if (count < 1) { fprintf(stderr, "count must be >= 1\n"); return 2; }
+    /* Validated arg parsing: a misformed IP/port/egress would otherwise wrap or
+     * silently send to the wrong target (these frames go on the wire). */
+    long count = 16;
+    if (argc >= 3) {
+        char *e; count = strtol(argv[2], &e, 0);
+        if (*e || count < 1 || count > 100000000L) { fprintf(stderr, "bad count\n"); return 2; }
+    }
+    uint32_t dst_ip = 0xC0000202u;  /* 192.0.2.2 */
+    if (argc >= 4) {
+        struct in_addr a;
+        if (inet_pton(AF_INET, argv[3], &a) != 1) { fprintf(stderr, "bad dst_ip\n"); return 2; }
+        dst_ip = ntohl(a.s_addr);
+    }
+    uint16_t dst_port = 80;
+    if (argc >= 5) {
+        char *e; unsigned long p = strtoul(argv[4], &e, 0);
+        if (*e || p > 65535u) { fprintf(stderr, "bad dst_port (0..65535)\n"); return 2; }
+        dst_port = (uint16_t)p;
+    }
+    uint8_t egress = 1;
+    if (argc >= 6) {
+        char *e; unsigned long g = strtoul(argv[5], &e, 0);
+        if (*e || g > 255u) { fprintf(stderr, "bad egress (0..255)\n"); return 2; }
+        egress = (uint8_t)g;
+    }
 
     pw_vfio_bind(bdf);
     struct pw_card_backend be;

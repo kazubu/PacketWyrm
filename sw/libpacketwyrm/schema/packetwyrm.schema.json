@@ -173,8 +173,8 @@
                         "frame_len_min":   { "type": "integer", "minimum": 64, "maximum": 1518 },
                         "frame_len_max":   { "type": "integer", "minimum": 64, "maximum": 1518 },
                         "frame_len_step":  { "type": "integer", "minimum": 1 },
-                        "rate_bps":        { "type": "integer", "minimum": 0 },
-                        "rate_pps":        { "type": "integer", "minimum": 0 },
+                        "rate_bps":        { "type": "integer", "minimum": 1 },
+                        "rate_pps":        { "type": "integer", "minimum": 1 },
                         "burst_size":      { "type": "integer", "minimum": 1 },
                         "burst_gap_ticks": { "type": "integer", "minimum": 0 },
                         "payload":         {

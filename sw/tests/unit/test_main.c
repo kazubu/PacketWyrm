@@ -243,6 +243,8 @@ static void test_traffic_validation(void) {
     PW_ASSERT_EQ(parse_with_traffic("frame_len: 512, rate_bps: 1, rate_pps: 1"), PW_E_INVAL);
     /* frame length: fixed+range exclusivity, range ordering, out-of-range. */
     PW_ASSERT_EQ(parse_with_traffic("frame_len: 512, frame_len_min: 64, frame_len_max: 128, rate_bps: 1"), PW_E_INVAL);
+    PW_ASSERT_EQ(parse_with_traffic("frame_len: 512, frame_len_max: 1518, rate_bps: 1"), PW_E_INVAL);
+    PW_ASSERT_EQ(parse_with_traffic("frame_len: 512, frame_len_step: 4, rate_bps: 1"), PW_E_INVAL);
     PW_ASSERT_EQ(parse_with_traffic("frame_len_min: 1000, frame_len_max: 128, rate_bps: 1"), PW_E_INVAL);
     PW_ASSERT_EQ(parse_with_traffic("frame_len: 9000, rate_bps: 1"), PW_E_INVAL);
     PW_ASSERT_EQ(parse_with_traffic("frame_len: 32, rate_bps: 1"), PW_E_INVAL);
@@ -760,6 +762,30 @@ static void test_fake_backend(void) {
     pw_card_backend_close(&b);
 }
 
+/* The fake backend records CSR writes per classification window so daemon-
+ * programming can be checked in CI. Verify each window's address macros land in
+ * the intended window (a forgotten/misaddressed write would miss its counter). */
+static void test_fake_csr_window_recording(void) {
+    struct pw_card_backend b;
+    PW_ASSERT_EQ(pw_fake_backend_open("0000:03:00.0", &b), PW_OK);
+    b.ops->write32(b.ctx, PWFPGA_WIN_FLOWID_MAP + 7u * 4u, PWFPGA_FLOWID_MAP_VALID | 3u);
+    b.ops->write32(b.ctx, PWFPGA_FC_CMP_SRC(PWFPGA_WIN_FC_CMP, 0), 13u);
+    b.ops->write32(b.ctx, PWFPGA_FC_CMP_MASK(PWFPGA_WIN_FC_CMP, 0), 0xFu);
+    b.ops->write32(b.ctx, PWFPGA_FC_UDF_OFFSET(PWFPGA_WIN_FC_UDF, 0), 14u);
+    b.ops->write32(b.ctx, PWFPGA_FC_RULE_LFID(PWFPGA_WIN_FC_RULE, 0), 0u);
+    b.ops->write32(b.ctx, PWFPGA_HASH_MASK_WORD(PWFPGA_WIN_HASH_MASK, 0), 0xFFFFFFFFu);
+    b.ops->write32(b.ctx, PWFPGA_REG_HASH_SEED, 0x9E3779B1u);
+    b.ops->write32(b.ctx, PWFPGA_HASH_KEY_WORD(PWFPGA_WIN_FC_HASH, 0, 0), 0u);
+    struct pw_fake_wr_counts wc;
+    pw_fake_backend_wr_counts(b.ctx, &wc);
+    PW_ASSERT_EQ(wc.flowid_map, 1);
+    PW_ASSERT_EQ(wc.fc_cmp, 2);     /* SRC + MASK */
+    PW_ASSERT_EQ(wc.fc_udf, 1);
+    PW_ASSERT_EQ(wc.fc_rule, 1);
+    PW_ASSERT_EQ(wc.hash, 3);       /* mask word + seed + key word */
+    pw_card_backend_close(&b);
+}
+
 static void test_bar_backend_path(void) {
     /* Stage a 64K "BAR image" with the identity registers populated
      * exactly as the FPGA would. The path-variant BAR backend mmaps
@@ -1241,6 +1267,7 @@ int main(void) {
         { "header_classify_mask_collision", test_header_classify_mask_collision },
         { "encap_flow_compiles", test_encap_flow_compiles },
         { "fake_backend", test_fake_backend },
+        { "fake_csr_window_recording", test_fake_csr_window_recording },
         { "bar_backend_path", test_bar_backend_path },
         { "bar_backend_window_writes", test_bar_backend_window_writes },
         { "bar_backend_stats_reads", test_bar_backend_stats_reads },

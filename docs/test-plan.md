@@ -8,12 +8,11 @@ catches a different class of bug; none of them subsumes the others.
 
 Two complementary stacks live under `sim/`:
 
-- **SystemVerilog testbenches under Verilator** (`make sim_all`,
-  172 assertions across 9 testbenches). This is the integration
-  gate against the production RTL. See `sim/README.md` for the
-  per-target catalogue.
+- **SystemVerilog testbenches under Verilator** (`make sim_all`).
+  This is the integration gate against the production RTL. See
+  `sim/README.md` for the per-target catalogue.
 - **Scapy + cocotb unit suite under Icarus Verilog**
-  (`make -C sim/cocotb all`, 17 assertions). Spec-level checks on
+  (`make -C sim/cocotb all`). Spec-level checks on
   small behavioural mirrors of `pw_parser`, `pw_classifier`, and
   `pw_flow_gen`. Runs because cocotb 2.x's VPI shim needs
   Verilator >= 5.036 and the system Verilator here is 5.020; when a
@@ -157,17 +156,15 @@ Tests:
 ## Test infrastructure
 
 - `make -C sw test` runs the host unit tests against the fake card
-  backend (164 / 164 assertions).
+  backend.
 - `make -C sw e2e` runs `e2e_smoke.sh` -- daemon + CLI smoke
-  exercising the JSON-RPC surface, including `config.load`
-  (18 / 18 checks).
-- `make -C sim sim_all` runs the SV testbench sweep under Verilator
-  (172 assertions).
+  exercising the JSON-RPC surface, including `config.load`.
+- `make -C sim sim_all` runs the SV testbench sweep under Verilator.
 - `make -C sim/cocotb all` runs the Scapy / Python unit suite under
-  Icarus (17 assertions).
+  Icarus.
 - `make -C tools/pktwyrm-tinet test` runs the lab generator +
-  orchestrator unit suite (35 assertions, pure Python +
-  `unittest.mock`; no docker / tinet / FPGA required).
+  orchestrator unit suite (pure Python + `unittest.mock`; no docker /
+  tinet / FPGA required).
 - `make hwtest` is gated on an environment variable
   (`PW_HW_DEV=card0`) and runs the integration tests against real
   hardware. CI runs the host job + RTL job above; `make hwtest`

@@ -253,9 +253,9 @@ static pw_status program_backends(const struct pw_program *prog,
          * (not classifier rules), so program one entry per test flow. */
         for (size_t m = 0; m < cp->n_map_entries; m++) {
             if (b->ops->write32)
-                (void)b->ops->write32(b->ctx,
+                PB_CHK(b->ops->write32(b->ctx,
                     PWFPGA_WIN_FLOWID_MAP + cp->map_entries[m].flow_id * 4u,
-                    PWFPGA_FLOWID_MAP_VALID | cp->map_entries[m].local_flow_id);
+                    PWFPGA_FLOWID_MAP_VALID | cp->map_entries[m].local_flow_id));
         }
         /* Unified field+UDF classifier: header-defined test flows + punt +
          * forward. Program each comparator ({src/offset,mask,value}; value
@@ -263,38 +263,38 @@ static pw_status program_backends(const struct pw_program *prog,
         if (b->ops->write32) {
             for (size_t i = 0; i < cp->n_fc_cmps; i++) {
                 const struct pw_fc_cmp *c = &cp->fc_cmps[i];
-                (void)b->ops->write32(b->ctx, PWFPGA_FC_CMP_SRC(PWFPGA_WIN_FC_CMP, i), c->src);
-                (void)b->ops->write32(b->ctx, PWFPGA_FC_CMP_MASK(PWFPGA_WIN_FC_CMP, i), c->mask);
-                (void)b->ops->write32(b->ctx, PWFPGA_FC_CMP_VALUE(PWFPGA_WIN_FC_CMP, i), c->value);
+                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_CMP_SRC(PWFPGA_WIN_FC_CMP, i), c->src));
+                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_CMP_MASK(PWFPGA_WIN_FC_CMP, i), c->mask));
+                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_CMP_VALUE(PWFPGA_WIN_FC_CMP, i), c->value));
             }
             for (size_t i = 0; i < cp->n_fc_udfs; i++) {
                 const struct pw_fc_udf *u = &cp->fc_udfs[i];
-                (void)b->ops->write32(b->ctx, PWFPGA_FC_UDF_OFFSET(PWFPGA_WIN_FC_UDF, i), u->offset);
-                (void)b->ops->write32(b->ctx, PWFPGA_FC_UDF_MASK(PWFPGA_WIN_FC_UDF, i), u->mask);
-                (void)b->ops->write32(b->ctx, PWFPGA_FC_UDF_VALUE(PWFPGA_WIN_FC_UDF, i), u->value);
+                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_UDF_OFFSET(PWFPGA_WIN_FC_UDF, i), u->offset));
+                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_UDF_MASK(PWFPGA_WIN_FC_UDF, i), u->mask));
+                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_UDF_VALUE(PWFPGA_WIN_FC_UDF, i), u->value));
             }
             for (size_t i = 0; i < cp->n_fc_rules; i++) {
                 const struct pw_fc_rule *rl = &cp->fc_rules[i];
-                (void)b->ops->write32(b->ctx, PWFPGA_FC_RULE_WORD0(PWFPGA_WIN_FC_RULE, i),
-                    PWFPGA_FC_RULE_W0(rl->care, rl->action, rl->egress, rl->priority, 1));
-                (void)b->ops->write32(b->ctx, PWFPGA_FC_RULE_LFID(PWFPGA_WIN_FC_RULE, i), rl->local_flow_id);
-                (void)b->ops->write32(b->ctx, PWFPGA_FC_RULE_LIF(PWFPGA_WIN_FC_RULE, i), rl->logical_if_id);
+                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_RULE_WORD0(PWFPGA_WIN_FC_RULE, i),
+                    PWFPGA_FC_RULE_W0(rl->care, rl->action, rl->egress, rl->priority, 1)));
+                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_RULE_LFID(PWFPGA_WIN_FC_RULE, i), rl->local_flow_id));
+                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_RULE_LIF(PWFPGA_WIN_FC_RULE, i), rl->logical_if_id));
             }
             /* Hash exact table: seed first, then each entry (key words, then the
              * control word commits at the SW-chosen bucket index). */
             if (cp->n_hash_entries > 0) {
                 for (unsigned w = 0; w < PWFPGA_HASH_KEY_WORDS; w++)
-                    (void)b->ops->write32(b->ctx,
-                        PWFPGA_HASH_MASK_WORD(PWFPGA_WIN_HASH_MASK, w), cp->hash_mask[w]);
-                (void)b->ops->write32(b->ctx, PWFPGA_REG_HASH_SEED, cp->hash_seed);
+                    PB_CHK(b->ops->write32(b->ctx,
+                        PWFPGA_HASH_MASK_WORD(PWFPGA_WIN_HASH_MASK, w), cp->hash_mask[w]));
+                PB_CHK(b->ops->write32(b->ctx, PWFPGA_REG_HASH_SEED, cp->hash_seed));
                 for (size_t i = 0; i < cp->n_hash_entries; i++) {
                     const struct pw_fc_hash_entry *he = &cp->hash_entries[i];
                     for (unsigned w = 0; w < PWFPGA_HASH_KEY_WORDS; w++)
-                        (void)b->ops->write32(b->ctx,
-                            PWFPGA_HASH_KEY_WORD(PWFPGA_WIN_FC_HASH, he->index, w), he->key_word[w]);
-                    (void)b->ops->write32(b->ctx,
+                        PB_CHK(b->ops->write32(b->ctx,
+                            PWFPGA_HASH_KEY_WORD(PWFPGA_WIN_FC_HASH, he->index, w), he->key_word[w]));
+                    PB_CHK(b->ops->write32(b->ctx,
                         PWFPGA_HASH_CTRL(PWFPGA_WIN_FC_HASH, he->index),
-                        PWFPGA_HASH_CTRL_VALID | he->local_flow_id);
+                        PWFPGA_HASH_CTRL_VALID | he->local_flow_id));
                 }
             }
         }
@@ -609,7 +609,11 @@ static struct json_object *build_flow_hist(const struct pw_config *cfg,
     }
     uint64_t buckets[64];
     size_t   n_buckets = 0;
-    (void)cards[rx_ci].backend.ops->stats_snapshot(cards[rx_ci].backend.ctx);
+    pw_status ss = cards[rx_ci].backend.ops->stats_snapshot(cards[rx_ci].backend.ctx);
+    if (ss != PW_OK) {
+        json_object_object_add(r, "error", json_object_new_string(pw_strerror(ss)));
+        return r;
+    }
     pw_status s = cards[rx_ci].backend.ops->flow_hist_read(
         cards[rx_ci].backend.ctx, m->rx_local_flow_id,
         buckets, sizeof(buckets) / sizeof(buckets[0]), &n_buckets);
@@ -635,9 +639,11 @@ static struct json_object *build_flow_stats(const struct pw_config *cfg,
     /* Trigger one snapshot per card so the counters are consistent
      * across the report. Cheap on the fake backend; the real BAR
      * backend writes the stats_snapshot_trigger CSR. */
-    for (size_t ci = 0; ci < cfg->n_cards; ci++) {
+    bool snap_ok[MAX_CARDS];
+    for (size_t ci = 0; ci < cfg->n_cards && ci < MAX_CARDS; ci++) {
+        snap_ok[ci] = true;
         if (cards[ci].open && cards[ci].backend.ops->stats_snapshot)
-            (void)cards[ci].backend.ops->stats_snapshot(cards[ci].backend.ctx);
+            snap_ok[ci] = (cards[ci].backend.ops->stats_snapshot(cards[ci].backend.ctx) == PW_OK);
     }
 
     struct json_object *r   = json_object_new_object();
@@ -655,21 +661,27 @@ static struct json_object *build_flow_stats(const struct pw_config *cfg,
             if (cfg->cards[ci].id == m->tx_card_id) { tx_ci = ci; break; }
 
         struct pw_flow_stats rs = {0}, ts = {0};
+        bool read_ok = true;
         if (rx_ci != (size_t)-1 && cards[rx_ci].open &&
             cards[rx_ci].backend.ops->flow_stats_read) {
-            (void)cards[rx_ci].backend.ops->flow_stats_read(
-                cards[rx_ci].backend.ctx, m->rx_local_flow_id, &rs);
+            read_ok &= (rx_ci < MAX_CARDS ? snap_ok[rx_ci] : true);
+            read_ok &= (cards[rx_ci].backend.ops->flow_stats_read(
+                cards[rx_ci].backend.ctx, m->rx_local_flow_id, &rs) == PW_OK);
         }
         if (tx_ci != (size_t)-1 && cards[tx_ci].open &&
             cards[tx_ci].backend.ops->flow_stats_read) {
-            (void)cards[tx_ci].backend.ops->flow_stats_read(
-                cards[tx_ci].backend.ctx, m->tx_local_flow_id, &ts);
+            read_ok &= (tx_ci < MAX_CARDS ? snap_ok[tx_ci] : true);
+            read_ok &= (cards[tx_ci].backend.ops->flow_stats_read(
+                cards[tx_ci].backend.ctx, m->tx_local_flow_id, &ts) == PW_OK);
         }
 
         struct json_object *f = json_object_new_object();
         json_object_object_add(f, "id", json_object_new_int64(m->global_flow_id));
         json_object_object_add(f, "tx_card_id", json_object_new_int(m->tx_card_id));
         json_object_object_add(f, "rx_card_id", json_object_new_int(m->rx_card_id));
+        /* read_ok=false => a snapshot/stats CSR read failed; the counters below
+         * are stale/zero, NOT a genuine "0 traffic" result. */
+        json_object_object_add(f, "read_ok", json_object_new_boolean(read_ok));
         json_object_object_add(f, "tx_frames", json_object_new_int64((int64_t)ts.tx_frames));
         json_object_object_add(f, "tx_bytes",  json_object_new_int64((int64_t)ts.tx_bytes));
         json_object_object_add(f, "rx_frames", json_object_new_int64((int64_t)rs.rx_frames));
@@ -772,7 +784,7 @@ static void handle_client(int cfd,
              * has no auto-reset; only this CSR write or rst_n). test.start
              * / test.stop walk every flow and flip the enable bit. */
             if (!strcmp(name, "test.arm")) {
-                program_backends(prog, cfg, cards);
+                if (program_backends(prog, cfg, cards) != PW_OK) failed++;
                 for (size_t ci = 0; ci < cfg->n_cards; ci++) {
                     if (cards[ci].open && cards[ci].backend.ops->write32) {
                         pw_status s = cards[ci].backend.ops->write32(
@@ -1059,7 +1071,9 @@ int main(int argc, char **argv) {
     struct tap_handle    taps[PW_HOST_PLANE_MAX_BINDINGS] = {0};
 
     open_all_backends(cfg, cards, allow_fake);
-    program_backends(prog, cfg, cards);
+    if (program_backends(prog, cfg, cards) != PW_OK)
+        fprintf(stderr, "warning: initial FPGA programming hard-failed -- "
+                "device may not match config (check the card / BAR)\n");
     int n_taps = setup_taps(cfg, cards, hps, taps, true);
     if (n_taps == 0) {
         fprintf(stderr, "warning: no TAPs were created\n");

@@ -48,6 +48,8 @@ struct fake_ctx {
 
     struct fake_slow_fifo punt_rx;   /* FPGA -> host */
     struct fake_slow_fifo tx_inject; /* host -> FPGA */
+
+    struct pw_fake_wr_counts wr;     /* per-window CSR write counts (test hook) */
 };
 
 static int slow_push(struct fake_slow_fifo *f, const void *data, size_t len,
@@ -117,7 +119,20 @@ static pw_status fake_write32(void *vctx, uint32_t off, uint32_t v) {
         /* W1C; nothing sticky in fake model */
         return PW_OK;
     }
+    /* Record writes to the classification windows so daemon-programming tests
+     * can assert each table was actually programmed (otherwise the fake just
+     * swallows them and a forgotten/misaddressed window goes unnoticed). */
+    if      (off >= PWFPGA_WIN_FLOWID_MAP && off < PWFPGA_WIN_FLOWID_MAP + 0x400u) c->wr.flowid_map++;
+    else if (off >= PWFPGA_WIN_FC_CMP     && off < PWFPGA_WIN_FC_UDF)              c->wr.fc_cmp++;
+    else if (off >= PWFPGA_WIN_FC_UDF     && off < PWFPGA_WIN_FC_RULE)             c->wr.fc_udf++;
+    else if (off >= PWFPGA_WIN_FC_RULE    && off < PWFPGA_WIN_FC_RULE + 0x100u)    c->wr.fc_rule++;
+    else if ((off >= PWFPGA_WIN_HASH_MASK && off < PWFPGA_WIN_FC_HASH + 0x2000u))  c->wr.hash++;
     return PW_OK;
+}
+
+void pw_fake_backend_wr_counts(void *ctx, struct pw_fake_wr_counts *out) {
+    struct fake_ctx *c = ctx;
+    if (c && out) *out = c->wr;
 }
 
 static pw_status fake_card_info(void *vctx, struct pw_card_info *out) {
