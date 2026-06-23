@@ -74,7 +74,9 @@ int main(int argc, char **argv) {
                        PWFPGA_ACT_PUNT_TO_HOST, /*egress*/0, /*lfid*/0, /*lif*/0x42) != PW_OK) {
         fprintf(stderr, "FATAL: classifier programming failed (BAR write error?)\n"); return 1;
     }
-    o->flow_write(be.ctx, 0, &f); o->flow_commit(be.ctx);
+    if (o->flow_write(be.ctx, 0, &f) != PW_OK || o->flow_commit(be.ctx) != PW_OK) {
+        fprintf(stderr, "FATAL: flow_write/commit failed\n"); return 1;
+    }
 
     printf("gen egress0 dst_ip=198.51.100.0 mod=increment mask=0x3ff; PUNT(ingress1) -> host\n");
 

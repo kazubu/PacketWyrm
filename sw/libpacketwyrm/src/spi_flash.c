@@ -19,17 +19,21 @@ static pw_status spi_txn(const struct pw_card_backend_ops *o, void *ctx,
         pw_status s = o->write32(ctx, PWFPGA_SPI_TXBUF + (uint32_t)i, d);
         if (s != PW_OK) return s;
     }
-    o->write32(ctx, PWFPGA_REG_SPI_LEN, (uint32_t)n);
-    o->write32(ctx, PWFPGA_REG_SPI_CTRL,
-               PWFPGA_SPI_CTRL_GO | (cs_hold ? PWFPGA_SPI_CTRL_CS_HOLD : 0));
+    pw_status s = o->write32(ctx, PWFPGA_REG_SPI_LEN, (uint32_t)n);
+    if (s != PW_OK) return s;
+    s = o->write32(ctx, PWFPGA_REG_SPI_CTRL,
+                   PWFPGA_SPI_CTRL_GO | (cs_hold ? PWFPGA_SPI_CTRL_CS_HOLD : 0));
+    if (s != PW_OK) return s;
     for (int spin = 0; spin < 2000000; spin++) {
         uint32_t st = 0;
-        o->read32(ctx, PWFPGA_REG_SPI_CTRL, &st);
+        s = o->read32(ctx, PWFPGA_REG_SPI_CTRL, &st);
+        if (s != PW_OK) return s;       /* a failed status read != "not busy" */
         if (!(st & PWFPGA_SPI_STATUS_BUSY)) {
             if (rx) {
                 for (int i = 0; i < n; i += 4) {
                     uint32_t d = 0;
-                    o->read32(ctx, PWFPGA_SPI_RXBUF + (uint32_t)i, &d);
+                    s = o->read32(ctx, PWFPGA_SPI_RXBUF + (uint32_t)i, &d);
+                    if (s != PW_OK) return s;
                     for (int k = 0; k < 4 && i + k < n; k++) rx[i + k] = (d >> (k * 8)) & 0xFF;
                 }
             }
@@ -41,13 +45,14 @@ static pw_status spi_txn(const struct pw_card_backend_ops *o, void *ctx,
 
 /* STARTUPE3 masks the first few USRCCLK edges after configuration, so the
  * very first SPI transaction loses bits; burn a throwaway RDSR. */
-static void warmup(const struct pw_card_backend_ops *o, void *ctx) {
-    uint8_t t[2] = {0x05, 0x00};
-    (void)spi_txn(o, ctx, t, 2, NULL, 0);
+static pw_status warmup(const struct pw_card_backend_ops *o, void *ctx) {
+    uint8_t t[2] = {0x05, 0x00};   /* throwaway RDSR; data is junk by design, but
+                                      a CSR-op failure here is a real fault. */
+    return spi_txn(o, ctx, t, 2, NULL, 0);
 }
 
-static void wren(const struct pw_card_backend_ops *o, void *ctx) {
-    uint8_t t = 0x06; (void)spi_txn(o, ctx, &t, 1, NULL, 0);
+static pw_status wren(const struct pw_card_backend_ops *o, void *ctx) {
+    uint8_t t = 0x06; return spi_txn(o, ctx, &t, 1, NULL, 0);
 }
 static int wip(const struct pw_card_backend_ops *o, void *ctx) {
     uint8_t t[2] = {0x05, 0x00}, r[2];
@@ -66,16 +71,18 @@ static void addr3(uint8_t *b, uint32_t a) { b[0]=(a>>16)&0xFF; b[1]=(a>>8)&0xFF;
 
 static pw_status sector_erase(const struct pw_card_backend_ops *o, void *ctx, uint32_t a) {
     uint8_t t[4] = {0xD8}; addr3(&t[1], a);
-    wren(o, ctx);
-    pw_status s = spi_txn(o, ctx, t, 4, NULL, 0);
+    pw_status s = wren(o, ctx);
+    if (s != PW_OK) return s;
+    s = spi_txn(o, ctx, t, 4, NULL, 0);
     if (s != PW_OK) return s;
     return wait_idle(o, ctx);
 }
 static pw_status page_program(const struct pw_card_backend_ops *o, void *ctx,
                               uint32_t a, const uint8_t *data, int len) {
     uint8_t t[4 + PAGE]; t[0] = 0x02; addr3(&t[1], a); memcpy(&t[4], data, (size_t)len);
-    wren(o, ctx);
-    pw_status s = spi_txn(o, ctx, t, 4 + len, NULL, 0);
+    pw_status s = wren(o, ctx);
+    if (s != PW_OK) return s;
+    s = spi_txn(o, ctx, t, 4 + len, NULL, 0);
     if (s != PW_OK) return s;
     return wait_idle(o, ctx);
 }
@@ -91,9 +98,10 @@ static pw_status flash_read(const struct pw_card_backend_ops *o, void *ctx,
 
 pw_status pw_flash_read_id(const struct pw_card_backend_ops *o, void *ctx, uint8_t id[3]) {
     if (!o || !o->write32 || !o->read32) return PW_E_INVAL;
-    warmup(o, ctx);
+    pw_status s = warmup(o, ctx);
+    if (s != PW_OK) return s;
     uint8_t t[4] = {0x9F, 0, 0, 0}, r[4];
-    pw_status s = spi_txn(o, ctx, t, 4, r, 0);
+    s = spi_txn(o, ctx, t, 4, r, 0);
     if (s != PW_OK) return s;
     id[0] = r[1]; id[1] = r[2]; id[2] = r[3];
     return PW_OK;
@@ -103,7 +111,8 @@ pw_status pw_flash_program(const struct pw_card_backend_ops *o, void *ctx,
                            uint32_t offset, const uint8_t *data, size_t len,
                            uint64_t *mismatch_out) {
     if (!o || !o->write32 || !o->read32 || !data || len == 0) return PW_E_INVAL;
-    warmup(o, ctx);
+    pw_status ws = warmup(o, ctx);
+    if (ws != PW_OK) return ws;
     for (uint32_t a = offset & ~(SECTOR - 1); a < offset + (uint32_t)len; a += SECTOR) {
         pw_status s = sector_erase(o, ctx, a);
         if (s != PW_OK) return s;

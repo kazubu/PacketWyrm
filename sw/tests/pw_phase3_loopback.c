@@ -65,52 +65,13 @@ int main(int argc, char **argv) {
            bdf, info.device_id, info.version,
            info.num_local_ports, info.num_local_flows, info.num_classifier_entries);
 
-    /* 4. program card 0: flow rows (flow tx_enable starts the generator),
-     *    the flow-id map, then the field+UDF classifier. Mirrors packetwyrmd. */
+    /* 4. program card 0: flow rows + commit, flow-id map, field+UDF classifier,
+     *    hash table -- via the shared library path (same code the daemon uses),
+     *    so every CSR write is error-checked in one place. */
     const struct pw_card_program *cp = &prog->per_card[0];
-    for (size_t r = 0; r < cp->n_flow_rows; r++)
-        if (o->flow_write) o->flow_write(be.ctx, (uint32_t)r, &cp->flow_rows[r]);
-    if (o->flow_commit) o->flow_commit(be.ctx);
-    /* TEST_RX flow-id map: structured test flows -> direct checker-slot index. */
-    for (size_t m = 0; m < cp->n_map_entries; m++)
-        if (o->write32)
-            o->write32(be.ctx, PWFPGA_WIN_FLOWID_MAP + cp->map_entries[m].flow_id * 4u,
-                       PWFPGA_FLOWID_MAP_VALID | cp->map_entries[m].local_flow_id);
-    /* Unified field+UDF classifier: header-defined flows + punt + forward. */
-    if (o->write32) {
-        for (size_t i = 0; i < cp->n_fc_cmps; i++) {
-            const struct pw_fc_cmp *c = &cp->fc_cmps[i];
-            o->write32(be.ctx, PWFPGA_FC_CMP_SRC(PWFPGA_WIN_FC_CMP, i), c->src);
-            o->write32(be.ctx, PWFPGA_FC_CMP_MASK(PWFPGA_WIN_FC_CMP, i), c->mask);
-            o->write32(be.ctx, PWFPGA_FC_CMP_VALUE(PWFPGA_WIN_FC_CMP, i), c->value);
-        }
-        for (size_t i = 0; i < cp->n_fc_udfs; i++) {
-            const struct pw_fc_udf *u = &cp->fc_udfs[i];
-            o->write32(be.ctx, PWFPGA_FC_UDF_OFFSET(PWFPGA_WIN_FC_UDF, i), u->offset);
-            o->write32(be.ctx, PWFPGA_FC_UDF_MASK(PWFPGA_WIN_FC_UDF, i), u->mask);
-            o->write32(be.ctx, PWFPGA_FC_UDF_VALUE(PWFPGA_WIN_FC_UDF, i), u->value);
-        }
-        for (size_t i = 0; i < cp->n_fc_rules; i++) {
-            const struct pw_fc_rule *rl = &cp->fc_rules[i];
-            o->write32(be.ctx, PWFPGA_FC_RULE_WORD0(PWFPGA_WIN_FC_RULE, i),
-                       PWFPGA_FC_RULE_W0(rl->care, rl->action, rl->egress, rl->priority, 1));
-            o->write32(be.ctx, PWFPGA_FC_RULE_LFID(PWFPGA_WIN_FC_RULE, i), rl->local_flow_id);
-            o->write32(be.ctx, PWFPGA_FC_RULE_LIF(PWFPGA_WIN_FC_RULE, i), rl->logical_if_id);
-        }
-        // hash exact table: seed + per-bucket entries (header-keyed TEST_RX)
-        if (cp->n_hash_entries > 0) {
-            for (unsigned w = 0; w < PWFPGA_HASH_KEY_WORDS; w++)
-                o->write32(be.ctx, PWFPGA_HASH_MASK_WORD(PWFPGA_WIN_HASH_MASK, w), cp->hash_mask[w]);
-            o->write32(be.ctx, PWFPGA_REG_HASH_SEED, cp->hash_seed);
-            for (size_t i = 0; i < cp->n_hash_entries; i++) {
-                const struct pw_fc_hash_entry *he = &cp->hash_entries[i];
-                for (unsigned w = 0; w < PWFPGA_HASH_KEY_WORDS; w++)
-                    o->write32(be.ctx, PWFPGA_HASH_KEY_WORD(PWFPGA_WIN_FC_HASH, he->index, w),
-                               he->key_word[w]);
-                o->write32(be.ctx, PWFPGA_HASH_CTRL(PWFPGA_WIN_FC_HASH, he->index),
-                           PWFPGA_HASH_CTRL_VALID | he->local_flow_id);
-            }
-        }
+    if (pw_program_card_tables(o, be.ctx, cp) != PW_OK) {
+        fprintf(stderr, "FATAL: card programming failed (BAR write error / card drop?)\n");
+        return 1;
     }
     printf("programmed %zu flow rows, %zu flow-id map entries, "
            "%zu cmp/%zu udf/%zu rules, %zu hash entries (seed %08x); generator running\n",
