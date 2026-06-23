@@ -475,7 +475,9 @@ struct pwfpga_dma_cpl {
 #define PWFPGA_REG_PUNT_INFO               (PWFPGA_WIN_PUNT_RX + 0x004u) /* R:[13:0]byte_len [19:16]ingress_port */
 #define PWFPGA_REG_PUNT_LIF                (PWFPGA_WIN_PUNT_RX + 0x008u) /* R: logical_if_id */
 #define PWFPGA_REG_PUNT_POP                (PWFPGA_WIN_PUNT_RX + 0x00Cu) /* W:1 -> release current frame */
-#define PWFPGA_PUNT_DATA                   (PWFPGA_WIN_PUNT_RX + 0x010u) /* R: frame word i at +i*4, LE */
+#define PWFPGA_REG_PUNT_RX_TS_LOW          (PWFPGA_WIN_PUNT_RX + 0x010u) /* R: RX wire timestamp [31:0] */
+#define PWFPGA_REG_PUNT_RX_TS_HIGH         (PWFPGA_WIN_PUNT_RX + 0x014u) /* R: RX wire timestamp [63:32] */
+#define PWFPGA_PUNT_DATA                   (PWFPGA_WIN_PUNT_RX + 0x020u) /* R: frame word i at +i*4, LE */
 #define PWFPGA_PUNT_MAX_FRAME              2048u
 #define PWFPGA_PUNT_STATUS_VALID           (1u << 0)
 #define PWFPGA_PUNT_STATUS_OVERFLOW        (1u << 1)

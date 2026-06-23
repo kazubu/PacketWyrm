@@ -56,7 +56,7 @@ int pw_host_plane_step(struct pw_host_plane *hp, int max_per_dir) {
         for (int i = 0; i < max_per_dir; i++) {
             uint32_t lif = 0;
             int n = hp->backend->ops->slow_path_rx(hp->backend->ctx,
-                                                   buf, sizeof(buf), &lif);
+                                                   buf, sizeof(buf), &lif, NULL);
             if (n <= 0) break;
             int b = find_binding(hp, lif);
             if (b < 0) { hp->punt_unknown_lif++; continue; }

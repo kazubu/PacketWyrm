@@ -83,7 +83,7 @@ int main(int argc, char **argv) {
     /* Drain the looped-back copy. */
     uint8_t rx[2048]; uint32_t got_lif = 0; int rn = 0;
     for (long s = 0; s < 20000000L && rn == 0; s++)
-        rn = o->slow_path_rx(be.ctx, rx, sizeof(rx), &got_lif);
+        rn = o->slow_path_rx(be.ctx, rx, sizeof(rx), &got_lif, NULL);
 
     if (rn <= 0) { printf("RESULT: FAIL -- no frame looped back (rn=%d)\n", rn); return 1; }
 

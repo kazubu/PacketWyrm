@@ -85,7 +85,7 @@ int main(int argc, char **argv) {
      * already sitting in the punt window. */
     if (o->write32) o->write32(be.ctx, PWFPGA_REG_DP_RESET, 1);
     { uint8_t tmp[2048]; uint32_t l; for (int i = 0; i < 256; i++)
-        if (o->slow_path_rx(be.ctx, tmp, sizeof tmp, &l) <= 0) break; }
+        if (o->slow_path_rx(be.ctx, tmp, sizeof tmp, &l, NULL) <= 0) break; }
 
     pw_tool_fc_ing_udp(o, be.ctx, 0, 0, /*ingress*/1, /*udp_dst*/50001,
                        PWFPGA_ACT_PUNT_TO_HOST, /*egress*/0, /*lfid*/0, /*lif*/0x66);
@@ -97,7 +97,7 @@ int main(int argc, char **argv) {
     uint8_t dlo_seen[256] = {0}; int dlo_distinct=0;
     uint8_t buf[2048];
     for (long s=0; s<50000000L && got<want; s++) {
-        uint32_t lif=0; int n = o->slow_path_rx(be.ctx, buf, sizeof(buf), &lif);
+        uint32_t lif=0; int n = o->slow_path_rx(be.ctx, buf, sizeof(buf), &lif, NULL);
         if (n <= 0) continue;
         got++;
         int is6 = (n >= 54 && buf[12]==0x86 && buf[13]==0xDD);

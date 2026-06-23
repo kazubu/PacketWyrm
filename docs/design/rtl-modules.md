@@ -23,7 +23,9 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
     |   |                            strobes -- flow window + fc cmp/udf/rule)
     |   +-- pw_spi_flash         CSR SPI master (live config-flash access)
     |   +-- DP_RESET / REBOOT / STATS_CLEAR / SNAPSHOT triggers
-    +-- pw_punt_rx_window        punt AXIS -> CSR-polled frame buffer (host RX)
+    +-- pw_punt_rx_window        punt AXIS -> CSR-polled frame buffer (host RX);
+    |                            carries a 64-bit RX wire timestamp (SOF-latched,
+    |                            servo-facing) in the punt metadata -> RX_TS regs
     +-- pw_inject_tx_window      CSR frame buffer -> AXIS into egress (host TX)
     +-- pw_data_plane_axis       64-bit AXIS streaming data plane
         +-- pw_flow_table_bram   BRAM flow table (commit-walk decode; per-port

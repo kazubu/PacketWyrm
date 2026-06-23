@@ -104,7 +104,7 @@ module pw_data_plane_axis #(
     output logic                  m_axis_punt_tvalid,
     input  wire                   m_axis_punt_tready,
     output logic                  m_axis_punt_tlast,
-    output logic [35:0]           m_axis_punt_tuser,   // {ingress[3:0], logical_if_id[31:0]} of head frame
+    output logic [99:0]           m_axis_punt_tuser,   // {rx_ts[63:0], ingress[3:0], logical_if_id[31:0]} of head frame
 
     // Slow-path TX inject (host -> FPGA): one AXIS source mixed into the
     // egress arbiter for the host-selected egress port (priority below
@@ -218,7 +218,7 @@ module pw_data_plane_axis #(
     // ingress SAFs, PW_PORTS selects the local flow generator.
     localparam int SELW  = $clog2(PW_PORTS + 1);
     localparam int RW    = 5;            // route tag: {is_punt, egress[3:0]}
-    localparam int MW    = 36;           // punt metadata: {ingress[3:0], logical_if_id[31:0]}
+    localparam int MW    = 100;          // punt metadata: {rx_ts[63:0], ingress[3:0], logical_if_id[31:0]}
 
     // ------------------------------------------------------------
     // Data-plane soft reset: stretch the 1-cycle CSR pulse to a few
@@ -383,6 +383,23 @@ module pw_data_plane_axis #(
             wire act_punt = (rx_eff[gp].action == PW_ACT_PUNT_TO_HOST) ||
                             (rx_eff[gp].action == PW_ACT_MIRROR_TO_HOST);
 
+            // RX wire timestamp (servo-facing): latch the free-running counter at
+            // the frame's first beat (SOF), snapshot it at EOF into frame_ts.
+            // frame_ts holds this frame's SOF time until the next frame's EOF
+            // (>> the classifier decision latency), so it is still valid when the
+            // SAF decision lands -- carried in the punt metadata to the host.
+            logic        in_frame;
+            logic [63:0] sof_ts, frame_ts;
+            always_ff @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin in_frame <= 1'b0; sof_ts <= '0; frame_ts <= '0; end
+                else if (s_axis_rx_tvalid[gp]) begin
+                    if (!in_frame) sof_ts <= timestamp_i;
+                    in_frame <= !s_axis_rx_tlast[gp];
+                    if (s_axis_rx_tlast[gp])
+                        frame_ts <= in_frame ? sof_ts : timestamp_i;  // single-beat -> this beat
+                end
+            end
+
             pw_frame_saf #(
                 .DEPTH_BEATS(SAF_DEPTH_BEATS),
                 .DESC_DEPTH (16),
@@ -399,7 +416,7 @@ module pw_data_plane_axis #(
                 .dec_keep_i      (rx_kv_d[gp] && rx_eff[gp].hit && (act_fwd || act_punt)),
                 .dec_route_i     (act_punt ? {1'b1, 4'd0}
                                            : {1'b0, rx_eff[gp].egress_port}),
-                .dec_meta_i      ({4'(gp), rx_eff[gp].logical_if_id}),
+                .dec_meta_i      ({frame_ts, 4'(gp), rx_eff[gp].logical_if_id}),
                 .overflow_drop_o (saf_overflow[gp]),  // forward-buffer-full drop
                 .m_tdata         (saf_td[gp]),
                 .m_tkeep         (saf_tk[gp]),

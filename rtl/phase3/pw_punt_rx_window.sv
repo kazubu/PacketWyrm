@@ -28,7 +28,7 @@
 module pw_punt_rx_window #(
     parameter int ADDR_W    = 16,
     parameter int BUF_BEATS = 512,                 // 64-bit beats; 4 KB max frame
-    parameter int DATA_OFF  = 16'h0010             // PUNT_DATA base offset
+    parameter int DATA_OFF  = 16'h0020             // PUNT_DATA base offset (0x10/0x14 = RX timestamp)
 ) (
     input  wire               clk,
     input  wire               rst_n,
@@ -39,7 +39,7 @@ module pw_punt_rx_window #(
     input  wire               s_tvalid,
     output wire               s_tready,
     input  wire               s_tlast,
-    input  wire [35:0]        s_tuser,             // {ingress[3:0], logical_if_id[31:0]}
+    input  wire [99:0]        s_tuser,             // {rx_ts[63:0], ingress[3:0], logical_if_id[31:0]}
 
     // CSR read: addressed, registered (1-cycle). rd_addr_i is the offset
     // within this window. rd_data_o is valid the cycle after rd_en_i.
@@ -63,6 +63,7 @@ module pw_punt_rx_window #(
     logic [13:0]    byte_len;     // accumulated valid bytes
     logic [31:0]    lif_q;        // logical_if_id of the captured frame
     logic [3:0]     ingress_q;    // ingress port of the captured frame
+    logic [63:0]    rx_ts_q;      // RX wire timestamp of the captured frame (servo-facing)
     logic           frame_valid;  // a frame is buffered, awaiting host read
     logic           overflow;     // sticky: a frame was dropped (did not fit)
     logic           dropping;     // current in-progress frame overflowed
@@ -86,6 +87,7 @@ module pw_punt_rx_window #(
             byte_len    <= '0;
             lif_q       <= '0;
             ingress_q   <= '0;
+            rx_ts_q     <= '0;
             frame_valid <= 1'b0;
             overflow    <= 1'b0;
             dropping    <= 1'b0;
@@ -111,6 +113,7 @@ module pw_punt_rx_window #(
                         frame_valid <= 1'b1;
                         lif_q       <= s_tuser[31:0];
                         ingress_q   <= s_tuser[35:32];
+                        rx_ts_q     <= s_tuser[99:36];
                     end
                 end
             end
@@ -156,6 +159,8 @@ module pw_punt_rx_window #(
             8'h00:   hdr_q <= {30'b0, overflow, frame_valid};
             8'h04:   hdr_q <= {12'b0, ingress_q, 2'b0, byte_len};
             8'h08:   hdr_q <= lif_q;
+            8'h10:   hdr_q <= rx_ts_q[31:0];       // RX wire timestamp (low)
+            8'h14:   hdr_q <= rx_ts_q[63:32];      //                    (high)
             default: hdr_q <= 32'h0;
         endcase
     end

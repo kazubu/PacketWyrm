@@ -89,12 +89,15 @@ struct pw_card_backend_ops {
                                 size_t *n_buckets_out);
 
     /* Slow-path RX (FPGA -> host). Pops one frame if available.
-     * Returns: > 0  = bytes copied into buf (and *out_lif_id set);
+     * Returns: > 0  = bytes copied into buf (and *out_lif_id set; *out_rx_ts,
+     *               if non-NULL, gets the frame's RX wire timestamp -- the
+     *               free-running counter latched at the frame's SOF, for a PTP
+     *               servo's RX events);
      *         == 0  = no frame waiting;
      *         <  0  = pw_status error code. May be NULL on backends
      *               that do not implement the slow path yet. */
     int       (*slow_path_rx)(void *ctx, void *buf, size_t buflen,
-                              uint32_t *out_lif_id);
+                              uint32_t *out_lif_id, uint64_t *out_rx_ts);
 
     /* Slow-path TX (host -> FPGA). Enqueues one frame for the FPGA's
      * TX arbiter to send out the given egress local port. May be

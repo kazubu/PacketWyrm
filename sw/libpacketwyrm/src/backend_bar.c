@@ -176,7 +176,7 @@ static pw_status bar_flow_hist_read(void *vctx, uint32_t lfid,
  * window. Polls PUNT_STATUS; if a frame is waiting, reads its metadata +
  * bytes, releases the slot (PUNT_POP) and returns the byte count. */
 static int bar_slow_path_rx(void *vctx, void *buf, size_t buflen,
-                            uint32_t *out_lif_id) {
+                            uint32_t *out_lif_id, uint64_t *out_rx_ts) {
     struct bar_ctx *c = vctx;
     if (!buf) return PW_E_INVAL;
     if ((size_t)PWFPGA_PUNT_DATA > c->size) return PW_E_OUT_OF_RANGE;
@@ -187,6 +187,9 @@ static int bar_slow_path_rx(void *vctx, void *buf, size_t buflen,
     uint32_t info = *reg_at(c, PWFPGA_REG_PUNT_INFO);
     uint32_t len  = info & PWFPGA_PUNT_INFO_LEN_MASK;
     uint32_t lif  = *reg_at(c, PWFPGA_REG_PUNT_LIF);
+    /* RX wire timestamp (servo-facing) -- read before POP releases the slot. */
+    uint64_t rx_ts = (uint64_t)*reg_at(c, PWFPGA_REG_PUNT_RX_TS_LOW)
+                   | ((uint64_t)*reg_at(c, PWFPGA_REG_PUNT_RX_TS_HIGH) << 32);
     if (len > PWFPGA_PUNT_MAX_FRAME) len = PWFPGA_PUNT_MAX_FRAME;  /* defensive */
 
     size_t copy = (len > buflen) ? buflen : len;
@@ -200,6 +203,7 @@ static int bar_slow_path_rx(void *vctx, void *buf, size_t buflen,
 
     *reg_at(c, PWFPGA_REG_PUNT_POP) = 1u;             /* release the slot */
     if (out_lif_id) *out_lif_id = lif;
+    if (out_rx_ts)  *out_rx_ts  = rx_ts;
     return (int)copy;
 }
 
