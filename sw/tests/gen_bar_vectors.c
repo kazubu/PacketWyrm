@@ -50,33 +50,10 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Classifier row 1: TEST_RX on UDP/50001, magic+flow_id mask. */
-    struct pwfpga_classifier_entry ce = {0};
-    ce.action               = PWFPGA_ACT_TEST_RX;
-    ce.priority             = 5;
-    ce.flags                = PWFPGA_CLS_FLAG_ENABLE;
-    ce.egress_local_port    = 1;   /* exercise the FORWARD egress wire byte */
-    ce.local_flow_id        = 3;
-    ce.logical_if_id        = 1000;
-    ce.key.l3_proto         = 17;
-    ce.mask.l3_proto        = 0xff;
-    ce.key.udp_dst_port     = 50001;
-    ce.mask.udp_dst_port    = 0xffff;
-    ce.key.test_magic       = 0xA5027E57;
-    ce.mask.test_magic      = 0xFFFFFFFFu;
-    ce.key.global_flow_id   = 42;
-    ce.mask.global_flow_id  = 0xFFFFFFFFu;
-    /* IPv6 dst match in the row tail (bytes 96..127): pattern 0x20..0x2F,
-     * mask all-ones (exact match). Exercises the classifier_window decode. */
-    for (int i = 0; i < 16; i++) { ce.ipv6_dst[i] = (uint8_t)(0x20 + i); ce.ipv6_dst_mask[i] = 0xff; }
-    if ((r = b.ops->classifier_write(b.ctx, 1, &ce)) != PW_OK) {
-        fprintf(stderr, "classifier_write: %s\n", pw_strerror(r));
-        goto fail;
-    }
-    if ((r = b.ops->classifier_commit(b.ctx)) != PW_OK) {
-        fprintf(stderr, "classifier_commit: %s\n", pw_strerror(r));
-        goto fail;
-    }
+    /* (The legacy classifier table is retired; this golden image now exercises
+     * the flow-window byte layout only. The field/hash classifier programming
+     * is register-based and covered by tb_field_classifier / tb_hash_classifier
+     * + tb_csr_full.) */
 
     /* Flow row 0: bind egress port 0 with a known rate. */
     struct pwfpga_flow_config fc = {0};

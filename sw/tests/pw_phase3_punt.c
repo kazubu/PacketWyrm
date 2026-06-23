@@ -24,6 +24,7 @@
 #include "packetwyrm/backend.h"
 #include "packetwyrm/vfio.h"
 #include "packetwyrm/csr.h"
+#include "pw_tool_fc.h"
 
 static void set_mac(uint8_t d[6], uint64_t v) {
     for (int i = 0; i < 6; i++) d[i] = (uint8_t)(v >> (8 * (5 - i)));
@@ -77,28 +78,16 @@ int main(int argc, char **argv) {
     f.tx_enable        = 1;
     f.rx_check_enable  = 0;
 
-    /* Clear stale rows first (tables persist across runs). */
+    /* Clear stale flow rows first (tables persist across runs). */
     {
-        struct pwfpga_classifier_entry zc = {0};
-        struct pwfpga_flow_config      zf = {0};
-        unsigned nc = info.num_classifier_entries ? info.num_classifier_entries : 8;
+        struct pwfpga_flow_config zf = {0};
         unsigned nf = info.num_local_flows ? info.num_local_flows : 8;
-        for (unsigned r = 0; r < nc; r++) if (o->classifier_write) o->classifier_write(be.ctx, r, &zc);
         for (unsigned r = 0; r < nf; r++) if (o->flow_write) o->flow_write(be.ctx, r, &zf);
     }
 
-    /* --- classifier rule 0: PUNT frames arriving on ingress 1 --- */
-    struct pwfpga_classifier_entry pe = {0};
-    pe.key.ingress_local_port = 1;        pe.mask.ingress_local_port = 0xFF;
-    pe.key.udp_dst_port       = 50001;    pe.mask.udp_dst_port       = 0xFFFF;
-    pe.key.test_magic         = 0xA5027E57; pe.mask.test_magic       = 0xFFFFFFFF;
-    pe.key.global_flow_id     = 2;        pe.mask.global_flow_id     = 0xFFFFFFFF;
-    pe.action        = PWFPGA_ACT_PUNT_TO_HOST;
-    pe.logical_if_id = lif;
-    pe.priority      = 5;
-    pe.flags         = PWFPGA_CLS_FLAG_ENABLE;
-    if (o->classifier_write) o->classifier_write(be.ctx, 0, &pe);
-    if (o->classifier_commit) o->classifier_commit(be.ctx);
+    /* --- field-classifier rule 0: PUNT frames (ingress 1, udp_dst 50001) --- */
+    pw_tool_fc_ing_udp(o, be.ctx, /*cmp0*/0, /*rule*/0, /*ingress*/1, /*udp_dst*/50001,
+                       PWFPGA_ACT_PUNT_TO_HOST, /*egress*/0, /*lfid*/0, lif);
 
     if (o->flow_write) o->flow_write(be.ctx, 0, &f);
     if (o->flow_commit) o->flow_commit(be.ctx);

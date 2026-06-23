@@ -111,22 +111,6 @@ static void bar_copy_words_out(void *dst, volatile const uint32_t *src,
     }
 }
 
-static pw_status bar_classifier_write(void *vctx, uint32_t row,
-                                      const struct pwfpga_classifier_entry *e) {
-    struct bar_ctx *c = vctx;
-    if (!e) return PW_E_INVAL;
-    uint32_t base = PWFPGA_WIN_CLASSIFIER + row * PWFPGA_CLASSIFIER_STRIDE;
-    if ((size_t)base + PWFPGA_CLASSIFIER_STRIDE > c->size) return PW_E_OUT_OF_RANGE;
-    bar_copy_words(reg_at(c, base), e, sizeof(*e));
-    return PW_OK;
-}
-
-static pw_status bar_classifier_commit(void *vctx) {
-    struct bar_ctx *c = vctx;
-    if (PWFPGA_REG_CLASSIFIER_COMMIT + 4 > c->size) return PW_E_OUT_OF_RANGE;
-    *reg_at(c, PWFPGA_REG_CLASSIFIER_COMMIT) = 1u;
-    return PW_OK;
-}
 
 static pw_status bar_flow_write(void *vctx, uint32_t row,
                                 const struct pwfpga_flow_config *f) {
@@ -267,8 +251,6 @@ static const struct pw_card_backend_ops bar_ops = {
     .read32              = bar_read32,
     .write32             = bar_write32,
     .card_info           = bar_card_info,
-    .classifier_write    = bar_classifier_write,
-    .classifier_commit   = bar_classifier_commit,
     .flow_write          = bar_flow_write,
     .flow_commit         = bar_flow_commit,
     .stats_snapshot      = bar_stats_snapshot,
