@@ -250,20 +250,20 @@ module pw_data_plane_axis #(
     // All downstream consumers (checker / SAF / drop) use rx_eff, not rx_fc.
     pw_class_result_t [PW_PORTS-1:0] rx_eff;
 
-    // The classifier is pipelined (latency 2: comparator register + result
-    // register) to break the long source -> compare -> select -> checker path,
-    // so rx_fc lands TWO cycles after rx_kv/rx_key.
-    // Delay the key + key_valid that feed the checker arbiter, the SAF
-    // decision, and the drop counter by two cycles to realign with it.
-    logic             [PW_PORTS-1:0] rx_kv_d1, rx_kv_d;
-    pw_match_key_t    [PW_PORTS-1:0] rx_key_d1, rx_key_d;
+    // The effective classifier result (rx_eff) now lands THREE cycles after
+    // rx_kv/rx_key: the hash classifier is latency 3 (a masked-key register
+    // stage off the dp_clk-critical hash path), and the field + map results are
+    // delayed to match. Delay the key + key_valid that feed the checker arbiter,
+    // the SAF decision, and the drop counter by three cycles to realign.
+    logic             [PW_PORTS-1:0] rx_kv_d1, rx_kv_d2, rx_kv_d;
+    pw_match_key_t    [PW_PORTS-1:0] rx_key_d1, rx_key_d2, rx_key_d;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            rx_kv_d1  <= '0; rx_kv_d  <= '0;
-            rx_key_d1 <= '0; rx_key_d <= '0;
+            rx_kv_d1  <= '0; rx_kv_d2  <= '0; rx_kv_d  <= '0;
+            rx_key_d1 <= '0; rx_key_d2 <= '0; rx_key_d <= '0;
         end else begin
-            rx_kv_d1  <= rx_kv;     rx_kv_d  <= rx_kv_d1;
-            rx_key_d1 <= rx_key;    rx_key_d <= rx_key_d1;
+            rx_kv_d1  <= rx_kv;     rx_kv_d2  <= rx_kv_d1;   rx_kv_d  <= rx_kv_d2;
+            rx_key_d1 <= rx_key;    rx_key_d2 <= rx_key_d1;  rx_key_d <= rx_key_d2;
         end
     end
 
@@ -335,9 +335,10 @@ module pw_data_plane_axis #(
 
             // TEST_RX flow-id map: a frame's test_flow_id directly indexes the
             // checker slot (no per-flow comparator). valid 1 cycle after the key;
-            // the classifier result is 2 cycles, so align the map result by +1.
-            logic                            mv1, mv2;
-            logic [$clog2(PW_NUM_FLOWS)-1:0] ml1, ml2;
+            // the hash classifier is latency 3, so align the map result (+1 of
+            // its own) and the field result to +3 with one extra register each.
+            logic                            mv1, mv2, mv3;
+            logic [$clog2(PW_NUM_FLOWS)-1:0] ml1, ml2, ml3;
             pw_flowid_map #(.NUM_FLOWS(PW_NUM_FLOWS), .MAP_DEPTH(MAP_DEPTH)) u_fmap (
                 .clk(clk), .rst_n(rst_n),
                 .wr_en(map_wr_en_i), .wr_addr(map_wr_addr_i),
@@ -345,16 +346,23 @@ module pw_data_plane_axis #(
                 .flowid_i(rx_key[gp].test_flow_id), .is_test_i(rx_key[gp].is_test),
                 .lookup_en_i(rx_kv[gp]), .valid_o(mv1), .local_flow_id_o(ml1)
             );
+            // Field classifier is latency 2; delay it one cycle to align with the
+            // now-latency-3 hash classifier (+ the +3 map below).
+            pw_class_result_t fc_d;
             always_ff @(posedge clk or negedge rst_n) begin
-                if (!rst_n) begin mv2 <= 1'b0; ml2 <= '0; end
-                else        begin mv2 <= mv1;  ml2 <= ml1; end
+                if (!rst_n) begin mv2 <= 1'b0; ml2 <= '0; mv3 <= 1'b0; ml3 <= '0; fc_d <= '0; end
+                else begin
+                    mv2 <= mv1;  ml2 <= ml1;     // map: +2
+                    mv3 <= mv2;  ml3 <= ml2;     // map: +3 (aligned with hash)
+                    fc_d <= rx_fc[gp];           // field: +3
+                end
             end
-            // Effective result (all aligned at +2). Precedence:
+            // Effective result (all aligned at +3). Precedence:
             //   flow-id map (structured test)
             //     > hash exact classifier (header-keyed high-count TEST_RX)
-            //       > field+UDF classifier (rx_fc: punt, forward, drop, few-rule).
+            //       > field+UDF classifier (fc_d: punt, forward, drop, few-rule).
             always_comb begin
-                rx_eff[gp] = rx_fc[gp];
+                rx_eff[gp] = fc_d;
                 if (hcv) begin
                     rx_eff[gp].hit           = 1'b1;
                     rx_eff[gp].action        = PW_ACT_TEST_RX;
@@ -363,10 +371,10 @@ module pw_data_plane_axis #(
                     rx_eff[gp].logical_if_id = '0;
                     rx_eff[gp].entry_index   = '0;
                 end
-                if (mv2) begin
+                if (mv3) begin
                     rx_eff[gp].hit           = 1'b1;
                     rx_eff[gp].action        = PW_ACT_TEST_RX;
-                    rx_eff[gp].local_flow_id = 32'(ml2);
+                    rx_eff[gp].local_flow_id = 32'(ml3);
                     rx_eff[gp].egress_port   = '0;
                     rx_eff[gp].logical_if_id = '0;
                     rx_eff[gp].entry_index   = '0;

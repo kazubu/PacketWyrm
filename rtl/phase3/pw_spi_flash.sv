@@ -58,15 +58,22 @@ module pw_spi_flash #(
     localparam int TX_OFF = 16'h100;
     localparam int RX_OFF = 16'h100 + BUF_BYTES;
     localparam int LENW   = $clog2(BUF_BYTES + 1);
+    localparam int WORDS  = BUF_BYTES / 4;
+    localparam int WAW    = $clog2(WORDS);
 
-    logic [7:0]      tx_buf [BUF_BYTES];
-    logic [7:0]      rx_buf [BUF_BYTES];
+    // TX/RX buffers as 32-bit-word BLOCK RAM (the host accesses them a dword at a
+    // time, and the byte engine streams bytes sequentially). This replaces two
+    // 512-byte register arrays whose byte-indexed read/write muxes cost ~10k LUT
+    // -- block RAM is ~free here and the SPI clock is clk/(2*CLK_DIV) so the
+    // 1-cycle BRAM latency is trivially absorbed.
+    (* ram_style = "block" *) logic [31:0] tx_mem [WORDS];
+    (* ram_style = "block" *) logic [31:0] rx_mem [WORDS];
     logic [LENW-1:0] len;
     logic            cs_hold;
     logic            go;
     logic            busy;
 
-    // ---- CSR writes ----
+    // ---- CSR writes (dword into the TX word RAM) ----
     wire [15:0] woff = wr_addr - WIN_BASE;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -82,28 +89,28 @@ module pw_spi_flash #(
                 end else if (woff == 16'h004) begin
                     len <= wr_data[LENW-1:0];
                 end else if (woff >= TX_OFF && woff < TX_OFF + BUF_BYTES) begin
-                    automatic int b = int'(woff) - TX_OFF;   // dword-aligned
-                    tx_buf[b+0] <= wr_data[7:0];
-                    tx_buf[b+1] <= wr_data[15:8];
-                    tx_buf[b+2] <= wr_data[23:16];
-                    tx_buf[b+3] <= wr_data[31:24];
+                    tx_mem[(woff - TX_OFF) >> 2] <= wr_data;
                 end
             end
         end
     end
 
-    // ---- CSR reads ----
-    logic [15:0] roff;
-    always_comb roff = rd_addr - WIN_BASE;
+    // ---- CSR reads (registered, 1-cycle: rx_mem BRAM read + status mux). The
+    // CSR (pw_csr_full) gives the SPI window a one-cycle pending read, like the
+    // histogram / punt windows. ----
+    wire [15:0]    roff   = rd_addr - WIN_BASE;
+    wire [WAW-1:0] rx_wsel = (roff >= RX_OFF) ? (roff - RX_OFF) >> 2 : '0;
+    logic [15:0]   roff_q;
+    logic [31:0]   rx_rd;
+    always_ff @(posedge clk) begin
+        roff_q <= roff;
+        rx_rd  <= rx_mem[rx_wsel];
+    end
     always_comb begin
         rd_data = 32'h0;
-        if (roff == 16'h000)
-            rd_data = {31'h0, busy};
-        else if (roff == 16'h004)
-            rd_data = {{(32-LENW){1'b0}}, len};
-        else if (roff >= RX_OFF && roff < RX_OFF + BUF_BYTES)
-            rd_data = {rx_buf[int'(roff)-RX_OFF+3], rx_buf[int'(roff)-RX_OFF+2],
-                       rx_buf[int'(roff)-RX_OFF+1], rx_buf[int'(roff)-RX_OFF]};
+        if      (roff_q == 16'h000) rd_data = {31'h0, busy};
+        else if (roff_q == 16'h004) rd_data = {{(32-LENW){1'b0}}, len};
+        else if (roff_q >= RX_OFF && roff_q < RX_OFF + BUF_BYTES) rd_data = rx_rd;
     end
 
     // ---- SPI mode-0 byte engine ----
@@ -133,10 +140,19 @@ module pw_spi_flash #(
     state_e          state;
     logic [LENW-1:0] byte_i;
     logic [2:0]      bit_i;
-    logic [7:0]      sh_tx;     // MSB-first shift-out (mosi = sh_tx[7])
     logic [7:0]      sh_rx;     // shift-in (full byte after 8 rising edges)
+    logic [31:0]     rxw;       // RX word accumulator (written to rx_mem per word)
 
-    assign mosi = sh_tx[7];
+    // TX: drive MOSI by a direct bit-select of the current word (registered BRAM
+    // read of tx_mem[cur_word]). The 1-cycle BRAM read latency on a word crossing
+    // is harmless: MOSI is only sampled at the SCK rising edge, which is CLK_DIV
+    // cycles after the byte advance, long after txw has settled. byte within the
+    // word = byte_i[1:0]; bit MSB-first = 7-bit_i.
+    wire [WAW-1:0] cur_word = byte_i[LENW-1:2];
+    logic [31:0]   txw;
+    always_ff @(posedge clk) txw <= tx_mem[cur_word];
+    wire [4:0] mosi_bit = {byte_i[1:0], 3'b0} + (5'd7 - {2'b0, bit_i});
+    assign mosi = txw[mosi_bit];
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -146,8 +162,8 @@ module pw_spi_flash #(
             busy   <= 1'b0;
             byte_i <= '0;
             bit_i  <= 3'd0;
-            sh_tx  <= 8'h0;
             sh_rx  <= 8'h0;
+            rxw    <= 32'h0;
         end else begin
             unique case (state)
                 S_IDLE: begin
@@ -157,7 +173,6 @@ module pw_spi_flash #(
                         busy   <= 1'b1;
                         byte_i <= '0;
                         bit_i  <= 3'd0;
-                        sh_tx  <= tx_buf[0];
                         sh_rx  <= 8'h0;
                         state  <= S_XFER;
                     end
@@ -171,16 +186,18 @@ module pw_spi_flash #(
                         // falling edge: advance bit / byte
                         sck <= 1'b0;
                         if (bit_i == 3'd7) begin
-                            rx_buf[byte_i] <= sh_rx;   // full byte captured
+                            // assemble the just-finished byte into the RX word and
+                            // flush the word to BRAM when it fills (or on the last
+                            // byte -- a partial last word's high bytes are unread).
+                            automatic logic [31:0] rxw_n = rxw;
+                            rxw_n[byte_i[1:0]*8 +: 8] = sh_rx;
+                            rxw <= rxw_n;
+                            if (byte_i[1:0] == 2'd3 || byte_i == len - 1)
+                                rx_mem[cur_word] <= rxw_n;
                             bit_i <= 3'd0;
-                            if (byte_i == len - 1) begin
-                                state <= S_FIN;
-                            end else begin
-                                sh_tx  <= tx_buf[byte_i + 1];
-                                byte_i <= byte_i + 1'b1;
-                            end
+                            if (byte_i == len - 1) state  <= S_FIN;
+                            else                   byte_i <= byte_i + 1'b1;
                         end else begin
-                            sh_tx <= {sh_tx[6:0], 1'b0};
                             bit_i <= bit_i + 1'b1;
                         end
                     end

@@ -528,6 +528,10 @@ module pw_csr_full #(
                          (s_axi_araddr[15:0] <  (PUNT_BASE + PUNT_SPAN));
     assign punt_rd_en_o   = punt_sel_rd;
     assign punt_rd_addr_o = s_axi_araddr[15:0] - PUNT_BASE;
+    // SPI flash buffers are now block RAM (registered read), so the SPI window
+    // read returns one cycle later -- handled by spi_pend like the punt window.
+    wire spi_sel_rd    = (s_axi_araddr[15:0] >= SPI_BASE) &&
+                         (s_axi_araddr[15:0] <  (SPI_BASE + SPI_SPAN));
 
     // The flow table itself is now BRAM-backed and lives in pw_data_plane_axis
     // (co-located with the generators for the read path). Export the decoded
@@ -584,6 +588,7 @@ module pw_csr_full #(
     reg hist_half_q;
     reg hist_val_q;
     reg punt_pend;
+    reg spi_pend;
 
     always_ff @(posedge s_axi_aclk or negedge s_axi_aresetn) begin
         if (!s_axi_aresetn) begin
@@ -596,8 +601,9 @@ module pw_csr_full #(
             hist_half_q            <= 1'b0;
             hist_val_q             <= 1'b0;
             punt_pend              <= 1'b0;
+            spi_pend               <= 1'b0;
         end else begin
-            if (!s_axi_rvalid && !hist_pend && !punt_pend && s_axi_arvalid) begin
+            if (!s_axi_rvalid && !hist_pend && !punt_pend && !spi_pend && s_axi_arvalid) begin
                 s_axi_arready <= 1'b1;
                 s_axi_rresp   <= 2'b00;
                 if (s_axi_araddr >= WIN_HIST_BASE &&
@@ -609,15 +615,15 @@ module pw_csr_full #(
                 end else if (punt_sel_rd) begin
                     // Punt window: registered read, capture next cycle.
                     punt_pend   <= 1'b1;
+                end else if (spi_sel_rd) begin
+                    // SPI window: block-RAM/registered read, capture next cycle.
+                    spi_pend    <= 1'b1;
                 end else begin
                     s_axi_rvalid <= 1'b1;
                     // Stats is the topmost window (0xC000..0xFFFF), so an
                     // open-ended lower-bound check avoids 16-bit wrap.
                     if (s_axi_araddr >= WIN_STATS_BASE) begin
                         s_axi_rdata <= stats_rdata;
-                    end else if (s_axi_araddr >= SPI_BASE &&
-                                 s_axi_araddr < (SPI_BASE + SPI_SPAN)) begin
-                        s_axi_rdata <= spi_rdata;   // SPI flash status / RX buffer
                     end else if (s_axi_araddr >= INJ_BASE &&
                                  s_axi_araddr < (INJ_BASE + INJ_SPAN)) begin
                         s_axi_rdata <= inj_rdata;   // inject window busy status
@@ -666,6 +672,11 @@ module pw_csr_full #(
                     punt_pend    <= 1'b0;
                     s_axi_rvalid <= 1'b1;
                     s_axi_rdata  <= punt_rd_data_i;
+                end else if (spi_pend) begin
+                    // SPI window registered data valid now; complete read.
+                    spi_pend     <= 1'b0;
+                    s_axi_rvalid <= 1'b1;
+                    s_axi_rdata  <= spi_rdata;
                 end
             end
             if (s_axi_rvalid && s_axi_rready) s_axi_rvalid <= 1'b0;
