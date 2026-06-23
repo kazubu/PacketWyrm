@@ -87,7 +87,9 @@ module tb_spi_flash;
         @(posedge clk); wr_en = 0;
     endtask
     task automatic csr_rd(input logic [15:0] a, output logic [31:0] d);
-        rd_addr = a; #1; d = rd_data;
+        // rd_data is now a registered (1-cycle) read: rx buffer is block RAM and
+        // the status mux is registered (the real CSR captures it via spi_pend).
+        rd_addr = a; @(posedge clk); #1; d = rd_data;
     endtask
 
     task automatic spi_xfer(input logic [7:0] tx [512], input int n, input bit cshold);

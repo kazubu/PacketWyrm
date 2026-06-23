@@ -8,6 +8,24 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ## Unreleased
 
+### Changed
+  - **dp_clk timing + LUT optimization (WNS -0.001 → +0.132 ns; LUT 89.2% →
+    87.9%).** Two targeted changes recovered the razor-thin timing the
+    variable-frame-length work left:
+    * `pw_hash_classifier` pipelined 2→3 cycles — a masked-key register splits
+      the dp_clk-critical `parser-key → assemble → mask → XOR-fold → multiply →
+      BRAM-address` path (the actual WNS path). The data plane delays the field
+      classifier + flow-id map results and the decision/`rx_kv_d` chain by one
+      cycle so all three classification paths stay aligned at the precedence mux.
+    * `pw_spi_flash` TX/RX buffers moved from two 512-byte register arrays
+      (~10K LUT of byte-indexed muxes) to 32-bit-word block RAM; MOSI is a direct
+      bit-select of the current word (the 1-cycle BRAM latency is absorbed by the
+      SCK divider) and RX accumulates words. The CSR read is now a 1-cycle
+      pending read (`spi_pend`, like the histogram/punt windows).
+    HW-validated on the xcku3p loopback: map + hash-hit (24-flow header-classify)
+    loopbacks loss=0, SPI JEDEC-ID read + 512 B live write/verify OK, link stable
+    (blk_lock_loss=0). All Verilator tbs green.
+
 ### Added
   - **TCP SYN generator (`pw_tcp_syn`) over the slow-path inject.** Reuses the
     existing `slow_path_tx` arbitrary-frame path: the host composes a complete

@@ -27,7 +27,10 @@
 //   hit    = valid && stored_key == masked_frame_key   (exact, no misclassify;
 //            SW stores the already-masked key, HW masks the frame key)
 //
-// Latency key_valid_i -> valid_o is 2 cycles, matching the field classifier.
+// Latency key_valid_i -> valid_o is 3 cycles: a masked-key register stage
+// splits the dp_clk-critical key->assemble->mask->fold->multiply->BRAM-address
+// path. The data plane delays the field classifier + flow-id map results by one
+// cycle so all three classification paths stay aligned at the precedence mux.
 
 `default_nettype none
 
@@ -86,28 +89,40 @@ module pw_hash_classifier #(
         return prod[31 -: IDX_W];
     endfunction
 
-    wire [KB-1:0] mkey = assemble(key_i) & mask_i;     // masked frame key
+    wire [KB-1:0] mkey_c = assemble(key_i) & mask_i;   // masked frame key (combinational)
 
-    // ---- BRAM table: write port + registered read port ----
+    // ---- stage 1: register the masked key. This splits the long dp_clk path
+    // (parser key -> assemble[is_ipv6 mux] -> mask -> XOR-fold -> multiply ->
+    // BRAM address) across a register: assemble+mask land here, the fold+
+    // multiply+BRAM-address land in stage 2. Adds one cycle of latency (2->3);
+    // the data plane delays the field classifier + flow-id map results to match.
+    logic [KB-1:0] mkey_q1;
+    logic          kv1;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin mkey_q1 <= '0; kv1 <= 1'b0; end
+        else        begin mkey_q1 <= mkey_c; kv1 <= key_valid_i; end
+    end
+
+    // ---- BRAM table: write port + registered read port (stage 2) ----
     (* ram_style = "block" *) logic [EW-1:0] mem [DEPTH];
     initial for (int i = 0; i < DEPTH; i++) mem[i] = '0;
 
-    wire [IDX_W-1:0] rd_index = hash_index(mkey, seed_i);
+    wire [IDX_W-1:0] rd_index = hash_index(mkey_q1, seed_i);
     logic [EW-1:0]   rd_q;
     always_ff @(posedge clk) begin
         if (wr_en) mem[wr_index] <= {wr_valid, wr_key, wr_lfid[LFW-1:0]};
         rd_q <= mem[rd_index];
     end
 
-    // ---- stage 1: hold the masked key + valid alongside the BRAM read ----
+    // ---- stage 2: hold the masked key + valid alongside the BRAM read ----
     logic [KB-1:0] key_q;
     logic          kv_q;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin key_q <= '0; kv_q <= 1'b0; end
-        else        begin key_q <= mkey;  kv_q <= key_valid_i; end
+        else        begin key_q <= mkey_q1; kv_q <= kv1; end
     end
 
-    // ---- stage 2: masked-key verify + register result ----
+    // ---- stage 3: masked-key verify + register result ----
     wire           e_valid = rd_q[EW-1];
     wire [KB-1:0]  e_key   = rd_q[EW-2 -: KB];
     wire [LFW-1:0] e_lfid  = rd_q[LFW-1:0];
