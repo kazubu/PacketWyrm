@@ -16,6 +16,7 @@ module tb_inject_window;
 
     logic clk = 0; always #5 clk = ~clk;
     logic rst_n = 0;
+    logic [63:0] ts = 64'd1000; always @(posedge clk) ts <= ts + 1;  // free-running counter
 
     logic        wr_en; logic [ADDR_W-1:0] wr_addr; logic [31:0] wr_data;
     logic [ADDR_W-1:0] rd_addr; logic [31:0] rd_data;
@@ -24,7 +25,7 @@ module tb_inject_window;
 
     pw_inject_tx_window #(.ADDR_W(ADDR_W), .BUF_BYTES(512),
                           .CTRL_OFF(CTRL_OFF), .INFO_OFF(INFO_OFF), .DATA_OFF(DATA_OFF)) dut (
-        .clk(clk), .rst_n(rst_n),
+        .clk(clk), .rst_n(rst_n), .timestamp_i(ts),
         .wr_en(wr_en), .wr_addr(wr_addr), .wr_data(wr_data),
         .rd_addr(rd_addr), .rd_data(rd_data),
         .m_tdata(m_tdata), .m_tkeep(m_tkeep), .m_tvalid(m_tvalid),

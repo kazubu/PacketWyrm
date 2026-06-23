@@ -32,6 +32,7 @@ module pw_inject_tx_window #(
 ) (
     input  wire               clk,
     input  wire               rst_n,
+    input  wire [63:0]        timestamp_i,    // free-running counter (egress TX timestamp)
 
     // CSR write (broadcast window strobe from pw_csr_full).
     input  wire               wr_en,
@@ -93,6 +94,7 @@ module pw_inject_tx_window #(
     logic [BAW:0]  nbeats;      // total beats = ceil(byte_len/8)
     logic [63:0]   beat_q;      // registered read of mem[rbeat]
     logic [2:0]    last_valid;  // valid bytes in the last beat (1..8) -> tkeep
+    logic [63:0]   tx_ts;       // egress wire timestamp (latched at the frame's first beat)
     wire           go = wr_en && !busy && (wr_addr == CTRL_OFF[ADDR_W-1:0]) && wr_data[0];
 
     wire           is_last = (rbeat + 1'b1 == nbeats);
@@ -113,7 +115,11 @@ module pw_inject_tx_window #(
             nbeats <= '0;
             beat_q <= '0;
             last_valid <= 3'd0;
+            tx_ts  <= '0;
         end else begin
+            // Latch the egress timestamp at the frame's first accepted beat
+            // (servo-facing TX-event time, e.g. a PTP Delay_Req departure).
+            if (busy && m_tvalid && m_tready && (rbeat == '0)) tx_ts <= timestamp_i;
             if (!busy) begin
                 if (go && byte_len != 0) begin
                     busy       <= 1'b1;
@@ -139,7 +145,9 @@ module pw_inject_tx_window #(
     // status read (combinational): only CTRL[0]=busy is meaningful.
     always_comb begin
         rd_data = 32'h0;
-        if (rd_addr == CTRL_OFF[ADDR_W-1:0]) rd_data = {31'b0, busy};
+        if      (rd_addr == CTRL_OFF[ADDR_W-1:0]) rd_data = {31'b0, busy};
+        else if (rd_addr == 16'h008)              rd_data = tx_ts[31:0];   // egress TS low
+        else if (rd_addr == 16'h00C)              rd_data = tx_ts[63:32];  //            high
     end
 
 endmodule

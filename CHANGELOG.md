@@ -19,6 +19,14 @@ For where work is going next, see `NEXT-STEPS.md`.
     two-clock servo loop follow (the latter gated on a second card). Validated:
     `tb_punt_window` RX_TS readback + `pw_phase3_punt` reports a monotonic
     `rx_ts` per punted frame.
+  - **Inject TX wire-timestamp (servo-facing PTP TX hook)** — the inject window
+    (`pw_inject_tx_window`) latches the free-running counter at the injected
+    frame's first egress beat and exposes it at `PWFPGA_REG_INJECT_TX_TS_LOW`/
+    `_HIGH` (0x0D08/0x0D0C). With the punt RX timestamp this gives a servo both
+    event times (e.g. Delay_Req departure). Validated single-card: `pw_phase3_
+    inject` injects a frame, reads its `tx_ts`, loops it back, and confirms the
+    punt `rx_ts > tx_ts` (the loopback latency). Completes #60's TX/RX wire-
+    timestamp exposure; the full two-clock servo loop remains gated on a 2nd card.
   - **Hash exact classifier — high-count payload-agnostic flows, wide masked
     key** (`pw_hash_classifier`; CSR window `PWFPGA_WIN_FC_HASH` @ 0x3000, mask
     window `PWFPGA_WIN_HASH_MASK` @ 0x2F00, seed reg `PWFPGA_REG_HASH_SEED`).

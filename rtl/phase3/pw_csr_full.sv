@@ -473,6 +473,7 @@ module pw_csr_full #(
     ) u_inj (
         .clk      (s_axi_aclk),
         .rst_n    (s_axi_aresetn),
+        .timestamp_i (timestamp_i),
         .wr_en    (wr_en && inj_wr_sel),
         .wr_addr  (wr_addr - INJ_BASE),
         .wr_data  (wr_data),
