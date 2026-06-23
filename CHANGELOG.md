@@ -9,6 +9,18 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Fixed
+  - **Punt rules narrowed; fake backend no longer a silent default.** BGP punt
+    now matches **TCP port 179 only** (one rule per direction — listener dst:179,
+    initiator src:179) instead of all TCP, so generated TCP test traffic (e.g. a
+    SYN flood on other ports) is not swallowed by the slow path. IS-IS punt now
+    matches the 802.3/LLC DSAP/SSAP (0xFEFE) via a UDF instead of a catch-all
+    that punted **every** frame on the ingress (fails safe: under-matches rather
+    than over-matches if the parser's L3 base differs for length-encoded frames).
+    Pure compiler change (existing bitstream's L4-port comparators + UDFs);
+    HW-confirmed it programs cleanly with the data plane at loss=0. The daemon
+    no longer falls back to the no-op **fake backend by default** — a BAR-open
+    failure is now an error unless `--allow-fake`/`-F` is passed (dev/CI), so a
+    real deployment can't look healthy while silently dropping all CSR writes.
   - **Code-review hardening (config/validation/daemon).** `rate_pps` is now
     realized (compiler computes pps × frame bytes → token rate; a pps-only flow
     transmitted 0 frames before — HW-validated tx>0, loss=0). The config parser

@@ -81,7 +81,13 @@ Constraints:
 - `global_port` must exist in `cards[].ports[]`.
 - `vlan` 0..4094 (4095 reserved).
 - `mac` valid 48-bit hex.
-- `punt.*` are independent booleans.
+- `punt.*` are independent booleans. Each compiles to a narrowly-scoped PUNT
+  classifier rule on the ingress: `arp`/`lldp` by ethertype; `icmp`/`ospf` by
+  IPv4 proto; `ipv6_nd` by IPv6 next-header; `bgp` by **TCP port 179** (two
+  rules, dst:179 + src:179 — so other TCP, e.g. generated SYN-flood traffic, is
+  not punted); `is_is` by the **802.3/LLC DSAP/SSAP 0xFEFE** signature (not a
+  catch-all). Slow-path / control-plane traffic only — keep these off for flows
+  you intend to measure.
 
 ## `flows`
 

@@ -73,13 +73,15 @@ static void *card_worker_main(void *arg) {
 
 static void usage(const char *prog) {
     fprintf(stderr,
-        "usage: %s [-c CONFIG] [-n] [-v] [-s INTERVAL_MS] [-p PROMETHEUS_PORT]\n"
+        "usage: %s [-c CONFIG] [-n] [-v] [-s INTERVAL_MS] [-p PROMETHEUS_PORT] [-F]\n"
         "  -c CONFIG         path to packetwyrm.yaml\n"
         "  -n                dry run: parse + validate + compile, exit\n"
         "  -v                verbose\n"
         "  -s INTERVAL_MS    stats print interval (default 5000, 0 = off)\n"
         "  -p PORT           bind a Prometheus /metrics exporter on this TCP\n"
-        "                    port; 0 (default) leaves it disabled\n",
+        "                    port; 0 (default) leaves it disabled\n"
+        "  -F                allow falling back to the no-op fake backend when a\n"
+        "                    card's BAR cannot be opened (dev/CI; default: error)\n",
         prog);
 }
 
@@ -99,18 +101,27 @@ static void print_summary(const struct pw_config *cfg, const struct pw_program *
 }
 
 static void open_all_backends(const struct pw_config *cfg,
-                              struct card_runtime cards[]) {
+                              struct card_runtime cards[], bool allow_fake) {
     for (size_t i = 0; i < cfg->n_cards; i++) {
         cards[i].which = "bar";
         pw_status br = pw_bar_backend_open(cfg->cards[i].pci, &cards[i].backend);
-        if (br != PW_OK) {
+        if (br != PW_OK && allow_fake) {
+            /* Only fall back to the no-op fake backend when explicitly asked
+             * (--allow-fake / -F). Falling back by default produced a daemon
+             * that looks healthy but silently drops all CSR writes -- "running
+             * but not transmitting". On real deployments a BAR-open failure is
+             * an error the operator must see. */
+            fprintf(stderr, "warning: %s (%s): BAR open failed (%s); "
+                    "using fake backend (--allow-fake)\n",
+                    cfg->cards[i].pci, cfg->cards[i].name, pw_strerror(br));
             cards[i].which = "fake";
             br = pw_fake_backend_open(cfg->cards[i].pci, &cards[i].backend);
         }
         cards[i].open = (br == PW_OK);
         if (!cards[i].open) {
-            fprintf(stderr, "could not open backend for %s (%s): %s\n",
-                    cfg->cards[i].pci, cfg->cards[i].name, pw_strerror(br));
+            fprintf(stderr, "could not open backend for %s (%s): %s%s\n",
+                    cfg->cards[i].pci, cfg->cards[i].name, pw_strerror(br),
+                    allow_fake ? "" : " (pass --allow-fake to use the no-op backend)");
         }
     }
 }
@@ -1006,17 +1017,19 @@ int main(int argc, char **argv) {
     const char *cfg_path = "/etc/packetwyrm/packetwyrm.yaml";
     bool dry_run        = false;
     bool verbose        = false;
+    bool allow_fake     = false;
     int  stats_interval = 5000;
     int  prom_port      = 0;
 
     int opt;
-    while ((opt = getopt(argc, argv, "c:nvs:p:h")) != -1) {
+    while ((opt = getopt(argc, argv, "c:nvs:p:Fh")) != -1) {
         switch (opt) {
         case 'c': cfg_path = optarg; break;
         case 'n': dry_run = true; break;
         case 'v': verbose = true; break;
         case 's': stats_interval = atoi(optarg); break;
         case 'p': prom_port = atoi(optarg); break;
+        case 'F': allow_fake = true; break;
         case 'h': default: usage(argv[0]); return opt == 'h' ? 0 : 2;
         }
     }
@@ -1045,7 +1058,7 @@ int main(int argc, char **argv) {
     struct pw_host_plane *hps[MAX_CARDS]  = {0};
     struct tap_handle    taps[PW_HOST_PLANE_MAX_BINDINGS] = {0};
 
-    open_all_backends(cfg, cards);
+    open_all_backends(cfg, cards, allow_fake);
     program_backends(prog, cfg, cards);
     int n_taps = setup_taps(cfg, cards, hps, taps, true);
     if (n_taps == 0) {

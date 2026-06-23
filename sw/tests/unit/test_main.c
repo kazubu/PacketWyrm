@@ -273,6 +273,41 @@ static void test_rate_pps_compiles_nonzero(void) {
     pw_config_free(cfg);
 }
 
+/* Punt narrowing: BGP -> TCP/179 (two rules, dst+src), IS-IS -> LLC UDF
+ * (not a catch-all). Regression for "slow path swallows normal TCP". */
+static void test_punt_narrowing(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n  - id: 0\n    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 } ]\n"
+        "logical_interfaces:\n  - id: 1000\n    global_port: 0\n"
+        "    mac: \"02:a5:02:00:00:64\"\n"
+        "    punt: { bgp: true, is_is: true }\n";
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
+    const struct pw_card_program *cp = &prog->per_card[0];
+    /* BGP emits two PUNT rules (dst:179 and src:179); IS-IS one. */
+    PW_ASSERT_EQ(cp->n_fc_rules, 3);
+    /* A TCP dst-port-179 and a src-port-179 comparator must exist. */
+    int have_dst179 = 0, have_src179 = 0;
+    for (size_t i = 0; i < cp->n_fc_cmps; i++) {
+        if (cp->fc_cmps[i].src == PWFPGA_FC_SRC_L4_DST && cp->fc_cmps[i].value == 179) have_dst179 = 1;
+        if (cp->fc_cmps[i].src == PWFPGA_FC_SRC_L4_SRC && cp->fc_cmps[i].value == 179) have_src179 = 1;
+    }
+    PW_ASSERT(have_dst179 && have_src179);
+    /* IS-IS uses an LLC DSAP/SSAP (0xFEFE) UDF, not a bare-ingress catch-all. */
+    int have_isis_udf = 0;
+    for (size_t i = 0; i < cp->n_fc_udfs; i++)
+        if (cp->fc_udfs[i].value == 0xFEFE0000u && cp->fc_udfs[i].mask == 0xFFFF0000u) have_isis_udf = 1;
+    PW_ASSERT(have_isis_udf);
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
 static void test_resolve_port_multi_card(void) {
     const char *yaml =
         "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
@@ -1191,6 +1226,7 @@ int main(void) {
         { "reject_cross_card_latency", test_reject_cross_card_latency },
         { "traffic_validation", test_traffic_validation },
         { "rate_pps_compiles_nonzero", test_rate_pps_compiles_nonzero },
+        { "punt_narrowing", test_punt_narrowing },
         { "reject_dup_card", test_reject_dup_card },
         { "reject_dup_gport", test_reject_dup_gport },
         { "reject_unknown_gport_in_flow", test_reject_unknown_gport_in_flow },

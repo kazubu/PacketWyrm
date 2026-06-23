@@ -372,9 +372,14 @@ static pw_status compile_punt_rules(struct pw_program *out, const struct pw_conf
         struct pw_card_program *cp = card_slot(out, ref.card_id);
         if (!cp) return PW_E_UNKNOWN_CARD;
 
-        /* Emit one punt rule: ingress (+ optional vlan/ethertype/l3_proto)
-         * field comparators ANDed into a PUNT rule carrying logical_if_id. */
-        #define EMIT(eth, l3p, prio_) do { \
+        /* Emit one punt rule: ingress (+ optional vlan / ethertype / l3_proto /
+         * one L4 port / one UDF) field comparators ANDed into a PUNT rule
+         * carrying logical_if_id. Pass 0 to skip eth / l3p / l4port / udf_val.
+         * l4lane selects PWFPGA_FC_SRC_L4_DST or _L4_SRC. udf_off is relative to
+         * the parser's inner-frame (L3) base; udf_val is a 2-byte field in the
+         * high half (value<<16, mask 0xFFFF0000), matching the slice extractor's
+         * big-endian MSB-first lane. */
+        #define EMIT_FULL(eth, l3p, l4lane, l4port, udf_off, udf_val, prio_) do { \
             uint16_t care = 0; size_t bit; pw_status er; \
             er = append_fc_cmp(cp, PWFPGA_FC_SRC_INGRESS, 0xFu, ref.local_port_id, &bit); \
             if (er != PW_OK) return er; care |= (uint16_t)(1u << bit); \
@@ -384,20 +389,35 @@ static pw_status compile_punt_rules(struct pw_program *out, const struct pw_conf
                          if (er != PW_OK) return er; care |= (uint16_t)(1u << bit); } \
             if ((l3p)) { er = append_fc_cmp(cp, PWFPGA_FC_SRC_L3_PROTO, 0xFFu, (l3p), &bit); \
                          if (er != PW_OK) return er; care |= (uint16_t)(1u << bit); } \
+            if ((l4port)) { er = append_fc_cmp(cp, (l4lane), 0xFFFFu, (l4port), &bit); \
+                            if (er != PW_OK) return er; care |= (uint16_t)(1u << bit); } \
+            if ((udf_val)) { er = append_fc_udf(cp, (udf_off), 0xFFFF0000u, (udf_val), &bit); \
+                             if (er != PW_OK) return er; care |= (uint16_t)(1u << bit); } \
             struct pw_fc_rule rule = { .care = care, .action = PWFPGA_ACT_PUNT_TO_HOST, \
                 .egress = 0, .local_flow_id = 0, .logical_if_id = l->id, .priority = (prio_) }; \
             er = append_fc_rule(cp, &rule); \
             if (er != PW_OK) return er; \
         } while (0)
+        #define EMIT(eth, l3p, prio_) EMIT_FULL((eth), (l3p), 0, 0, 0, 0, (prio_))
 
         if (l->punt.arp)     EMIT(0x0806, 0,  20);
         if (l->punt.ipv6_nd) EMIT(0x86DD, 58, 20);    /* ICMPv6 */
         if (l->punt.lldp)    EMIT(0x88CC, 0,  20);
         if (l->punt.icmp)    EMIT(0x0800, 1,  25);    /* ICMPv4 */
-        if (l->punt.bgp)     EMIT(0x0800, 6,  30);    /* TCP, classifier narrows on port 179 in HW */
+        /* BGP: TCP/179 only -- one rule per direction (listener dst:179,
+         * initiator src:179) so generated TCP test traffic (e.g. a SYN flood on
+         * other ports) is NOT swallowed by the slow path. */
+        if (l->punt.bgp)   { EMIT_FULL(0x0800, 6, PWFPGA_FC_SRC_L4_DST, 179, 0, 0, 30);
+                             EMIT_FULL(0x0800, 6, PWFPGA_FC_SRC_L4_SRC, 179, 0, 0, 30); }
         if (l->punt.ospf)    EMIT(0x0800, 89, 30);
-        if (l->punt.is_is)   EMIT(0x0000, 0,  30);    /* IS-IS sub-network entity, capability-gated */
+        /* IS-IS rides 802.3/LLC (no ethertype), identified by DSAP=SSAP=0xFE at
+         * the LLC header. Match that via a UDF instead of a catch-all (the old
+         * ethertype=0/proto=0 rule punted EVERY frame on the ingress). Fails
+         * safe: if the parser's L3 base differs for length-encoded frames the
+         * UDF simply won't match (no punt) rather than over-matching. */
+        if (l->punt.is_is)   EMIT_FULL(0, 0, 0, 0, /*udf_off*/0, /*0xFEFE*/0xFEFE0000u, 30);
         #undef EMIT
+        #undef EMIT_FULL
     }
     return PW_OK;
 }

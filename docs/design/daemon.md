@@ -37,7 +37,10 @@ read-mostly, updated only on config reload via RCU-style swap.
   in `pw_pci_discover()`).
 - BAR0 mmap via `pw_bar_backend_open()` &rarr;
   `/sys/bus/pci/devices/<bdf>/resource0`. The same backend interface
-  has a path-variant used by unit tests against a tmpfs file.
+  has a path-variant used by unit tests against a tmpfs file. A BAR-open
+  failure is a hard error by default; pass `-F`/`--allow-fake` to fall back to
+  the no-op fake backend (dev/CI only — it drops all CSR writes, so a real
+  deployment would look healthy while transmitting nothing).
 - `device_id` / `version` / `capabilities` / port-count read through
   the backend's `card_info` op.
 
