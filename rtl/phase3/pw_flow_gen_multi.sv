@@ -89,12 +89,16 @@ module pw_flow_gen_multi #(
     logic [63:0] sequence_q [NUM_SLOTS];
     logic [31:0] tokens_q   [NUM_SLOTS];   // Q16.16
     logic [47:0] tx_count   [NUM_SLOTS];   // emitted frames (clearable, for tx-rx loss)
+    logic [15:0] cur_len    [NUM_SLOTS];   // current swept total frame length (0 -> use min)
 
     always_comb for (int s = 0; s < NUM_SLOTS; s++) tx_count_o[s] = tx_count[s];
 
     // In-flight frame (built from the selected slot at frame start).
     logic [HDR_MAX_BYTES-1:0][7:0] fb;
-    logic [11:0]                   frame_len;
+    logic [11:0]                   frame_len;   // total emitted bytes this frame
+    logic [11:0]                   built_len;   // bytes actually laid into fb (header
+                                                // + 32B test region); rest is zero pad
+    logic [15:0]                   next_len_q;  // next sweep length for the active slot
     logic [SELW-1:0]               sel;
     logic                          active;
     logic [11:0]                   byte_off;
@@ -177,13 +181,19 @@ module pw_flow_gen_multi #(
     wire [11:0] rem  = frame_len - byte_off;
     wire        last = active && (rem <= 12'd8);
 
+    // Emit fb for the built header region, zeros for the pad beyond it (a long
+    // frame's payload pad is generated on the fly -- fb only holds the header,
+    // so the index is masked to the buffer size and guarded by built_len to
+    // never read past it). tkeep runs out to the total frame_len.
     always_comb begin
         m_tdata = '0;
         m_tkeep = '0;
         for (int k = 0; k < 8; k++) begin
-            if (({20'b0, byte_off} + k) < {20'b0, frame_len}) begin
-                m_tdata[k*8 +: 8] = fb[byte_off + k[11:0]];
+            automatic logic [11:0] gb = byte_off + k[11:0];
+            if (gb < frame_len) begin
                 m_tkeep[k]        = 1'b1;
+                m_tdata[k*8 +: 8] = (gb < built_len) ? fb[gb[$clog2(HDR_MAX_BYTES)-1:0]]
+                                                     : 8'h00;
             end
         end
     end
@@ -331,12 +341,38 @@ module pw_flow_gen_multi #(
     pw_flow_row_t     row_l;               // = rd_row_i (BRAM output); set in the
                                            // precompute always_comb below.
     logic [63:0]      seq_l;
+    logic [15:0]      eff_len_l;           // swept total frame length for this frame
+    logic [11:0]      paylen_l;            // L4 payload bytes for this frame (>=32)
+
+    // Effective frame length + L4 payload for the slot being fetched (pick_q):
+    // the slot's current sweep position, snapped to len_min on the first frame
+    // (cur_len 0) or if it ever falls outside [min,max]. min/max/ovh come from
+    // the scheduling descriptor (FF), so this adds no BRAM-latency dependency.
+    // Computed here (stage A, otherwise near-empty) rather than in the checksum
+    // precompute (stage B) so the dp_clk-critical csum adders see a *registered*
+    // length input, not this subtract.
+    logic [15:0] sl_min_pk, sl_max_pk, cur_pk, eff_len_a;
+    logic [11:0] ovh_pk, paylen_a;
+    always_comb begin
+        sl_min_pk = flow_sched_i[pick_q].len_min;
+        sl_max_pk = flow_sched_i[pick_q].len_max;
+        ovh_pk    = flow_sched_i[pick_q].ovh;
+        cur_pk    = cur_len[pick_q];
+        eff_len_a = (cur_pk < sl_min_pk || cur_pk > sl_max_pk) ? sl_min_pk : cur_pk;
+        // L4 payload = total - header overhead, floored at the 32-byte test hdr.
+        paylen_a  = (eff_len_a > {4'b0, ovh_pk} + 16'd32)
+                    ? 12'(eff_len_a - {4'b0, ovh_pk}) : 12'd32;
+    end
+
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin pick_l <= '0; pvalid_l <= 1'b0; seq_l <= '0; end
-        else begin
-            pick_l   <= pick_q;
-            pvalid_l <= pick_valid_q;
-            seq_l    <= sequence_q[pick_q];
+        if (!rst_n) begin
+            pick_l <= '0; pvalid_l <= 1'b0; seq_l <= '0; eff_len_l <= '0; paylen_l <= 12'd32;
+        end else begin
+            pick_l    <= pick_q;
+            pvalid_l  <= pick_valid_q;
+            seq_l     <= sequence_q[pick_q];
+            eff_len_l <= eff_len_a;
+            paylen_l  <= paylen_a;
         end
     end
 
@@ -350,6 +386,9 @@ module pw_flow_gen_multi #(
         logic [15:0] vlan16;
         logic [15:0] outer_tot;
         row_l    = rd_row_i;       // picked row from the flow-table BRAM (Stage A)
+        // L4 payload (paylen_l) is computed + registered in stage A. The pad
+        // beyond the 32-byte test header is zero, so it adds nothing to the UDP
+        // checksum -- only these length fields change.
         pc_sip   = mod32(row_l.sip_mod, row_l.src_ipv4, row_l.sip_mask, seq_l);
         pc_dip   = mod32(row_l.dip_mod, row_l.dst_ipv4, row_l.dip_mask, seq_l);
         // MAC / VLAN modifiers (Ethernet header only; not in any checksum).
@@ -366,14 +405,14 @@ module pw_flow_gen_multi #(
         pc_v6dst = {row_l.ipv6_dst[127:32], mod32(row_l.dip_mod, row_l.ipv6_dst[31:0], row_l.dip_mask, seq_l)};
         pc_sp    = mod16(row_l.sp_mod,  row_l.udp_sp,   row_l.sp_mask,  seq_l);
         pc_dp    = mod16(row_l.dp_mod,  row_l.udp_dp,   row_l.dp_mask,  seq_l);
-        pc_csum  = ip_csum16(16'(20 + 8 + FRAME_LEN_PAYLOAD), pc_sip, pc_dip,
+        pc_csum  = ip_csum16(16'(20 + 8 + int'(paylen_l)), pc_sip, pc_dip,
                              row_l.dscp, row_l.ttl);
         pc_psa   = udp6_psum_a(pc_v6src, pc_v6dst);
-        pc_psb   = udp6_psum_b(pc_sp, pc_dp, 16'(8 + FRAME_LEN_PAYLOAD), row_l.flow_id, seq_l);
+        pc_psb   = udp6_psum_b(pc_sp, pc_dp, 16'(8 + int'(paylen_l)), row_l.flow_id, seq_l);
         // Outer IPv4 header checksum (encap with a v4 outer). tot_len = outer
         // header(20) + encap header + inner IP packet. Static outer addresses.
         outer_tot = 16'(20 + encap_hdr_len(row_l.encap_type)
-                        + (row_l.is_v6 ? 40 : 20) + 8 + FRAME_LEN_PAYLOAD);
+                        + (row_l.is_v6 ? 40 : 20) + 8 + int'(paylen_l));
         pc_ocsum = ip_csum16_o(outer_tot, row_l.outer_src_ipv4, row_l.outer_dst_ipv4,
                                row_l.outer_dscp, row_l.outer_ttl,
                                encap_proto(row_l.encap_type, row_l.is_v6));
@@ -390,6 +429,8 @@ module pw_flow_gen_multi #(
     logic [11:0]      eff_vlan_q;
     logic [15:0]      eff_sp_q, eff_dp_q, csum_q, ocsum_q;
     logic [19:0]      psa_q, psb_q;       // IPv6 UDP csum half-sums; folded in build()
+    logic [11:0]      paylen_q;           // L4 payload bytes (>=32) for this frame
+    logic [15:0]      eff_len_qq;         // total frame length used (drives sweep advance)
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             pick_qq <= '0; pick_valid_qq <= 1'b0; row_qq <= '0; seq_qq <= '0;
@@ -397,6 +438,7 @@ module pw_flow_gen_multi #(
             eff_v6src_q <= '0; eff_v6dst_q <= '0;
             eff_smac_q <= '0; eff_dmac_q <= '0; eff_vlan_q <= '0;
             csum_q    <= '0; ocsum_q <= '0; psa_q <= '0; psb_q <= '0;
+            paylen_q  <= 12'd32; eff_len_qq <= '0;
         end else begin
             pick_qq       <= pick_l;
             pick_valid_qq <= pvalid_l;
@@ -407,6 +449,7 @@ module pw_flow_gen_multi #(
             eff_v6src_q <= pc_v6src; eff_v6dst_q <= pc_v6dst;
             eff_sp_q  <= pc_sp;   eff_dp_q  <= pc_dp;
             csum_q    <= pc_csum; ocsum_q <= pc_ocsum; psa_q <= pc_psa; psb_q <= pc_psb;
+            paylen_q  <= paylen_l; eff_len_qq <= eff_len_l;
         end
     end
 
@@ -420,7 +463,8 @@ module pw_flow_gen_multi #(
                          input logic [11:0] eff_vlan,
                          input logic [15:0] eff_sp,  input logic [15:0] eff_dp,
                          input logic [15:0] csum,    input logic [15:0] ocsum,
-                         input logic [19:0] psa,     input logic [19:0] psb);
+                         input logic [19:0] psa,     input logic [19:0] psb,
+                         input logic [11:0] pay_len);
         int off, tl, total_len, o_pl, o_tot;
         logic [7:0]  tos, o_tos, o_proto;
         logic [15:0] ucsum, inner_et;
@@ -442,14 +486,14 @@ module pw_flow_gen_multi #(
             fb[off+2]<={4'h0,eff_vlan[11:8]}; fb[off+3]<=eff_vlan[7:0];
             off += 4;
         end
-        tl = 8 + FRAME_LEN_PAYLOAD;        // inner UDP length, common to v4/v6
+        tl = 8 + int'(pay_len);            // inner UDP length, common to v4/v6
 
         // --- Encapsulation prefix: outer IP + tunnel header ----------------
         if (r.encap_type != 2'd0) begin
             o_proto = encap_proto(r.encap_type, r.is_v6);
             o_tos   = {r.outer_dscp[5:0], 2'b00};
             // Outer IP payload = tunnel header + inner IP packet.
-            o_pl    = encap_hdr_len(r.encap_type) + (r.is_v6 ? 40 : 20) + 8 + FRAME_LEN_PAYLOAD;
+            o_pl    = encap_hdr_len(r.encap_type) + (r.is_v6 ? 40 : 20) + 8 + int'(pay_len);
             if (r.outer_v6) begin
                 fb[off]<=8'h86; fb[off+1]<=8'hDD; off += 2;    // ethertype IPv6 (outer)
                 fb[off+0]<={4'h6, o_tos[7:4]}; fb[off+1]<={o_tos[3:0], 4'h0};
@@ -507,7 +551,7 @@ module pw_flow_gen_multi #(
             for (int b = 0; b < 16; b++) fb[off+24+b] <= eff_v6dst[127 - b*8 -: 8];
             off += 40;
         end else begin
-            total_len = 20 + 8 + FRAME_LEN_PAYLOAD;
+            total_len = 20 + 8 + int'(pay_len);
             fb[off+0]<=8'h45; fb[off+1]<=tos;                  // ver/ihl | TOS (DSCP)
             fb[off+2]<=total_len[15:8]; fb[off+3]<=total_len[7:0];
             fb[off+4]<=8'h00; fb[off+5]<=8'h00; fb[off+6]<=8'h40; fb[off+7]<=8'h00;
@@ -537,7 +581,11 @@ module pw_flow_gen_multi #(
         // off now points at the inner test-header/payload (the UDP block above
         // already advanced it past the 8-byte UDP header); total = + payload.
         // This covers all encap layouts (outer IP + tunnel header already added).
-        frame_len <= 12'(off + FRAME_LEN_PAYLOAD);
+        // built_len = the bytes actually written into fb (header + the 32-byte
+        // test-header region); the emit FSM streams zero pad from built_len up
+        // to frame_len, so fb never needs to hold the (up to 1518 B) payload.
+        frame_len <= 12'(off + int'(pay_len));
+        built_len <= 12'(off + 32);
     endtask
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -546,10 +594,12 @@ module pw_flow_gen_multi #(
             byte_off <= '0;
             rr_ptr   <= '0;
             sel      <= '0;
+            next_len_q <= '0;
             for (int s = 0; s < NUM_SLOTS; s++) begin
                 sequence_q[s] <= '0;
                 tokens_q[s]   <= '0;
                 tx_count[s]   <= '0;
+                cur_len[s]    <= '0;
             end
         end else begin
             // Re-baseline the TX frame counters on a stats clear (the on-wire
@@ -578,10 +628,17 @@ module pw_flow_gen_multi #(
                     automatic logic [31:0] cap  = cap_q[pick_qq];
                     automatic logic [32:0] acc  = {1'b0, tokens_q[pick_qq]} + {1'b0, row_qq.tokens_fp};
                     automatic logic [31:0] accv = (acc > {1'b0, cap}) ? cap : acc[31:0];
+                    // Compute the NEXT sweep length for this slot now (using the
+                    // length just consumed + the slot's step/max/min) and store
+                    // it; it is committed to cur_len[] when this frame finishes.
+                    automatic logic [16:0] nl = {1'b0, eff_len_qq}
+                                              + {1'b0, flow_sched_i[pick_qq].len_step};
+                    next_len_q <= (nl > {1'b0, flow_sched_i[pick_qq].len_max})
+                                  ? flow_sched_i[pick_qq].len_min : nl[15:0];
                     build(row_qq, seq_qq, timestamp_i,
                           eff_sip_q, eff_dip_q, eff_v6src_q, eff_v6dst_q,
                           eff_smac_q, eff_dmac_q, eff_vlan_q,
-                          eff_sp_q, eff_dp_q, csum_q, ocsum_q, psa_q, psb_q);
+                          eff_sp_q, eff_dp_q, csum_q, ocsum_q, psa_q, psb_q, paylen_q);
                     sel      <= pick_qq;
                     active   <= 1'b1;
                     byte_off <= '0;
@@ -592,6 +649,8 @@ module pw_flow_gen_multi #(
                 if (last) begin
                     active          <= 1'b0;
                     sequence_q[sel] <= sequence_q[sel] + 64'd1;
+                    // Advance the frame-length sweep for the slot just emitted.
+                    cur_len[sel]    <= next_len_q;
                     // TX frame count for tx-rx loss (clear wins over increment).
                     if (!stats_clear_i) tx_count[sel] <= tx_count[sel] + 48'd1;
                 end else begin

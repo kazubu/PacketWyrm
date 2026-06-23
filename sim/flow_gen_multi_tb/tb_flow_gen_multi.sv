@@ -28,6 +28,10 @@ module tb_flow_gen_multi;
         f_sched[s].tokens_fp = f_rows[s].tokens_fp;
         f_sched[s].cap       = {f_rows[s].burst, 16'h0};
         f_sched[s].cost      = {16'(pw_frame_bytes(f_rows[s], 32)), 16'h0};
+        f_sched[s].len_min   = f_rows[s].frame_len_min;
+        f_sched[s].len_max   = f_rows[s].frame_len_max;
+        f_sched[s].len_step  = f_rows[s].frame_len_step;
+        f_sched[s].ovh       = 12'(pw_frame_bytes(f_rows[s], 0));
     end
     logic [$clog2(SLOTS)-1:0] rd_addr;
     pw_flow_row_t             rd_row;
@@ -117,6 +121,10 @@ module tb_flow_gen_multi;
     logic [255:0] smac_lo_seen = '0; int smac_lo_distinct = 0; logic smac_hi_const = 1'b1;
     // VLAN modifier (VLAN-tagged frames): VID low byte @15 rotates.
     logic [255:0] vid_lo_seen = '0; int vid_lo_distinct = 0;
+    // Variable-length flow (flow_id 7): count frames at each swept length, and
+    // confirm the IPv4 total_len field + header checksum track the real length.
+    int len7_128 = 0, len7_192 = 0, len7_256 = 0, len7_other = 0;
+    logic len7_totlen_ok = 1'b1, len7_csum_ok = 1'b1;
     always_ff @(posedge clk) begin
         if (rst_n && tv) begin
             for (int k = 0; k < 8; k++) if (tk[k]) begin
@@ -147,6 +155,25 @@ module tb_flow_gen_multi;
                 if (fb_n >= 18 && fbuf[12] == 8'h81 && fbuf[13] == 8'h00) begin
                     if (!vid_lo_seen[fbuf[15]]) begin
                         vid_lo_seen[fbuf[15]] = 1'b1; vid_lo_distinct++;
+                    end
+                end
+                // Variable-length flow_id 7 (IPv4 untagged): test-header flow_id
+                // is at byte 50 (eth14+ip20+udp8=42, magic@42, flow_id@50).
+                if (fbuf[12] == 8'h08 && fbuf[13] == 8'h00 &&
+                    fbuf[50] == 8'd0 && fbuf[51] == 8'd0 && fbuf[52] == 8'd0 && fbuf[53] == 8'd7) begin
+                    case (fb_n)
+                        128:     len7_128++;
+                        192:     len7_192++;
+                        256:     len7_256++;
+                        default: len7_other++;
+                    endcase
+                    if ({fbuf[16], fbuf[17]} != 16'(fb_n - 14)) len7_totlen_ok = 1'b0;
+                    begin  // IPv4 header checksum over fbuf[14..33] must fold to 0xFFFF
+                        automatic logic [31:0] cs = 0;
+                        for (int w = 0; w < 10; w++) cs += {fbuf[14 + w*2], fbuf[14 + w*2 + 1]};
+                        cs = (cs & 32'hFFFF) + (cs >> 16);
+                        cs = (cs & 32'hFFFF) + (cs >> 16);
+                        if (cs[15:0] != 16'hFFFF) len7_csum_ok = 1'b0;
                     end
                 end
                 fb_n = 0;
@@ -208,6 +235,14 @@ module tb_flow_gen_multi;
         f_rows[2].dip_mod=2'd1; f_rows[2].dip_mask=32'h000000FF;
         // DSCP 46 (EF) -> IPv6 traffic class 0xB8 (byte0 0x6B, byte1 0x80).
         f_rows[2].dscp=8'd46;
+        // slot 3: variable frame length sweep (flow_id 7) -- 128 -> 256 by 64,
+        // i.e. lengths {128,192,256} repeating. Exercises the frame-length
+        // generator (payload pad + length-field/checksum tracking).
+        f_rows[3].valid=1; f_rows[3].egress=0; f_rows[3].flow_id=32'd7;
+        f_rows[3].tokens_fp=32'h00200000;
+        f_rows[3].src_ipv4=32'h0A000007; f_rows[3].dst_ipv4=32'h0A000008;
+        f_rows[3].frame_len_min=16'd128; f_rows[3].frame_len_max=16'd256;
+        f_rows[3].frame_len_step=16'd64;
 
         repeat (4) @(posedge clk); rst_n = 1;
         repeat (3000) @(posedge clk);
@@ -239,7 +274,15 @@ module tb_flow_gen_multi;
         chk("src-MAC modifier rotates low byte", smac_lo_distinct >= 4);
         chk("src-MAC modifier keeps high bytes", smac_hi_const);
         chk("VLAN-ID modifier rotates", vid_lo_distinct >= 4);
-        $display("flow_gen_multi: fid1=%0d fid3=%0d (%0d pass, %0d fail)", seen_a, seen_b, g_pass, g_fail);
+        // Variable frame length (flow_id 7): sweep 128 -> 256 by 64.
+        chk("var-len emits 128B frames", len7_128 >= 2);
+        chk("var-len emits 192B frames", len7_192 >= 2);
+        chk("var-len emits 256B frames", len7_256 >= 2);
+        chk("var-len has no off-grid lengths", len7_other == 0);
+        chk("var-len IPv4 total_len tracks frame", len7_totlen_ok);
+        chk("var-len IPv4 header checksum valid", len7_csum_ok);
+        $display("flow_gen_multi: fid1=%0d fid3=%0d len7={128:%0d,192:%0d,256:%0d} (%0d pass, %0d fail)",
+                 seen_a, seen_b, len7_128, len7_192, len7_256, g_pass, g_fail);
         if (g_fail == 0) $display("ALL FLOW_GEN_MULTI SCENARIOS PASS");
         else $display("FAILED with %0d error(s)", g_fail);
         $finish;

@@ -121,7 +121,11 @@ flows:
       dst_port: 50001
 
     traffic:
-      frame_len: 512               # or frame_len_min/max/step
+      frame_len: 512               # total L2 frame bytes (excl FCS); or
+                                   #   frame_len_min/max/step for a size sweep.
+                                   # The generator emits this exact size (min==max)
+                                   # or sweeps min->max by step (IMIX). Sizes below
+                                   # the 74 B test-frame floor clamp up to it.
       rate_bps: 1000000000         # or rate_pps
       burst_size: 1                # optional, default 1
       burst_gap_ticks: 0           # optional

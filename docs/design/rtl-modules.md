@@ -86,6 +86,21 @@ parallel with the inner one (`ip_csum16_o`, tunnel proto in the protocol
 byte). `HDR_MAX_BYTES` grew to 176 to hold the deepest layout (v6-outer
 EtherIP v6-inner + VLAN = 154 B). The inner UDP checksum is unchanged (over
 the inner addresses), so egress timestamping still works at the deep offset.
+**Variable frame length:** each slot emits a total L2 frame length that sweeps
+`frame_len_min → frame_len_max` by `frame_len_step` (wrapping); `min == max`
+gives a fixed size (RFC 2544), and a `min < max` range gives IMIX/staircase
+sizing. The min/max/step live in the scheduling descriptor (FFs) so the per-slot
+sweep position (`cur_len[]`) needs no BRAM read; the effective length is sampled
+at `pick` and flows through the precompute pipeline alongside `seq`. The L4
+payload = `frame_len − header_overhead` (floored at the 32-byte test header, so
+a sub-minimum config clamps to the smallest legal frame); the IPv4/IPv6/UDP
+*length fields* and the length-dependent checksum terms track it, while the pad
+beyond the 32-byte test region is zero (adds nothing to the UDP checksum). The
+header buffer `fb` only holds the built header + test region (`built_len`); the
+emit FSM streams zero pad from `built_len` out to `frame_len`, so `fb` never has
+to grow to the 1518 B frame size. The token cost meters by the smallest legal
+frame (exact for a fixed size; a sweep meters by `min`). Before this, the
+generator ignored `frame_len_*` and always emitted a fixed 74 B frame.
 `pw_flow_table_bram` holds the flow table in **block RAM** (in the data
 plane, next to the generators). The old approach — a 32-wide registered
 `pw_flow_row_t` array (`flow_rows_o`) fanning out to both generators, each
