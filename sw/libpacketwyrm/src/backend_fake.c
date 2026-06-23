@@ -135,19 +135,6 @@ static pw_status fake_card_info(void *vctx, struct pw_card_info *out) {
     return PW_OK;
 }
 
-static pw_status fake_classifier_write(void *vctx, uint32_t row,
-                                       const struct pwfpga_classifier_entry *e) {
-    struct fake_ctx *c = vctx;
-    if (row >= FAKE_NUM_CLASSIFIER) return PW_E_OUT_OF_RANGE;
-    c->cls_staged[row] = *e;
-    return PW_OK;
-}
-
-static pw_status fake_classifier_commit(void *vctx) {
-    struct fake_ctx *c = vctx;
-    memcpy(c->cls, c->cls_staged, sizeof(c->cls));
-    return PW_OK;
-}
 
 static pw_status fake_flow_write(void *vctx, uint32_t row,
                                  const struct pwfpga_flow_config *f) {
@@ -219,8 +206,6 @@ static const struct pw_card_backend_ops fake_ops = {
     .read32              = fake_read32,
     .write32             = fake_write32,
     .card_info           = fake_card_info,
-    .classifier_write    = fake_classifier_write,
-    .classifier_commit   = fake_classifier_commit,
     .flow_write          = fake_flow_write,
     .flow_commit         = fake_flow_commit,
     .stats_snapshot      = fake_stats_snapshot,

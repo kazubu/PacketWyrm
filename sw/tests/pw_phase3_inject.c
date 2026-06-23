@@ -22,6 +22,7 @@
 #include "packetwyrm/backend.h"
 #include "packetwyrm/vfio.h"
 #include "packetwyrm/csr.h"
+#include "pw_tool_fc.h"
 
 static void set_mac(uint8_t *d, uint64_t v) {
     for (int i = 0; i < 6; i++) d[i] = (uint8_t)(v >> (8 * (5 - i)));
@@ -44,26 +45,16 @@ int main(int argc, char **argv) {
     if (o->card_info) o->card_info(be.ctx, &info);
     printf("card %s: device_id=0x%08x version=0x%08x\n", bdf, info.device_id, info.version);
 
-    /* Clear stale rules. */
+    /* Clear stale flow rows. */
     {
-        struct pwfpga_classifier_entry zc = {0};
-        struct pwfpga_flow_config      zf = {0};
-        unsigned nc = info.num_classifier_entries ? info.num_classifier_entries : 8;
+        struct pwfpga_flow_config zf = {0};
         unsigned nf = info.num_local_flows ? info.num_local_flows : 8;
-        for (unsigned r = 0; r < nc; r++) if (o->classifier_write) o->classifier_write(be.ctx, r, &zc);
         for (unsigned r = 0; r < nf; r++) if (o->flow_write) o->flow_write(be.ctx, r, &zf);
     }
 
-    /* Classifier rule: PUNT UDP/0xBEEF arriving on ingress 1. */
-    struct pwfpga_classifier_entry pe = {0};
-    pe.key.ingress_local_port = 1;       pe.mask.ingress_local_port = 0xFF;
-    pe.key.udp_dst_port       = UDP_DST; pe.mask.udp_dst_port       = 0xFFFF;
-    pe.action        = PWFPGA_ACT_PUNT_TO_HOST;
-    pe.logical_if_id = LIF;
-    pe.priority      = 5;
-    pe.flags         = PWFPGA_CLS_FLAG_ENABLE;
-    if (o->classifier_write) o->classifier_write(be.ctx, 0, &pe);
-    if (o->classifier_commit) o->classifier_commit(be.ctx);
+    /* Field-classifier rule: PUNT UDP/0xBEEF arriving on ingress 1. */
+    pw_tool_fc_ing_udp(o, be.ctx, 0, 0, /*ingress*/1, /*udp_dst*/UDP_DST,
+                       PWFPGA_ACT_PUNT_TO_HOST, /*egress*/0, /*lfid*/0, LIF);
 
     /* Compose a plain Eth/IPv4/UDP frame (no FCS -- the MAC appends it). */
     uint8_t f[64]; memset(f, 0, sizeof(f));

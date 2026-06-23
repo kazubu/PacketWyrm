@@ -787,39 +787,12 @@ static void test_bar_backend_window_writes(void) {
     struct pw_card_backend b;
     PW_ASSERT_EQ(pw_bar_backend_open_path(path, &b), PW_OK);
 
-    /* --- classifier_write at row 3 --- */
-    struct pwfpga_classifier_entry e = {0};
-    e.action       = PWFPGA_ACT_TEST_RX;
-    e.priority     = 7;
-    e.flags        = 0xabcd;
-    e.local_flow_id = 0x12345678;
-    e.logical_if_id = 0x87654321;
-    e.key.udp_dst_port = 50001;
-    e.mask.udp_dst_port = 0xFFFF;
-    PW_ASSERT_EQ(b.ops->classifier_write(b.ctx, 3, &e), PW_OK);
-    PW_ASSERT_EQ(b.ops->classifier_commit(b.ctx), PW_OK);
-
-    /* Re-mmap the file and inspect what landed at row 3 + commit. */
-    fd = open(path, O_RDONLY);
-    PW_ASSERT(fd >= 0);
-    uint8_t *raw = mmap(NULL, 65536, PROT_READ, MAP_SHARED, fd, 0);
-    PW_ASSERT(raw != MAP_FAILED);
-    close(fd);
-
-    size_t row_base = PWFPGA_WIN_CLASSIFIER + 3 * PWFPGA_CLASSIFIER_STRIDE;
-    struct pwfpga_classifier_entry back;
-    memcpy(&back, raw + row_base, sizeof(back));
-    PW_ASSERT_EQ(back.action, PWFPGA_ACT_TEST_RX);
-    PW_ASSERT_EQ(back.priority, 7);
-    PW_ASSERT_EQ(back.flags, 0xabcd);
-    PW_ASSERT_EQ(back.local_flow_id, 0x12345678);
-    PW_ASSERT_EQ(back.logical_if_id, 0x87654321);
-    PW_ASSERT_EQ(back.key.udp_dst_port, 50001);
-    PW_ASSERT_EQ(back.mask.udp_dst_port, 0xFFFF);
-
+    /* The legacy classifier_write backend op is retired (the field/hash
+     * classifier is programmed via write32; covered by tb_csr_full +
+     * tb_field_classifier / tb_hash_classifier). This test now covers the
+     * flow-table window serialization. */
+    uint8_t *raw;
     uint32_t commit_val;
-    memcpy(&commit_val, raw + PWFPGA_REG_CLASSIFIER_COMMIT, 4);
-    PW_ASSERT_EQ(commit_val, 1u);
 
     /* --- flow_write at row 5 --- */
     struct pwfpga_flow_config f = {0};

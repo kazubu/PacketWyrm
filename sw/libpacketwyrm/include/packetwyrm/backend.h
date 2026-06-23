@@ -67,9 +67,8 @@ struct pw_card_backend_ops {
 
     pw_status (*card_info)(void *ctx, struct pw_card_info *out);
 
-    pw_status (*classifier_write)(void *ctx, uint32_t row,
-                                  const struct pwfpga_classifier_entry *e);
-    pw_status (*classifier_commit)(void *ctx);
+    /* (The legacy classifier_write/commit ops are retired -- the field+UDF /
+     * hash / flow-id-map classifiers are programmed register-wise via write32.) */
 
     pw_status (*flow_write)(void *ctx, uint32_t row,
                             const struct pwfpga_flow_config *f);

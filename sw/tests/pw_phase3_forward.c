@@ -26,6 +26,7 @@
 #include "packetwyrm/backend.h"
 #include "packetwyrm/vfio.h"
 #include "packetwyrm/csr.h"
+#include "pw_tool_fc.h"
 
 static void set_mac(uint8_t d[6], uint64_t v) {
     for (int i = 0; i < 6; i++) d[i] = (uint8_t)(v >> (8 * (5 - i)));
@@ -93,11 +94,8 @@ int main(int argc, char **argv) {
      * across runs (no data-plane reset between tool invocations), so stale
      * rules from a previous test would also match and corrupt the result. */
     {
-        struct pwfpga_classifier_entry zc = {0};
-        struct pwfpga_flow_config      zf = {0};
-        unsigned nc = info.num_classifier_entries ? info.num_classifier_entries : 8;
+        struct pwfpga_flow_config zf = {0};
         unsigned nf = info.num_local_flows ? info.num_local_flows : 8;
-        for (unsigned r = 0; r < nc; r++) if (o->classifier_write) o->classifier_write(be.ctx, r, &zc);
         for (unsigned r = 0; r < nf; r++) if (o->flow_write) o->flow_write(be.ctx, r, &zf);
     }
 
@@ -107,30 +105,12 @@ int main(int argc, char **argv) {
      * report out_of_order against the previous run's stale expected_seq
      * (the forwarding itself is unaffected -- lost stays ~0). */
 
-    /* --- classifier rule 0: FORWARD frames arriving on ingress fwd_ingr --- */
-    struct pwfpga_classifier_entry fwd = {0};
-    fwd.key.ingress_local_port = (uint8_t)fwd_ingr; fwd.mask.ingress_local_port = 0xFF;
-    fwd.key.udp_dst_port       = 50001;   fwd.mask.udp_dst_port       = 0xFFFF;
-    fwd.key.test_magic         = 0xA5027E57; fwd.mask.test_magic      = 0xFFFFFFFF;
-    fwd.key.global_flow_id     = 2;       fwd.mask.global_flow_id     = 0xFFFFFFFF;
-    fwd.action            = PWFPGA_ACT_FORWARD_PORT;
-    fwd.egress_local_port = (uint8_t)fe;  /* now wire-carried into the classifier */
-    fwd.priority = 5;
-    fwd.flags    = PWFPGA_CLS_FLAG_ENABLE;
-    if (o->classifier_write) o->classifier_write(be.ctx, 0, &fwd);
-
-    /* --- classifier rule 1: TEST_RX the re-emitted copies on ingress chk_ingr --- */
-    struct pwfpga_classifier_entry chk = {0};
-    chk.key.ingress_local_port = (uint8_t)chk_ingr; chk.mask.ingress_local_port = 0xFF;
-    chk.key.udp_dst_port       = 50001;   chk.mask.udp_dst_port       = 0xFFFF;
-    chk.key.test_magic         = 0xA5027E57; chk.mask.test_magic      = 0xFFFFFFFF;
-    chk.key.global_flow_id     = 2;       chk.mask.global_flow_id     = 0xFFFFFFFF;
-    chk.action        = PWFPGA_ACT_TEST_RX;
-    chk.local_flow_id = 0;
-    chk.priority      = 5;
-    chk.flags         = PWFPGA_CLS_FLAG_ENABLE;
-    if (o->classifier_write) o->classifier_write(be.ctx, 1, &chk);
-    if (o->classifier_commit) o->classifier_commit(be.ctx);
+    /* Field-classifier rule 0: FORWARD frames (ingress fwd_ingr, udp_dst 50001)
+     * to egress fe; rule 1: TEST_RX the re-emitted copies on ingress chk_ingr. */
+    pw_tool_fc_ing_udp(o, be.ctx, /*cmp0*/0, /*rule*/0, (uint8_t)fwd_ingr, 50001,
+                       PWFPGA_ACT_FORWARD_PORT, /*egress*/(uint8_t)fe, /*lfid*/0, /*lif*/0);
+    pw_tool_fc_ing_udp(o, be.ctx, /*cmp0*/2, /*rule*/1, (uint8_t)chk_ingr, 50001,
+                       PWFPGA_ACT_TEST_RX, /*egress*/0, /*lfid*/0, /*lif*/0);
 
     /* Start the generator only after the classifier is committed, so no
      * frames arrive before the FORWARD rule exists (else they'd DROP). */
