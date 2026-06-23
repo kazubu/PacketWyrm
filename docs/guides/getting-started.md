@@ -6,38 +6,34 @@ A five-minute walk through PacketWyrm with no FPGA hardware.
 
 ```sh
 git clone <packetwyrm>
-cd packetwyrm/sw
-make
+cd packetwyrm
+make -C sw
 ```
 
-This produces `build/packetwyrmd`, `build/pktwyrm`, and
-`build/libpacketwyrm.{a,so}`. The build depends on `libyaml-0.1`
-and `libjson-c` via pkg-config.
+This produces `sw/build/packetwyrmd`, `sw/build/pktwyrm`, and
+`sw/build/libpacketwyrm.{a,so}`. The build depends on `libyaml-0.1`
+and `libjson-c` via pkg-config. (All commands below run from the repo
+root.)
 
 ## 2. Test
 
 Host stack:
 
 ```sh
-make -C sw test
-# expected: 164/164 assertions pass
-
-make -C sw e2e
-# expected: 18/18 daemon <-> CLI smoke checks pass
+make -C sw test      # host unit tests
+make -C sw e2e       # daemon <-> CLI smoke
 ```
 
 RTL data plane (needs Verilator >= 5.0):
 
 ```sh
-make -C sim sim_all
-# expected: 172 assertions across 9 testbenches (all PASS)
+make -C sim sim_all  # SystemVerilog testbench sweep
 ```
 
 Optional Python unit suite (needs Icarus Verilog + cocotb 2 + Scapy):
 
 ```sh
-make -C sim/cocotb all
-# expected: 17/17 parser + classifier + flow_gen unit checks
+make -C sim/cocotb all   # parser + classifier + flow_gen units
 ```
 
 ## 3. Run the daemon (fake backend, real TAPs)
@@ -45,14 +41,16 @@ make -C sim/cocotb all
 The example config wires one logical card with two ports and one
 same-card flow. The daemon will:
 
-- open the `bar` backend if the PCI vendor/device match a card,
-  otherwise fall back to `fake`;
+- open the `bar` backend for each card; if a card's BAR cannot be
+  opened it is a hard error **unless** `-F`/`--allow-fake` is given,
+  which permits the no-op `fake` backend (for a no-FPGA run like this
+  one);
 - create a real Linux TAP device (`tap-pw-p0-v100`);
 - listen for control RPCs on a Unix socket;
 - (optionally) serve Prometheus on a TCP port.
 
 ```sh
-sudo sw/build/packetwyrmd -v -s 5000 -p 9100 \
+sudo sw/build/packetwyrmd -v -F -s 5000 -p 9100 \
     -c configs/examples/single-card.yaml
 ```
 

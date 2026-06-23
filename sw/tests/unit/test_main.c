@@ -786,6 +786,57 @@ static void test_fake_csr_window_recording(void) {
     pw_card_backend_close(&b);
 }
 
+/* pw_program_card_tables (shared by the daemon's program_backends) must write
+ * each classification window the right number of times -- caught via the fake
+ * backend's per-window write recording. A forgotten/misaddressed window would
+ * make the recorded count diverge from the compiled program's content. */
+static void test_program_card_tables(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n  - id: 0\n    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "logical_interfaces:\n  - id: 1000\n    global_port: 0\n"
+        "    mac: \"02:a5:02:00:00:64\"\n    punt: { arp: true, bgp: true }\n"
+        "flows:\n"
+        "  - id: 1\n    tx_global_port: 0\n    rx_global_port: 1\n    logical_if_id: 1000\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv4: { src: \"192.0.2.1\", dst: \"192.0.2.2\" }\n    udp: { src_port: 1, dst_port: 2 }\n"
+        "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
+        "  - id: 2\n    classify: header\n    tx_global_port: 0\n    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:02:01\", dst_mac: \"02:a5:02:00:02:02\" }\n"
+        "    ipv4: { src: \"192.0.2.3\", dst: \"198.51.100.9\" }\n    udp: { src_port: 49152, dst_port: 50002 }\n"
+        "    traffic: { frame_len: 256, rate_bps: 200000000 }\n";
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
+    const struct pw_card_program *cp = &prog->per_card[0];
+    /* exercise the windows we expect to be populated */
+    PW_ASSERT(cp->n_map_entries >= 1);   /* structured flow 1 */
+    PW_ASSERT(cp->n_fc_rules >= 1);      /* arp + bgp punt */
+    PW_ASSERT(cp->n_hash_entries >= 1);  /* header-classified flow 2 */
+
+    struct pw_card_backend b;
+    PW_ASSERT_EQ(pw_fake_backend_open("0000:03:00.0", &b), PW_OK);
+    PW_ASSERT_EQ(pw_program_card_tables(b.ops, b.ctx, cp), PW_OK);
+    struct pw_fake_wr_counts wc;
+    pw_fake_backend_wr_counts(b.ctx, &wc);
+    PW_ASSERT_EQ(wc.flowid_map, (uint32_t)cp->n_map_entries);
+    PW_ASSERT_EQ(wc.fc_cmp,     (uint32_t)cp->n_fc_cmps * 3u);
+    PW_ASSERT_EQ(wc.fc_udf,     (uint32_t)cp->n_fc_udfs * 3u);
+    PW_ASSERT_EQ(wc.fc_rule,    (uint32_t)cp->n_fc_rules * 3u);
+    uint32_t exp_hash = cp->n_hash_entries
+        ? (uint32_t)(PWFPGA_HASH_KEY_WORDS + 1u +
+                     cp->n_hash_entries * (PWFPGA_HASH_KEY_WORDS + 1u))
+        : 0u;
+    PW_ASSERT_EQ(wc.hash, exp_hash);
+    pw_card_backend_close(&b);
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
 static void test_bar_backend_path(void) {
     /* Stage a 64K "BAR image" with the identity registers populated
      * exactly as the FPGA would. The path-variant BAR backend mmaps
@@ -925,8 +976,7 @@ static void test_bar_backend_window_writes(void) {
     PW_ASSERT_EQ(b.ops->flow_write(b.ctx, 5, &f), PW_OK);
     PW_ASSERT_EQ(b.ops->flow_commit(b.ctx), PW_OK);
 
-    /* re-read */
-    munmap(raw, 65536);
+    /* re-read (raw is first mapped here -- no prior mapping to release) */
     fd = open(path, O_RDONLY);
     raw = mmap(NULL, 65536, PROT_READ, MAP_SHARED, fd, 0);
     close(fd);
@@ -1268,6 +1318,7 @@ int main(void) {
         { "encap_flow_compiles", test_encap_flow_compiles },
         { "fake_backend", test_fake_backend },
         { "fake_csr_window_recording", test_fake_csr_window_recording },
+        { "program_card_tables", test_program_card_tables },
         { "bar_backend_path", test_bar_backend_path },
         { "bar_backend_window_writes", test_bar_backend_window_writes },
         { "bar_backend_stats_reads", test_bar_backend_stats_reads },

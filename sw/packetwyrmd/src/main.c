@@ -221,93 +221,31 @@ static uint64_t now_ms(void) {
  * *hard* status seen (PW_OK if all writes succeeded or only returned
  * NOT_IMPLEMENTED, which is the legacy soft case for a bitstream lacking a
  * window). A real fault (BAR write error, card drop) is returned so the caller
- * can report that the FPGA is NOT in sync with the daemon's config. */
-#define PB_CHK(call) do { \
-    pw_status _s = (call); \
-    if (_s != PW_OK && _s != PW_E_NOT_IMPLEMENTED && worst == PW_OK) worst = _s; \
-} while (0)
+ * can report that the FPGA is NOT in sync with the daemon's config. The table
+ * write sequence itself lives in libpacketwyrm (pw_program_card_tables) so it is
+ * shared with the unit tests; here we add the per-card data-plane quiesce. */
 static pw_status program_backends(const struct pw_program *prog,
                                   const struct pw_config *cfg,
                                   struct card_runtime cards[]) {
+    (void)cfg;
     pw_status worst = PW_OK;
     for (size_t ci = 0; ci < prog->n_cards; ci++) {
         const struct pw_card_program *cp = &prog->per_card[ci];
         if (!cards[ci].open) continue;
         const struct pw_card_backend *b = &cards[ci].backend;
-        bool any_err = false;
-        /* Soft-reset the data plane before (re)writing the tables. This
-         * quiesces the generators / SAF / arbiters so reprogramming over a
-         * running data plane cannot wedge it (configuration is preserved,
-         * and we re-commit it immediately below). */
-        if (b->ops->write32)
-            PB_CHK(b->ops->write32(b->ctx, PWFPGA_REG_DP_RESET, 1u));
-        for (size_t r = 0; r < cp->n_flow_rows; r++) {
-            pw_status s = b->ops->flow_write
-                ? b->ops->flow_write(b->ctx, (uint32_t)r, &cp->flow_rows[r])
-                : PW_E_NOT_IMPLEMENTED;
-            if (s != PW_OK) any_err = true;
+        /* Soft-reset the data plane before (re)writing the tables: quiesce the
+         * generators / SAF / arbiters so reprogramming over a running data plane
+         * cannot wedge it (configuration is preserved; the commit below re-applies
+         * it). */
+        if (b->ops->write32) {
+            pw_status s = b->ops->write32(b->ctx, PWFPGA_REG_DP_RESET, 1u);
             if (s != PW_OK && s != PW_E_NOT_IMPLEMENTED && worst == PW_OK) worst = s;
         }
-        if (b->ops->flow_commit) PB_CHK(b->ops->flow_commit(b->ctx));
-        /* TEST_RX flow-id map: test flows are classified by the flow-id map
-         * (not classifier rules), so program one entry per test flow. */
-        for (size_t m = 0; m < cp->n_map_entries; m++) {
-            if (b->ops->write32)
-                PB_CHK(b->ops->write32(b->ctx,
-                    PWFPGA_WIN_FLOWID_MAP + cp->map_entries[m].flow_id * 4u,
-                    PWFPGA_FLOWID_MAP_VALID | cp->map_entries[m].local_flow_id));
-        }
-        /* Unified field+UDF classifier: header-defined test flows + punt +
-         * forward. Program each comparator ({src/offset,mask,value}; value
-         * commits) then each rule (lif commits). */
-        if (b->ops->write32) {
-            for (size_t i = 0; i < cp->n_fc_cmps; i++) {
-                const struct pw_fc_cmp *c = &cp->fc_cmps[i];
-                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_CMP_SRC(PWFPGA_WIN_FC_CMP, i), c->src));
-                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_CMP_MASK(PWFPGA_WIN_FC_CMP, i), c->mask));
-                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_CMP_VALUE(PWFPGA_WIN_FC_CMP, i), c->value));
-            }
-            for (size_t i = 0; i < cp->n_fc_udfs; i++) {
-                const struct pw_fc_udf *u = &cp->fc_udfs[i];
-                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_UDF_OFFSET(PWFPGA_WIN_FC_UDF, i), u->offset));
-                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_UDF_MASK(PWFPGA_WIN_FC_UDF, i), u->mask));
-                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_UDF_VALUE(PWFPGA_WIN_FC_UDF, i), u->value));
-            }
-            for (size_t i = 0; i < cp->n_fc_rules; i++) {
-                const struct pw_fc_rule *rl = &cp->fc_rules[i];
-                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_RULE_WORD0(PWFPGA_WIN_FC_RULE, i),
-                    PWFPGA_FC_RULE_W0(rl->care, rl->action, rl->egress, rl->priority, 1)));
-                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_RULE_LFID(PWFPGA_WIN_FC_RULE, i), rl->local_flow_id));
-                PB_CHK(b->ops->write32(b->ctx, PWFPGA_FC_RULE_LIF(PWFPGA_WIN_FC_RULE, i), rl->logical_if_id));
-            }
-            /* Hash exact table: seed first, then each entry (key words, then the
-             * control word commits at the SW-chosen bucket index). */
-            if (cp->n_hash_entries > 0) {
-                for (unsigned w = 0; w < PWFPGA_HASH_KEY_WORDS; w++)
-                    PB_CHK(b->ops->write32(b->ctx,
-                        PWFPGA_HASH_MASK_WORD(PWFPGA_WIN_HASH_MASK, w), cp->hash_mask[w]));
-                PB_CHK(b->ops->write32(b->ctx, PWFPGA_REG_HASH_SEED, cp->hash_seed));
-                for (size_t i = 0; i < cp->n_hash_entries; i++) {
-                    const struct pw_fc_hash_entry *he = &cp->hash_entries[i];
-                    for (unsigned w = 0; w < PWFPGA_HASH_KEY_WORDS; w++)
-                        PB_CHK(b->ops->write32(b->ctx,
-                            PWFPGA_HASH_KEY_WORD(PWFPGA_WIN_FC_HASH, he->index, w), he->key_word[w]));
-                    PB_CHK(b->ops->write32(b->ctx,
-                        PWFPGA_HASH_CTRL(PWFPGA_WIN_FC_HASH, he->index),
-                        PWFPGA_HASH_CTRL_VALID | he->local_flow_id));
-                }
-            }
-        }
-        if (any_err) {
-            fprintf(stderr,
-                "  card%u(%s): some table writes returned not-implemented; "
-                "RTL table windows not in this bitstream yet\n",
-                (unsigned)cfg->cards[ci].id, cards[ci].which);
-        }
+        pw_status s = pw_program_card_tables(b->ops, b->ctx, cp);
+        if (s != PW_OK && worst == PW_OK) worst = s;
     }
     return worst;
 }
-#undef PB_CHK
 
 /* Look up the (tx) row index for a given global_flow_id. */
 static int find_tx_row(const struct pw_program *prog,
@@ -403,14 +341,14 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
 
     pw_status r = pw_config_parse_string(yaml, yaml_len, new_cfg, &diag);
     if (r != PW_OK) {
-        char msg[256];
+        char msg[600];
         snprintf(msg, sizeof(msg), "parse: %s at %s: %s",
                  pw_strerror(r), diag.path, diag.message);
         resp = build_error(msg);
         goto fail;
     }
     if ((r = pw_config_validate(new_cfg, &diag)) != PW_OK) {
-        char msg[256];
+        char msg[600];
         snprintf(msg, sizeof(msg), "validate: %s at %s: %s",
                  pw_strerror(r), diag.path, diag.message);
         resp = build_error(msg);
@@ -421,7 +359,7 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
         goto fail;
     }
     if ((r = pw_flow_compile(new_cfg, new_prog, &diag)) != PW_OK) {
-        char msg[256];
+        char msg[600];
         snprintf(msg, sizeof(msg), "compile: %s at %s: %s",
                  pw_strerror(r), diag.path, diag.message);
         resp = build_error(msg);
@@ -847,9 +785,9 @@ static void handle_client(int cfd,
             else {
                 uint8_t id[3] = {0};
                 pw_status s = pw_flash_read_id(cards[ci].backend.ops, cards[ci].backend.ctx, id);
-                char buf[16]; snprintf(buf, sizeof buf, "%02x %02x %02x", id[0], id[1], id[2]);
+                char idbuf[16]; snprintf(idbuf, sizeof idbuf, "%02x %02x %02x", id[0], id[1], id[2]);
                 resp = json_object_new_object();
-                json_object_object_add(resp, "jedec_id", json_object_new_string(buf));
+                json_object_object_add(resp, "jedec_id", json_object_new_string(idbuf));
                 json_object_object_add(resp, "status",   json_object_new_string(pw_strerror(s)));
             }
         } else if (!strcmp(name, "flash.write")) {

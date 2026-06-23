@@ -27,10 +27,14 @@
 //   hit    = valid && stored_key == masked_frame_key   (exact, no misclassify;
 //            SW stores the already-masked key, HW masks the frame key)
 //
-// Latency key_valid_i -> valid_o is 3 cycles: a masked-key register stage
-// splits the dp_clk-critical key->assemble->mask->fold->multiply->BRAM-address
-// path. The data plane delays the field classifier + flow-id map results by one
-// cycle so all three classification paths stay aligned at the precedence mux.
+// Latency is 3 clocks measured from the cycle key_i/key_valid_i are presented
+// to the cycle valid_o/local_flow_id_o are valid: cycle 0 captures the masked
+// key (mkey_q1), cycle 1 reads the BRAM at the hashed index (rd_q) + holds the
+// key (key_q), cycle 2 verifies + registers the result. The masked-key register
+// stage splits the dp_clk-critical key->assemble->mask->fold->multiply->BRAM-
+// address path. The data plane delays the field classifier + flow-id map
+// results by one cycle so all three classification paths stay aligned (also at
+// 3 from key_valid) at the precedence mux.
 
 `default_nettype none
 
