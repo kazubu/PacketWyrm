@@ -493,6 +493,8 @@ struct pwfpga_dma_cpl {
 #define PWFPGA_WIN_INJECT_TX               0x0D00u
 #define PWFPGA_REG_INJECT_CTRL             (PWFPGA_WIN_INJECT_TX + 0x000u) /* W:[0]go  R:[0]busy */
 #define PWFPGA_REG_INJECT_INFO             (PWFPGA_WIN_INJECT_TX + 0x004u) /* W:[13:0]byte_len [19:16]egress_port */
+#define PWFPGA_REG_INJECT_TX_TS_LOW        (PWFPGA_WIN_INJECT_TX + 0x008u) /* R: egress wire timestamp [31:0] */
+#define PWFPGA_REG_INJECT_TX_TS_HIGH       (PWFPGA_WIN_INJECT_TX + 0x00Cu) /* R: egress wire timestamp [63:32] */
 #define PWFPGA_INJECT_DATA                 (PWFPGA_WIN_INJECT_TX + 0x040u) /* W: frame word i at +i*4, LE */
 #define PWFPGA_INJECT_MAX_FRAME            512u
 #define PWFPGA_INJECT_CTRL_GO              (1u << 0)

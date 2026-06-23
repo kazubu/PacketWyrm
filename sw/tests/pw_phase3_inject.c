@@ -80,10 +80,19 @@ int main(int argc, char **argv) {
     pw_status tr = o->slow_path_tx(be.ctx, f, n, 0 /*lif unused*/, 0 /*egress 0*/);
     if (tr != PW_OK) { fprintf(stderr, "slow_path_tx failed: %d\n", (int)tr); return 1; }
 
-    /* Drain the looped-back copy. */
-    uint8_t rx[2048]; uint32_t got_lif = 0; int rn = 0;
+    /* Egress (TX) wire timestamp of the injected frame (servo-facing). */
+    uint64_t tx_ts = 0;
+    if (o->read32) {
+        uint32_t lo = 0, hi = 0;
+        o->read32(be.ctx, PWFPGA_REG_INJECT_TX_TS_LOW,  &lo);
+        o->read32(be.ctx, PWFPGA_REG_INJECT_TX_TS_HIGH, &hi);
+        tx_ts = (uint64_t)lo | ((uint64_t)hi << 32);
+    }
+
+    /* Drain the looped-back copy + its RX wire timestamp. */
+    uint8_t rx[2048]; uint32_t got_lif = 0; int rn = 0; uint64_t rx_ts = 0;
     for (long s = 0; s < 20000000L && rn == 0; s++)
-        rn = o->slow_path_rx(be.ctx, rx, sizeof(rx), &got_lif, NULL);
+        rn = o->slow_path_rx(be.ctx, rx, sizeof(rx), &got_lif, &rx_ts);
 
     if (rn <= 0) { printf("RESULT: FAIL -- no frame looped back (rn=%d)\n", rn); return 1; }
 
@@ -102,8 +111,15 @@ int main(int argc, char **argv) {
             if (f[i] != rx[i]) printf(" [%zu]%02x/%02x", i, f[i], rx[i]);
         printf("\n");
     }
-    printf("RESULT: %s\n", (len_ok && lif_ok && data_ok) ? "PASS" : "FAIL");
+    /* Servo-facing timestamps: egress (inject) + ingress (punt). On one card
+     * both use the same counter, so the looped frame's rx_ts must exceed its
+     * tx_ts by the loopback latency. */
+    int ts_ok = (tx_ts != 0) && (rx_ts > tx_ts);
+    printf("timestamps: tx_ts=%llu rx_ts=%llu (rx-tx=%lld) ts_ok=%d\n",
+           (unsigned long long)tx_ts, (unsigned long long)rx_ts,
+           (long long)(rx_ts - tx_ts), ts_ok);
+    printf("RESULT: %s\n", (len_ok && lif_ok && data_ok && ts_ok) ? "PASS" : "FAIL");
 
     pw_card_backend_close(&be);
-    return (len_ok && lif_ok && data_ok) ? 0 : 1;
+    return (len_ok && lif_ok && data_ok && ts_ok) ? 0 : 1;
 }

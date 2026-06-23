@@ -26,7 +26,9 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
     +-- pw_punt_rx_window        punt AXIS -> CSR-polled frame buffer (host RX);
     |                            carries a 64-bit RX wire timestamp (SOF-latched,
     |                            servo-facing) in the punt metadata -> RX_TS regs
-    +-- pw_inject_tx_window      CSR frame buffer -> AXIS into egress (host TX)
+    +-- pw_inject_tx_window      CSR frame buffer -> AXIS into egress (host TX);
+    |                            latches the egress wire timestamp of the injected
+    |                            frame (servo-facing) -> INJECT_TX_TS regs
     +-- pw_data_plane_axis       64-bit AXIS streaming data plane
         +-- pw_flow_table_bram   BRAM flow table (commit-walk decode; per-port
         |                        read port + compact scheduling FF array)

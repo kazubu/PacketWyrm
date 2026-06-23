@@ -61,6 +61,8 @@ the initial proposal; concrete field bit definitions are owned by the
 0x0d00..0x0fff  inject_tx_window
   0x0d00  inject_ctrl  W:[0]go      R:[0]busy
   0x0d04  inject_info  W:[13:0]byte_len [19:16]egress_port
+  0x0d08  inject_tx_ts_lo R: egress wire timestamp [31:0] (counter latched at the
+  0x0d0c  inject_tx_ts_hi R: injected frame's first egress beat -- servo TX time)
   0x0d40  inject_data  W: frame word i at +i*4 (little-endian; up to 512 B)
 
 # Punt / slow-path RX window (FPGA -> host, BAR-polled; pw_punt_rx_window)
