@@ -32,7 +32,9 @@ if [ "$(id -u)" -ne 0 ]; then
     echo "(running as non-root; TAP creation will be skipped by the daemon)"
 fi
 
-"$DAEMON" -s 0 -c "$CFG" > "$WORK/daemon.log" 2>&1 &
+# -F: allow the no-op fake backend (no real card on the CI/dev host; BAR open
+# fails and the daemon now errors out by default without this).
+"$DAEMON" -s 0 -F -c "$CFG" > "$WORK/daemon.log" 2>&1 &
 DPID=$!
 cleanup() { kill -INT "$DPID" 2>/dev/null || true; wait "$DPID" 2>/dev/null || true; }
 trap 'cleanup; rm -rf "$WORK"' EXIT
