@@ -85,6 +85,8 @@ static pw_status append_ipv6_cmps(struct pw_card_program *cp, const uint8_t addr
         if (m == 0) continue;
         uint32_t v = ((uint32_t)ab[0] << 24) | ((uint32_t)ab[1] << 16) |
                      ((uint32_t)ab[2] << 8) | ab[3];
+        v &= m;   /* mask the value so two prefixes differing only in don't-care
+                   * (host) bits dedup to one comparator (the RTL masks too). */
         size_t bit; pw_status er = append_fc_cmp(cp, sel[w], m, v, &bit);
         if (er != PW_OK) return er;
         *care |= (uint16_t)(1u << bit);

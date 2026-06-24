@@ -241,7 +241,12 @@ there is no extra per-slot state. Notes:
   (not in any checksum). The IPv6 address lanes are field+lane-salted so a
   full-128 rotation gives four distinct words and src ≠ dst; the streams are
   deterministic (xorshift-based), de-duplicated rather than statistically
-  independent, with an effective ~2³² period.
+  independent, with an effective ~2³² period. **Scope:** this salting applies to
+  the 128-bit IPv6 path only. The scalar single-field modifiers (IPv4 src/dst,
+  ports, MAC, VLAN) still share the per-frame sequence, so two same-mask
+  `random` scalar fields rotate in lockstep (correlated) — fine for DUT
+  diversification (their base values differ); full per-field de-correlation
+  would be a follow-up.
 
 `encap` wraps the flow's inner IP/UDP/test frame in an outer L3 + tunnel
 header so PacketWyrm can exercise a DUT's tunnel decap/encap path:
