@@ -218,6 +218,27 @@ static void pw_fc_relax_mask(uint32_t mask[11], const struct pw_flow *f) {
     if (f->mod.vlan.mode != PWFPGA_FIELD_STATIC)     mask[9] &= ~(((uint32_t)f->mod.vlan.mask & 0x0FFFu) << 16);
 }
 
+/* Minimum legal on-wire frame (bytes), mirroring RTL pw_frame_bytes(row, 32B
+ * test payload). The generator clamps the swept length UP to this and the token
+ * cost uses it, so the bucket cap and the rate_pps byte basis must meter at
+ * least this many bytes -- else cap < cost (the flow never transmits) and pps is
+ * metered against the wrong size. Accounts for VLAN, encap (outer IP + tunnel),
+ * and inner IP family. (UDP L4 = 8; the TCP path is on the phase3-tcp-gen
+ * branch.) */
+static uint32_t pw_flow_min_legal_frame(const struct pw_flow *f) {
+    uint32_t l = 14u;                                       /* Ethernet */
+    if (f->l2.vlan_set) l += 4u;                            /* VLAN tag */
+    if (f->encap.present) {
+        l += f->encap.outer_ipv6.present ? 40u : 20u;       /* outer IP */
+        if (f->encap.type == PWFPGA_ENCAP_GRE)          l += 4u;
+        else if (f->encap.type == PWFPGA_ENCAP_ETHERIP) l += 16u;
+    }
+    l += f->ipv6.present ? 40u : 20u;                       /* inner IP */
+    l += 8u;                                                /* UDP */
+    l += 32u;                                               /* test-header region */
+    return l;
+}
+
 static void mac_set(uint8_t *dst, const uint8_t *src) { memcpy(dst, src, 6); }
 
 static pw_status compile_one_flow(struct pw_program *out,
@@ -343,6 +364,8 @@ static pw_status compile_one_flow(struct pw_program *out,
         if (eff_rate_bps == 0 && f->traffic.rate_pps) {
             uint32_t flen = f->traffic.frame_len_fixed_set ? f->traffic.frame_len_fixed
                                                            : f->traffic.frame_len_min;
+            uint32_t minf = pw_flow_min_legal_frame(f);     /* RTL clamps up to this */
+            if (flen < minf) flen = minf;
             eff_rate_bps = f->traffic.rate_pps * (uint64_t)flen * 8u;
         }
         unsigned __int128 num = (unsigned __int128)eff_rate_bps * 65536u;
@@ -357,6 +380,8 @@ static pw_status compile_one_flow(struct pw_program *out,
      * enough tokens to cover a frame's cost and the generator starves. */
     {
         uint32_t flen = tx_row.frame_len_max ? tx_row.frame_len_max : 1518u;
+        uint32_t minf = pw_flow_min_legal_frame(f);    /* cap must cover the clamped cost */
+        if (flen < minf) flen = minf;
         uint32_t bsz  = f->traffic.burst_size ? f->traffic.burst_size : 1u;
         uint64_t cap  = (uint64_t)bsz * flen;
         if (cap < flen) cap = flen;
@@ -541,6 +566,15 @@ static pw_status compile_forward_rules(struct pw_program *out, const struct pw_c
             if (er != PW_OK) return er;
             care |= (uint16_t)(1u << bit);
         }
+        if (fr->ipv6_dst_set || fr->ipv6_src_set) {
+            /* An IPv6 address match must also require is_ipv6 -- otherwise an
+             * IPv4 packet (whose ipv6_src/dst key words are zero) would match a
+             * mask like ::/0. Costs one more of the 12 shared comparators. */
+            er = append_fc_cmp(cp, PWFPGA_FC_SRC_FLAGS, PWFPGA_FC_FLAG_IS_IPV6,
+                               PWFPGA_FC_FLAG_IS_IPV6, &bit);
+            if (er != PW_OK) return er;
+            care |= (uint16_t)(1u << bit);
+        }
         if (fr->ipv6_dst_set) {
             static const uint8_t dsel[4] = {
                 PWFPGA_FC_SRC_IPV6_DST_3, PWFPGA_FC_SRC_IPV6_DST_2,
@@ -588,9 +622,30 @@ pw_status pw_flow_compile(const struct pw_config *cfg, struct pw_program *out,
     }
 
     r = compile_punt_rules(out, cfg);
-    if (r != PW_OK) return r;
+    if (r != PW_OK) {
+        if (r == PW_E_NO_RESOURCES && diag) {
+            diag->code = r;
+            snprintf(diag->path, sizeof diag->path, "punt");
+            snprintf(diag->message, sizeof diag->message,
+                     "field-comparator pool exhausted (limit NCMP=%u, shared across "
+                     "punt+forward rules); reduce per-rule match conditions",
+                     (unsigned)PWFPGA_NUM_CMP);
+        }
+        return r;
+    }
     r = compile_forward_rules(out, cfg);
-    if (r != PW_OK) return r;
+    if (r != PW_OK) {
+        if (r == PW_E_NO_RESOURCES && diag) {
+            diag->code = r;
+            snprintf(diag->path, sizeof diag->path, "forwards");
+            snprintf(diag->message, sizeof diag->message,
+                     "field-comparator pool exhausted (limit NCMP=%u, shared across "
+                     "punt+forward rules); a /128 IPv6 match costs 4 + 1 is_ipv6, "
+                     "/64 costs 2 + 1; reduce per-rule match conditions",
+                     (unsigned)PWFPGA_NUM_CMP);
+        }
+        return r;
+    }
 
     /* Per-card hash-table seed search: pick a seed so every configured
      * header-key lands in a distinct bucket (the hash only chooses the bucket;

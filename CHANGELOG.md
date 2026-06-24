@@ -8,7 +8,31 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ## Unreleased
 
+### Added
+  - **IPv6 source/destination classifier matching.** Forward rules accept
+    `ipv6_dst` / `ipv6_src` (address or `addr/prefix`) compiled to masked field
+    comparators (all four IPv6-src words are now selectable; `/64` costs 2 of the
+    12 per-card comparators + 1 `is_ipv6` guard, `/128` costs 4 + 1; the compiler
+    dedups and returns `PW_E_NO_RESOURCES` with a diagnostic when over-subscribed).
+    `classify: header` flows accept `match: { ipv6_dst_prefix / ipv6_src_prefix }`
+    to narrow the hash key (the key mask is per-card global).
+  - **Full 128-bit IPv6 address modifiers.** `src_ipv6` / `dst_ipv6` modifiers
+    accept a full IPv6-literal mask (rotate the whole 128-bit address); a bare
+    ≤32-bit hex still rotates the low 32 bits (back-compatible). Each 32-bit lane
+    is field+lane-salted so a full-mask rotation emits four distinct words and
+    src ≠ dst (de-duplicated deterministic streams, ~2³² period). Increment mode
+    and all existing v4/port/MAC/VLAN modifiers are byte-identical to before.
+  - (Stateless line-rate TCP segment generation is implemented on the
+    `phase3-tcp-gen` branch but deferred from this build: A+B+C together exceed
+    the xcku3p routing budget (~93% LUT), so TCP ships after a dedicated
+    LUT-reduction pass.)
+
 ### Fixed
+  - **Sub-minimum frame lengths no longer stall a flow.** The generator clamps a
+    too-short frame up to the minimum legal size (incl. VLAN/encap/IP family);
+    the SW now computes that same minimum and applies it to the token-bucket cap
+    **and** the rate_pps byte basis, so a flow configured below the minimum (e.g.
+    64 B) transmits at the right rate instead of starving (cap < cost).
   - **Reloads no longer leave stale classifier / flow / hash / map entries.**
     `pw_program_card_tables` now writes every table to its full capacity on each
     load: configured entries enabled, all remaining slots invalidated (flow rows

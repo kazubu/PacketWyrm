@@ -479,6 +479,10 @@ static void test_forward_comparator_exhaustion(void) {
     PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
     struct pw_program *prog = pw_program_new();
     PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_E_NO_RESOURCES);
+    /* diagnostic names the comparator pool + the rule class (not just a code) */
+    PW_ASSERT_EQ(d.code, PW_E_NO_RESOURCES);
+    PW_ASSERT(strstr(d.message, "comparator") != NULL);
+    PW_ASSERT(strstr(d.path, "forward") != NULL);
     pw_program_free(prog);
     pw_config_free(cfg);
 }

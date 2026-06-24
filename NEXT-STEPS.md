@@ -49,10 +49,14 @@ Merge phase3-tool-migration: standalone HW tools -> field classifier
 Three classification paths coexist (precedence map > hash > field): the flow-id
 map (structured test flows), the hash exact table (high-count payload-agnostic),
 and the field+UDF comparator classifier (punt/forward/few-rule). The generator
-honors `frame_len_min/max/step` (fixed RFC2544 size + IMIX sweep). HW state:
-WNS ~0 (design at its Fmax ceiling, 89% LUT) — a dedicated timing-recovery pass
-(pipeline the hash multiply->BRAM + token-bucket paths) is recommended before
-adding more dp_clk logic.
+honors `frame_len_min/max/step` (fixed RFC2544 size + IMIX sweep). HW state
+(after the timing-recovery pass): post-route **WNS +0.132 ns, LUT 87.9%**. The
+design is at its area ceiling — adding the IPv6-classifier+modifier work (A+B)
+plus TCP (C) together overflowed routing (~93% LUT), which is why TCP is held
+out (above). The classifier-winner select is O(N²) on purpose (shallow parallel
+one-hot mux); a "leaner" linear/tree rewrite is DEEPER and regresses timing (see
+the `dp-clk-timing-lessons` memory). Cut LUT to lift near-zero paths; pipeline to
+fix one named path.
 
 Standalone HW tools (`sw/tests/`, run via `sudo env PW_BACKEND=vfio
 sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
@@ -69,21 +73,25 @@ Gated on a **second card** (can't proceed on the single-card rig):
    ingress stamp in the MAC clock domain need a second card.
 2. **Multi-card** — cross-card flows + orchestration.
 
-Optional RTL features (each a bitstream rebuild):
+Optional RTL features:
 
-3. **Line-rate TCP generation.** `pw_tcp_syn` generates TCP SYNs via the
-   slow-path inject (SW-built frame + SW checksum, ~tens of k pps). Line rate
-   needs `pw_flow_gen_multi` to emit a TCP header + checksum (like the UDP/test
-   path) — the bigger item.
-4. **Field-modifier extensions:** full 128-bit IPv6-address rotation (low 32
-   bits done) and independent per-field rotation (currently a shared,
-   correlated sequence).
-5. **Classifier extensions:** bitwise IPv6 dst masking + IPv6 *src* match (v4
-   bitwise + v6 dst-exact are done; the field/UDF + hash engines replaced the
-   old single `pw_classifier`).
-6. **Further LUT reduction** if headroom is needed: the parser (~36K LUT over
-   2 ports) is now the largest consumer (generator ~27K, field classifier
-   ~15K, flow table ~15K).
+3. **Line-rate stateless TCP segment generation — IMPLEMENTED, deferred on
+   LUT.** Done on branch `phase3-tcp-gen` (generator TCP header + dual-family L4
+   checksum, egress tx_ts fold, RX parser offset, `protocol: tcp`). But A+B+C
+   together hit **~93% LUT and would not route** (congestion) on the xcku3p, so
+   TCP is **held out of this build**. Ships after a dedicated LUT-reduction pass
+   — biggest levers: the parser (HDR_BYTES 176; ~35K LUT over 2 ports) and the
+   generator (~35K). `pw_tcp_syn` (slow-path inject) remains for one-off SYNs.
+4. **Field-modifier extensions — DONE.** Full 128-bit IPv6-address rotation
+   (v6-literal mask) with field+lane salts (four distinct lanes, src≠dst,
+   de-duplicated deterministic streams, ~2³² period); low-32 hex masks stay
+   back-compatible.
+5. **Classifier extensions — DONE.** IPv6 *src* match (all four words now
+   selectable) + masked IPv6 dst/src in forward rules (auto `is_ipv6` guard);
+   `match.ipv6_*_prefix` for `classify: header` (hash, per-card-global mask).
+6. **Further LUT reduction** — now on the critical path for shipping TCP (see 3).
+   Largest blocks: parser ~35K LUT (2 ports), generator ~35K, field classifier
+   ~16K.
 
 Classification is three coexisting paths (precedence map > hash > field): the
 flow-id map (structured test flows), the hash exact table (high-count,
