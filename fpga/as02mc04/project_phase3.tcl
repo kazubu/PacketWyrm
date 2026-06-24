@@ -154,7 +154,7 @@ if {[lsearch $argv "impl"] >= 0} {
     # Timing-closure directives: the encap + BRAM-flow-table data plane is dense
     # (~87% LUT) and the dp_clk floor is placement/congestion-dominated, so use
     # the Explore directives for place / phys_opt / route to chase WNS harder.
-    set_property STEPS.PLACE_DESIGN.ARGS.DIRECTIVE AltSpreadLogic_high [get_runs impl_1]
+    set_property STEPS.PLACE_DESIGN.ARGS.DIRECTIVE Explore [get_runs impl_1]
     set_property STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE Explore [get_runs impl_1]
     set_property STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE Explore [get_runs impl_1]
     set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE Explore [get_runs impl_1]
