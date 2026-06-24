@@ -49,14 +49,30 @@ Merge phase3-tool-migration: standalone HW tools -> field classifier
 Three classification paths coexist (precedence map > hash > field): the flow-id
 map (structured test flows), the hash exact table (high-count payload-agnostic),
 and the field+UDF comparator classifier (punt/forward/few-rule). The generator
-honors `frame_len_min/max/step` (fixed RFC2544 size + IMIX sweep). HW state
-(after the timing-recovery pass): post-route **WNS +0.132 ns, LUT 87.9%**. The
-design is at its area ceiling — adding the IPv6-classifier+modifier work (A+B)
-plus TCP (C) together overflowed routing (~93% LUT), which is why TCP is held
-out (above). The classifier-winner select is O(N²) on purpose (shallow parallel
-one-hot mux); a "leaner" linear/tree rewrite is DEEPER and regresses timing (see
-the `dp-clk-timing-lessons` memory). Cut LUT to lift near-zero paths; pipeline to
-fix one named path.
+honors `frame_len_min/max/step` (fixed RFC2544 size + IMIX sweep).
+
+**HW state (current = the A+B IPv6-classifier+modifier build):** post-route
+**WNS +0.084 ns (all clocks ≥0), LUT 84.0%**, flashed + booting. To fit A+B the
+device needed **two impl changes**: PLACE directive `AltSpreadLogic_high` →
+`Explore` (the former manufactures congestion at ~90%), and **`HDR_BYTES` 160 →
+128** (parser var-offset muxes scale with it; this freed ~9K LUT). The device is
+at its absolute routability/timing ceiling (~88%): the pre-A+B baseline was
++0.132 / 87.9%, and A+B+C together overflowed routing (~93% LUT) — so **TCP (C)
+is held out** until a LUT-reduction pass, and **any further dp_clk feature is now
+gated on LUT, not just timing**. The biggest blocks: parser ~32K (now 128 B),
+generator ~28K, field classifier ~17K. The classifier-winner select is O(N²) on
+purpose (shallow parallel one-hot mux); a "leaner" linear/tree rewrite is DEEPER
+and regresses timing (see the `dp-clk-timing-lessons` memory).
+
+**HDR_BYTES=128 capability boundary:** RX test-header classification spans
+≤128 B — non-encap + single-encap v4/v6 are fine; the deepest v6-in-v6 *encap*
+test header (>128 B) is no longer RX-classified (TX generation is unaffected).
+
+**Known: single/low-flow IPv6 loopback is low-volume on this rig** (the stock
+`phase3-ipv6.yaml` reproduces rx≈2 while IPv4 multiflow runs at 345K frames,
+loss=0). Pre-existing (the generator rate logic is family-agnostic and unchanged;
+IPv6 frames loop clean — loss=0, fcs=0). Worth a separate investigation (DAC /
+MAC-PCS / classification behavior with IPv6); not introduced by A+B.
 
 Standalone HW tools (`sw/tests/`, run via `sudo env PW_BACKEND=vfio
 sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
