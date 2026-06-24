@@ -235,6 +235,37 @@ module pw_flow_gen_multi #(
         rot = (mode == 2'd2) ? rnd[47:0] : seq[47:0];
         return (mode == 2'd0) ? base : ((base & ~mask) | (rot & mask));
     endfunction
+    // Full 128-bit IPv6 address modifier. Each 32-bit lane is rotated
+    // independently with a fixed per-lane salt (random) / offset (increment) so
+    // a full-mask rotation does NOT emit four identical words; field_salt
+    // (distinct for src vs dst) decorrelates the two addresses. Lane 0 ([31:0])
+    // uses salt/offset 0, so a low-32-only mask reproduces the original v6
+    // host-ID rotation exactly (back-compat). These are field+lane-SALTED
+    // deterministic streams (xorshift is linear, so they are de-duplicated, not
+    // statistically independent). The salts are FIXED RTL spec (golden-tested).
+    function automatic logic [127:0] mod128(input logic [1:0] mode, input logic [127:0] base,
+                                            input logic [127:0] mask, input logic [63:0] seq,
+                                            input logic [31:0] field_salt);
+        logic [127:0] r;
+        logic [31:0]  lsalt [4];
+        logic [31:0]  loff  [4];
+        lsalt[0] = 32'h0000_0000; loff[0] = 32'h0000_0000;   // low lane: unchanged
+        lsalt[1] = 32'h9E37_79B1; loff[1] = 32'h1000_0000;
+        lsalt[2] = 32'h85EB_CA77; loff[2] = 32'h2000_0000;
+        lsalt[3] = 32'hC2B2_AE3D; loff[3] = 32'h3000_0000;
+        for (int l = 0; l < 4; l++) begin
+            logic [31:0] rot;
+            rot = (mode == 2'd2) ? scramble(seq[31:0] ^ field_salt ^ lsalt[l])
+                                 : (seq[31:0] + loff[l]);
+            r[l*32 +: 32] = (mode == 2'd0) ? base[l*32 +: 32]
+                          : ((base[l*32 +: 32] & ~mask[l*32 +: 32]) | (rot & mask[l*32 +: 32]));
+        end
+        return r;
+    endfunction
+    // Field salts: src=0 preserves the original v6-low random stream exactly;
+    // dst is distinct so src and dst don't emit identical rotated values.
+    localparam logic [31:0] SALT_SIP = 32'h0000_0000;
+    localparam logic [31:0] SALT_DIP = 32'h5A5A_5A5A;
     // IPv4 header checksum over the (mostly constant) header with the
     // effective src/dst addresses, the DSCP (TOS byte) and the TTL.
     // Constants: ver/ihl=0x45, flags/frag=0x4000, proto=0x11 (UDP); id and
@@ -398,11 +429,14 @@ module pw_flow_gen_multi #(
         // assign to a temp first.)
         vlan16   = mod16(row_l.vlan_mod, {4'b0, row_l.vlan_id}, row_l.vlan_mask, seq_l);
         pc_vlan  = vlan16[11:0];
-        // IPv6 address modifiers apply to the low 32 bits (host/interface-ID
-        // portion); the upper 96 bits are static. Reuses the same modifier
-        // fields as the IPv4 src/dst (a flow is either v4 or v6).
-        pc_v6src = {row_l.ipv6_src[127:32], mod32(row_l.sip_mod, row_l.ipv6_src[31:0], row_l.sip_mask, seq_l)};
-        pc_v6dst = {row_l.ipv6_dst[127:32], mod32(row_l.dip_mod, row_l.ipv6_dst[31:0], row_l.dip_mask, seq_l)};
+        // IPv6 address modifiers: full 128-bit rotation. The mask is
+        // {*_mask_hi[127:32], *_mask[31:0]}; a low-32-only mask reproduces the
+        // original host-ID rotation. The udp6 partial checksum sums the full
+        // modified address, so no extra checksum work is needed here.
+        pc_v6src = mod128(row_l.sip_mod, row_l.ipv6_src,
+                          {row_l.sip_mask_hi, row_l.sip_mask}, seq_l, SALT_SIP);
+        pc_v6dst = mod128(row_l.dip_mod, row_l.ipv6_dst,
+                          {row_l.dip_mask_hi, row_l.dip_mask}, seq_l, SALT_DIP);
         pc_sp    = mod16(row_l.sp_mod,  row_l.udp_sp,   row_l.sp_mask,  seq_l);
         pc_dp    = mod16(row_l.dp_mod,  row_l.udp_dp,   row_l.dp_mask,  seq_l);
         pc_csum  = ip_csum16(16'(20 + 8 + int'(paylen_l)), pc_sip, pc_dip,

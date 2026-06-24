@@ -609,6 +609,46 @@ static void test_ipv6_flow_compiles(void) {
     pw_config_free(cfg);
 }
 
+/* Full 128-bit IPv6 modifier: a v6-literal mask rotates the upper words. The
+ * low 32 bits land in dst_ipv4_mask; the high 96 in dst_ipv6_mask_hi (wire
+ * little-endian, hi[i]=mask[11-i]). mask ffff:ffff:: = bits[127:96] only. */
+static void test_ipv6_modifier_128(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n"
+        "  - id: 0\n"
+        "    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "flows:\n"
+        "  - id: 1\n"
+        "    tx_global_port: 0\n"
+        "    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv6: { src: \"2001:db8::1\", dst: \"2001:db8::2\" }\n"
+        "    udp:  { src_port: 49152, dst_port: 50001 }\n"
+        "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
+        "    modifiers: { dst_ipv6: { mode: random, mask: \"ffff:ffff::\" } }\n";
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    PW_ASSERT_EQ(cfg->flows[0].mod.dst_ipv4.mode, PWFPGA_FIELD_RANDOM);
+    PW_ASSERT_EQ(cfg->flows[0].mod.dst_ipv4.mask, 0u);          /* low 32 untouched */
+    PW_ASSERT_EQ(cfg->flows[0].mod.dst_ipv6_mask[0], 0xff);     /* MSB-first bits[127:120] */
+    PW_ASSERT_EQ(cfg->flows[0].mod.dst_ipv6_mask[3], 0xff);     /* bits[103:96] */
+    PW_ASSERT_EQ(cfg->flows[0].mod.dst_ipv6_mask[4], 0x00);     /* bits[95:88] */
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
+    const struct pwfpga_flow_config *fr = &prog->per_card[0].flow_rows[0];
+    PW_ASSERT_EQ(fr->dst_ipv4_mask, 0u);                        /* low word not masked */
+    /* high 96: only the top word (bits[127:96]) set -> hi[8..11]=0xFF, hi[0..7]=0 */
+    PW_ASSERT_EQ(fr->dst_ipv6_mask_hi[11], 0xff);
+    PW_ASSERT_EQ(fr->dst_ipv6_mask_hi[8],  0xff);
+    PW_ASSERT_EQ(fr->dst_ipv6_mask_hi[7],  0x00);
+    PW_ASSERT_EQ(fr->dst_ipv6_mask_hi[0],  0x00);
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
 static void test_background_and_match_mask(void) {
     const char *yaml =
         "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
@@ -1432,6 +1472,7 @@ int main(void) {
         { "forward_comparator_exhaustion", test_forward_comparator_exhaustion },
         { "header_classify_ipv6_prefix", test_header_classify_ipv6_prefix },
         { "ipv6_flow_compiles", test_ipv6_flow_compiles },
+        { "ipv6_modifier_128", test_ipv6_modifier_128 },
         { "reject_cross_card_forward", test_reject_cross_card_forward },
         { "flow_field_modifiers", test_flow_field_modifiers },
         { "background_and_match_mask", test_background_and_match_mask },

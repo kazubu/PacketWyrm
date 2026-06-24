@@ -330,6 +330,44 @@ static pw_status parse_field_mod(const pw_yaml_node *parent, const char *key,
     return PW_OK;
 }
 
+/* IPv6 address modifier: { mode, mask }. mask is a v6 literal (full 128-bit
+ * rotation) or a <=32-bit hex (low-32-only, back-compatible). Fills fm->mode
+ * and fm->mask (the low 32 bits, for relax/compat) plus mask16 (MSB-first). */
+static pw_status parse_ipv6_field_mod(const pw_yaml_node *parent, const char *key,
+                                      const char *path, struct pw_field_mod *fm,
+                                      uint8_t mask16[16], struct pw_diag *diag) {
+    memset(mask16, 0, 16);
+    const pw_yaml_node *n = pw_yaml_map_get(parent, key);
+    if (!n) return PW_OK;
+    char p[112]; snprintf(p, sizeof(p), "%s.%s", path, key);
+    REQ_MAP(n, p);
+    const char *s; pw_status r;
+    if ((r = get_scalar(n, "mode", p, false, &s, diag)) != PW_OK) return r;
+    if (s) {
+        if      (!strcmp(s, "static"))    fm->mode = 0;
+        else if (!strcmp(s, "increment")) fm->mode = 1;
+        else if (!strcmp(s, "random"))    fm->mode = 2;
+        else { diag_set(diag, PW_E_PARSE, p, "mode must be static|increment|random"); return PW_E_PARSE; }
+    }
+    if ((r = get_scalar(n, "mask", p, false, &s, diag)) != PW_OK) return r;
+    if (s) {
+        if (strchr(s, ':')) {
+            if (!pw_parse_ipv6(s, mask16)) {
+                diag_set(diag, PW_E_PARSE, p, "ipv6 modifier mask must be an IPv6 mask literal"); return PW_E_PARSE;
+            }
+        } else {
+            uint64_t v;
+            if (!pw_parse_u64(s, &v) || v > 0xFFFFFFFFull) {
+                diag_set(diag, PW_E_PARSE, p, "ipv6 hex mask must be <=32 bits; use a v6-literal mask for the full address"); return PW_E_PARSE;
+            }
+            mask16[12]=(v>>24)&0xFF; mask16[13]=(v>>16)&0xFF; mask16[14]=(v>>8)&0xFF; mask16[15]=v&0xFF;
+        }
+    }
+    fm->mask = ((uint64_t)mask16[12]<<24) | ((uint64_t)mask16[13]<<16) |
+               ((uint64_t)mask16[14]<<8)  | mask16[15];
+    return PW_OK;
+}
+
 /* Parse an ipv4-or-ipv6 endpoint block (src/dst + ttl-or-hop_limit + dscp)
  * found under `parent` (exactly one of ipv4 / ipv6). Used for the inner flow
  * address and the outer (encap) address. */
@@ -582,10 +620,15 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
         /* Address modifiers use the flow's active family key (src_ipv4/dst_ipv4
          * for v4, src_ipv6/dst_ipv6 for v6); both populate the same wire slot,
          * which the generator applies to the active address (v6 = low 32 bits). */
-        const char *src_key = f->ipv6.present ? "src_ipv6" : "src_ipv4";
-        const char *dst_key = f->ipv6.present ? "dst_ipv6" : "dst_ipv4";
-        if ((r = parse_field_mod(mods, src_key, xp, &f->mod.src_ipv4, diag)) != PW_OK) return r;
-        if ((r = parse_field_mod(mods, dst_key, xp, &f->mod.dst_ipv4, diag)) != PW_OK) return r;
+        if (f->ipv6.present) {
+            /* v6: full 128-bit mask (v6-literal) or low-32 hex; mode shared with
+             * the src_ipv4/dst_ipv4 slot, full mask in src/dst_ipv6_mask. */
+            if ((r = parse_ipv6_field_mod(mods, "src_ipv6", xp, &f->mod.src_ipv4, f->mod.src_ipv6_mask, diag)) != PW_OK) return r;
+            if ((r = parse_ipv6_field_mod(mods, "dst_ipv6", xp, &f->mod.dst_ipv4, f->mod.dst_ipv6_mask, diag)) != PW_OK) return r;
+        } else {
+            if ((r = parse_field_mod(mods, "src_ipv4", xp, &f->mod.src_ipv4, diag)) != PW_OK) return r;
+            if ((r = parse_field_mod(mods, "dst_ipv4", xp, &f->mod.dst_ipv4, diag)) != PW_OK) return r;
+        }
         if ((r = parse_field_mod(mods, "udp_src",  xp, &f->mod.udp_src,  diag)) != PW_OK) return r;
         if ((r = parse_field_mod(mods, "udp_dst",  xp, &f->mod.udp_dst,  diag)) != PW_OK) return r;
         if ((r = parse_field_mod(mods, "src_mac",  xp, &f->mod.src_mac,  diag)) != PW_OK) return r;

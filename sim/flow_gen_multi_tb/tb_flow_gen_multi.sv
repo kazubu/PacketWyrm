@@ -231,8 +231,12 @@ module tb_flow_gen_multi;
         f_rows[2].is_v6=1'b1;
         f_rows[2].ipv6_src=128'h2001_0db8_0000_0000_0000_0000_0000_0001;
         f_rows[2].ipv6_dst=128'h2001_0db8_0000_0000_0000_0000_0000_0002;
-        // IPv6 dst-address modifier: rotate the low 8 bits (host portion).
-        f_rows[2].dip_mod=2'd1; f_rows[2].dip_mask=32'h000000FF;
+        // IPv6 dst-address modifier: FULL 128-bit rotation (increment). The low
+        // 32 bits = dip_mask; the high 96 = dip_mask_hi. Per-lane offsets make
+        // the four 32-bit words distinct (lane l adds l<<28), so the four
+        // lane-MSB bytes differ -- exercises mod128 + the lane salts.
+        f_rows[2].dip_mod=2'd1; f_rows[2].dip_mask=32'hFFFFFFFF;
+        f_rows[2].dip_mask_hi={96{1'b1}};
         // DSCP 46 (EF) -> IPv6 traffic class 0xB8 (byte0 0x6B, byte1 0x80).
         f_rows[2].dscp=8'd46;
         // slot 3: variable frame length sweep (flow_id 7) -- 128 -> 256 by 64,
@@ -268,8 +272,13 @@ module tb_flow_gen_multi;
         // IPv4/IPv6 parity: IPv6 traffic class + hop limit + address modifier.
         chk("IPv6 traffic class = DSCP<<2", cap6[14] == 8'h6B && cap6[15] == 8'h80);
         chk("IPv6 hop limit emitted (64)", cap6[21] == 8'd64);
-        chk("IPv6 dst-addr modifier rotates", v6_dlo_distinct >= 4);
-        chk("IPv6 dst-addr modifier keeps high bits", v6_dhi_const);
+        chk("IPv6 dst-addr modifier rotates (low lane)", v6_dlo_distinct >= 4);
+        // Full 128-bit rotation: the four 32-bit lanes are distinct (lane l adds
+        // l<<28, so the lane-MSB bytes are 0x00/0x10/0x20/0x30 for small seq).
+        // Proves mod128 rotates all four words, not just the low one.
+        chk("IPv6 128-bit modifier: 4 lanes distinct",
+            (cap6[50] != cap6[46]) && (cap6[46] != cap6[42]) && (cap6[42] != cap6[38])
+            && (cap6[50] != cap6[42]) && (cap6[50] != cap6[38]) && (cap6[46] != cap6[38]));
         // MAC modifier (slot 0 src MAC low byte) + VLAN modifier (slot 1 VID).
         chk("src-MAC modifier rotates low byte", smac_lo_distinct >= 4);
         chk("src-MAC modifier keeps high bytes", smac_hi_const);

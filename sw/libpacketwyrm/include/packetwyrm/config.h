@@ -139,13 +139,20 @@ struct pw_field_mod {
 };
 
 struct pw_flow_modifiers {
-    struct pw_field_mod src_ipv4;   /* or src_ipv6 (low 32 bits) */
-    struct pw_field_mod dst_ipv4;   /* or dst_ipv6 (low 32 bits) */
+    struct pw_field_mod src_ipv4;   /* v4: mask; v6: low 32 bits (mode shared) */
+    struct pw_field_mod dst_ipv4;   /* v4: mask; v6: low 32 bits (mode shared) */
     struct pw_field_mod udp_src;
     struct pw_field_mod udp_dst;
     struct pw_field_mod src_mac;    /* 48-bit mask */
     struct pw_field_mod dst_mac;    /* 48-bit mask */
     struct pw_field_mod vlan;       /* low 12 bits */
+    /* Full 128-bit IPv6 address mask (MSB-first, [0]=bits[127:120]). For v6
+     * flows this is the source of truth for the src/dst-ipv6 modifier; the mode
+     * lives in src_ipv4/dst_ipv4. A bare <=32-bit hex `mask:` fills only the low
+     * 4 bytes (back-compatible low-32 rotation); a v6-literal mask fills all 16.
+     * Unused for v4 flows. */
+    uint8_t src_ipv6_mask[16];
+    uint8_t dst_ipv6_mask[16];
 };
 
 struct pw_flow {

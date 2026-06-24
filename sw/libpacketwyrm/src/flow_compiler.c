@@ -181,6 +181,21 @@ static void pw_fc_relax_mask(uint32_t mask[11], const struct pw_flow *f) {
     if (f->match_ipv4_dst_mask != 0xFFFFFFFFu)       mask[0] &=  f->match_ipv4_dst_mask;
     /* l3_src (w4) */
     if (f->mod.src_ipv4.mode != PWFPGA_FIELD_STATIC) mask[4] &= ~(uint32_t)f->mod.src_ipv4.mask;
+    /* IPv6 full-128 modifier high words: dst w1..3 / src w5..7 also rotate (w0/w4
+     * cleared above via the low mask). Hash word w -> MSB-first mask bytes
+     * [(3-w)*4 .. +3]. */
+    if (f->ipv6.present) {
+        if (f->mod.dst_ipv4.mode != PWFPGA_FIELD_STATIC)
+            for (int w = 1; w < 4; w++) {
+                const uint8_t *b = &f->mod.dst_ipv6_mask[(3 - w) * 4];
+                mask[w] &= ~(((uint32_t)b[0]<<24)|((uint32_t)b[1]<<16)|((uint32_t)b[2]<<8)|b[3]);
+            }
+        if (f->mod.src_ipv4.mode != PWFPGA_FIELD_STATIC)
+            for (int w = 1; w < 4; w++) {
+                const uint8_t *b = &f->mod.src_ipv6_mask[(3 - w) * 4];
+                mask[4 + w] &= ~(((uint32_t)b[0]<<24)|((uint32_t)b[1]<<16)|((uint32_t)b[2]<<8)|b[3]);
+            }
+    }
     /* IPv6 match narrowing: dst -> w0..3, src -> w4..7 (hash word layout:
      * w[0]=addr low 32 = bytes[12:15], w[3]=high = bytes[0:3]). */
     if (f->match_ipv6_dst_set) {
@@ -278,6 +293,16 @@ static pw_status compile_one_flow(struct pw_program *out,
     /* Per-field modifiers (DUT-facing flow diversification). */
     tx_row.src_ipv4_mod  = f->mod.src_ipv4.mode; tx_row.src_ipv4_mask = (uint32_t)f->mod.src_ipv4.mask;
     tx_row.dst_ipv4_mod  = f->mod.dst_ipv4.mode; tx_row.dst_ipv4_mask = (uint32_t)f->mod.dst_ipv4.mask;
+    /* IPv6 full-128 mask: low 32 bits are in src/dst_ipv4_mask (above); the high
+     * 96 bits go to *_ipv6_mask_hi. config mask is MSB-first (mask[0]=[127:120]);
+     * the wire hi array is little-endian by byte (index 0 = address [39:32]), so
+     * hi[i] = mask[11-i]. Zero for v4 flows. */
+    if (f->ipv6.present) {
+        for (int i = 0; i < 12; i++) {
+            tx_row.src_ipv6_mask_hi[i] = f->mod.src_ipv6_mask[11 - i];
+            tx_row.dst_ipv6_mask_hi[i] = f->mod.dst_ipv6_mask[11 - i];
+        }
+    }
     tx_row.udp_src_mod   = f->mod.udp_src.mode;  tx_row.udp_src_mask  = (uint16_t)f->mod.udp_src.mask;
     tx_row.udp_dst_mod   = f->mod.udp_dst.mode;  tx_row.udp_dst_mask  = (uint16_t)f->mod.udp_dst.mask;
     /* MAC masks are 6 bytes, MSB-first (byte 0 = address bits 47..40). */

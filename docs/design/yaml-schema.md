@@ -203,9 +203,13 @@ flows:
     modifiers:                       # optional: per-field "field modifiers"
       dst_ipv4: { mode: increment, mask: 0x000003ff }  # rotate low 10 bits -> 1024 flows
       src_ipv4: { mode: random,    mask: 0x0000ffff }
-      # For an ipv6 flow, use src_ipv6 / dst_ipv6 instead (same syntax); the
-      # mask rotates the low 32 bits of the address (host / interface-ID).
-      #   dst_ipv6: { mode: increment, mask: 0x000000ff }
+      # For an ipv6 flow, use src_ipv6 / dst_ipv6. A <=32-bit hex `mask` rotates
+      # the low 32 bits (host/interface-ID, back-compatible); an IPv6-literal
+      # mask rotates the FULL 128-bit address. Each 32-bit lane is rotated with a
+      # fixed per-lane salt (random) / offset (increment) so a full-mask rotation
+      # does not emit four identical words.
+      #   dst_ipv6: { mode: increment, mask: 0x000000ff }       # low 32 bits
+      #   src_ipv6: { mode: random,    mask: "ffff:ffff:ffff:ffff::" }  # high 64
       udp_src:  { mode: increment, mask: 0xffff }
       udp_dst:  { mode: static }     # (default; same as omitting)
       src_mac:  { mode: increment, mask: 0x0000000000ff }  # 48-bit mask
@@ -231,12 +235,13 @@ there is no extra per-slot state. Notes:
 - Per-*apparent*-flow individual RX stats are limited to the HW slot
   count (`NUM_FLOWS`); aggregate loss/latency across the diversified
   traffic is unaffected.
-- Covers `src_ipv4` / `dst_ipv4` (or `src_ipv6` / `dst_ipv6`, low 32 bits) /
-  `udp_src` / `udp_dst` / `src_mac` / `dst_mac` (48-bit mask) / `vlan` (low 12
-  bits). MAC / VLAN modifiers only rewrite the Ethernet header (not in any
-  checksum). All rotate off the same sequence (correlated, not a full
-  cross-product). Full 128-bit IPv6-address rotation is a mechanical
-  extension of the same scheme.
+- Covers `src_ipv4` / `dst_ipv4` (or `src_ipv6` / `dst_ipv6`, low-32 or full
+  128-bit) / `udp_src` / `udp_dst` / `src_mac` / `dst_mac` (48-bit mask) /
+  `vlan` (low 12 bits). MAC / VLAN modifiers only rewrite the Ethernet header
+  (not in any checksum). The IPv6 address lanes are field+lane-salted so a
+  full-128 rotation gives four distinct words and src ≠ dst; the streams are
+  deterministic (xorshift-based), de-duplicated rather than statistically
+  independent, with an effective ~2³² period.
 
 `encap` wraps the flow's inner IP/UDP/test frame in an outer L3 + tunnel
 header so PacketWyrm can exercise a DUT's tunnel decap/encap path:
@@ -277,7 +282,8 @@ Constraints:
   both emit DSCP/traffic-class, TTL/hop-limit, and address field modifiers
   (IPv4 emits a correct header checksum; IPv6 a correct non-zero UDP
   checksum). Address modifiers use the family key (`src_ipv4`/`dst_ipv4` or
-  `src_ipv6`/`dst_ipv6`); for IPv6 they rotate the low 32 bits.
+  `src_ipv6`/`dst_ipv6`); for IPv6 a hex mask rotates the low 32 bits and an
+  IPv6-literal mask rotates the full 128-bit address.
 - Exactly one of `traffic.rate_bps` / `traffic.rate_pps`.
 - Exactly one of `traffic.frame_len` and the
   `frame_len_min/max/step` triple.
