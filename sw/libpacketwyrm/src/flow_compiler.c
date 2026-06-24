@@ -69,6 +69,29 @@ static pw_status append_fc_cmp(struct pw_card_program *cp, uint8_t src,
     return PW_OK;
 }
 
+/* Emit up to 4 field comparators for a 128-bit IPv6 address match (addr[0]=MSB,
+ * bitwise mask, 1 = must match). sel[w] is the comparator source selector for
+ * address word w (w=0 -> bytes [0:3] = [127:96], w=3 -> bytes [12:15] = [31:0]).
+ * A word whose 32-bit mask is zero emits NO comparator (wildcard) -> a /64
+ * prefix costs 2 comparators, not 4. The shared 12-comparator pool + dedup +
+ * PW_E_NO_RESOURCES are handled by append_fc_cmp. */
+static pw_status append_ipv6_cmps(struct pw_card_program *cp, const uint8_t addr[16],
+                                  const uint8_t mask[16], const uint8_t sel[4],
+                                  uint16_t *care) {
+    for (int w = 0; w < 4; w++) {
+        const uint8_t *mb = &mask[w * 4], *ab = &addr[w * 4];
+        uint32_t m = ((uint32_t)mb[0] << 24) | ((uint32_t)mb[1] << 16) |
+                     ((uint32_t)mb[2] << 8) | mb[3];
+        if (m == 0) continue;
+        uint32_t v = ((uint32_t)ab[0] << 24) | ((uint32_t)ab[1] << 16) |
+                     ((uint32_t)ab[2] << 8) | ab[3];
+        size_t bit; pw_status er = append_fc_cmp(cp, sel[w], m, v, &bit);
+        if (er != PW_OK) return er;
+        *care |= (uint16_t)(1u << bit);
+    }
+    return PW_OK;
+}
+
 /* Append a UDF comparator (deduped). Returns the comparator-bit index
  * (= PWFPGA_NUM_CMP + udf index) in *bit_out. */
 static pw_status append_fc_udf(struct pw_card_program *cp, uint16_t offset,
@@ -158,6 +181,20 @@ static void pw_fc_relax_mask(uint32_t mask[11], const struct pw_flow *f) {
     if (f->match_ipv4_dst_mask != 0xFFFFFFFFu)       mask[0] &=  f->match_ipv4_dst_mask;
     /* l3_src (w4) */
     if (f->mod.src_ipv4.mode != PWFPGA_FIELD_STATIC) mask[4] &= ~(uint32_t)f->mod.src_ipv4.mask;
+    /* IPv6 match narrowing: dst -> w0..3, src -> w4..7 (hash word layout:
+     * w[0]=addr low 32 = bytes[12:15], w[3]=high = bytes[0:3]). */
+    if (f->match_ipv6_dst_set) {
+        for (int i = 0; i < 4; i++) {
+            const uint8_t *b = &f->match_ipv6_dst_mask[(3 - i) * 4];
+            mask[i] &= ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) | ((uint32_t)b[2] << 8) | b[3];
+        }
+    }
+    if (f->match_ipv6_src_set) {
+        for (int i = 0; i < 4; i++) {
+            const uint8_t *b = &f->match_ipv6_src_mask[(3 - i) * 4];
+            mask[4 + i] &= ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) | ((uint32_t)b[2] << 8) | b[3];
+        }
+    }
     /* l4_dst (w8 low 16) / l4_src (w8 high 16) */
     if (f->mod.udp_dst.mode != PWFPGA_FIELD_STATIC)  mask[8] &= ~((uint32_t)f->mod.udp_dst.mask & 0xFFFFu);
     if (f->match_udp_dst_mask != 0xFFFFu)            mask[8] &= (0xFFFF0000u | f->match_udp_dst_mask);
@@ -478,6 +515,20 @@ static pw_status compile_forward_rules(struct pw_program *out, const struct pw_c
             er = append_fc_cmp(cp, PWFPGA_FC_SRC_L4_DST, 0xFFFFu, fr->udp_dst, &bit);
             if (er != PW_OK) return er;
             care |= (uint16_t)(1u << bit);
+        }
+        if (fr->ipv6_dst_set) {
+            static const uint8_t dsel[4] = {
+                PWFPGA_FC_SRC_IPV6_DST_3, PWFPGA_FC_SRC_IPV6_DST_2,
+                PWFPGA_FC_SRC_IPV6_DST_1, PWFPGA_FC_SRC_IPV6_DST_0 };
+            er = append_ipv6_cmps(cp, fr->ipv6_dst, fr->ipv6_dst_mask, dsel, &care);
+            if (er != PW_OK) return er;
+        }
+        if (fr->ipv6_src_set) {
+            static const uint8_t ssel[4] = {
+                PWFPGA_FC_SRC_IPV6_SRC_3, PWFPGA_FC_SRC_IPV6_SRC_2,
+                PWFPGA_FC_SRC_IPV6_SRC_1, PWFPGA_FC_SRC_IPV6_SRC_0 };
+            er = append_ipv6_cmps(cp, fr->ipv6_src, fr->ipv6_src_mask, ssel, &care);
+            if (er != PW_OK) return er;
         }
 
         struct pw_fc_rule rule = { .care = care, .action = PWFPGA_ACT_FORWARD_PORT,

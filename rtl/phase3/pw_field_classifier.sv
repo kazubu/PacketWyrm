@@ -105,8 +105,10 @@ module pw_field_classifier #(
             5'd11: src_lane = k.test_flow_id;
             5'd12: src_lane = flags_lane(k);
             5'd13: src_lane = {28'b0, k.ingress_port};
-            5'd14: src_lane = k.ipv6_src[31:0];
-            5'd15: src_lane = k.ipv6_src[127:96];
+            5'd14: src_lane = k.ipv6_src[31:0];     // SRC_0 (host word)
+            5'd15: src_lane = k.ipv6_src[127:96];   // SRC_3 (prefix word)
+            5'd16: src_lane = k.ipv6_src[63:32];    // SRC_1
+            5'd17: src_lane = k.ipv6_src[95:64];    // SRC_2 -> all 4 src words now selectable
             default: src_lane = 32'b0;
         endcase
     endfunction

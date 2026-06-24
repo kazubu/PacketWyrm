@@ -280,6 +280,32 @@ static pw_status parse_logical_if(const pw_yaml_node *m, struct pw_logical_if *l
     return PW_OK;
 }
 
+/* IPv6 prefix length (0..128) -> 16-byte big-endian bitwise mask. */
+static void pw_v6_prefix_mask(unsigned prefix, uint8_t mask[16]) {
+    for (int i = 0; i < 16; i++) {
+        unsigned lo = (unsigned)i * 8, hi = lo + 8;
+        unsigned bits = (prefix >= hi) ? 8u : (prefix > lo ? prefix - lo : 0u);
+        mask[i] = bits ? (uint8_t)(0xFFu << (8 - bits)) : 0u;
+    }
+}
+/* Parse "addr" or "addr/prefix" -> addr[16] + mask[16] (default /128). */
+static bool pw_parse_ipv6_cidr(const char *s, uint8_t addr[16], uint8_t mask[16]) {
+    const char *slash = strchr(s, '/');
+    unsigned prefix = 128;
+    char buf[64];
+    if (slash) {
+        size_t n = (size_t)(slash - s);
+        if (n == 0 || n >= sizeof buf) return false;
+        memcpy(buf, s, n); buf[n] = '\0';
+        char *end; unsigned long p = strtoul(slash + 1, &end, 10);
+        if (*end != '\0' || p > 128) return false;
+        prefix = (unsigned)p; s = buf;
+    }
+    if (!pw_parse_ipv6(s, addr)) return false;
+    pw_v6_prefix_mask(prefix, mask);
+    return true;
+}
+
 /* Parse one optional field-modifier submap: { mode: static|increment|random,
  * mask: <u32> }. Absent key leaves the modifier at its zeroed default. */
 static pw_status parse_field_mod(const pw_yaml_node *parent, const char *key,
@@ -589,6 +615,24 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
         if (s && !pw_parse_u32(s, &f->match_ipv4_dst_mask)) {
             diag_set(diag, PW_E_PARSE, mp, "ipv4_dst mask must be 32-bit"); return PW_E_PARSE;
         }
+        /* IPv6 match prefix (classify:header / hash). Value comes from the
+         * flow's own ipv6.dst/src; this narrows the matched prefix. */
+        unsigned long pfx;
+        char *end;
+        if ((r = get_scalar(mm, "ipv6_dst_prefix", mp, false, &s, diag)) != PW_OK) return r;
+        if (s) {
+            if (!f->ipv6.present) { diag_set(diag, PW_E_INVAL, mp, "ipv6_dst_prefix requires an ipv6 flow"); return PW_E_INVAL; }
+            pfx = strtoul(s, &end, 10);
+            if (*end != '\0' || pfx > 128) { diag_set(diag, PW_E_PARSE, mp, "ipv6_dst_prefix must be 0..128"); return PW_E_PARSE; }
+            pw_v6_prefix_mask((unsigned)pfx, f->match_ipv6_dst_mask); f->match_ipv6_dst_set = true;
+        }
+        if ((r = get_scalar(mm, "ipv6_src_prefix", mp, false, &s, diag)) != PW_OK) return r;
+        if (s) {
+            if (!f->ipv6.present) { diag_set(diag, PW_E_INVAL, mp, "ipv6_src_prefix requires an ipv6 flow"); return PW_E_INVAL; }
+            pfx = strtoul(s, &end, 10);
+            if (*end != '\0' || pfx > 128) { diag_set(diag, PW_E_PARSE, mp, "ipv6_src_prefix must be 0..128"); return PW_E_PARSE; }
+            pw_v6_prefix_mask((unsigned)pfx, f->match_ipv6_src_mask); f->match_ipv6_src_set = true;
+        }
     }
 
     /* RX classification mode: "map" (default, test flow-id map) or "header"
@@ -652,6 +696,22 @@ static pw_status parse_forward(const pw_yaml_node *m, struct pw_forward_rule *fr
             diag_set(diag, PW_E_OUT_OF_RANGE, path, "vlan must be 0..4094"); return PW_E_OUT_OF_RANGE;
         }
         fr->vlan = u16;
+    }
+    /* IPv6 address match (field classifier): addr or addr/prefix (default /128).
+     * Each non-zero 32-bit word costs a field comparator (shared 12-pool). */
+    if ((r = get_scalar(m, "ipv6_dst", path, false, &s, diag)) != PW_OK) return r;
+    if (s) {
+        if (!pw_parse_ipv6_cidr(s, fr->ipv6_dst, fr->ipv6_dst_mask)) {
+            diag_set(diag, PW_E_PARSE, path, "ipv6_dst must be an IPv6 address or addr/prefix"); return PW_E_PARSE;
+        }
+        fr->ipv6_dst_set = true;
+    }
+    if ((r = get_scalar(m, "ipv6_src", path, false, &s, diag)) != PW_OK) return r;
+    if (s) {
+        if (!pw_parse_ipv6_cidr(s, fr->ipv6_src, fr->ipv6_src_mask)) {
+            diag_set(diag, PW_E_PARSE, path, "ipv6_src must be an IPv6 address or addr/prefix"); return PW_E_PARSE;
+        }
+        fr->ipv6_src_set = true;
     }
     return PW_OK;
 }

@@ -416,6 +416,108 @@ static void test_forward_rule_compiles(void) {
     pw_config_free(cfg);
 }
 
+/* Forward rule matching IPv6 dst (/128 -> 4 comparators) + src (/32 -> 1). */
+static void test_forward_ipv6_match_compiles(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n"
+        "  - id: 0\n"
+        "    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "forwards:\n"
+        "  - ingress_port: 0\n"
+        "    egress_port: 1\n"
+        "    ipv6_dst: \"2001:db8::1\"\n"
+        "    ipv6_src: \"2001:db8::/32\"\n";
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    PW_ASSERT(cfg->forwards[0].ipv6_dst_set);
+    PW_ASSERT(cfg->forwards[0].ipv6_src_set);
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
+    const struct pw_card_program *cp = &prog->per_card[0];
+    /* dst /128: all four words. value of the [127:96] word = 0x20010db8. */
+    int n_dst = 0, n_src = 0; bool dst3 = false, dst0 = false, src3 = false;
+    for (size_t i = 0; i < cp->n_fc_cmps; i++) {
+        const struct pw_fc_cmp *c = &cp->fc_cmps[i];
+        if (c->src == PWFPGA_FC_SRC_IPV6_DST_3) { n_dst++; dst3 = (c->value == 0x20010db8u && c->mask == 0xFFFFFFFFu); }
+        if (c->src == PWFPGA_FC_SRC_IPV6_DST_2 || c->src == PWFPGA_FC_SRC_IPV6_DST_1) n_dst++;
+        if (c->src == PWFPGA_FC_SRC_IPV6_DST_0) { n_dst++; dst0 = (c->value == 0x00000001u); }
+        if (c->src == PWFPGA_FC_SRC_IPV6_SRC_3) { n_src++; src3 = (c->value == 0x20010db8u); }
+        if (c->src == PWFPGA_FC_SRC_IPV6_SRC_2 || c->src == PWFPGA_FC_SRC_IPV6_SRC_1
+            || c->src == PWFPGA_FC_SRC_IPV6_SRC_0) n_src++;
+    }
+    PW_ASSERT_EQ(n_dst, 4);    /* /128 -> all four dst words */
+    PW_ASSERT_EQ(n_src, 1);    /* /32  -> only the top src word */
+    PW_ASSERT(dst3); PW_ASSERT(dst0); PW_ASSERT(src3);
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
+/* A forward rule needing >12 field comparators must fail PW_E_NO_RESOURCES,
+ * not silently drop conditions. ingress(1)+eth(1)+proto(1)+udp(1)+vlan(1) +
+ * v6 dst /128 (4) + v6 src /128 (4) = 13 > NCMP(12). */
+static void test_forward_comparator_exhaustion(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n"
+        "  - id: 0\n"
+        "    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "forwards:\n"
+        "  - ingress_port: 0\n"
+        "    egress_port: 1\n"
+        "    ethertype: 0x86dd\n"
+        "    ip_proto: 17\n"
+        "    udp_dst: 5000\n"
+        "    vlan: 100\n"
+        "    ipv6_dst: \"2001:db8::1\"\n"
+        "    ipv6_src: \"2001:db8::2\"\n";
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_E_NO_RESOURCES);
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
+/* classify:header IPv6 flow with a /64 dst match -> hash key mask narrows the
+ * low 64 bits of the dst (words w0,w1 cleared; w2,w3 kept). */
+static void test_header_classify_ipv6_prefix(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n"
+        "  - id: 0\n"
+        "    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "flows:\n"
+        "  - id: 1\n"
+        "    tx_global_port: 0\n"
+        "    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv6: { src: \"2001:db8::1\", dst: \"2001:db8:dead:beef::2\" }\n"
+        "    udp:  { src_port: 49152, dst_port: 50001 }\n"
+        "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
+        "    classify: header\n"
+        "    match: { ipv6_dst_prefix: 64 }\n";
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    PW_ASSERT(cfg->flows[0].match_ipv6_dst_set);
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
+    const struct pw_card_program *cp = &prog->per_card[0];
+    PW_ASSERT_EQ(cp->n_hash_entries, 1);
+    PW_ASSERT_EQ(cp->hash_mask[0], 0u);            /* dst [31:0]  masked out */
+    PW_ASSERT_EQ(cp->hash_mask[1], 0u);            /* dst [63:32] masked out */
+    PW_ASSERT_EQ(cp->hash_mask[2], 0xFFFFFFFFu);   /* dst [95:64] kept */
+    PW_ASSERT_EQ(cp->hash_mask[3], 0xFFFFFFFFu);   /* dst [127:96] kept */
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
 static void test_flow_field_modifiers(void) {
     const char *yaml =
         "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
@@ -1326,6 +1428,9 @@ int main(void) {
         { "resolve_port_multi_card", test_resolve_port_multi_card },
         { "cross_card_flow_compiles", test_cross_card_flow_compiles },
         { "forward_rule_compiles", test_forward_rule_compiles },
+        { "forward_ipv6_match_compiles", test_forward_ipv6_match_compiles },
+        { "forward_comparator_exhaustion", test_forward_comparator_exhaustion },
+        { "header_classify_ipv6_prefix", test_header_classify_ipv6_prefix },
         { "ipv6_flow_compiles", test_ipv6_flow_compiles },
         { "reject_cross_card_forward", test_reject_cross_card_forward },
         { "flow_field_modifiers", test_flow_field_modifiers },

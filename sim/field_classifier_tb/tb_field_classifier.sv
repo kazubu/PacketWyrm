@@ -116,6 +116,32 @@ module tb_field_classifier;
         chk("udf hit", result.hit, 1);
         chk("udf lfid", result.local_flow_id, 7);
 
+        // --- IPv6 SRC full match (exercises the new src lanes sel 16/17) ---
+        // ipv6_src = 2001:db8::1 -> [127:96]=20010db8 [95:64]=0 [63:32]=0 [31:0]=1
+        prog_cmp(3, 15, 32'hFFFF_FFFF, 32'h2001_0DB8);   // src[127:96] (SRC_3)
+        prog_cmp(4, 17, 32'hFFFF_FFFF, 32'h0000_0000);   // src[95:64]  (SRC_2, new)
+        prog_cmp(5, 16, 32'hFFFF_FFFF, 32'h0000_0000);   // src[63:32]  (SRC_1, new)
+        prog_cmp(6, 14, 32'hFFFF_FFFF, 32'h0000_0001);   // src[31:0]   (SRC_0)
+        prog_rule(3, 14'h0078, 1, 9, 0, 15);             // care bits 3,4,5,6
+        key='0; window='0; base=0; key.is_ipv6 = 1;      // clear leftover UDF state
+        key.ipv6_src = 128'h2001_0db8_0000_0000_0000_0000_0000_0001;
+        pulse();
+        chk("v6 src full: hit", result.hit, 1);
+        chk("v6 src full: lfid", result.local_flow_id, 9);
+        // flip the SRC_1 ([63:32]) word -> proves the new lane is wired
+        key.ipv6_src = 128'h2001_0db8_0000_0000_dead_beef_0000_0001;
+        pulse();
+        chk("v6 src mid-word (sel16) mismatch: no hit", result.hit, 0);
+
+        // --- IPv6 DST /32 prefix: only the top dst word is compared ---
+        prog_cmp(7, 4, 32'hFFFF_FFFF, 32'h2001_0DB8);    // dst[127:96]
+        prog_rule(4, 14'h0080, 1, 11, 0, 25);            // care bit 7
+        key='0; window='0; base=0; key.is_ipv6 = 1;
+        key.ipv6_dst = 128'h2001_0db8_dead_beef_0000_0000_0000_0099;
+        pulse();
+        chk("v6 dst /32 prefix: hit", result.hit, 1);
+        chk("v6 dst /32 prefix: lfid", result.local_flow_id, 11);
+
         if (errors == 0) $display("ALL FIELD_CLASSIFIER SCENARIOS PASS");
         else begin $display("FAILED with %0d errors", errors); $fatal; end
         $finish;

@@ -186,6 +186,13 @@ flows:
     match:                           # optional: narrow the RX match for masked
       udp_dst: 0xff00                # field-comparator matching. bitwise mask
       ipv4_dst: 0xffffff00           # (1 = bit must match); default full match.
+      ipv6_dst_prefix: 64            # classify:header (hash) only: narrow the
+      ipv6_src_prefix: 0             # matched IPv6 dst/src to this prefix length
+                                     # (0..128). Value is the flow's own ipv6
+                                     # addr; the hash key mask is per-card GLOBAL
+                                     # so distinct per-flow prefixes merge into
+                                     # one mask -- use a `forwards` rule (field
+                                     # classifier) for a private per-flow prefix.
                                      # (classify: header uses an exact tuple, so
                                      # the masks are advisory there.) Also lets a
                                      # modifier rotate the unmatched bits.
@@ -295,12 +302,19 @@ forwards:
     ip_proto: 17            # optional match (IPv4 proto / IPv6 next-hdr)
     udp_dst: 5000           # optional match
     vlan: 100               # optional match (0..4094)
+    ipv6_dst: "2001:db8::/64"   # optional IPv6 dst match (addr or addr/prefix)
+    ipv6_src: "2001:db8:a::1"   # optional IPv6 src match (default /128)
 ```
 
 - `ingress_port` and `egress_port` must resolve to ports, and must be
   on the **same card** (the classifier is per-card; `egress_local_port`
   is a local port id).
 - Hex (`0x0800`) and decimal are both accepted for match values.
+- `ipv6_dst` / `ipv6_src` accept an IPv6 address or `addr/prefix` (default
+  `/128`). Each non-zero 32-bit word of the resulting mask costs one of the
+  **12 field comparators per card** (shared across all forward/punt rules; a
+  `/64` prefix costs 2, a full `/128` costs 4). The compiler dedups identical
+  comparators and rejects an over-subscribed config with `PW_E_NO_RESOURCES`.
 - FORWARD rules are independent of `flows` / `logical_interfaces`; a
   config may have only `forwards` (a pure relay/DUT-in-path setup).
 

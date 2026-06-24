@@ -119,6 +119,8 @@ enum pwfpga_fc_src {
     PWFPGA_FC_SRC_INGRESS    = 13,  /* ingress_port (low 4b)                  */
     PWFPGA_FC_SRC_IPV6_SRC_0 = 14,  /* ipv6_src[31:0]                         */
     PWFPGA_FC_SRC_IPV6_SRC_3 = 15,  /* ipv6_src[127:96]                       */
+    PWFPGA_FC_SRC_IPV6_SRC_1 = 16,  /* ipv6_src[63:32]                        */
+    PWFPGA_FC_SRC_IPV6_SRC_2 = 17,  /* ipv6_src[95:64] -> all 4 src words     */
 };
 /* Bit positions in the FLAGS source lane. */
 enum {
