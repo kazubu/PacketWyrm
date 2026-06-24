@@ -186,6 +186,13 @@ flows:
     match:                           # optional: narrow the RX match for masked
       udp_dst: 0xff00                # field-comparator matching. bitwise mask
       ipv4_dst: 0xffffff00           # (1 = bit must match); default full match.
+      ipv6_dst_prefix: 64            # classify:header (hash) only: narrow the
+      ipv6_src_prefix: 0             # matched IPv6 dst/src to this prefix length
+                                     # (0..128). Value is the flow's own ipv6
+                                     # addr; the hash key mask is per-card GLOBAL
+                                     # so distinct per-flow prefixes merge into
+                                     # one mask -- use a `forwards` rule (field
+                                     # classifier) for a private per-flow prefix.
                                      # (classify: header uses an exact tuple, so
                                      # the masks are advisory there.) Also lets a
                                      # modifier rotate the unmatched bits.
@@ -196,9 +203,13 @@ flows:
     modifiers:                       # optional: per-field "field modifiers"
       dst_ipv4: { mode: increment, mask: 0x000003ff }  # rotate low 10 bits -> 1024 flows
       src_ipv4: { mode: random,    mask: 0x0000ffff }
-      # For an ipv6 flow, use src_ipv6 / dst_ipv6 instead (same syntax); the
-      # mask rotates the low 32 bits of the address (host / interface-ID).
-      #   dst_ipv6: { mode: increment, mask: 0x000000ff }
+      # For an ipv6 flow, use src_ipv6 / dst_ipv6. A <=32-bit hex `mask` rotates
+      # the low 32 bits (host/interface-ID, back-compatible); an IPv6-literal
+      # mask rotates the FULL 128-bit address. Each 32-bit lane is rotated with a
+      # fixed per-lane salt (random) / offset (increment) so a full-mask rotation
+      # does not emit four identical words.
+      #   dst_ipv6: { mode: increment, mask: 0x000000ff }       # low 32 bits
+      #   src_ipv6: { mode: random,    mask: "ffff:ffff:ffff:ffff::" }  # high 64
       udp_src:  { mode: increment, mask: 0xffff }
       udp_dst:  { mode: static }     # (default; same as omitting)
       src_mac:  { mode: increment, mask: 0x0000000000ff }  # 48-bit mask
@@ -224,12 +235,18 @@ there is no extra per-slot state. Notes:
 - Per-*apparent*-flow individual RX stats are limited to the HW slot
   count (`NUM_FLOWS`); aggregate loss/latency across the diversified
   traffic is unaffected.
-- Covers `src_ipv4` / `dst_ipv4` (or `src_ipv6` / `dst_ipv6`, low 32 bits) /
-  `udp_src` / `udp_dst` / `src_mac` / `dst_mac` (48-bit mask) / `vlan` (low 12
-  bits). MAC / VLAN modifiers only rewrite the Ethernet header (not in any
-  checksum). All rotate off the same sequence (correlated, not a full
-  cross-product). Full 128-bit IPv6-address rotation is a mechanical
-  extension of the same scheme.
+- Covers `src_ipv4` / `dst_ipv4` (or `src_ipv6` / `dst_ipv6`, low-32 or full
+  128-bit) / `udp_src` / `udp_dst` / `src_mac` / `dst_mac` (48-bit mask) /
+  `vlan` (low 12 bits). MAC / VLAN modifiers only rewrite the Ethernet header
+  (not in any checksum). The IPv6 address lanes are field+lane-salted so a
+  full-128 rotation gives four distinct words and src ≠ dst; the streams are
+  deterministic (xorshift-based), de-duplicated rather than statistically
+  independent, with an effective ~2³² period. **Scope:** this salting applies to
+  the 128-bit IPv6 path only. The scalar single-field modifiers (IPv4 src/dst,
+  ports, MAC, VLAN) still share the per-frame sequence, so two same-mask
+  `random` scalar fields rotate in lockstep (correlated) — fine for DUT
+  diversification (their base values differ); full per-field de-correlation
+  would be a follow-up.
 
 `encap` wraps the flow's inner IP/UDP/test frame in an outer L3 + tunnel
 header so PacketWyrm can exercise a DUT's tunnel decap/encap path:
@@ -270,7 +287,8 @@ Constraints:
   both emit DSCP/traffic-class, TTL/hop-limit, and address field modifiers
   (IPv4 emits a correct header checksum; IPv6 a correct non-zero UDP
   checksum). Address modifiers use the family key (`src_ipv4`/`dst_ipv4` or
-  `src_ipv6`/`dst_ipv6`); for IPv6 they rotate the low 32 bits.
+  `src_ipv6`/`dst_ipv6`); for IPv6 a hex mask rotates the low 32 bits and an
+  IPv6-literal mask rotates the full 128-bit address.
 - Exactly one of `traffic.rate_bps` / `traffic.rate_pps`.
 - Exactly one of `traffic.frame_len` and the
   `frame_len_min/max/step` triple.
@@ -295,12 +313,19 @@ forwards:
     ip_proto: 17            # optional match (IPv4 proto / IPv6 next-hdr)
     udp_dst: 5000           # optional match
     vlan: 100               # optional match (0..4094)
+    ipv6_dst: "2001:db8::/64"   # optional IPv6 dst match (addr or addr/prefix)
+    ipv6_src: "2001:db8:a::1"   # optional IPv6 src match (default /128)
 ```
 
 - `ingress_port` and `egress_port` must resolve to ports, and must be
   on the **same card** (the classifier is per-card; `egress_local_port`
   is a local port id).
 - Hex (`0x0800`) and decimal are both accepted for match values.
+- `ipv6_dst` / `ipv6_src` accept an IPv6 address or `addr/prefix` (default
+  `/128`). Each non-zero 32-bit word of the resulting mask costs one of the
+  **12 field comparators per card** (shared across all forward/punt rules; a
+  `/64` prefix costs 2, a full `/128` costs 4). The compiler dedups identical
+  comparators and rejects an over-subscribed config with `PW_E_NO_RESOURCES`.
 - FORWARD rules are independent of `flows` / `logical_interfaces`; a
   config may have only `forwards` (a pure relay/DUT-in-path setup).
 

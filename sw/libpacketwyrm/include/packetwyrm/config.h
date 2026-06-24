@@ -139,13 +139,20 @@ struct pw_field_mod {
 };
 
 struct pw_flow_modifiers {
-    struct pw_field_mod src_ipv4;   /* or src_ipv6 (low 32 bits) */
-    struct pw_field_mod dst_ipv4;   /* or dst_ipv6 (low 32 bits) */
+    struct pw_field_mod src_ipv4;   /* v4: mask; v6: low 32 bits (mode shared) */
+    struct pw_field_mod dst_ipv4;   /* v4: mask; v6: low 32 bits (mode shared) */
     struct pw_field_mod udp_src;
     struct pw_field_mod udp_dst;
     struct pw_field_mod src_mac;    /* 48-bit mask */
     struct pw_field_mod dst_mac;    /* 48-bit mask */
     struct pw_field_mod vlan;       /* low 12 bits */
+    /* Full 128-bit IPv6 address mask (MSB-first, [0]=bits[127:120]). For v6
+     * flows this is the source of truth for the src/dst-ipv6 modifier; the mode
+     * lives in src_ipv4/dst_ipv4. A bare <=32-bit hex `mask:` fills only the low
+     * 4 bytes (back-compatible low-32 rotation); a v6-literal mask fills all 16.
+     * Unused for v4 flows. */
+    uint8_t src_ipv6_mask[16];
+    uint8_t dst_ipv6_mask[16];
 };
 
 struct pw_flow {
@@ -185,6 +192,18 @@ struct pw_flow {
     uint16_t match_udp_dst_mask;     /* default 0xFFFF */
     uint32_t match_ipv4_dst_mask;    /* default 0xFFFFFFFF */
 
+    /* IPv6 match masks for classify:header (hash). A classify:header flow keys
+     * on the FULL v6 address by default (the hash key carries all 128 bits); a
+     * `match: { ipv6_dst/src: <prefix> }` narrows it. When _set, the bitwise
+     * mask (1 = must match) narrows the global hash key words: dst -> w0..3,
+     * src -> w4..7. NB: the hash key mask is per-card GLOBAL, so distinct
+     * per-flow prefixes fold into one mask (use a forward rule for a private
+     * per-flow prefix). */
+    bool     match_ipv6_dst_set;
+    uint8_t  match_ipv6_dst_mask[16];
+    bool     match_ipv6_src_set;
+    uint8_t  match_ipv6_src_mask[16];
+
     /* RX classification mode. Default (false) keys on the test header flow_id
      * via the flow-id map (scales to 256 flows but needs the flow_id at a fixed
      * payload offset). When true ("classify: header"), the flow is classified
@@ -208,6 +227,19 @@ struct pw_forward_rule {
     uint8_t  ip_proto;                   /* 0 = any */
     uint16_t udp_dst;                    /* 0 = any */
     uint16_t vlan;                       /* 0 = any */
+
+    /* IPv6 address match via the field classifier (bitwise mask, 1 = must
+     * match). Each non-zero 32-bit word of the mask costs one field comparator
+     * (up to 4 per address; a /64 prefix leaves the low 2 words zero -> 2
+     * comparators). The 12-comparator-per-card pool is shared across all
+     * forward/punt rules; the compiler dedups and returns PW_E_NO_RESOURCES
+     * when exhausted. */
+    bool     ipv6_dst_set;
+    uint8_t  ipv6_dst[16];
+    uint8_t  ipv6_dst_mask[16];
+    bool     ipv6_src_set;
+    uint8_t  ipv6_src[16];
+    uint8_t  ipv6_src_mask[16];
 };
 
 struct pw_config {

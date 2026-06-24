@@ -29,7 +29,9 @@ int main(int argc, char **argv) {
     FILE *f = fopen(path, "rb");
     if (!f) { perror("fopen"); return 1; }
     fseek(f, 0, SEEK_END); long fsz = ftell(f); fseek(f, 0, SEEK_SET);
-    if (fsz <= 0 || fsz > (8 << 20)) { fprintf(stderr, "bad file size %ld\n", fsz); fclose(f); return 1; }
+    /* 16 MB cap: the boot image is ~12 MB (was <8 MB when this guard was added)
+     * and the MT25QU256 is 32 MB, so a full boot image at offset 0 must fit. */
+    if (fsz <= 0 || fsz > (16 << 20)) { fprintf(stderr, "bad file size %ld\n", fsz); fclose(f); return 1; }
     uint8_t *img = malloc((size_t)fsz);
     if (fread(img, 1, (size_t)fsz, f) != (size_t)fsz) { perror("fread"); fclose(f); free(img); return 1; }
     fclose(f);

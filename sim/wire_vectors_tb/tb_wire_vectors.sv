@@ -276,6 +276,12 @@ module tb_wire_vectors;
         check_eq("udp_dst",         ft_rd_row[0].udp_dp, 50001);
         check_eq("smac",            ft_rd_row[0].src_mac, 48'h02_a5_02_00_00_01);
         check_eq("dmac",            ft_rd_row[0].dst_mac, 48'h02_a5_02_00_00_02);
+        // New 238-byte-row fields: IPv6 mask-hi (little-endian byte order; byte 0
+        // = bits [7:0] = 0xA0/0xB0). Catches C-struct <-> RTL-decode drift.
+        check_eq("sip_mask_hi",     ft_rd_row[0].sip_mask_hi,
+                 96'hAB_AA_A9_A8_A7_A6_A5_A4_A3_A2_A1_A0);
+        check_eq("dip_mask_hi",     ft_rd_row[0].dip_mask_hi,
+                 96'hBB_BA_B9_B8_B7_B6_B5_B4_B3_B2_B1_B0);
 
         if (errors == 0) begin
             $display("ALL WIRE VECTOR SCENARIOS PASS");

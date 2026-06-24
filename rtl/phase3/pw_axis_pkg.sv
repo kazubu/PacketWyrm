@@ -96,6 +96,12 @@ package pw_axis_pkg;
         // (the host/interface-ID portion -- enough for DUT hashing / ECMP).
         logic [1:0]  sip_mod;   logic [31:0] sip_mask;
         logic [1:0]  dip_mod;   logic [31:0] dip_mask;
+        // Full 128-bit IPv6 address modifiers: sip_mask/dip_mask hold address
+        // bits [31:0] (also the IPv4 mask); these *_mask_hi hold bits [127:32].
+        // The full v6 mask = {*_mask_hi, *_mask}. Zero (default) = low-32-only
+        // (back-compatible with the original v6 host-ID rotation).
+        logic [95:0] sip_mask_hi;
+        logic [95:0] dip_mask_hi;
         logic [1:0]  sp_mod;    logic [15:0] sp_mask;
         logic [1:0]  dp_mod;    logic [15:0] dp_mask;
         // MAC / VLAN modifiers (same scheme; not in any checksum -- the
@@ -190,6 +196,12 @@ package pw_axis_pkg;
                            row[205*8 +: 8], row[206*8 +: 8], row[207*8 +: 8]};
         f.inner_src_mac = {row[208*8 +: 8], row[209*8 +: 8], row[210*8 +: 8],
                            row[211*8 +: 8], row[212*8 +: 8], row[213*8 +: 8]};
+        // IPv6 mask high 96 bits (address [127:32]); little-endian like sip_mask
+        // (low byte = address bit 32). Bytes 214..225 (src), 226..237 (dst).
+        for (int b = 0; b < 12; b++) begin
+            f.sip_mask_hi[b*8 +: 8] = row[(214+b)*8 +: 8];
+            f.dip_mask_hi[b*8 +: 8] = row[(226+b)*8 +: 8];
+        end
         return f;
     endfunction
 

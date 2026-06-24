@@ -119,6 +119,8 @@ enum pwfpga_fc_src {
     PWFPGA_FC_SRC_INGRESS    = 13,  /* ingress_port (low 4b)                  */
     PWFPGA_FC_SRC_IPV6_SRC_0 = 14,  /* ipv6_src[31:0]                         */
     PWFPGA_FC_SRC_IPV6_SRC_3 = 15,  /* ipv6_src[127:96]                       */
+    PWFPGA_FC_SRC_IPV6_SRC_1 = 16,  /* ipv6_src[63:32]                        */
+    PWFPGA_FC_SRC_IPV6_SRC_2 = 17,  /* ipv6_src[95:64] -> all 4 src words     */
 };
 /* Bit positions in the FLAGS source lane. */
 enum {
@@ -359,7 +361,21 @@ struct pwfpga_flow_config {
      * flow l2 MAC when unset). dst then src, matching the main MAC fields. */
     uint8_t  inner_dst_mac[6];   /* bytes 202..207 */
     uint8_t  inner_src_mac[6];   /* bytes 208..213 */
+
+    /* Full 128-bit IPv6 address-modifier mask: src_ipv4_mask / dst_ipv4_mask
+     * hold address bits [31:0]; these hold bits [127:32], little-endian by byte
+     * (index 0 = address bits [39:32], index 11 = [127:120]). Zero (default) =
+     * low-32-only rotation (back-compatible). Only used when ip_version == 6. */
+    uint8_t  src_ipv6_mask_hi[12]; /* bytes 214..225 */
+    uint8_t  dst_ipv6_mask_hi[12]; /* bytes 226..237 */
 } __attribute__((packed));
+
+_Static_assert(sizeof(struct pwfpga_flow_config) == 238,
+               "pwfpga_flow_config wire layout drifted (expected 238 bytes)");
+_Static_assert(offsetof(struct pwfpga_flow_config, src_ipv6_mask_hi) == 214,
+               "src_ipv6_mask_hi must be at wire byte 214");
+_Static_assert(offsetof(struct pwfpga_flow_config, dst_ipv6_mask_hi) == 226,
+               "dst_ipv6_mask_hi must be at wire byte 226");
 
 enum pwfpga_encap_type {
     PWFPGA_ENCAP_NONE    = 0,

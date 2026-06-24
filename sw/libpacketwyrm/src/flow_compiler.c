@@ -69,6 +69,31 @@ static pw_status append_fc_cmp(struct pw_card_program *cp, uint8_t src,
     return PW_OK;
 }
 
+/* Emit up to 4 field comparators for a 128-bit IPv6 address match (addr[0]=MSB,
+ * bitwise mask, 1 = must match). sel[w] is the comparator source selector for
+ * address word w (w=0 -> bytes [0:3] = [127:96], w=3 -> bytes [12:15] = [31:0]).
+ * A word whose 32-bit mask is zero emits NO comparator (wildcard) -> a /64
+ * prefix costs 2 comparators, not 4. The shared 12-comparator pool + dedup +
+ * PW_E_NO_RESOURCES are handled by append_fc_cmp. */
+static pw_status append_ipv6_cmps(struct pw_card_program *cp, const uint8_t addr[16],
+                                  const uint8_t mask[16], const uint8_t sel[4],
+                                  uint16_t *care) {
+    for (int w = 0; w < 4; w++) {
+        const uint8_t *mb = &mask[w * 4], *ab = &addr[w * 4];
+        uint32_t m = ((uint32_t)mb[0] << 24) | ((uint32_t)mb[1] << 16) |
+                     ((uint32_t)mb[2] << 8) | mb[3];
+        if (m == 0) continue;
+        uint32_t v = ((uint32_t)ab[0] << 24) | ((uint32_t)ab[1] << 16) |
+                     ((uint32_t)ab[2] << 8) | ab[3];
+        v &= m;   /* mask the value so two prefixes differing only in don't-care
+                   * (host) bits dedup to one comparator (the RTL masks too). */
+        size_t bit; pw_status er = append_fc_cmp(cp, sel[w], m, v, &bit);
+        if (er != PW_OK) return er;
+        *care |= (uint16_t)(1u << bit);
+    }
+    return PW_OK;
+}
+
 /* Append a UDF comparator (deduped). Returns the comparator-bit index
  * (= PWFPGA_NUM_CMP + udf index) in *bit_out. */
 static pw_status append_fc_udf(struct pw_card_program *cp, uint16_t offset,
@@ -158,12 +183,62 @@ static void pw_fc_relax_mask(uint32_t mask[11], const struct pw_flow *f) {
     if (f->match_ipv4_dst_mask != 0xFFFFFFFFu)       mask[0] &=  f->match_ipv4_dst_mask;
     /* l3_src (w4) */
     if (f->mod.src_ipv4.mode != PWFPGA_FIELD_STATIC) mask[4] &= ~(uint32_t)f->mod.src_ipv4.mask;
+    /* IPv6 full-128 modifier high words: dst w1..3 / src w5..7 also rotate (w0/w4
+     * cleared above via the low mask). Hash word w -> MSB-first mask bytes
+     * [(3-w)*4 .. +3]. */
+    if (f->ipv6.present) {
+        if (f->mod.dst_ipv4.mode != PWFPGA_FIELD_STATIC)
+            for (int w = 1; w < 4; w++) {
+                const uint8_t *b = &f->mod.dst_ipv6_mask[(3 - w) * 4];
+                mask[w] &= ~(((uint32_t)b[0]<<24)|((uint32_t)b[1]<<16)|((uint32_t)b[2]<<8)|b[3]);
+            }
+        if (f->mod.src_ipv4.mode != PWFPGA_FIELD_STATIC)
+            for (int w = 1; w < 4; w++) {
+                const uint8_t *b = &f->mod.src_ipv6_mask[(3 - w) * 4];
+                mask[4 + w] &= ~(((uint32_t)b[0]<<24)|((uint32_t)b[1]<<16)|((uint32_t)b[2]<<8)|b[3]);
+            }
+    }
+    /* IPv6 match narrowing: dst -> w0..3, src -> w4..7 (hash word layout:
+     * w[0]=addr low 32 = bytes[12:15], w[3]=high = bytes[0:3]). */
+    if (f->match_ipv6_dst_set) {
+        for (int i = 0; i < 4; i++) {
+            const uint8_t *b = &f->match_ipv6_dst_mask[(3 - i) * 4];
+            mask[i] &= ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) | ((uint32_t)b[2] << 8) | b[3];
+        }
+    }
+    if (f->match_ipv6_src_set) {
+        for (int i = 0; i < 4; i++) {
+            const uint8_t *b = &f->match_ipv6_src_mask[(3 - i) * 4];
+            mask[4 + i] &= ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) | ((uint32_t)b[2] << 8) | b[3];
+        }
+    }
     /* l4_dst (w8 low 16) / l4_src (w8 high 16) */
     if (f->mod.udp_dst.mode != PWFPGA_FIELD_STATIC)  mask[8] &= ~((uint32_t)f->mod.udp_dst.mask & 0xFFFFu);
     if (f->match_udp_dst_mask != 0xFFFFu)            mask[8] &= (0xFFFF0000u | f->match_udp_dst_mask);
     if (f->mod.udp_src.mode != PWFPGA_FIELD_STATIC)  mask[8] &= ~(((uint32_t)f->mod.udp_src.mask & 0xFFFFu) << 16);
     /* vlan (w9 high 16) */
     if (f->mod.vlan.mode != PWFPGA_FIELD_STATIC)     mask[9] &= ~(((uint32_t)f->mod.vlan.mask & 0x0FFFu) << 16);
+}
+
+/* Minimum legal on-wire frame (bytes), mirroring RTL pw_frame_bytes(row, 32B
+ * test payload). The generator clamps the swept length UP to this and the token
+ * cost uses it, so the bucket cap and the rate_pps byte basis must meter at
+ * least this many bytes -- else cap < cost (the flow never transmits) and pps is
+ * metered against the wrong size. Accounts for VLAN, encap (outer IP + tunnel),
+ * and inner IP family. (UDP L4 = 8; the TCP path is on the phase3-tcp-gen
+ * branch.) */
+static uint32_t pw_flow_min_legal_frame(const struct pw_flow *f) {
+    uint32_t l = 14u;                                       /* Ethernet */
+    if (f->l2.vlan_set) l += 4u;                            /* VLAN tag */
+    if (f->encap.present) {
+        l += f->encap.outer_ipv6.present ? 40u : 20u;       /* outer IP */
+        if (f->encap.type == PWFPGA_ENCAP_GRE)          l += 4u;
+        else if (f->encap.type == PWFPGA_ENCAP_ETHERIP) l += 16u;
+    }
+    l += f->ipv6.present ? 40u : 20u;                       /* inner IP */
+    l += 8u;                                                /* UDP */
+    l += 32u;                                               /* test-header region */
+    return l;
 }
 
 static void mac_set(uint8_t *dst, const uint8_t *src) { memcpy(dst, src, 6); }
@@ -241,6 +316,16 @@ static pw_status compile_one_flow(struct pw_program *out,
     /* Per-field modifiers (DUT-facing flow diversification). */
     tx_row.src_ipv4_mod  = f->mod.src_ipv4.mode; tx_row.src_ipv4_mask = (uint32_t)f->mod.src_ipv4.mask;
     tx_row.dst_ipv4_mod  = f->mod.dst_ipv4.mode; tx_row.dst_ipv4_mask = (uint32_t)f->mod.dst_ipv4.mask;
+    /* IPv6 full-128 mask: low 32 bits are in src/dst_ipv4_mask (above); the high
+     * 96 bits go to *_ipv6_mask_hi. config mask is MSB-first (mask[0]=[127:120]);
+     * the wire hi array is little-endian by byte (index 0 = address [39:32]), so
+     * hi[i] = mask[11-i]. Zero for v4 flows. */
+    if (f->ipv6.present) {
+        for (int i = 0; i < 12; i++) {
+            tx_row.src_ipv6_mask_hi[i] = f->mod.src_ipv6_mask[11 - i];
+            tx_row.dst_ipv6_mask_hi[i] = f->mod.dst_ipv6_mask[11 - i];
+        }
+    }
     tx_row.udp_src_mod   = f->mod.udp_src.mode;  tx_row.udp_src_mask  = (uint16_t)f->mod.udp_src.mask;
     tx_row.udp_dst_mod   = f->mod.udp_dst.mode;  tx_row.udp_dst_mask  = (uint16_t)f->mod.udp_dst.mask;
     /* MAC masks are 6 bytes, MSB-first (byte 0 = address bits 47..40). */
@@ -281,6 +366,8 @@ static pw_status compile_one_flow(struct pw_program *out,
         if (eff_rate_bps == 0 && f->traffic.rate_pps) {
             uint32_t flen = f->traffic.frame_len_fixed_set ? f->traffic.frame_len_fixed
                                                            : f->traffic.frame_len_min;
+            uint32_t minf = pw_flow_min_legal_frame(f);     /* RTL clamps up to this */
+            if (flen < minf) flen = minf;
             eff_rate_bps = f->traffic.rate_pps * (uint64_t)flen * 8u;
         }
         unsigned __int128 num = (unsigned __int128)eff_rate_bps * 65536u;
@@ -295,6 +382,8 @@ static pw_status compile_one_flow(struct pw_program *out,
      * enough tokens to cover a frame's cost and the generator starves. */
     {
         uint32_t flen = tx_row.frame_len_max ? tx_row.frame_len_max : 1518u;
+        uint32_t minf = pw_flow_min_legal_frame(f);    /* cap must cover the clamped cost */
+        if (flen < minf) flen = minf;
         uint32_t bsz  = f->traffic.burst_size ? f->traffic.burst_size : 1u;
         uint64_t cap  = (uint64_t)bsz * flen;
         if (cap < flen) cap = flen;
@@ -479,6 +568,29 @@ static pw_status compile_forward_rules(struct pw_program *out, const struct pw_c
             if (er != PW_OK) return er;
             care |= (uint16_t)(1u << bit);
         }
+        if (fr->ipv6_dst_set || fr->ipv6_src_set) {
+            /* An IPv6 address match must also require is_ipv6 -- otherwise an
+             * IPv4 packet (whose ipv6_src/dst key words are zero) would match a
+             * mask like ::/0. Costs one more of the 12 shared comparators. */
+            er = append_fc_cmp(cp, PWFPGA_FC_SRC_FLAGS, PWFPGA_FC_FLAG_IS_IPV6,
+                               PWFPGA_FC_FLAG_IS_IPV6, &bit);
+            if (er != PW_OK) return er;
+            care |= (uint16_t)(1u << bit);
+        }
+        if (fr->ipv6_dst_set) {
+            static const uint8_t dsel[4] = {
+                PWFPGA_FC_SRC_IPV6_DST_3, PWFPGA_FC_SRC_IPV6_DST_2,
+                PWFPGA_FC_SRC_IPV6_DST_1, PWFPGA_FC_SRC_IPV6_DST_0 };
+            er = append_ipv6_cmps(cp, fr->ipv6_dst, fr->ipv6_dst_mask, dsel, &care);
+            if (er != PW_OK) return er;
+        }
+        if (fr->ipv6_src_set) {
+            static const uint8_t ssel[4] = {
+                PWFPGA_FC_SRC_IPV6_SRC_3, PWFPGA_FC_SRC_IPV6_SRC_2,
+                PWFPGA_FC_SRC_IPV6_SRC_1, PWFPGA_FC_SRC_IPV6_SRC_0 };
+            er = append_ipv6_cmps(cp, fr->ipv6_src, fr->ipv6_src_mask, ssel, &care);
+            if (er != PW_OK) return er;
+        }
 
         struct pw_fc_rule rule = { .care = care, .action = PWFPGA_ACT_FORWARD_PORT,
             .egress = egr.local_port_id, .local_flow_id = 0, .logical_if_id = 0,
@@ -512,9 +624,30 @@ pw_status pw_flow_compile(const struct pw_config *cfg, struct pw_program *out,
     }
 
     r = compile_punt_rules(out, cfg);
-    if (r != PW_OK) return r;
+    if (r != PW_OK) {
+        if (r == PW_E_NO_RESOURCES && diag) {
+            diag->code = r;
+            snprintf(diag->path, sizeof diag->path, "punt");
+            snprintf(diag->message, sizeof diag->message,
+                     "field-comparator pool exhausted (limit NCMP=%u, shared across "
+                     "punt+forward rules); reduce per-rule match conditions",
+                     (unsigned)PWFPGA_NUM_CMP);
+        }
+        return r;
+    }
     r = compile_forward_rules(out, cfg);
-    if (r != PW_OK) return r;
+    if (r != PW_OK) {
+        if (r == PW_E_NO_RESOURCES && diag) {
+            diag->code = r;
+            snprintf(diag->path, sizeof diag->path, "forwards");
+            snprintf(diag->message, sizeof diag->message,
+                     "field-comparator pool exhausted (limit NCMP=%u, shared across "
+                     "punt+forward rules); a /128 IPv6 match costs 4 + 1 is_ipv6, "
+                     "/64 costs 2 + 1; reduce per-rule match conditions",
+                     (unsigned)PWFPGA_NUM_CMP);
+        }
+        return r;
+    }
 
     /* Per-card hash-table seed search: pick a seed so every configured
      * header-key lands in a distinct bucket (the hash only chooses the bucket;

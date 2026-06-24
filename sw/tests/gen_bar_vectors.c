@@ -72,6 +72,12 @@ int main(int argc, char **argv) {
     fc.tokens_per_tick_fp = 0x00040000u;
     fc.burst_bytes        = 256;
     fc.tx_enable         = 1;
+    /* New 238-byte-row fields: unique non-zero patterns so the RTL decode of the
+     * IPv6 mask-hi byte order is checked too. */
+    for (int i = 0; i < 12; i++) {
+        fc.src_ipv6_mask_hi[i] = (uint8_t)(0xA0 + i);
+        fc.dst_ipv6_mask_hi[i] = (uint8_t)(0xB0 + i);
+    }
     if ((r = b.ops->flow_write(b.ctx, 0, &fc)) != PW_OK) {
         fprintf(stderr, "flow_write: %s\n", pw_strerror(r));
         goto fail;

@@ -231,8 +231,12 @@ module tb_flow_gen_multi;
         f_rows[2].is_v6=1'b1;
         f_rows[2].ipv6_src=128'h2001_0db8_0000_0000_0000_0000_0000_0001;
         f_rows[2].ipv6_dst=128'h2001_0db8_0000_0000_0000_0000_0000_0002;
-        // IPv6 dst-address modifier: rotate the low 8 bits (host portion).
-        f_rows[2].dip_mod=2'd1; f_rows[2].dip_mask=32'h000000FF;
+        // IPv6 src+dst modifiers: FULL 128-bit RANDOM rotation. Each 32-bit lane
+        // is scrambled with a distinct lane salt, and src/dst use distinct field
+        // salts (SALT_SIP=0, SALT_DIP!=0) -- so the four lanes differ AND src !=
+        // dst even with the same mask. Exercises mod128 + the field/lane salts.
+        f_rows[2].sip_mod=2'd2; f_rows[2].sip_mask=32'hFFFFFFFF; f_rows[2].sip_mask_hi={96{1'b1}};
+        f_rows[2].dip_mod=2'd2; f_rows[2].dip_mask=32'hFFFFFFFF; f_rows[2].dip_mask_hi={96{1'b1}};
         // DSCP 46 (EF) -> IPv6 traffic class 0xB8 (byte0 0x6B, byte1 0x80).
         f_rows[2].dscp=8'd46;
         // slot 3: variable frame length sweep (flow_id 7) -- 128 -> 256 by 64,
@@ -268,8 +272,20 @@ module tb_flow_gen_multi;
         // IPv4/IPv6 parity: IPv6 traffic class + hop limit + address modifier.
         chk("IPv6 traffic class = DSCP<<2", cap6[14] == 8'h6B && cap6[15] == 8'h80);
         chk("IPv6 hop limit emitted (64)", cap6[21] == 8'd64);
-        chk("IPv6 dst-addr modifier rotates", v6_dlo_distinct >= 4);
-        chk("IPv6 dst-addr modifier keeps high bits", v6_dhi_const);
+        chk("IPv6 dst-addr modifier rotates (low lane)", v6_dlo_distinct >= 4);
+        // Full 128-bit RANDOM rotation. The four dst lanes (32-bit words @38/42/
+        // 46/50) are scrambled with distinct lane salts -> all differ; src (@22)
+        // uses a distinct field salt from dst -> src != dst even with the same
+        // mask. Proves mod128's field/lane salting (a salt-constant change would
+        // break these). xorshift is a bijection, so distinct salted inputs give
+        // distinct outputs deterministically.
+        chk("IPv6 random: 4 dst lanes differ (lane salt)",
+            ({cap6[38],cap6[39],cap6[40],cap6[41]} != {cap6[42],cap6[43],cap6[44],cap6[45]}) &&
+            ({cap6[42],cap6[43],cap6[44],cap6[45]} != {cap6[46],cap6[47],cap6[48],cap6[49]}) &&
+            ({cap6[46],cap6[47],cap6[48],cap6[49]} != {cap6[50],cap6[51],cap6[52],cap6[53]}) &&
+            ({cap6[38],cap6[39],cap6[40],cap6[41]} != {cap6[50],cap6[51],cap6[52],cap6[53]}));
+        chk("IPv6 random: src != dst (field salt)",
+            {cap6[22],cap6[23],cap6[24],cap6[25]} != {cap6[38],cap6[39],cap6[40],cap6[41]});
         // MAC modifier (slot 0 src MAC low byte) + VLAN modifier (slot 1 VID).
         chk("src-MAC modifier rotates low byte", smac_lo_distinct >= 4);
         chk("src-MAC modifier keeps high bytes", smac_hi_const);
