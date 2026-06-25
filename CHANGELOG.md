@@ -28,6 +28,16 @@ For where work is going next, see `NEXT-STEPS.md`.
     LUT-reduction pass.)
 
 ### Fixed
+  - **`DP_RESET` now also resets the MAC-TX CDC, to recover a presumed TX-FIFO
+    wedge in-system.** The data-plane soft reset only quiesced dp_clk-domain
+    state (gen / SAF / arbiters); the per-port MAC-TX CDC FIFO + `pw_ts_insert`
+    live in the MAC tx_clk domain and were outside it. An observed egress hang
+    (every flow `tx=0`, inject `INJECT_STATUS_BUSY` stuck, link still up) cleared
+    only on an ICAP reboot / power cycle — consistent with a stuck TX-FIFO state.
+    The `DP_RESET` pulse is now stretched in dp_clk and CDC'd into each MAC
+    tx_clk to flush the TX FIFO (both sides) and reset `pw_ts_insert`. This
+    re-initialises the TX-CDC state while the TX clock is running; it does not
+    cover the MAC/PCS/GT, the RX CDC, or a stopped TX clock (still a reboot).
   - **Sub-minimum frame lengths no longer stall a flow.** The generator clamps a
     too-short frame up to the minimum legal size (incl. VLAN/encap/IP family);
     the SW now computes that same minimum and applies it to the token-bucket cap

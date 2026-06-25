@@ -202,6 +202,29 @@ module tb_flow_gen_multi;
         return (s[15:0] == 16'hFFFF);                // partial + ~partial == 0xFFFF
     endfunction
 
+    // Exact-rate measurement (final scenario): SOF-to-SOF cycle interval for a
+    // single low-rate flow. tv rises at each frame start (it drops in the gap
+    // between frames at low rate), so a tv rising edge marks an SOF.
+    logic       tv_prev = 1'b0;
+    logic       rate_phase = 1'b0;
+    int         rate_cyc = 0, last_sof = -1, n_gaps = 0;
+    int         gaps [0:7];
+    always_ff @(posedge clk) begin
+        if (!rate_phase) begin
+            tv_prev <= 1'b0;
+        end else begin
+            rate_cyc <= rate_cyc + 1;
+            if (tv && !tv_prev) begin                 // SOF
+                if (last_sof >= 0 && n_gaps < 8) begin
+                    gaps[n_gaps] <= rate_cyc - last_sof;
+                    n_gaps <= n_gaps + 1;
+                end
+                last_sof <= rate_cyc;
+            end
+            tv_prev <= tv;
+        end
+    end
+
     initial begin
         for (int s = 0; s < SLOTS; s++) begin
             f_rows[s] = '0;
@@ -297,6 +320,46 @@ module tb_flow_gen_multi;
         chk("var-len has no off-grid lengths", len7_other == 0);
         chk("var-len IPv4 total_len tracks frame", len7_totlen_ok);
         chk("var-len IPv4 header checksum valid", len7_csum_ok);
+
+        // ---- exact low-rate interval: pins the token-bucket pipeline equivalence ----
+        // One flow, accrual = exactly 1.0 byte/cycle (tokens_fp = 1<<16). The
+        // token bucket conserves: over one period accrual*interval == cost (one
+        // deduct), so the steady-state SOF-to-SOF interval = cost/tokens_fp =
+        // pw_frame_bytes(row,32) cycles, CONSTANT (refill-limited, emit << period).
+        // The registered-operand deduct must reproduce this exactly: a 1-tick
+        // error would shift the interval or make it jitter.
+        begin
+            automatic int expw;
+            for (int s = 0; s < SLOTS; s++) f_rows[s] = '0;
+            f_rows[0].valid=1; f_rows[0].egress=0; f_rows[0].flow_id=32'd9;
+            f_rows[0].src_mac=48'h02_00_00_00_00_01; f_rows[0].dst_mac=48'hFF_FF_FF_FF_FF_FF;
+            f_rows[0].src_ipv4=32'h0A000001; f_rows[0].dst_ipv4=32'h0A000002;
+            f_rows[0].udp_sp=16'd4000; f_rows[0].udp_dp=16'd4001; f_rows[0].ttl=8'd64;
+            f_rows[0].burst=16'd256;                 // cap = 256<<16 > cost
+            f_rows[0].tokens_fp=32'h0001_0000;       // 1.0 byte/cycle
+            f_rows[0].frame_len_min=16'd64; f_rows[0].frame_len_max=16'd64; f_rows[0].frame_len_step=16'd1;
+            expw = pw_frame_bytes(f_rows[0], 32);    // cost in bytes = 74 (v4: 14+20+8+32)
+            // clean reset so buckets/pipeline start empty for a deterministic measurement
+            rst_n=0; repeat (4) @(posedge clk); rst_n=1;
+            repeat (400) @(posedge clk);             // warm-up to steady state
+            rate_phase = 1'b1;
+            repeat (700) @(posedge clk);             // ~9 frames at expw-cycle spacing
+            rate_phase = 1'b0;
+            chk("low-rate: >=5 intervals measured", n_gaps >= 5);   // checks read gaps[1..4]
+            // Token-bucket conservation: over one period accrual*interval == cost
+            // (one deduct), so the steady-state interval = cost/tokens_fp = expw
+            // cycles EXACTLY. The pipelined deduct must reproduce this (it folds
+            // the start-cycle accrual in, like the un-pipelined path); a 1-tick
+            // error -- e.g. registering the raw bucket and dropping one accrual --
+            // would shift this to expw+1 and run the flow ~1.35% slow.
+            chk("low-rate interval == cost/tokens_fp (exact)",
+                gaps[1]==expw && gaps[2]==expw && gaps[3]==expw);
+            chk("low-rate interval constant (no jitter)",
+                gaps[1]==gaps[2] && gaps[2]==gaps[3] && gaps[3]==gaps[4]);
+            $display("flow_gen_multi: low-rate expw=%0d gaps={%0d,%0d,%0d,%0d,%0d}",
+                     expw, gaps[0], gaps[1], gaps[2], gaps[3], gaps[4]);
+        end
+
         $display("flow_gen_multi: fid1=%0d fid3=%0d len7={128:%0d,192:%0d,256:%0d} (%0d pass, %0d fail)",
                  seen_a, seen_b, len7_128, len7_192, len7_256, g_pass, g_fail);
         if (g_fail == 0) $display("ALL FLOW_GEN_MULTI SCENARIOS PASS");

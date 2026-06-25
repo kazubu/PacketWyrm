@@ -242,7 +242,13 @@ PWFPGA_REG_STATS_SNAPSHOT_TRIGGER  = PWFPGA_WIN_STATS_SNAPSHOT + 0x3FFC
 PWFPGA_REG_STATS_CLEAR             = PWFPGA_WIN_STATS_SNAPSHOT + 0x3FF8
    W     write 1 to soft-clear all RX checker counters (re-baseline; `test arm`)
 PWFPGA_REG_DP_RESET                = PWFPGA_WIN_STATS_SNAPSHOT + 0x3FF4
-   W     write 1 to soft-reset the wedge-prone datapath (gen / SAF / arbiters)
+   W     write 1 to soft-reset the wedge-prone datapath (gen / SAF / arbiters).
+         Also flushes the per-port MAC-TX CDC FIFO (both clock sides) +
+         pw_ts_insert: the pulse is stretched in dp_clk and CDC'd into each
+         MAC tx_clk, discarding a frame stuck in the egress FIFO (MAC-TX clock
+         domain, outside the dp_clk reset) so TX recovers WITHOUT a bitstream
+         reload. Re-initialises TX-CDC state while the TX clock runs; does NOT
+         cover the MAC/PCS/GT, the RX CDC, or a stopped TX clock. RX untouched.
 
 per-port block (read-only after snapshot):
    PWFPGA_WIN_STATS_SNAPSHOT + N * PWFPGA_PORT_STATS_STRIDE  (128 B)

@@ -118,9 +118,21 @@ module pwfpga_top_phase3_board (
     // FRAME_FIFO + DROP_OVERSIZE). It must hold a whole frame, so 2048 covers a
     // full 1518 B Ethernet frame + margin (1024 dropped frames > ~1024 B, which
     // capped the test generator's variable frame length at ~1 KB).
+    // --- soft-reset flush of the MAC-TX CDC + egress timestamper ------------
+    // The CSR DP_RESET pulse (u_dp.dp_soft_rst_o) only resets the dp_clk-domain
+    // data plane (gen/SAF/arbiters). A frame wedged in the MAC-TX FIFO or in
+    // ts_insert (per-port tx_clk domain) survives it, leaving TX dead until a
+    // full bitstream reload. The CDC flushes its own TX FIFO from this pulse
+    // (stretch + per-tx_clk sync are internal); it returns the synchronized
+    // per-port flush level (tx_soft_flush_w) so we also reset ts_insert in the
+    // same domain -- recovering a wedged egress without JTAG / ICAP reboot.
+    wire dp_soft_rst_pulse;
+    wire tx_soft_flush_w [2];
+
     pw_mac_axis_cdc #(.PORTS(2), .DATA_W(64), .DEPTH(2048)) u_cdc (
         .dp_clk(dp_clk), .dp_rst(dp_rst),
         .rx_clk(sfp_rx_clk), .rx_rst(sfp_rx_rst), .tx_clk(sfp_tx_clk), .tx_rst(sfp_tx_rst),
+        .dp_soft_flush(dp_soft_rst_pulse), .tx_soft_flush_o(tx_soft_flush_w),
         .mac_rx_tdata(mac_rx_d), .mac_rx_tkeep(mac_rx_k), .mac_rx_tvalid(mac_rx_v),
         .mac_rx_tlast(mac_rx_l), .mac_rx_tuser(mac_rx_u),
         .mac_tx_tdata(cdc_tx_d), .mac_tx_tkeep(cdc_tx_k), .mac_tx_tvalid(cdc_tx_v),
@@ -145,7 +157,9 @@ module pwfpga_top_phase3_board (
             .src_clk(dp_clk), .src_bin(ts), .dst_clk(sfp_tx_clk[p]), .dst_bin(ts_tx[p])
         );
         pw_ts_insert u_tsins (
-            .clk(sfp_tx_clk[p]), .rst_n(~sfp_tx_rst[p]), .ts_now(ts_tx[p]),
+            // rst_n also gated by the soft flush so a wedged ts_insert beat
+            // counter / SOF latch re-zeros alongside the TX FIFO it feeds.
+            .clk(sfp_tx_clk[p]), .rst_n(~(sfp_tx_rst[p] | tx_soft_flush_w[p])), .ts_now(ts_tx[p]),
             .s_tdata(cdc_tx_d[p]), .s_tkeep(cdc_tx_k[p]), .s_tvalid(cdc_tx_v[p]),
             .s_tready(cdc_tx_r[p]), .s_tlast(cdc_tx_l[p]), .s_tuser(cdc_tx_u[p]),
             .m_tdata(mac_tx_d[p]), .m_tkeep(mac_tx_k[p]), .m_tvalid(mac_tx_v[p]),
@@ -204,7 +218,8 @@ module pwfpga_top_phase3_board (
         .m_axis_tx_tready(dptx_r), .m_axis_tx_tlast(dptx_l), .m_axis_tx_tuser(dptx_u),
         .timestamp_i(ts),
         .spi_sck_o(spi_sck), .spi_cs_n_o(spi_cs_n), .spi_mosi_o(spi_mosi), .spi_miso_i(spi_miso),
-        .icap_csib_o(icap_csib), .icap_rdwrb_o(icap_rdwrb), .icap_i_o(icap_i)
+        .icap_csib_o(icap_csib), .icap_rdwrb_o(icap_rdwrb), .icap_i_o(icap_i),
+        .dp_soft_rst_o(dp_soft_rst_pulse)
     );
 
     // --- in-band reconfiguration via ICAPE3 -------------------------------

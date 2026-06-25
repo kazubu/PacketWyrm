@@ -235,9 +235,10 @@ static pw_status program_backends(const struct pw_program *prog,
         if (!cards[ci].open) continue;
         const struct pw_card_backend *b = &cards[ci].backend;
         /* Soft-reset the data plane before (re)writing the tables: quiesce the
-         * generators / SAF / arbiters so reprogramming over a running data plane
-         * cannot wedge it (configuration is preserved; the commit below re-applies
-         * it). */
+         * generators / SAF / arbiters (and flush the MAC-TX CDC FIFO + ts_insert
+         * via the CDC'd pulse) so reprogramming over a running data plane cannot
+         * wedge it (configuration is preserved; the commit below re-applies it).
+         * Note: this does not reset the MAC/PCS/GT or a stopped TX clock. */
         if (b->ops->write32) {
             pw_status s = b->ops->write32(b->ctx, PWFPGA_REG_DP_RESET, 1u);
             if (s != PW_OK && s != PW_E_NOT_IMPLEMENTED && worst == PW_OK) worst = s;
