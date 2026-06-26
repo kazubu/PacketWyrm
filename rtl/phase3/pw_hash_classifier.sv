@@ -100,11 +100,20 @@ module pw_hash_classifier #(
     // BRAM address) across a register: assemble+mask land here, the fold+
     // multiply+BRAM-address land in stage 2. Adds one cycle of latency (2->3);
     // the data plane delays the field classifier + flow-id map results to match.
-    logic [KB-1:0] mkey_q1;
+    // mkey_q1 feeds the XOR-fold + hash multiply (a DSP). Keep it RESET-LESS --
+    // it is a pure data pipeline register, gated downstream by kv1 (which IS
+    // reset), so its value on reset is don't-care. Dropping the async reset on
+    // this 352-bit register cuts that much async-reset fanout and removes it
+    // from the DSP-input LUTAR-1 set. (It does NOT fully clear the hash LUTAR-1
+    // or free LUT: the seed/B operand keeps its reset and the XOR fold sits
+    // between this reg and the DSP, so the DSP still can't absorb its input
+    // registers -- a known, non-blocking perf hint.) Init '0 = GSR/power-up
+    // value for sim cleanliness, not an async reset.
+    logic [KB-1:0] mkey_q1 = '0;
     logic          kv1;
+    always_ff @(posedge clk) mkey_q1 <= mkey_c;
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin mkey_q1 <= '0; kv1 <= 1'b0; end
-        else        begin mkey_q1 <= mkey_c; kv1 <= key_valid_i; end
+        if (!rst_n) kv1 <= 1'b0; else kv1 <= key_valid_i;
     end
 
     // ---- BRAM table: write port + registered read port (stage 2) ----
