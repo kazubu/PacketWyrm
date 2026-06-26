@@ -72,6 +72,23 @@ create_waiver -type CDC -id {CDC-10} \
 # pre-existing, and unmodified by this work -- left unwaived here (waiving
 # third-party IP internals would assert a safety claim we haven't vetted).
 
+# --- TIMING-6/7 methodology waivers: timestamp Gray-CDC clock pairs ----------
+# The egress timestamp Gray CDC (u_tscdc) crosses dp_clk -> each MAC tx_clk.
+# These clocks are intentionally ASYNCHRONOUS (different sources, no common
+# primary clock), and the crossing is constrained per-port by the
+# set_max_delay -datapath_only + set_bus_skew above. TIMING-6 ("no common
+# primary clock") / TIMING-7 ("no common node") are therefore expected and
+# safe -- waive them, scoped to ONLY these two dp_clk->tx_clk pairs, so a real
+# unconstrained-clock-relationship Critical elsewhere still stands out. (Not a
+# clock_groups: that would also drop the max_delay/bus_skew on the Gray CDC.)
+foreach _tx {gtwiz_userclk_tx_srcclk_out[0] gtwiz_userclk_tx_srcclk_out[0]_1} {
+    foreach _id {TIMING-6 TIMING-7} {
+        create_waiver -type METHODOLOGY -id $_id \
+            -objects [get_clocks [list dp_clk_u $_tx]] -user pw \
+            -description "Egress timestamp Gray CDC (u_tscdc): dp_clk -> MAC tx_clk is intentionally async, constrained per-port by set_max_delay -datapath_only + set_bus_skew; no common primary clock/node is expected."
+    }
+}
+
 # Async LED outputs.
 set_false_path -to [get_ports {sfp_led[*]}]
 set_false_path -to [get_ports {led[*]}]

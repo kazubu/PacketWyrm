@@ -20,6 +20,13 @@ puts -nonewline $fh_out [string map [list @PW_VERSION@ $version_hex @PW_BUILD_ID
 close $fh_in; close $fh_out
 puts "INFO: regenerated pw_version_pkg build_id=$build_hex git_hash=$git_hex"
 
+# Sanity: the regenerated package MUST carry this build's git hash (catches a
+# broken substitution / stale template before we spend an hour synthesising).
+set _chk [open "$gen_dir/pw_version_pkg.sv" r]; set _txt [read $_chk]; close $_chk
+if {$git_hex ne "00000000" && ![string match "*$git_hex*" $_txt]} {
+    error "version regen failed: git_hash $git_hex not found in $gen_dir/pw_version_pkg.sv"
+}
+
 reset_run synth_1
 launch_runs synth_1 -jobs 8
 wait_on_run synth_1
