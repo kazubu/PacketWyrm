@@ -70,17 +70,47 @@ module tb_mac_axis_cdc;
     logic flush_seen_tx = 0;
     always_ff @(posedge tx_clk) if (tx_soft_flush_o[0]) flush_seen_tx <= 1'b1;
 
+    // MAC-TX output beat capture: verify a frame is byte-correct (matches
+    // push_frame's seed^beat pattern) and count accepted beats. All counters are
+    // written ONLY here (no mixed blocking/NBA race); the test arms via arm_req.
+    logic [7:0] exp_seed = 8'h00;
+    logic       arm_req  = 1'b0;
+    int  beat_idx = 0, beats_seen = 0, beat_errs = 0;
+    always_ff @(posedge tx_clk) begin
+        if (arm_req) begin
+            beat_idx <= 0; beats_seen <= 0; beat_errs <= 0;
+        end else if (mactx_v[0] && mactx_r[0]) begin
+            if (mactx_d[0] != ({8{exp_seed}} ^ {56'd0, 8'(beat_idx[7:0])})) beat_errs <= beat_errs + 1;
+            beats_seen <= beats_seen + 1;
+            beat_idx   <= mactx_l[0] ? 0 : beat_idx + 1;
+        end
+    end
+    task automatic arm_capture(input logic [7:0] s);
+        // Drive on negedge so arm_req/exp_seed are stable at the posedge the
+        // capture always_ff samples (no posedge-edge race; portable).
+        @(negedge tx_clk); exp_seed = s; arm_req = 1'b1;
+        @(negedge tx_clk); arm_req = 1'b0;
+    endtask
+    // Single dp_clk flush pulse (no settle wait) -- for overlapping flushes.
+    task automatic flush_pulse();
+        @(negedge dp_clk); dp_soft_flush = 1'b1;
+        @(negedge dp_clk); dp_soft_flush = 1'b0;
+    endtask
+
     // Push one 4-beat frame into the dp_tx (write) side, byte-tagged by `seed`.
+    // Drive on negedge (stable at the posedge the DUT samples) and present each
+    // beat EXACTLY once: holding the same beat across the next iteration's edge
+    // would let the FIFO accept it twice (a stimulus bug, not the DUT).
     task automatic push_frame(input logic [7:0] seed);
         for (int b = 0; b < 4; b++) begin
-            @(posedge dp_clk);
-            dptx_d[0] <= {8{seed}} ^ {56'd0, 8'(b)};
-            dptx_k[0] <= 8'hFF; dptx_u[0] <= 1'b0;
-            dptx_l[0] <= (b == 3); dptx_v[0] <= 1'b1;
-            // wait for write-side acceptance (FIFO may backpressure when full)
-            do @(posedge dp_clk); while (!dptx_r[0]);
+            @(negedge dp_clk);
+            dptx_d[0] = {8{seed}} ^ {56'd0, 8'(b)};
+            dptx_k[0] = 8'hFF; dptx_u[0] = 1'b0;
+            dptx_l[0] = (b == 3); dptx_v[0] = 1'b1;
+            @(posedge dp_clk);                       // beat sampled here
+            while (!dptx_r[0]) begin @(negedge dp_clk); @(posedge dp_clk); end
         end
-        @(posedge dp_clk); dptx_v[0] <= 1'b0; dptx_l[0] <= 1'b0;
+        @(negedge dp_clk); dptx_v[0] = 1'b0; dptx_l[0] = 1'b0;
     endtask
 
     // Wait until mac_frames reaches `target` (or timeout tx_clk cycles).
@@ -153,6 +183,50 @@ module tb_mac_axis_cdc;
         push_frame(8'hE5);
         wait_frames(1, 1000);
         chk("recovers after multi-frame flush (exactly 1)", mac_frames == 1);
+
+        // ---- Scenario 4: OVERLAPPING consecutive DP_RESET (2nd within 1st) ----
+        // The second pulse arrives while the first's stretch is still active
+        // (reloading the counter) -- a true back-to-back, not two settled flushes.
+        settle_and_clear();
+        mactx_r[0] = 1'b0;
+        push_frame(8'h44);
+        flush_pulse();                           // 1st pulse -> ~24-cycle stretch
+        repeat (6) @(posedge dp_clk);            // still mid-stretch
+        flush_pulse();                           // 2nd pulse DURING the 1st
+        repeat (60) @(posedge dp_clk); repeat (60) @(posedge tx_clk);
+        mactx_r[0] = 1'b1;
+        repeat (400) @(posedge tx_clk);
+        chk("overlapping consecutive flush: frame discarded (0 out)", mac_frames == 0);
+        arm_capture(8'h45);
+        push_frame(8'h45);
+        wait_frames(1, 1000);
+        chk("recovers after overlapping flush (exactly 1, byte-correct)",
+            mac_frames == 1 && beats_seen == 4 && beat_errs == 0);
+
+        // ---- Scenario 5: flush MID-HANDSHAKE (old tlast suppressed) ----
+        // Drain 2 beats of the old frame to the MAC, PAUSE (so it can't finish
+        // while the flush propagates), flush the half-emitted frame, and verify:
+        // (a) its tlast never appears (truncated), (b) the next frame is complete
+        // AND byte-perfect (every beat = seed^beat). This is the wedge-recovery
+        // case that actually matters on the wire.
+        settle_and_clear();
+        mactx_r[0] = 1'b0;
+        push_frame(8'h66);                       // old frame fully buffered
+        arm_capture(8'h66);
+        mactx_r[0] = 1'b1;                        // start draining to the MAC
+        wait (beats_seen >= 2);                  // 2 beats out, no tlast yet
+        mactx_r[0] = 1'b0;                        // pause so it can't complete
+        flush_pulse();                           // flush the half-emitted frame
+        repeat (60) @(posedge dp_clk); repeat (60) @(posedge tx_clk);
+        chk("mid-handshake flush: old frame truncated (no tlast)", mac_frames == 0);
+        mactx_r[0] = 1'b1;
+        repeat (200) @(posedge tx_clk);
+        chk("mid-handshake flush: old frame still never completes", mac_frames == 0);
+        arm_capture(8'h77);
+        push_frame(8'h77);
+        wait_frames(1, 1000);
+        chk("post-flush fresh frame complete + byte-correct (4 beats, 0 errs)",
+            mac_frames == 1 && beats_seen == 4 && beat_errs == 0);
 
         $display("mac_axis_cdc: %0d passed, %0d failed", pass, fail);
         if (fail == 0) $display("ALL MAC_AXIS_CDC SCENARIOS PASS");

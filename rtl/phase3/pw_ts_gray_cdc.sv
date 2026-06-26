@@ -29,11 +29,14 @@ module pw_ts_gray_cdc #(
         return b;
     endfunction
 
-    // Source: register the Gray code.
-    (* ASYNC_REG = "TRUE" *) logic [W-1:0] gray_src;
+    // Source: register the Gray code (src_clk domain -- NOT a synchronizer FF,
+    // so no ASYNC_REG; the gray_src -> sync1 crossing is constrained by
+    // set_max_delay -datapath_only + set_bus_skew in xdc/phase3_cdc.xdc).
+    logic [W-1:0] gray_src;
     always_ff @(posedge src_clk) gray_src <= bin2gray(src_bin);
 
-    // Destination: 2-FF synchronizer, then convert back to binary.
+    // Destination: 2-FF synchronizer (ASYNC_REG -> placed together for MTBF),
+    // then convert back to binary.
     (* ASYNC_REG = "TRUE" *) logic [W-1:0] sync1, sync2;
     always_ff @(posedge dst_clk) begin
         sync1 <= gray_src;

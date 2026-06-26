@@ -231,16 +231,29 @@ module pw_data_plane_axis #(
 
     // ------------------------------------------------------------
     // Data-plane soft reset: stretch the 1-cycle CSR pulse to a few
-    // cycles and AND it (active-low) into rst_n for the wedge-prone
-    // datapath state. Registered counter -> dp_rst_n is glitch-free.
+    // cycles and drive it (active-low) as the reset for the wedge-prone
+    // datapath state.
     // ------------------------------------------------------------
+    // dp_rst_n must be GLITCH-FREE: it fans out to the async-reset pins of
+    // 100+ FFs, so it cannot be the combinational compare `rst_n & (srst_cnt
+    // == 0)` -- a binary counter glitches that compare on multi-bit transitions
+    // (8->7), momentarily deasserting reset mid-recovery. Register the level
+    // instead (computed from the counter's next value, so it stays aligned with
+    // srst_cnt == 0 but is a clean FF output). Assert is synchronous; the global
+    // async rst_n still forces it low immediately.
     logic [3:0] srst_cnt;
+    logic       dp_rst_n;
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n)             srst_cnt <= 4'd0;
-        else if (dp_soft_rst_i) srst_cnt <= 4'd8;
-        else if (srst_cnt != 0) srst_cnt <= srst_cnt - 4'd1;
+        if (!rst_n) begin
+            srst_cnt <= 4'd0;
+            dp_rst_n <= 1'b0;
+        end else begin
+            automatic logic [3:0] nxt = dp_soft_rst_i ? 4'd8
+                                      : (srst_cnt != 0) ? srst_cnt - 4'd1 : 4'd0;
+            srst_cnt <= nxt;
+            dp_rst_n <= (nxt == 4'd0);   // glitch-free registered reset level
+        end
     end
-    wire dp_rst_n = rst_n & (srst_cnt == 4'd0);
 
     // ------------------------------------------------------------
     // Per-port RX: streaming parser -> classifier -> SAF
@@ -640,8 +653,12 @@ module pw_data_plane_axis #(
     // clk (2-FF), then count link up/down transitions and block-lock
     // losses. Not affected by stats_clear_i (link history is sticky).
     // ------------------------------------------------------------
-    logic [PW_PORTS-1:0] lu_sync0, lu_sync1, lu_prev;
-    logic [PW_PORTS-1:0] bl_sync0, bl_sync1, bl_prev;
+    // 2-FF synchronizers for the async MAC/PCS status; ASYNC_REG keeps the pair
+    // placed together for max MTBF (CDC-2). lu_prev/bl_prev are edge-detect regs
+    // in-domain, not part of the synchronizer.
+    (* ASYNC_REG = "true" *) logic [PW_PORTS-1:0] lu_sync0, lu_sync1;
+    (* ASYNC_REG = "true" *) logic [PW_PORTS-1:0] bl_sync0, bl_sync1;
+    logic [PW_PORTS-1:0] lu_prev, bl_prev;
     logic [31:0] link_up_cnt   [PW_PORTS];
     logic [31:0] link_down_cnt [PW_PORTS];
     logic [31:0] bl_loss_cnt   [PW_PORTS];
