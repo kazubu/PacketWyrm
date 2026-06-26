@@ -22,14 +22,22 @@ set_false_path -to [get_cells -hier -filter {NAME =~ *flush_sync_reg[0]}]
 # counter crosses dp_clk -> each MAC tx_clk. Bound the source-reg -> first-sync
 # delay (datapath-only) and the inter-bit skew so a sample mid-increment
 # resolves to N or N+1 (Gray guarantees one bit changes), never a far value.
-# Both domains ~6.4 ns; constrain to one period. Without these the crossing is
-# (incorrectly) timed as synchronous between unrelated clocks (TIMING-6/7).
-set_max_delay -datapath_only \
-    -from [get_cells -hier -filter {NAME =~ *u_tscdc/gray_src_reg[*]}] \
-    -to   [get_cells -hier -filter {NAME =~ *u_tscdc/sync1_reg[*]}] 6.400
-set_bus_skew \
-    -from [get_cells -hier -filter {NAME =~ *u_tscdc/gray_src_reg[*]}] \
-    -to   [get_cells -hier -filter {NAME =~ *u_tscdc/sync1_reg[*]}] 6.400
+# Without these the crossing is (incorrectly) timed as synchronous between
+# unrelated clocks (TIMING-6/7).
+#
+# MUST be split PER DESTINATION PORT: synthesis merges the two identical dp_clk
+# Gray source registers into one, but it fans out to BOTH ports' sync stages,
+# which are in DIFFERENT tx_clk domains. A single bus-skew group spanning both
+# destinations can't be populated (the source->dest pairs are different clocks
+# -> "Failed to populate N paths in bus skew group"). One group per dest port.
+foreach pp {0 1} {
+    set_max_delay -datapath_only \
+        -from [get_cells -hier -filter {NAME =~ *u_tscdc/gray_src_reg[*]}] \
+        -to   [get_cells -hier -filter "NAME =~ *g_ts_egress\[$pp\].u_tscdc/sync1_reg\[*\]"] 6.400
+    set_bus_skew \
+        -from [get_cells -hier -filter {NAME =~ *u_tscdc/gray_src_reg[*]}] \
+        -to   [get_cells -hier -filter "NAME =~ *g_ts_egress\[$pp\].u_tscdc/sync1_reg\[*\]"] 6.400
+}
 
 # Reset-synchroniser async-assert crossings. With the broad axi<->dp clock_groups
 # removed (above), the async-reset (CLR) inputs of these reset synchronisers are

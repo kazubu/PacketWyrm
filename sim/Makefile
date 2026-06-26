@@ -136,6 +136,12 @@ CDC_RTL  := $(TAXI_SRC)/axis/rtl/taxi_axis_if.sv \
             $(REPO)/rtl/phase2/pw_mac_axis_cdc.sv
 CDC_YDIRS := -y $(TAXI_SRC)/axis/rtl -y $(TAXI_SRC)/lib/rtl -y $(TAXI_SRC)/sync/rtl
 
+# Full Taxi 10G MAC (taxi_eth_mac_10g) for the MAC-inclusive loopback test.
+TB_MACLOOP := mac_loopback_tb/tb_mac_loopback.sv
+MAC_YDIRS  := -y $(TAXI_SRC)/eth/rtl -y $(TAXI_SRC)/axis/rtl -y $(TAXI_SRC)/lfsr/rtl \
+              -y $(TAXI_SRC)/ptp/rtl -y $(TAXI_SRC)/sync/rtl -y $(TAXI_SRC)/stats/rtl \
+              -y $(TAXI_SRC)/prim/rtl
+
 CHK_RTL := \
     $(REPO)/rtl/phase3/pw_axis_pkg.sv \
     $(REPO)/rtl/phase3/pw_classifier_pkg.sv \
@@ -151,7 +157,7 @@ VFLAGS := --binary -j 0 \
           -Wno-PINCONNECTEMPTY \
           --timing
 
-.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_full sim_fga sim_fgm sim_fge sim_pax sim_saf sim_punt sim_inj sim_cdc sim_dpa sim_top sim_vec sim_all wave clean vectors
+.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_full sim_fga sim_fgm sim_fge sim_pax sim_saf sim_punt sim_inj sim_cdc sim_macloop sim_dpa sim_top sim_vec sim_all wave clean vectors
 
 sim: sim_build/data_plane
 	./sim_build/data_plane
@@ -226,6 +232,17 @@ sim_build/mac_axis_cdc: $(CDC_RTL) $(TB_CDC)
 	    -o mac_axis_cdc \
 	    $(CDC_RTL) $(TB_CDC)
 
+sim_macloop: sim_build/mac_loopback
+	./sim_build/mac_loopback
+
+# Vendor Taxi MAC is not lint-clean under our -Wall set -> -Wno-fatal.
+sim_build/mac_loopback: $(TB_MACLOOP)
+	$(VERILATOR) --binary -j 0 --timing -Wno-fatal \
+	    -Mdir sim_build $(MAC_YDIRS) \
+	    --top-module tb_mac_loopback \
+	    -o mac_loopback \
+	    $(TAXI_SRC)/axis/rtl/taxi_axis_if.sv $(TB_MACLOOP)
+
 sim_dpa: sim_build/data_plane_axis
 	./sim_build/data_plane_axis
 
@@ -248,7 +265,7 @@ vectors_clean:
 sim_vec: sim_build/wire_vectors $(VECTORS)
 	./sim_build/wire_vectors
 
-sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_chk sim_slice sim_fclass sim_hclass sim_fidmap sim_spi sim_icap sim_tsi sim_full sim_fga sim_fgm sim_fge sim_pax sim_saf sim_punt sim_inj sim_cdc sim_dpa sim_top sim_vec
+sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_chk sim_slice sim_fclass sim_hclass sim_fidmap sim_spi sim_icap sim_tsi sim_full sim_fga sim_fgm sim_fge sim_pax sim_saf sim_punt sim_inj sim_cdc sim_macloop sim_dpa sim_top sim_vec
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
