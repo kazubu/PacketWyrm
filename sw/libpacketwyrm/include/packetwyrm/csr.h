@@ -464,7 +464,13 @@ struct pwfpga_dma_cpl {
 /* Write 1: data-plane soft reset -- clears the wedge-prone datapath
  * state machines (generators, store-and-forward FIFOs, egress/punt
  * arbiters) so a wedged data plane recovers without a JTAG reconfig.
- * Configuration (classifier / flow tables) is preserved. */
+ * The pulse is also stretched and CDC'd into each MAC TX clock to flush
+ * the per-port MAC-TX CDC FIFO (both sides) and reset pw_ts_insert, so a
+ * frame stuck in the egress FIFO (MAC-TX clock domain) is discarded and
+ * TX recovers in-system. Re-initialises TX-CDC state while the TX clock
+ * runs; does NOT cover the MAC/PCS/GT, the RX CDC, or a stopped TX clock
+ * (those still need an ICAP reboot / power cycle). Configuration
+ * (classifier / flow tables) is preserved. */
 #define PWFPGA_REG_DP_RESET                (PWFPGA_WIN_STATS_SNAPSHOT + 0x3FF4u)
 
 /* In-system SPI flash master (pw_spi_flash) -- lives in the free reg

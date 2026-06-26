@@ -93,7 +93,13 @@ module pwfpga_top_phase3 #(
     // In-band reconfig -- board top wires these to ICAPE3.
     output wire              icap_csib_o,
     output wire              icap_rdwrb_o,
-    output wire [31:0]       icap_i_o
+    output wire [31:0]       icap_i_o,
+
+    // Data-plane soft-reset pulse (CSR DP_RESET, 1 clk). Exposed so the board
+    // top can also flush the MAC-TX CDC + ts_insert (their tx_clk domain is
+    // outside this core's reset), making an egress wedge recoverable without a
+    // full bitstream reload. Safe to leave unconnected.
+    output wire              dp_soft_rst_o
 );
 
     // --- Data-plane <-> CSR_full wiring -------------------------
@@ -327,6 +333,7 @@ module pwfpga_top_phase3 #(
     logic [$clog2(NUM_FLOWS)-1:0]  hash_wr_lfid_w;
     logic         stats_clear_w;
     logic         dp_soft_rst_w;
+    assign dp_soft_rst_o = dp_soft_rst_w;
 
     pw_data_plane_axis #(
         .PW_PORTS      (NUM_PORTS),

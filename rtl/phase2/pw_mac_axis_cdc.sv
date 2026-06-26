@@ -52,8 +52,53 @@ module pw_mac_axis_cdc #(
     input  wire logic                dp_tx_tvalid [PORTS],
     output wire logic                dp_tx_tready [PORTS],
     input  wire logic                dp_tx_tlast  [PORTS],
-    input  wire logic                dp_tx_tuser  [PORTS]
+    input  wire logic                dp_tx_tuser  [PORTS],
+
+    // DP_RESET egress recovery: a single dp_soft_flush pulse (dp_clk) flushes
+    // every port's TX FIFO -- discarding a frame wedged in the MAC-TX clock
+    // domain so TX recovers WITHOUT a bitstream reload. The pulse is stretched
+    // here and CDC'd into each tx_clk internally (so the FIFO's two clock sides
+    // see an overlapping multi-cycle reset); only the TX FIFO is flushed, the
+    // RX FIFO is untouched. tx_soft_flush_o[] exports the synchronized per-port
+    // flush level (tx_clk) so the board can reset the downstream pw_ts_insert in
+    // the same domain. Tie dp_soft_flush low if unused.
+    input  wire logic                dp_soft_flush,
+    output wire logic                tx_soft_flush_o [PORTS]
 );
+
+    // --- egress soft-flush: stretch the dp_clk pulse, CDC into each tx_clk ---
+    // dp_soft_flush is a 1-cycle pulse; stretch it to a level long enough that,
+    // once synchronized into the (independent) tx_clk, both FIFO sides hold
+    // reset together. dp_rst is dp_clk-synchronous (board top), so a plain
+    // synchronous clear is correct here.
+    //
+    // flush_dp is REGISTERED (not the combinational `flush_cnt != 0`): a binary
+    // counter glitches its zero-compare during multi-bit transitions, and that
+    // glitch must never reach the tx_clk synchroniser (it would momentarily drop
+    // the FIFO reset mid-recovery). A clean dp_clk FF output crosses instead --
+    // report_cdc sees a registered source (CDC-3 Info), not combinational logic
+    // before a synchroniser (CDC-10 Critical).
+    logic [4:0] flush_cnt = '0;
+    logic       flush_dp  = 1'b0;
+    always_ff @(posedge dp_clk) begin
+        automatic logic [4:0] nxt = dp_rst ? 5'd0
+                                  : dp_soft_flush ? 5'd24          // hold ~24 dp_clk
+                                  : (flush_cnt != 0) ? flush_cnt - 5'd1
+                                  : 5'd0;
+        flush_cnt <= nxt;
+        flush_dp  <= (nxt != 5'd0);    // 1-bit FF, aligned with flush_cnt != 0
+    end
+
+    // Single REGISTERED reset level for the TX FIFO write (dp_clk) side: a clean
+    // FF output drives the FIFO's async reset, never a multi-input OR LUT (which
+    // can glitch the reset, briefly deasserting it mid-recovery). Asserts
+    // immediately on dp_rst (async) and on the soft flush (flush_dp, registered);
+    // deasserts synchronously.
+    logic fifo_srst = 1'b1;
+    always_ff @(posedge dp_clk or posedge dp_rst) begin
+        if (dp_rst) fifo_srst <= 1'b1;
+        else        fifo_srst <= flush_dp;
+    end
 
     for (genvar p = 0; p < PORTS; p++) begin : g_cdc
 
@@ -93,6 +138,24 @@ module pw_mac_axis_cdc #(
         assign dp_rx_tuser[p]  = rx_m.tuser;
         assign rx_m.tready     = dp_rx_tready[p];
 
+        // Synchronize the dp_clk flush level into this port's tx_clk, then form a
+        // SINGLE registered reset level for the TX FIFO read side (fifo_mrst): a
+        // clean FF output, never an OR LUT on the async reset. Asserts on tx_rst
+        // (async) and on the synchronized flush; exported so the board's
+        // ts_insert shares this same single registered reset.
+        (* ASYNC_REG = "true" *) logic [2:0] flush_sync = '0;
+        logic fifo_mrst = 1'b1;
+        always_ff @(posedge tx_clk[p] or posedge tx_rst[p]) begin
+            if (tx_rst[p]) begin
+                flush_sync <= '0;
+                fifo_mrst  <= 1'b1;
+            end else begin
+                flush_sync <= {flush_sync[1:0], flush_dp};
+                fifo_mrst  <= flush_sync[2];
+            end
+        end
+        assign tx_soft_flush_o[p] = fifo_mrst;   // registered combined tx reset (active-high)
+
         // ---- TX: data plane(dp_clk) -> MAC(tx_clk) ----
         assign tx_s.tdata  = dp_tx_tdata[p];
         assign tx_s.tkeep  = dp_tx_tkeep[p];
@@ -107,8 +170,11 @@ module pw_mac_axis_cdc #(
         taxi_axis_async_fifo #(
             .DEPTH(DEPTH), .FRAME_FIFO(1'b1)
         ) u_tx_fifo (
-            .s_clk(dp_clk),    .s_rst(dp_rst),    .s_axis(tx_s),
-            .m_clk(tx_clk[p]), .m_rst(tx_rst[p]), .m_axis(tx_m),
+            // Registered single-source resets (fifo_srst/fifo_mrst): both sides
+            // reset together (overlapping) so the async FIFO's gray pointers
+            // re-zero cleanly and any wedged frame is discarded.
+            .s_clk(dp_clk),    .s_rst(fifo_srst),   .s_axis(tx_s),
+            .m_clk(tx_clk[p]), .m_rst(fifo_mrst),   .m_axis(tx_m),
             .s_pause_ack(), .m_pause_ack(),
             .s_status_depth(), .s_status_depth_commit(), .s_status_overflow(),
             .s_status_bad_frame(), .s_status_good_frame(),

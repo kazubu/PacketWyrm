@@ -49,8 +49,9 @@ module clock_reset (
 
     BUFG u_bufg_100 (.I(sys_clk), .O(clk_100mhz));
 
-    // Two-flop reset synchronisers into each domain.
-    reg [1:0] r100_sync;
+    // Two-flop reset synchronisers into each domain (ASYNC_REG -> placed
+    // together for stable MTBF + clean methodology/CDC recognition).
+    (* ASYNC_REG = "true" *) reg [1:0] r100_sync;
     always @(posedge clk_100mhz or negedge sys_rst_n) begin
         if (!sys_rst_n) r100_sync <= 2'b00;
         else            r100_sync <= {r100_sync[0], 1'b1};
@@ -58,7 +59,7 @@ module clock_reset (
     assign rst_n_100 = r100_sync[1];
 
     assign clk_axi   = pcie_user_clk;
-    reg [1:0] raxi_sync;
+    (* ASYNC_REG = "true" *) reg [1:0] raxi_sync;
     always @(posedge pcie_user_clk or negedge pcie_user_resetn) begin
         if (!pcie_user_resetn) raxi_sync <= 2'b00;
         else                   raxi_sync <= {raxi_sync[0], 1'b1};
