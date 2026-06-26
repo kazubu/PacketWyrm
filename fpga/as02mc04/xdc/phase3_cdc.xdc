@@ -30,14 +30,24 @@ set_false_path -to [get_cells -hier -filter {NAME =~ *flush_sync_reg[0]}]
 # which are in DIFFERENT tx_clk domains. A single bus-skew group spanning both
 # destinations can't be populated (the source->dest pairs are different clocks
 # -> "Failed to populate N paths in bus skew group"). One group per dest port.
-foreach pp {0 1} {
-    set_max_delay -datapath_only \
-        -from [get_cells -hier -filter {NAME =~ *u_tscdc/gray_src_reg[*]}] \
-        -to   [get_cells -hier -filter "NAME =~ *g_ts_egress\[$pp\].u_tscdc/sync1_reg\[*\]"] 6.400
-    set_bus_skew \
-        -from [get_cells -hier -filter {NAME =~ *u_tscdc/gray_src_reg[*]}] \
-        -to   [get_cells -hier -filter "NAME =~ *g_ts_egress\[$pp\].u_tscdc/sync1_reg\[*\]"] 6.400
-}
+# NOTE: foreach/if are NOT supported in XDC constraint files (silently skipped
+# with CRITICAL WARNING Designutils 20-1307) -- these MUST be unrolled per port.
+# In a -filter NAME =~ glob, '[' / ']' are LITERAL and '*' is the wildcard, so
+# g_ts_egress[0] matches the literal generate index.
+# Port 0:
+set_max_delay -datapath_only \
+    -from [get_cells -hier -filter {NAME =~ *u_tscdc/gray_src_reg[*]}] \
+    -to   [get_cells -hier -filter {NAME =~ *g_ts_egress[0].u_tscdc/sync1_reg[*]}] 6.400
+set_bus_skew \
+    -from [get_cells -hier -filter {NAME =~ *u_tscdc/gray_src_reg[*]}] \
+    -to   [get_cells -hier -filter {NAME =~ *g_ts_egress[0].u_tscdc/sync1_reg[*]}] 6.400
+# Port 1:
+set_max_delay -datapath_only \
+    -from [get_cells -hier -filter {NAME =~ *u_tscdc/gray_src_reg[*]}] \
+    -to   [get_cells -hier -filter {NAME =~ *g_ts_egress[1].u_tscdc/sync1_reg[*]}] 6.400
+set_bus_skew \
+    -from [get_cells -hier -filter {NAME =~ *u_tscdc/gray_src_reg[*]}] \
+    -to   [get_cells -hier -filter {NAME =~ *g_ts_egress[1].u_tscdc/sync1_reg[*]}] 6.400
 
 # Reset-synchroniser async-assert crossings. With the broad axi<->dp clock_groups
 # removed (above), the async-reset (CLR) inputs of these reset synchronisers are
@@ -85,13 +95,19 @@ create_waiver -type CDC -id {CDC-10} \
 # it is NOT limited to u_tscdc. Any NEW dp_clk -> tx_clk CDC must therefore be
 # vetted individually (report_cdc -details + its own max_delay/bus_skew or
 # false_path); don't rely on TIMING-6/7 to flag it.
-foreach _tx {gtwiz_userclk_tx_srcclk_out[0] gtwiz_userclk_tx_srcclk_out[0]_1} {
-    foreach _id {TIMING-6 TIMING-7} {
-        create_waiver -type METHODOLOGY -id $_id \
-            -objects [get_clocks [list dp_clk_u $_tx]] -user pw \
-            -description "Egress timestamp Gray CDC (u_tscdc): dp_clk -> MAC tx_clk is intentionally async, constrained per-port by set_max_delay -datapath_only + set_bus_skew; no common primary clock/node is expected."
-    }
-}
+# NOTE: foreach is NOT supported in XDC (Designutils 20-1307) -- unrolled below.
+create_waiver -type METHODOLOGY -id {TIMING-6} \
+    -objects [get_clocks {dp_clk_u gtwiz_userclk_tx_srcclk_out[0]}] -user pw \
+    -description "Egress timestamp Gray CDC (u_tscdc): dp_clk -> MAC tx_clk is intentionally async, constrained per-port by set_max_delay -datapath_only + set_bus_skew; no common primary clock/node is expected."
+create_waiver -type METHODOLOGY -id {TIMING-7} \
+    -objects [get_clocks {dp_clk_u gtwiz_userclk_tx_srcclk_out[0]}] -user pw \
+    -description "Egress timestamp Gray CDC (u_tscdc): dp_clk -> MAC tx_clk is intentionally async, constrained per-port by set_max_delay -datapath_only + set_bus_skew; no common primary clock/node is expected."
+create_waiver -type METHODOLOGY -id {TIMING-6} \
+    -objects [get_clocks {dp_clk_u gtwiz_userclk_tx_srcclk_out[0]_1}] -user pw \
+    -description "Egress timestamp Gray CDC (u_tscdc): dp_clk -> MAC tx_clk is intentionally async, constrained per-port by set_max_delay -datapath_only + set_bus_skew; no common primary clock/node is expected."
+create_waiver -type METHODOLOGY -id {TIMING-7} \
+    -objects [get_clocks {dp_clk_u gtwiz_userclk_tx_srcclk_out[0]_1}] -user pw \
+    -description "Egress timestamp Gray CDC (u_tscdc): dp_clk -> MAC tx_clk is intentionally async, constrained per-port by set_max_delay -datapath_only + set_bus_skew; no common primary clock/node is expected."
 
 # Async LED outputs.
 set_false_path -to [get_ports {sfp_led[*]}]
