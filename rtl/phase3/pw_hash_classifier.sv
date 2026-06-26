@@ -104,11 +104,13 @@ module pw_hash_classifier #(
     // it is a pure data pipeline register, gated downstream by kv1 (which IS
     // reset), so its value on reset is don't-care. Dropping the async reset on
     // this 352-bit register cuts that much async-reset fanout and removes it
-    // from the DSP-input LUTAR-1 set. (It does NOT fully clear the hash LUTAR-1
-    // or free LUT: the seed/B operand keeps its reset and the XOR fold sits
-    // between this reg and the DSP, so the DSP still can't absorb its input
-    // registers -- a known, non-blocking perf hint.) Init '0 = GSR/power-up
-    // value for sim cleanliness, not an async reset.
+    // from the DSP-input async-reset set (the DPIR-2 "asynchronous driver" /
+    // SYNTH-10 DSP-packing hints -- NOT LUTAR-1, which is about LUTs driving
+    // reset pins). It does NOT fully clear those hints or free LUT: the seed/B
+    // operand keeps its reset and the XOR fold sits between this reg and the
+    // DSP, so the DSP still can't absorb its input registers -- a known,
+    // non-blocking perf hint. Init '0 = GSR/power-up value (sim cleanliness),
+    // not an async reset.
     logic [KB-1:0] mkey_q1 = '0;
     logic          kv1;
     always_ff @(posedge clk) mkey_q1 <= mkey_c;

@@ -78,9 +78,13 @@ create_waiver -type CDC -id {CDC-10} \
 # primary clock), and the crossing is constrained per-port by the
 # set_max_delay -datapath_only + set_bus_skew above. TIMING-6 ("no common
 # primary clock") / TIMING-7 ("no common node") are therefore expected and
-# safe -- waive them, scoped to ONLY these two dp_clk->tx_clk pairs, so a real
-# unconstrained-clock-relationship Critical elsewhere still stands out. (Not a
-# clock_groups: that would also drop the max_delay/bus_skew on the Gray CDC.)
+# safe -- waive them for these dp_clk -> tx_clk CLOCK PAIRS. (Not a clock_groups:
+# that would also drop the max_delay/bus_skew on the Gray CDC.)
+# CAVEAT: TIMING-6/7 are clock-RELATIONSHIP checks, so this waiver also silences
+# them for ANY future logic that crosses these same dp_clk -> tx_clk pairs --
+# it is NOT limited to u_tscdc. Any NEW dp_clk -> tx_clk CDC must therefore be
+# vetted individually (report_cdc -details + its own max_delay/bus_skew or
+# false_path); don't rely on TIMING-6/7 to flag it.
 foreach _tx {gtwiz_userclk_tx_srcclk_out[0] gtwiz_userclk_tx_srcclk_out[0]_1} {
     foreach _id {TIMING-6 TIMING-7} {
         create_waiver -type METHODOLOGY -id $_id \
