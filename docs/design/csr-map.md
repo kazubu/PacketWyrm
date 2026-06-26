@@ -27,7 +27,7 @@ headers (those are authoritative; this map is intent).
 ```
 0x0000  device_id              R     0x000041C5 / vendor-defined
 0x0004  version                R     {major[31:24], minor[23:16], patch[15:0]}
-0x0008  build_id               R     opaque build identifier
+0x0008  build_id               R     opaque build identifier (unix build time)
 0x000c  git_hash               R     low 32 bits of git SHA
 0x0010  capabilities           R     bitmask, see below
 0x0014  num_local_ports        R     usually 2
@@ -36,7 +36,18 @@ headers (those are authoritative; this map is intent).
 0x0020  num_classifier_entries R
 0x0024  num_histogram_bins     R     per-flow latency histogram bins
 0x0028  capability_ext         R     reserved for future bits
+```
 
+> **build_id / git_hash also readable over JTAG (no PCIe needed).** The build
+> stamps `BITSTREAM.CONFIG.USERID = git_hash` and `USR_ACCESS = build_id`, so
+> `get_property REGISTER.USERCODE <hw_device>` (= git_hash) and
+> `REGISTER.USR_ACCESS <hw_device>` (= build_id) identify the running fabric
+> independently of the CSR. Build `synth_impl_phase3.tcl` disables incremental
+> synthesis — otherwise it reuses the `pw_csr_full` netlist and the regenerated
+> build_id/git_hash never reach the bitstream (the design then reports the
+> *previous* build's id even though everything else is current).
+
+```
 0x0100  global_control         RW    [0] enable, [1] arm, [2] reset_counters
 0x0104  global_status          R     [0] ready, [1] armed, [2] running,
                                      [3] error, [4] degraded
