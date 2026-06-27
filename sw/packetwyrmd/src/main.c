@@ -826,7 +826,10 @@ static void handle_client(int cfd,
                 if (!f) { resp = build_error("open file failed"); }
                 else {
                     fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
-                    if (sz <= 0 || sz > (8 << 20)) { fclose(f); resp = build_error("bad file size"); }
+                    /* 16 MB cap (matches pw_flash): the boot image is ~12 MB now;
+                     * the old 8 MB guard predates the full data-plane bitstream and
+                     * rejected it. 16 MB = the 3-byte-addressable range of the flash. */
+                    if (sz <= 0 || sz > (16 << 20)) { fclose(f); resp = build_error("bad file size"); }
                     else {
                         uint8_t *img = malloc((size_t)sz);
                         size_t rd = fread(img, 1, (size_t)sz, f); fclose(f);
