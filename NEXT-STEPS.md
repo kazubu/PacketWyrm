@@ -115,14 +115,24 @@ payload-agnostic), and the field+UDF comparator classifier (punt/forward/
 few-rule). Variable frame length (RFC2544 + IMIX), the RFC2544 driver, and the
 slow-path TCP SYN generator are done.
 
-**Timing:** post-route **WNS +0.132 ns @156.25 MHz, LUT ~88%** after the
-timing-recovery pass (hash classifier pipelined + SPI flash buffers → block
-RAM). The design sits near its Fmax ceiling, so multiple `dp_clk` paths hover
-near zero; cutting LUT (congestion) lifts them all, while pipelining fixes one
-named path. Read timing **post-route** (`report_timing` on the routed dcp) —
-the post-*place* estimate runs ~0.5 ns optimistic and the project tcl has no
-timing gate, so `write_bitstream` completing does NOT imply closure. Full
-hard-won detail is in the `dp-clk-timing-lessons` memory.
+**Timing:** post-route **WNS +0.014 ns @156.25 MHz** on a FULL (non-incremental)
+resynth — the canonical build is build_id `0x6a3f40f3` / git `1c152435`. The
+earlier **+0.132** figure was an *incremental*-synth build that reused a lucky
+placement; it also masked that the per-build build_id never reached the netlist
+(incremental reused `pw_csr_full`). Disabling incremental synth (so build_id is
+real — see `flash-reconfig-hw-facts` memory) exposed the true ceiling at -0.059,
+fixed by **pipelining the hash classifier 3→4** (register the XOR-fold `k32` so
+fold/multiply/BRAM-addr no longer share a dp_clk cone). The new WNS limiter is no
+longer dp_clk — it's the `axi_aclk` (250 MHz) `hash_acc_key` CSR-write path
+(config-time only). The design still sits near its Fmax ceiling, so cutting LUT
+(congestion) lifts all near-zero paths while pipelining fixes one named path.
+Build identity is now also readable over JTAG (`REGISTER.USERCODE`=git,
+`USR_ACCESS`=build_id; `BITSTREAM.CONFIG.USERID/USR_ACCESS` stamped). Read timing
+**post-route** (`report_timing` on the routed dcp) — the post-*place* estimate
+runs ~0.5 ns optimistic and the project tcl has no timing gate, so
+`write_bitstream` completing does NOT imply closure (it now also gates on run
+STATUS). Full hard-won detail is in the `dp-clk-timing-lessons` memory
+(UPDATE 10) + `flash-reconfig-hw-facts`.
 
 ## Test surface
 
