@@ -379,7 +379,9 @@ module tb_data_plane_axis;
     task automatic commit_flows();
         prog_row(0); prog_row(1);
         csr_w(FCOMMIT, 32'h1);
-        repeat (FLOWS + 4) @(posedge clk);
+        // BRAM-staged flow table: the commit walk reads the staging one 32-bit
+        // word per cycle, so it takes FLOWS*ROW_DW (=64) cycles, not FLOWS.
+        repeat (FLOWS*64 + 16) @(posedge clk);
     endtask
     // Fast enable/disable: rewrite only word 0 (enable byte, preserving
     // egress/flow_id) + commit. Used where the generation window must end
@@ -390,7 +392,9 @@ module tb_data_plane_axis;
               {flow_rows[idx].flow_id[15:8], flow_rows[idx].flow_id[7:0],
                {4'h0, flow_rows[idx].egress}, {7'h0, en}});
         csr_w(FCOMMIT, 32'h1);
-        repeat (FLOWS + 4) @(posedge clk);
+        // BRAM-staged flow table: the commit walk reads the staging one 32-bit
+        // word per cycle, so it takes FLOWS*ROW_DW (=64) cycles, not FLOWS.
+        repeat (FLOWS*64 + 16) @(posedge clk);
     endtask
 
     // ----- frame builder: Ethernet [/VLAN] / IPv4 / UDP / 32B test hdr
@@ -657,16 +661,26 @@ module tb_data_plane_axis;
         lb_en     = 1'b1;
         flow_rows[0].valid = 1'b1;
         set_enable(0, 1'b1);          // fast enable (row already staged above)
-        repeat (200) @(posedge clk);
+        // The BRAM-staged commit walk takes FLOWS*64 cycles, during which the
+        // flow is already live and generating, so measure the rate as a DELTA
+        // over a fixed window (like the bidir scenario) rather than an absolute
+        // count from enable -- the absolute count would include the walk period.
+        begin
+            longint rx4_a;
+            snap_all();
+            rx4_a = flow_rx[4];
+            repeat (200) @(posedge clk);  // measurement window
+            snap_all();
+            // 74-byte frames, ~4 B/cyc over 200 cyc -> ~10 frames; window [4,16]
+            check_eq("rate rx delta >= 4",  ((flow_rx[4]-rx4_a) >= 4)  ? 1 : 0, 1);
+            check_eq("rate rx delta <= 16", ((flow_rx[4]-rx4_a) <= 16) ? 1 : 0, 1);
+        end
         flow_rows[0].valid = 1'b0;
         set_enable(0, 1'b0);          // fast disable -> generation stops promptly
         repeat (24) @(posedge clk);   // drain the last looped frame (keep lb_en) so
         lb_en     = 1'b0;             // dropping lb_en never cuts a partial frame
         repeat (4) @(posedge clk);
-        // 74-byte frames, ~4 B/cyc over 200 cyc -> ~10 frames; window [4,16]
         snap_all();
-        check_eq("rate rx >= 4",  (flow_rx[4] >= 4)  ? 1 : 0, 1);
-        check_eq("rate rx <= 16", (flow_rx[4] <= 16) ? 1 : 0, 1);
         check_eq("rate lost==0",  flow_lost[4], 0);
 
         // ---------------- scenario 6: drop ----------------

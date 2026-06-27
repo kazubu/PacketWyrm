@@ -105,16 +105,27 @@ generator ignored `frame_len_*` and always emitted a fixed 74 B frame.
 plane, next to the generators). The old approach — a 32-wide registered
 `pw_flow_row_t` array (`flow_rows_o`) fanning out to both generators, each
 muxing the picked row 32:1 — was the routing wall once encap widened the row
-(~92% LUT, unroutable). Instead: the CSR shadow/commit is unchanged, but on
-commit a single decoder **walks** the committed rows (one per cycle) into a
-per-generator BRAM copy plus a compact per-slot scheduling FF array
-(`flow_sched`: valid/egress/tokens/cap/cost). Each generator schedules from
-`flow_sched` (all slots, every cycle) and reads only its **picked** row from
+(~92% LUT, unroutable). Instead: on commit a single decoder **walks** the
+committed rows into a per-generator BRAM copy plus a compact per-slot scheduling
+FF array (`flow_sched`: valid/egress/tokens/cap/cost). Each generator schedules
+from `flow_sched` (all slots, every cycle) and reads only its **picked** row from
 BRAM (`rd_addr`→`rd_row`, 1-cycle, same latency the old register mux had). The
 decode happens once (not ×32 in parallel), the wide register array + fan-out
 are gone, and the 32:1 mux became a BRAM read — LUT 92%→87%, FF 78%→66%, +34
 RAMB36. (BRAM inference needs a flat bit-vector mem read into an internal reg;
-a struct-array mem or reading into the output port maps to FFs.) The legacy
+a struct-array mem or reading into the output port maps to FFs.)
+
+The **CSR staging** is also block RAM now (it used to be a `pw_csr_window`
+shadow+live register double-buffer — ~94 K FFs read by the commit walk through a
+32:1 × 2048-bit `live_rows[waddr]` mux, ~17 K LUT, the dominant cost of this
+module after the read path went to BRAM). The host writes one 32-bit word per CSR
+write into a word-wide staging BRAM; on commit a **word-serial walk** reads it one
+word per cycle, reassembles each row, and feeds the same single decoder. So the
+walk now takes `DEPTH*ROW_DW` (64 words/row) cycles instead of `DEPTH` — ~13 µs
+for 32×256 B at 156.25 MHz, benign because configs are committed before a run (the
+commit-takes-effect-shortly-after contract just has a wider window). The CSR
+address map / commit register / wire model are unchanged. `pw_csr_window` itself
+is untouched and still backs the legacy flow window + the classifier window. The legacy
 per-port `gen_*_o` single-flow selection was also removed (dead in the
 multi-flow data plane). The wide-bus `pw_data_plane` / `pw_parser` /
 `pw_flow_gen` and `pw_flow_window` remain only for the legacy sim

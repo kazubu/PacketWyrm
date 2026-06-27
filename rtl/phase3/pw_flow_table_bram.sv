@@ -4,26 +4,35 @@
 // flow_rows_o) that fanned out into every egress generator and forced a
 // 32:1 wide mux per generator (the route-heavy, LUT-hungry path). Instead:
 //
-//   * The CSR shadow/commit staging is unchanged (pw_csr_window).
-//   * On commit, a single decoder WALKS the committed rows once (one row per
-//     cycle) and writes the decoded pw_flow_row_t into a block-RAM (one copy
-//     per egress port so each generator gets an independent read port), plus a
-//     small per-slot SCHEDULING descriptor (valid / egress / tokens / cap /
-//     cost) into a flip-flop array.
+//   * The CSR staging is a 32-bit-word block RAM (NOT a register double-buffer).
+//     The host writes one 32-bit word per CSR write at offset N*ROW_BYTES + w*4.
+//   * On commit, a word-serial walk reads the staging BRAM (one 32-bit word per
+//     cycle), reassembles each ROW_BYTES row, decodes it ONCE (a single
+//     pw_decode_flow_row instance), and writes the decoded pw_flow_row_t into a
+//     per-egress-port block-RAM plus a small per-slot SCHEDULING descriptor
+//     (valid / egress / tokens / cap / cost) into a flip-flop array.
 //   * Each generator schedules from the compact flow_sched_o[] array (all slots
 //     visible every cycle) and reads ONLY its picked slot's wide row content
 //     from BRAM via rd_addr_i / rd_row_o (registered, 1-cycle latency -- the
 //     same latency the old f_rows_i[pick] register mux had).
 //
 // Net: the wide decode happens once (not x32 in parallel), the 32-deep
-// pw_flow_row_t register array and its wide fan-out are gone, and the
-// generator's 32:1 row mux becomes a BRAM read. cost/cap are precomputed here
-// (Q16.16) so the generator no longer computes frame_bytes.
+// pw_flow_row_t register array and its wide fan-out are gone, AND the CSR
+// staging that used to be a shadow+live register double-buffer (pw_csr_window:
+// ~94 K FFs read by a 32:1 x 2048-bit `live_rows[waddr]` mux, ~17 K LUT) is now
+// a block RAM read by the word-serial walk. That register file + wide mux was
+// the dominant LUT/FF cost of this module; staging it in BRAM frees it the same
+// way the checker and SPI-flash register arrays were moved to BRAM. The CSR
+// address map / commit register / wire model are unchanged, so software is
+// unaffected.
 //
-// Commit transient: the walk takes DEPTH cycles; a slot's sched + BRAM update
-// on the cycle it is walked, so for ~DEPTH cycles after a commit the table is a
-// mix of old/new rows. Configs are committed before a run, so this is benign
-// (matches the old "commit takes effect ~1 cycle later" contract, just wider).
+// Commit transient: the walk now takes DEPTH*ROW_DW cycles (one 32-bit word per
+// cycle) plus a few pipeline cycles -- ~13 us for 32x256 B at 156.25 MHz. A
+// slot's sched + BRAM row update on the cycle its last word is assembled, so for
+// the duration of the walk the table is a mix of old/new rows. Configs are
+// committed before a run, so this is benign (same "commit takes effect shortly
+// after" contract as before, just a wider window). The per-port row BRAM is the
+// live store the generators read; it is only rewritten during the walk.
 
 `default_nettype none
 
@@ -53,63 +62,104 @@ module pw_flow_table_bram #(
 
     output logic                 commit_pulse_o
 );
-    localparam int IDXW      = $clog2(DEPTH);
+    localparam int IDXW      = (DEPTH  > 1) ? $clog2(DEPTH) : 1;
     localparam int ROW_BYTES = PW_FLOW_ROW_BYTES;
+    localparam int ROW_DW    = ROW_BYTES / 4;        // 32-bit words per row
+    localparam int WORD_W    = $clog2(ROW_DW);        // word index within a row
+    localparam int NWORDS    = DEPTH * ROW_DW;        // staging BRAM depth
+    localparam int WADDR_W   = $clog2(NWORDS);
+    localparam int ROWBITS   = $bits(pw_flow_row_t);
 
-    // --- CSR shadow/commit staging (unchanged) -----------------------------
-    logic [DEPTH-1:0][ROW_BYTES*8-1:0] live_rows;
-    logic                              commit_pulse;
-    assign commit_pulse_o = commit_pulse;
+    // --- CSR staging: a 32-bit-word block RAM (write = host CSR word writes) ---
+    // Address decode mirrors the old pw_csr_window: a row N occupies the byte
+    // range [WIN_BASE + N*ROW_BYTES, +ROW_BYTES); word w of row N is at byte
+    // offset N*ROW_BYTES + w*4, i.e. flat word index N*ROW_DW + w = rel >> 2.
+    (* ram_style = "block" *) logic [31:0] stg [NWORDS];
 
-    pw_csr_window #(
-        .ADDR_W        (ADDR_W),
-        .DEPTH         (DEPTH),
-        .ROW_BYTES     (ROW_BYTES),
-        .WIN_BASE      (WIN_BASE),
-        .COMMIT_OFFSET (COMMIT_OFFSET)
-    ) u_win (
-        .clk            (clk),
-        .rst_n          (rst_n),
-        .wr_en          (wr_en),
-        .wr_addr        (wr_addr),
-        .wr_data        (wr_data),
-        .live_rows_o    (live_rows),
-        .commit_pulse_o (commit_pulse)
-    );
+    wire [ADDR_W-1:0] rel           = wr_addr - WIN_BASE;
+    wire              is_commit_reg = (wr_addr == (WIN_BASE + COMMIT_OFFSET));
+    wire              is_row        = (wr_addr >= WIN_BASE) &&
+                                      (rel < (DEPTH * ROW_BYTES));
+    wire [WADDR_W-1:0] wword        = rel[2 +: WADDR_W];
 
-    // --- commit walk: decode one committed row per cycle -------------------
-    // live_rows is promoted on commit_pulse; start the walk the next cycle.
-    logic            walking;
-    logic [IDXW:0]   widx;          // 0..DEPTH (DEPTH = done)
-    pw_flow_row_t    wrow;          // decoded row being written this cycle
-    logic            wwe;           // BRAM write-enable for this cycle
-    logic [IDXW-1:0] waddr;
+    // --- commit-walk FSM -----------------------------------------------------
+    // walking issues sequential staging reads; the read data (1-cycle BRAM
+    // latency) is reassembled into one row, then decoded + written to the
+    // per-port row BRAM + the sched descriptor at each row boundary.
+    logic                    commit_req;
+    logic                    walking;
+    logic [WADDR_W:0]        rd_ptr;        // 0..NWORDS (NWORDS = all issued)
+    logic [31:0]             stg_q;         // registered staging read data
+    logic [WADDR_W:0]        rd_ptr_d;      // addr that stg_q corresponds to
+    logic                    rd_vld_d;      // stg_q holds a valid staging word
+
+    logic [ROW_DW-1:0][31:0] row_acc;       // row being assembled (one row)
+    logic                    row_done;      // row_acc holds a complete row
+    logic [IDXW-1:0]         row_idx;       // which flow slot row_acc is for
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            walking <= 1'b0; widx <= '0;
+            commit_req <= 1'b0; walking <= 1'b0; rd_ptr <= '0;
+            rd_ptr_d <= '0; rd_vld_d <= 1'b0; row_done <= 1'b0;
+            row_idx <= '0; commit_pulse_o <= 1'b0;
         end else begin
-            if (commit_pulse) begin
-                walking <= 1'b1; widx <= '0;
-            end else if (walking) begin
-                if (widx == IDXW'(DEPTH-1) || widx == (DEPTH)) walking <= 1'b0;
-                widx <= widx + 1'b1;
+            commit_pulse_o <= 1'b0;
+            row_done       <= 1'b0;
+
+            // latch a commit request (write-1 to the commit register)
+            if (wr_en && is_commit_reg && wr_data[0]) commit_req <= 1'b1;
+
+            // start / advance the walk
+            if (!walking) begin
+                if (commit_req) begin
+                    walking        <= 1'b1;
+                    commit_req     <= 1'b0;
+                    rd_ptr         <= '0;
+                    commit_pulse_o <= 1'b1;   // commit accepted; walk begins
+                end
+            end else begin
+                if (rd_ptr == (WADDR_W+1)'(NWORDS)) walking <= 1'b0;
+                else rd_ptr <= rd_ptr + 1'b1;
+            end
+
+            // staging read pipeline (BRAM has 1-cycle latency). Unconditional
+            // read keeps inference clean; rd_vld_d gates the use of stg_q.
+            stg_q    <= stg[rd_ptr[WADDR_W-1:0]];
+            rd_ptr_d <= rd_ptr;
+            rd_vld_d <= walking && (rd_ptr < (WADDR_W+1)'(NWORDS));
+
+            // reassemble the row; flag completion at the last word of each row
+            if (rd_vld_d) begin
+                row_acc[rd_ptr_d[WORD_W-1:0]] <= stg_q;
+                if (rd_ptr_d[WORD_W-1:0] == WORD_W'(ROW_DW-1)) begin
+                    row_done <= 1'b1;                       // row_acc complete next cycle
+                    row_idx  <= rd_ptr_d[WADDR_W-1:WORD_W];
+                end
             end
         end
     end
 
-    // Decode the row currently addressed by the walk (combinational, single
-    // decoder instance) and register the scheduling descriptor.
-    always_comb begin
-        waddr = widx[IDXW-1:0];
-        wrow  = pw_decode_flow_row(live_rows[waddr]);
-        wwe   = walking;
+    // staging write port (host CSR). Same clk block as the read above would
+    // create a true SDP; keep writes in their own block for clarity -- the two
+    // never address-collide in practice (host writes, then commits, then walk).
+    always_ff @(posedge clk) begin
+        if (wr_en && is_row) stg[wword] <= wr_data;
     end
 
+    // --- decode the assembled row (single decoder instance) ------------------
+    logic [ROW_BYTES*8-1:0] rowflat;
+    pw_flow_row_t           wrow;
+    always_comb begin
+        for (int d = 0; d < ROW_DW; d++) rowflat[d*32 +: 32] = row_acc[d];
+        wrow = pw_decode_flow_row(rowflat);
+    end
+    wire [ROWBITS-1:0] wrow_bits = wrow;
+
+    // --- scheduling descriptor (registered) ----------------------------------
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             for (int s = 0; s < DEPTH; s++) flow_sched_o[s] <= '0;
-        end else if (wwe) begin
+        end else if (row_done) begin
             // Token cost meters by the smallest legal frame of this flow: the
             // minimum-payload frame, or the configured frame_len_min if larger.
             // Exact for a fixed size (RFC2544, min==max); a min<max sweep meters
@@ -117,32 +167,30 @@ module pw_flow_table_bram #(
             automatic int min_legal = pw_frame_bytes(wrow, FRAME_LEN_PAYLOAD);
             automatic int cfg_min    = int'(wrow.frame_len_min);
             automatic int cost_b     = (cfg_min > min_legal) ? cfg_min : min_legal;
-            flow_sched_o[waddr].valid     <= wrow.valid;
-            flow_sched_o[waddr].egress    <= wrow.egress;
-            flow_sched_o[waddr].tokens_fp <= wrow.tokens_fp;
-            flow_sched_o[waddr].cap       <= {wrow.burst, 16'h0};
-            flow_sched_o[waddr].cost      <= {16'(cost_b), 16'h0};
-            flow_sched_o[waddr].len_min   <= wrow.frame_len_min;
-            flow_sched_o[waddr].len_max   <= wrow.frame_len_max;
-            flow_sched_o[waddr].len_step  <= wrow.frame_len_step;
-            flow_sched_o[waddr].ovh       <= 12'(pw_frame_bytes(wrow, 0));
+            flow_sched_o[row_idx].valid     <= wrow.valid;
+            flow_sched_o[row_idx].egress    <= wrow.egress;
+            flow_sched_o[row_idx].tokens_fp <= wrow.tokens_fp;
+            flow_sched_o[row_idx].cap       <= {wrow.burst, 16'h0};
+            flow_sched_o[row_idx].cost      <= {16'(cost_b), 16'h0};
+            flow_sched_o[row_idx].len_min   <= wrow.frame_len_min;
+            flow_sched_o[row_idx].len_max   <= wrow.frame_len_max;
+            flow_sched_o[row_idx].len_step  <= wrow.frame_len_step;
+            flow_sched_o[row_idx].ovh       <= 12'(pw_frame_bytes(wrow, 0));
         end
     end
 
-    // --- BRAM holding the decoded wide rows, one copy per read port --------
+    // --- BRAM holding the decoded wide rows, one copy per read port ----------
     // Replicated per generator so each gets an independent (write-walk +
     // read-pick) simple-dual-port block RAM -- no read arbitration. Stored as a
     // flat bit-vector (not a struct array) and read into an internal register
     // (not the output port) -- both are required for clean block-RAM inference.
-    localparam int ROWBITS = $bits(pw_flow_row_t);
-    wire [ROWBITS-1:0] wrow_bits = wrow;
     generate
         for (genvar p = 0; p < PORTS; p++) begin : g_bank
             (* ram_style = "block" *) logic [ROWBITS-1:0] mem [DEPTH];
             logic [ROWBITS-1:0] rd_q;
             always_ff @(posedge clk) begin
-                if (wwe) mem[waddr] <= wrow_bits;     // write (commit walk)
-                rd_q <= mem[rd_addr_i[p]];            // read (generator pick)
+                if (row_done) mem[row_idx] <= wrow_bits;   // write (commit walk)
+                rd_q <= mem[rd_addr_i[p]];                 // read (generator pick)
             end
             assign rd_row_o[p] = pw_flow_row_t'(rd_q);
         end
