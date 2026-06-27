@@ -296,9 +296,12 @@ module pw_csr_full #(
     // its word-write was the dp_clk/axi_aclk-critical path (the AXI clock-converter
     // handshake fed s_axi_wdata straight into it). Latch the word + index off the
     // handshake first (short), apply to hash_acc_key the next cycle (reg->reg,
-    // short). Safe: AXI-Lite writes to the CSR are spaced by the clock-converter
-    // handshake latency (>1 cycle), so this 1-cycle stage always drains before the
-    // next word write AND before the @+0x2C commit reads hash_acc_key.
+    // short). Safe: this write FSM is single-outstanding -- a B-handshake
+    // (bvalid/bready) sits between any two accepted write beats, so consecutive CSR
+    // writes are >=1 cycle apart (the AXI clock-converter handshake widens that
+    // further). The 1-cycle stage therefore always drains before the next word write
+    // AND before the @+0x2C commit reads hash_acc_key (a translate_off assert at the
+    // commit guards this should the write side ever change).
     logic                  hk_wr_q;
     logic [3:0]            hk_word_q;
     logic [31:0]           hk_data_q;
@@ -462,6 +465,17 @@ module pw_csr_full #(
                         hash_wr_valid_o <= s_axi_wdata[31];
                         hash_wr_key_o   <= hash_acc_key;
                         hash_wr_lfid_o  <= s_axi_wdata[$clog2(NUM_FLOWS)-1:0];
+                        // The commit reads hash_acc_key, which must already hold all 11
+                        // staged words. The write FSM is single-outstanding (a B-handshake
+                        // sits between any two write beats), so the 1-cycle hk_wr_q
+                        // pipeline always drains before this commit beat. Guard it: if a
+                        // future AXI-write change ever lets a word write land in the beat
+                        // immediately before the commit, hk_wr_q would still be pending
+                        // here and the committed key would miss that word.
+                        // synthesis translate_off
+                        assert (!hk_wr_q) else
+                            $error("hash commit @+0x2C with a key word still pending in hk_wr_q -- the 1-cycle hash_acc_key pipeline did not drain (AXI write spacing assumption violated)");
+                        // synthesis translate_on
                     end
                 end
                 aw_captured  <= 1'b0;

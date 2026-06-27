@@ -108,6 +108,13 @@ module tb_csr_full;
     logic                     rule_seen = 0; logic [$clog2(NRULE)-1:0] cap_rule_idx;
     logic [NTOTAL-1:0]        cap_rule_care; logic [2:0] cap_rule_action;
     logic [31:0]              cap_rule_lfid; logic cap_rule_enable;
+    // Hash exact-table programming outputs (exercises the hash_acc_key write pipeline).
+    logic                     hash_wr_en; logic [6:0] hash_wr_index;
+    logic                     hash_wr_valid; logic [351:0] hash_wr_key;
+    logic [$clog2(NUM_FLOWS)-1:0] hash_wr_lfid;
+    logic                     hash_seen = 0; logic [6:0] cap_hash_idx;
+    logic                     cap_hash_valid; logic [351:0] cap_hash_key;
+    logic [$clog2(NUM_FLOWS)-1:0] cap_hash_lfid;
     always @(posedge clk) begin
         if (cmp_wr_en) begin
             cmp_seen <= 1; cap_cmp_idx <= cmp_wr_idx; cap_cmp_src <= cmp_wr_src;
@@ -117,6 +124,10 @@ module tb_csr_full;
             rule_seen <= 1; cap_rule_idx <= rule_wr_idx; cap_rule_care <= rule_wr_care;
             cap_rule_action <= rule_wr_action; cap_rule_lfid <= rule_wr_lfid;
             cap_rule_enable <= rule_wr_enable;
+        end
+        if (hash_wr_en) begin
+            hash_seen <= 1; cap_hash_idx <= hash_wr_index; cap_hash_valid <= hash_wr_valid;
+            cap_hash_key <= hash_wr_key; cap_hash_lfid <= hash_wr_lfid;
         end
     end
 
@@ -202,11 +213,11 @@ module tb_csr_full;
         .rule_wr_enable_o    (rule_wr_enable),
         .hash_seed_o         (),
         .hash_mask_o         (),
-        .hash_wr_en_o        (),
-        .hash_wr_index_o     (),
-        .hash_wr_valid_o     (),
-        .hash_wr_key_o       (),
-        .hash_wr_lfid_o      (),
+        .hash_wr_en_o        (hash_wr_en),
+        .hash_wr_index_o     (hash_wr_index),
+        .hash_wr_valid_o     (hash_wr_valid),
+        .hash_wr_key_o       (hash_wr_key),
+        .hash_wr_lfid_o      (hash_wr_lfid),
         .stats_clear_o       (),
         .dp_soft_rst_o       (),
         .spi_sck_o           (),
@@ -392,6 +403,32 @@ module tb_csr_full;
             check_eq("rule action", longint'(cap_rule_action), 1);
             check_eq("rule lfid",   cap_rule_lfid, 2);
             check_eq("rule enable", cap_rule_enable ? 1 : 0, 1);
+        end
+
+        // ---- hash exact-table key programming (exercises the hash_acc_key
+        //      1-cycle write pipeline: 11 key words @+0..+0x28, commit @+0x2C) ----
+        scenario = "hash_key";
+        begin
+            logic [351:0] exp_key;
+            int           bucket;
+            logic [15:0]  hbase;
+            bucket = 3;
+            hbase  = 16'h3000 + 16'(bucket * 64);
+            exp_key   = '0;   // hash_seen is set-once by the capture (no earlier test pulses it)
+            for (int w = 0; w < 11; w++) begin
+                logic [31:0] kw;
+                kw = 32'hC0DE_0000 + 32'(w);     // distinct per-word so a mis-staged
+                axi_write(hbase + 16'(w*4), kw);  // word would change the 352-bit key
+                exp_key[w*32 +: 32] = kw;
+            end
+            axi_write(hbase + 16'h2C, 32'h8000_0006);   // commit: valid=1, lfid=6
+            repeat (4) @(posedge clk);
+            check_eq("hash_wr_en pulsed",         hash_seen ? 1 : 0, 1);
+            check_eq("hash_wr_index",             cap_hash_idx, bucket);
+            check_eq("hash_wr_valid",             cap_hash_valid ? 1 : 0, 1);
+            check_eq("hash_wr_lfid",              cap_hash_lfid, 6);
+            // the whole 352-bit key must reflect all 11 staged words (pipeline drained)
+            check_eq("hash_wr_key all 11 words",  (cap_hash_key == exp_key) ? 1 : 0, 1);
         end
 
         // ---- stats snapshot trigger ----
