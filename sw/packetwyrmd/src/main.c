@@ -830,6 +830,13 @@ static void handle_client(int cfd,
                      * the old 8 MB guard predates the full data-plane bitstream and
                      * rejected it. 16 MB = the 3-byte-addressable range of the flash. */
                     if (sz <= 0 || sz > (16 << 20)) { fclose(f); resp = build_error("bad file size"); }
+                    /* 3-byte addressing wraps at 16 MB: a write whose END exceeds it
+                     * clobbers the boot image at offset 0. The ~12 MB image only fits
+                     * at offset 0; reject offset+len > 16 MB (default offset is the
+                     * 14 MB dev-scratch region, only for small writes). */
+                    else if ((uint64_t)off + (uint64_t)sz > 0x01000000u) {
+                        fclose(f); resp = build_error("offset+size exceeds 16 MB (would wrap onto boot image); use offset 0 for a full image");
+                    }
                     else {
                         uint8_t *img = malloc((size_t)sz);
                         size_t rd = fread(img, 1, (size_t)sz, f); fclose(f);

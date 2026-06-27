@@ -32,6 +32,18 @@ int main(int argc, char **argv) {
     /* 16 MB cap: the boot image is ~12 MB (was <8 MB when this guard was added)
      * and the MT25QU256 is 32 MB, so a full boot image at offset 0 must fit. */
     if (fsz <= 0 || fsz > (16 << 20)) { fprintf(stderr, "bad file size %ld\n", fsz); fclose(f); return 1; }
+    /* The in-design SPI master uses 3-byte addressing -> the addressable window is
+     * the low 16 MB; an address past 0xFFFFFF WRAPS to the low sectors. So a write
+     * whose END exceeds 16 MB would silently clobber the boot image at offset 0.
+     * The full ~12 MB image only fits at offset 0; the 14 MB dev DEF_OFFSET is for
+     * small scratch writes. Reject offset+len > 16 MB rather than corrupt the boot
+     * region. */
+    if ((uint64_t)off + (uint64_t)fsz > 0x01000000u) {
+        fprintf(stderr, "offset 0x%x + %ld bytes exceeds the 16 MB (3-byte) range "
+                "and would wrap onto the boot image; pass offset 0x0 for a full image\n",
+                off, fsz);
+        fclose(f); return 1;
+    }
     uint8_t *img = malloc((size_t)fsz);
     if (fread(img, 1, (size_t)fsz, f) != (size_t)fsz) { perror("fread"); fclose(f); free(img); return 1; }
     fclose(f);
