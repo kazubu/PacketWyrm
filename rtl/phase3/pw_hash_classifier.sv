@@ -27,14 +27,17 @@
 //   hit    = valid && stored_key == masked_frame_key   (exact, no misclassify;
 //            SW stores the already-masked key, HW masks the frame key)
 //
-// Latency is 3 clocks measured from the cycle key_i/key_valid_i are presented
+// Latency is 4 clocks measured from the cycle key_i/key_valid_i are presented
 // to the cycle valid_o/local_flow_id_o are valid: cycle 0 captures the masked
-// key (mkey_q1), cycle 1 reads the BRAM at the hashed index (rd_q) + holds the
-// key (key_q), cycle 2 verifies + registers the result. The masked-key register
-// stage splits the dp_clk-critical key->assemble->mask->fold->multiply->BRAM-
-// address path. The data plane delays the field classifier + flow-id map
-// results by one cycle so all three classification paths stay aligned (also at
-// 3 from key_valid) at the precedence mux.
+// key (mkey_q1 = assemble+mask), cycle 1 registers the XOR-fold (k32_q) and
+// carries the key (key_q1b), cycle 2 reads the BRAM at the multiply-shifted
+// index (rd_q) + holds the key (key_q), cycle 3 verifies + registers the result.
+// The two register stages split the dp_clk path
+// key->assemble->mask | ->fold | ->multiply->BRAM-address into three short hops
+// (fold and multiply no longer share a cone -- that combined cone was the
+// dp_clk-critical path). The data plane delays the field classifier + flow-id map
+// results so all three classification paths stay aligned (at 4 from key_valid) at
+// the precedence mux.
 
 `default_nettype none
 
@@ -83,35 +86,60 @@ module pw_hash_classifier #(
         return {w[10], w[9], w[8], w[7], w[6], w[5], w[4], w[3], w[2], w[1], w[0]};
     endfunction
 
-    // ---- hash: XOR-fold the 11 words to 32b, multiply-shift to IDX_W ----
-    function automatic logic [IDX_W-1:0] hash_index(input logic [KB-1:0] mkey,
-                                                    input logic [31:0] seed);
-        logic [31:0] k32, prod;
+    // ---- hash split into two pipelineable halves ----
+    // fold: XOR-fold the 11 masked words to 32b (a shallow XOR tree).
+    function automatic logic [31:0] fold(input logic [KB-1:0] mkey);
+        logic [31:0] k32;
         k32 = 32'b0;
         for (int i = 0; i < KW; i++) k32 ^= mkey[i*32 +: 32];
+        return k32;
+    endfunction
+    // mulshift: Dietzfelbinger multiply-shift to IDX_W bits (the 32x32 DSP).
+    function automatic logic [IDX_W-1:0] mulshift(input logic [31:0] k32,
+                                                  input logic [31:0] seed);
+        logic [31:0] prod;
         prod = k32 * (seed | 32'd1);
         return prod[31 -: IDX_W];
     endfunction
 
     wire [KB-1:0] mkey_c = assemble(key_i) & mask_i;   // masked frame key (combinational)
 
-    // ---- stage 1: register the masked key. This splits the long dp_clk path
-    // (parser key -> assemble[is_ipv6 mux] -> mask -> XOR-fold -> multiply ->
-    // BRAM address) across a register: assemble+mask land here, the fold+
-    // multiply+BRAM-address land in stage 2. Adds one cycle of latency (2->3);
-    // the data plane delays the field classifier + flow-id map results to match.
-    logic [KB-1:0] mkey_q1;
+    // ---- stage 1: register the masked key (assemble[is_ipv6 mux] + mask land
+    // here). RESET-LESS pure data pipeline reg, gated downstream by kv1 (which IS
+    // reset), so its reset value is don't-care; init '0 = GSR/power-up only. ----
+    logic [KB-1:0] mkey_q1 = '0;
     logic          kv1;
+    always_ff @(posedge clk) mkey_q1 <= mkey_c;
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin mkey_q1 <= '0; kv1 <= 1'b0; end
-        else        begin mkey_q1 <= mkey_c; kv1 <= key_valid_i; end
+        if (!rst_n) kv1 <= 1'b0; else kv1 <= key_valid_i;
     end
 
-    // ---- BRAM table: write port + registered read port (stage 2) ----
+    // ---- stage 1b: register the XOR-fold result (k32_q) on its OWN cycle, and
+    // carry the full masked key (key_q1b) + valid (kv1b) alongside. This is the
+    // dp_clk timing fix: previously fold+multiply+BRAM-address were one combinational
+    // cone (mkey_q1 -> XOR-fold -> 32x32 multiply -> BRAM ADDR) and that was THE
+    // dp_clk-critical path (post-route WNS went negative on a full resynth). Splitting
+    // the fold off into its own register leaves stage 1b = just the shallow XOR tree
+    // and stage 2 = just multiply->BRAM-address, both comfortably short; it also gives
+    // the multiply a clean registered A operand (k32_q) so the DSP can pack its input
+    // register (clears the DPIR-2 / SYNTH-10 hints). Costs one cycle of latency
+    // (3->4); the data plane realigns the field classifier + flow-id map by +1 to
+    // match. k32_q / key_q1b are RESET-LESS data pipeline regs (gated by kv1b).
+    logic [31:0]   k32_q  = '0;
+    logic [KB-1:0] key_q1b = '0;
+    logic          kv1b;
+    always_ff @(posedge clk) begin k32_q <= fold(mkey_q1); key_q1b <= mkey_q1; end
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) kv1b <= 1'b0; else kv1b <= kv1;
+    end
+
+    // ---- BRAM table: write port + registered read port (stage 2). The read
+    // address is now just the multiply-shift of the registered fold (no fold in
+    // this cone), so the path k32_q -> multiply -> BRAM ADDR is short. ----
     (* ram_style = "block" *) logic [EW-1:0] mem [DEPTH];
     initial for (int i = 0; i < DEPTH; i++) mem[i] = '0;
 
-    wire [IDX_W-1:0] rd_index = hash_index(mkey_q1, seed_i);
+    wire [IDX_W-1:0] rd_index = mulshift(k32_q, seed_i);
     logic [EW-1:0]   rd_q;
     always_ff @(posedge clk) begin
         if (wr_en) mem[wr_index] <= {wr_valid, wr_key, wr_lfid[LFW-1:0]};
@@ -123,7 +151,7 @@ module pw_hash_classifier #(
     logic          kv_q;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin key_q <= '0; kv_q <= 1'b0; end
-        else        begin key_q <= mkey_q1; kv_q <= kv1; end
+        else        begin key_q <= key_q1b; kv_q <= kv1b; end
     end
 
     // ---- stage 3: masked-key verify + register result ----

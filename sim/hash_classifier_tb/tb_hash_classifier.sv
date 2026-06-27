@@ -71,7 +71,7 @@ module tb_hash_classifier;
         key='0; key.is_ipv4=1; key.ipv4_dst=dst; key.ipv4_src=src;
         key.l4_dst=ld; key.l4_src=ls; key.l3_proto=proto; key.ethertype=16'h0800;
         key_valid=1; @(negedge clk); key_valid=0;
-        @(negedge clk); @(negedge clk);   // latency 3 (was 2): one extra cycle
+        @(negedge clk); @(negedge clk); @(negedge clk);   // latency 4 (k32 fold register stage added)
     endtask
 
     logic [KB-1:0] kA, kB;

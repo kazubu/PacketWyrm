@@ -257,7 +257,11 @@ TEST_RX on `pw_flowid_map`. Actions are unchanged: `DROP`, `TEST_RX`,
   canonical fields; AND a **global key mask**; XOR-fold to 32 bits; bucket =
   `(k32 * (seed|1)) >> (32-log2 DEPTH)` (Dietzfelbinger multiply-shift); read
   `mem[bucket]`; hit = `valid && stored_key == masked_key` (FULL masked-key
-  verify, so no misclassification — the hash only picks the bucket). Latency 2.
+  verify, so no misclassification — the hash only picks the bucket). Latency 4:
+  register stages split key→assemble→mask | →XOR-fold | →multiply→BRAM-address so
+  no two of those land in one dp_clk cone (the fold+multiply→BRAM cone was the
+  dp_clk-critical path); the data plane realigns the field + flow-id-map results
+  to match.
 - The global key mask (ANDed into hash input + verify) selects which bits
   participate; masking a field/bits lets a generator **modifier randomize** them
   while the flow still classifies. SW computes the identical hash + key + mask,

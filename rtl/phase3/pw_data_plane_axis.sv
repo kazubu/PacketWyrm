@@ -272,20 +272,20 @@ module pw_data_plane_axis #(
     // All downstream consumers (checker / SAF / drop) use rx_eff, not rx_fc.
     pw_class_result_t [PW_PORTS-1:0] rx_eff;
 
-    // The effective classifier result (rx_eff) now lands THREE cycles after
-    // rx_kv/rx_key: the hash classifier is latency 3 (a masked-key register
-    // stage off the dp_clk-critical hash path), and the field + map results are
-    // delayed to match. Delay the key + key_valid that feed the checker arbiter,
-    // the SAF decision, and the drop counter by three cycles to realign.
-    logic             [PW_PORTS-1:0] rx_kv_d1, rx_kv_d2, rx_kv_d;
-    pw_match_key_t    [PW_PORTS-1:0] rx_key_d1, rx_key_d2, rx_key_d;
+    // The effective classifier result (rx_eff) now lands FOUR cycles after
+    // rx_kv/rx_key: the hash classifier is latency 4 (a masked-key register stage
+    // PLUS a fold register stage, both off the dp_clk-critical hash path), and the
+    // field + map results are delayed to match. Delay the key + key_valid that feed
+    // the checker arbiter, the SAF decision, and the drop counter by four cycles.
+    logic             [PW_PORTS-1:0] rx_kv_d1, rx_kv_d2, rx_kv_d3, rx_kv_d;
+    pw_match_key_t    [PW_PORTS-1:0] rx_key_d1, rx_key_d2, rx_key_d3, rx_key_d;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            rx_kv_d1  <= '0; rx_kv_d2  <= '0; rx_kv_d  <= '0;
-            rx_key_d1 <= '0; rx_key_d2 <= '0; rx_key_d <= '0;
+            rx_kv_d1  <= '0; rx_kv_d2  <= '0; rx_kv_d3  <= '0; rx_kv_d  <= '0;
+            rx_key_d1 <= '0; rx_key_d2 <= '0; rx_key_d3 <= '0; rx_key_d <= '0;
         end else begin
-            rx_kv_d1  <= rx_kv;     rx_kv_d2  <= rx_kv_d1;   rx_kv_d  <= rx_kv_d2;
-            rx_key_d1 <= rx_key;    rx_key_d2 <= rx_key_d1;  rx_key_d <= rx_key_d2;
+            rx_kv_d1  <= rx_kv;   rx_kv_d2  <= rx_kv_d1;  rx_kv_d3  <= rx_kv_d2;  rx_kv_d  <= rx_kv_d3;
+            rx_key_d1 <= rx_key;  rx_key_d2 <= rx_key_d1; rx_key_d3 <= rx_key_d2; rx_key_d <= rx_key_d3;
         end
     end
 
@@ -343,8 +343,8 @@ module pw_data_plane_axis #(
             );
 
             // Hash exact classifier: header-keyed TEST_RX, high count (-> checker
-            // slot). Latency 3 from key_valid (masked-key register stage); the
-            // map and field results are realigned to +3 to match (see below).
+            // slot). Latency 4 from key_valid (masked-key register + fold register
+            // stages); the map and field results are realigned to +4 to match.
             logic                            hcv;
             logic [$clog2(PW_NUM_FLOWS)-1:0] hcl;
             pw_hash_classifier #(.NUM_FLOWS(PW_NUM_FLOWS), .DEPTH(HASH_DEPTH)) u_hclass (
@@ -359,11 +359,11 @@ module pw_data_plane_axis #(
             // TEST_RX flow-id map: a frame's test_flow_id directly indexes the
             // checker slot (no per-flow comparator). Latencies are all measured
             // from rx_kv (the cycle the key is presented): the map is +1, the
-            // field classifier +2, the hash classifier +3. Realign the map (+2)
-            // and field (+1) results so all three land at +3 -- matching the
+            // field classifier +2, the hash classifier +4. Realign the map (+1->+4)
+            // and field (+2->+4) results so all three land at +4 -- matching the
             // hash -- at the precedence mux below.
-            logic                            mv1, mv2, mv3;
-            logic [$clog2(PW_NUM_FLOWS)-1:0] ml1, ml2, ml3;
+            logic                            mv1, mv2, mv3, mv4;
+            logic [$clog2(PW_NUM_FLOWS)-1:0] ml1, ml2, ml3, ml4;
             pw_flowid_map #(.NUM_FLOWS(PW_NUM_FLOWS), .MAP_DEPTH(MAP_DEPTH)) u_fmap (
                 .clk(clk), .rst_n(rst_n),
                 .wr_en(map_wr_en_i), .wr_addr(map_wr_addr_i),
@@ -371,23 +371,27 @@ module pw_data_plane_axis #(
                 .flowid_i(rx_key[gp].test_flow_id), .is_test_i(rx_key[gp].is_test),
                 .lookup_en_i(rx_kv[gp]), .valid_o(mv1), .local_flow_id_o(ml1)
             );
-            // Field classifier is latency 2; delay it one cycle to align with the
-            // now-latency-3 hash classifier (+ the +3 map below).
-            pw_class_result_t fc_d;
+            // Field classifier is latency 2; delay it two cycles to align with the
+            // now-latency-4 hash classifier (+ the +4 map below).
+            pw_class_result_t fc_d, fc_d2;
             always_ff @(posedge clk or negedge rst_n) begin
-                if (!rst_n) begin mv2 <= 1'b0; ml2 <= '0; mv3 <= 1'b0; ml3 <= '0; fc_d <= '0; end
-                else begin
+                if (!rst_n) begin
+                    mv2 <= 1'b0; ml2 <= '0; mv3 <= 1'b0; ml3 <= '0; mv4 <= 1'b0; ml4 <= '0;
+                    fc_d <= '0; fc_d2 <= '0;
+                end else begin
                     mv2 <= mv1;  ml2 <= ml1;     // map: +2
-                    mv3 <= mv2;  ml3 <= ml2;     // map: +3 (aligned with hash)
+                    mv3 <= mv2;  ml3 <= ml2;     // map: +3
+                    mv4 <= mv3;  ml4 <= ml3;     // map: +4 (aligned with hash)
                     fc_d <= rx_fc[gp];           // field: +3
+                    fc_d2 <= fc_d;               // field: +4 (aligned with hash)
                 end
             end
-            // Effective result (all aligned at +3). Precedence:
+            // Effective result (all aligned at +4). Precedence:
             //   flow-id map (structured test)
             //     > hash exact classifier (header-keyed high-count TEST_RX)
-            //       > field+UDF classifier (fc_d: punt, forward, drop, few-rule).
+            //       > field+UDF classifier (fc_d2: punt, forward, drop, few-rule).
             always_comb begin
-                rx_eff[gp] = fc_d;
+                rx_eff[gp] = fc_d2;
                 if (hcv) begin
                     rx_eff[gp].hit           = 1'b1;
                     rx_eff[gp].action        = PW_ACT_TEST_RX;
@@ -396,10 +400,10 @@ module pw_data_plane_axis #(
                     rx_eff[gp].logical_if_id = '0;
                     rx_eff[gp].entry_index   = '0;
                 end
-                if (mv3) begin
+                if (mv4) begin
                     rx_eff[gp].hit           = 1'b1;
                     rx_eff[gp].action        = PW_ACT_TEST_RX;
-                    rx_eff[gp].local_flow_id = 32'(ml3);
+                    rx_eff[gp].local_flow_id = 32'(ml4);
                     rx_eff[gp].egress_port   = '0;
                     rx_eff[gp].logical_if_id = '0;
                     rx_eff[gp].entry_index   = '0;
