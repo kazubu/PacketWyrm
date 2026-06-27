@@ -42,14 +42,28 @@ reset_run synth_1
 launch_runs synth_1 -jobs 8
 wait_on_run synth_1
 puts "INFO: synth_1 = [get_property STATUS [get_runs synth_1]]"
+# HARD GATE: a failed/partial synth must NOT fall through. Otherwise we would
+# open the STALE routed dcp below and stamp the fresh USERID/build_id onto an OLD
+# placement -- "new build_id, old bitstream", the exact trap this flow exists to
+# prevent. (Success STATUS is "<step> Complete!".)
+if {![string match "*Complete!*" [get_property STATUS [get_runs synth_1]]]} {
+    error "synth_1 did not complete: [get_property STATUS [get_runs synth_1]]"
+}
 # Route only; we write the bitstream by hand below so we can stamp the build
 # identity into the config registers (see USERID/USR_ACCESS below).
 reset_run impl_1
 launch_runs impl_1 -to_step route_design -jobs 8
 wait_on_run impl_1
+puts "INFO: impl_1 = [get_property STATUS [get_runs impl_1]]"
+if {![string match "*Complete!*" [get_property STATUS [get_runs impl_1]]]} {
+    error "impl_1 (route_design) did not complete: [get_property STATUS [get_runs impl_1]]"
+}
 # open the routed checkpoint directly (open_run rejects a run launched only
 # -to_step route_design with "has not been launched"; the routed dcp is on disk).
+# reset_run impl_1 cleared any prior outputs and the STATUS gate above proved THIS
+# run produced the dcp, so we are not opening a leftover from a failed build.
 set routed "$pd/pwfpga_as02mc04_phase3.runs/impl_1/pwfpga_top_phase3_board_routed.dcp"
+if {![file exists $routed]} { error "routed dcp missing after route_design: $routed" }
 open_checkpoint $routed
 puts "INFO: FINAL WNS = [get_property SLACK [get_timing_paths -setup]]"
 
@@ -69,3 +83,12 @@ puts "INFO: stamped USERID=0x$git_hex (->USERCODE) USR_ACCESS=0x$build_hex (->bu
 set bit "$pd/pwfpga_as02mc04_phase3.runs/impl_1/pwfpga_top_phase3_board.bit"
 write_bitstream -force $bit
 puts "INFO: bit exists = [file exists $bit]"
+
+# Regenerate the top-level .bin that pw_flash / pktwyrm flash program into the
+# SPI flash, so it tracks THIS build's .bit. It was going stale (a fresh .bit but
+# an old .bin), which means in-system flashing would write the PREVIOUS image.
+# Same SPIx4 / offset-0 recipe as scripts/flash.tcl's MCS.
+set topbin "$pd/pwfpga_top_phase3_board.bin"
+write_cfgmem -force -format BIN -size 32 -interface SPIx4 \
+    -loadbit "up 0x00000000 $bit" -file $topbin
+puts "INFO: bin = $topbin exists = [file exists $topbin]"
