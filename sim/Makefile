@@ -157,7 +157,7 @@ VFLAGS := --binary -j 0 \
           -Wno-PINCONNECTEMPTY \
           --timing
 
-.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_full sim_fga sim_fgm sim_fge sim_pax sim_saf sim_punt sim_inj sim_cdc sim_macloop sim_dpa sim_top sim_vec sim_all wave clean vectors
+.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_full sim_fga sim_fgm sim_fge sim_pax sim_pbnd sim_saf sim_punt sim_inj sim_cdc sim_macloop sim_dpa sim_top sim_vec sim_all wave clean vectors
 
 sim: sim_build/data_plane
 	./sim_build/data_plane
@@ -209,6 +209,9 @@ sim_fge: sim_build/flow_gen_encap
 
 sim_ftb: sim_build/flow_table_bram
 	./sim_build/flow_table_bram
+
+sim_pbnd: sim_build/parser_bounds
+	./sim_build/parser_bounds
 
 sim_pax: sim_build/parser_axis
 	./sim_build/parser_axis
@@ -265,7 +268,7 @@ vectors_clean:
 sim_vec: sim_build/wire_vectors $(VECTORS)
 	./sim_build/wire_vectors
 
-sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_chk sim_slice sim_fclass sim_hclass sim_fidmap sim_spi sim_icap sim_tsi sim_full sim_fga sim_fgm sim_fge sim_pax sim_saf sim_punt sim_inj sim_cdc sim_macloop sim_dpa sim_top sim_vec
+sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_chk sim_slice sim_fclass sim_hclass sim_fidmap sim_spi sim_icap sim_tsi sim_full sim_fga sim_fgm sim_fge sim_pax sim_pbnd sim_saf sim_punt sim_inj sim_cdc sim_macloop sim_dpa sim_top sim_vec
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
@@ -367,6 +370,9 @@ sim_build/csr_full: $(FULL_RTL) $(TB_FULL)
 
 sim_build/parser_axis: $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_flow_gen_axis.sv $(REPO)/rtl/phase3/pw_parser_axis.sv parser_axis_tb/tb_parser_axis.sv
 	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Mdir sim_build --top-module tb_parser_axis -o parser_axis $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_flow_gen_axis.sv $(REPO)/rtl/phase3/pw_parser_axis.sv parser_axis_tb/tb_parser_axis.sv
+
+sim_build/parser_bounds: $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_parser_axis.sv parser_bounds_tb/tb_parser_bounds.sv
+	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Mdir sim_build --top-module tb_parser_bounds -o parser_bounds $(REPO)/rtl/phase3/pw_classifier_pkg.sv $(REPO)/rtl/phase3/pw_parser_axis.sv parser_bounds_tb/tb_parser_bounds.sv
 
 sim_build/flow_gen_axis: $(REPO)/rtl/phase3/pw_flow_gen_axis.sv flow_gen_axis_tb/tb_flow_gen_axis.sv
 	$(VERILATOR) $(VFLAGS) -Mdir sim_build --top-module tb_flow_gen_axis -o flow_gen_axis $(REPO)/rtl/phase3/pw_flow_gen_axis.sv flow_gen_axis_tb/tb_flow_gen_axis.sv
