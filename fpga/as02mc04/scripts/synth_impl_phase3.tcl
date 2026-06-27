@@ -47,7 +47,10 @@ puts "INFO: synth_1 = [get_property STATUS [get_runs synth_1]]"
 reset_run impl_1
 launch_runs impl_1 -to_step route_design -jobs 8
 wait_on_run impl_1
-open_run impl_1
+# open the routed checkpoint directly (open_run rejects a run launched only
+# -to_step route_design with "has not been launched"; the routed dcp is on disk).
+set routed "$pd/pwfpga_as02mc04_phase3.runs/impl_1/pwfpga_top_phase3_board_routed.dcp"
+open_checkpoint $routed
 puts "INFO: FINAL WNS = [get_property SLACK [get_timing_paths -setup]]"
 
 # Stamp the build identity into the bitstream config registers so it can be read
