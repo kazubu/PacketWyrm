@@ -292,6 +292,16 @@ module pw_csr_full #(
     logic                  rule_acc_enable;
     logic [31:0]           rule_acc_lfid;
     logic [351:0]          hash_acc_key;       // 11 staged key words
+    // One-cycle write pipeline for hash_acc_key. The 352-bit register is wide and
+    // its word-write was the dp_clk/axi_aclk-critical path (the AXI clock-converter
+    // handshake fed s_axi_wdata straight into it). Latch the word + index off the
+    // handshake first (short), apply to hash_acc_key the next cycle (reg->reg,
+    // short). Safe: AXI-Lite writes to the CSR are spaced by the clock-converter
+    // handshake latency (>1 cycle), so this 1-cycle stage always drains before the
+    // next word write AND before the @+0x2C commit reads hash_acc_key.
+    logic                  hk_wr_q;
+    logic [3:0]            hk_word_q;
+    logic [31:0]           hk_data_q;
 
     // Snapshot trigger (write 1 to STATS_TRIGGER_ADDR latches the
     // stats + histogram shadows in lockstep).
@@ -317,10 +327,14 @@ module pw_csr_full #(
             punt_pop_o       <= 1'b0;
             hash_seed_o      <= '0;
             hash_mask_o      <= '0;
+            hk_wr_q          <= 1'b0;
         end else begin
             wr_en            <= 1'b0;
             map_wr_en_o      <= 1'b0;
             hash_wr_en_o     <= 1'b0;
+            hk_wr_q          <= 1'b0;   // pulse: cleared each cycle, set on a hash word write below
+            // Apply the pipelined hash-key word write (registered last cycle).
+            if (hk_wr_q) hash_acc_key[hk_word_q*32 +: 32] <= hk_data_q;
             cmp_wr_en_o      <= 1'b0;
             udf_wr_en_o      <= 1'b0;
             rule_wr_en_o     <= 1'b0;
@@ -438,7 +452,10 @@ module pw_csr_full #(
                 if (awaddr_q >= WIN_HASH_BASE && awaddr_q < WIN_HASH_END) begin
                     automatic int sub = (awaddr_q - WIN_HASH_BASE) & 16'h3F;
                     if (sub <= 16'h28) begin
-                        hash_acc_key[(sub >> 2) * 32 +: 32] <= s_axi_wdata;
+                        // pipeline the wide hash_acc_key write off the handshake (see decl)
+                        hk_wr_q   <= 1'b1;
+                        hk_word_q <= 4'((sub >> 2));
+                        hk_data_q <= s_axi_wdata;
                     end else if (sub == 16'h2C) begin
                         hash_wr_en_o    <= 1'b1;
                         hash_wr_index_o <= ($clog2(HASH_DEPTH))'((awaddr_q - WIN_HASH_BASE) >> 6);
