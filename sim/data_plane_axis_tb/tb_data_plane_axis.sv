@@ -676,7 +676,7 @@ module tb_data_plane_axis;
             pre_drops = port_drops[0];
             build_plain_udp(16'd80);   // matches no rule -> default DROP
             inject(0);
-            repeat (8) @(posedge clk);
+            repeat (12) @(posedge clk);   // classifier latency 4 (was 3): wider window
             check_eq("port0 drop ticked", port_drops[0], pre_drops + 1);
         end
 
