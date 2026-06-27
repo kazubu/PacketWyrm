@@ -55,13 +55,16 @@ reset_run impl_1
 launch_runs impl_1 -to_step route_design -jobs 8
 wait_on_run impl_1
 puts "INFO: impl_1 = [get_property STATUS [get_runs impl_1]]"
-if {![string match "*Complete!*" [get_property STATUS [get_runs impl_1]]]} {
-    error "impl_1 (route_design) did not complete: [get_property STATUS [get_runs impl_1]]"
+# NOTE: launching -to_step route_design leaves the run STATUS at the NEXT step,
+# "Not started phys_opt_design (Post-Route)", on SUCCESS -- so do NOT require
+# "Complete!". Gate on an explicit error in STATUS instead, and (below) require a
+# FRESH routed dcp: reset_run impl_1 just deleted any prior outputs, so the dcp
+# existing means THIS run produced it (never a leftover from a failed build).
+if {[string match -nocase "*error*" [get_property STATUS [get_runs impl_1]]]} {
+    error "impl_1 (route_design) failed: [get_property STATUS [get_runs impl_1]]"
 }
 # open the routed checkpoint directly (open_run rejects a run launched only
 # -to_step route_design with "has not been launched"; the routed dcp is on disk).
-# reset_run impl_1 cleared any prior outputs and the STATUS gate above proved THIS
-# run produced the dcp, so we are not opening a leftover from a failed build.
 set routed "$pd/pwfpga_as02mc04_phase3.runs/impl_1/pwfpga_top_phase3_board_routed.dcp"
 if {![file exists $routed]} { error "routed dcp missing after route_design: $routed" }
 open_checkpoint $routed
