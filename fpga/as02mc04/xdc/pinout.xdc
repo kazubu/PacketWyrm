@@ -112,3 +112,20 @@ set_output_delay 0    [get_ports {led[*] led_hb}]
 # Board reset button (SW1) - optional, unused in Phase 1
 ############################################################
 # set_property -dict {LOC F12  IOSTANDARD LVCMOS33} [get_ports reset_btn_n]
+
+############################################################
+# J5 header GPIO - cross-card time-sync (pw_gpio_sync). 6 LVCMOS33 signals on
+# odd/even pin pairs (J5.3/4 .. J5.13/14). Bidirectional (IOBUF); only the
+# configured sync-out pin is driven, the rest are hi-Z. Async inputs are
+# synchronised in pw_gpio_sync and false-pathed in timing.xdc.
+############################################################
+set_property -dict {LOC A14 IOSTANDARD LVCMOS33} [get_ports {gpio[0]}] ;# J5.3,4
+set_property -dict {LOC E12 IOSTANDARD LVCMOS33} [get_ports {gpio[1]}] ;# J5.5,6
+set_property -dict {LOC E13 IOSTANDARD LVCMOS33} [get_ports {gpio[2]}] ;# J5.7,8
+set_property -dict {LOC F10 IOSTANDARD LVCMOS33} [get_ports {gpio[3]}] ;# J5.9,10
+set_property -dict {LOC C9  IOSTANDARD LVCMOS33} [get_ports {gpio[4]}] ;# J5.11,12
+set_property -dict {LOC D9  IOSTANDARD LVCMOS33} [get_ports {gpio[5]}] ;# J5.13,14
+# Async sync line: inputs land in pw_gpio_sync's 2-FF synchroniser, outputs are a
+# free-running pulse to the far card -- no setup/hold relationship either way.
+set_false_path -from [get_ports {gpio[*]}]
+set_false_path -to   [get_ports {gpio[*]}]

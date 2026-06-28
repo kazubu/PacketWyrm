@@ -99,13 +99,25 @@ module pwfpga_top_phase3 #(
     // top can also flush the MAC-TX CDC + ts_insert (their tx_clk domain is
     // outside this core's reset), making an egress wedge recoverable without a
     // full bitstream reload. Safe to leave unconnected.
-    output wire              dp_soft_rst_o
+    output wire              dp_soft_rst_o,
+
+    // J5 GPIO for cross-card time-sync (pw_gpio_sync). The board top owns the
+    // bidirectional pads (IOBUF) and presents the split in/out/tri here.
+    input  wire [5:0]        gpio_i,
+    output wire [5:0]        gpio_o,
+    output wire [5:0]        gpio_t
 );
 
     // --- Data-plane <-> CSR_full wiring -------------------------
 
     // Per-port and per-flow counters from the data plane back into
     // the CSR for snapshot exposure.
+    // GPIO cross-card time-sync wiring (CSR <-> pw_gpio_sync).
+    logic [31:0] gpio_sync_ctrl_w;
+    logic [63:0] gpio_sync_ts_w;
+    logic [31:0] gpio_sync_seq_w;
+    logic [5:0]  gpio_sync_gpin_w;
+
     logic [31:0] port_drops_w  [NUM_PORTS];
     logic [47:0] rx_frames_w   [NUM_PORTS];
     logic [47:0] rx_bytes_w    [NUM_PORTS];
@@ -184,6 +196,10 @@ module pwfpga_top_phase3 #(
         .timestamp_i         (timestamp_i),
         .global_control_o    (),
         .error_status_set_i  (32'h0),
+        .gpio_sync_ctrl_o    (gpio_sync_ctrl_w),
+        .gpio_sync_ts_i      (gpio_sync_ts_w),
+        .gpio_sync_seq_i     (gpio_sync_seq_w),
+        .gpio_sync_gpio_in_i (gpio_sync_gpin_w),
         .port_drops_i        (port_drops_w),
         .rx_fcs_err_i        (rx_fcs_err_w),
         .link_up_cnt_i       (link_up_cnt_w),
@@ -436,6 +452,22 @@ module pwfpga_top_phase3 #(
         .link_up_cnt_o     (link_up_cnt_w),
         .link_down_cnt_o   (link_down_cnt_w),
         .block_lock_loss_o (block_lock_loss_w)
+    );
+
+    // --- J5 GPIO cross-card time-sync ---------------------------------------
+    // Same dp_clk domain as timestamp_i; latches the free-running counter at a
+    // shared sync edge (master originates, slaves listen + optionally repeat).
+    pw_gpio_sync #(.NGPIO(6)) u_gpio_sync (
+        .clk         (clk),
+        .rst_n       (rst_n),
+        .timestamp_i (timestamp_i),
+        .gpio_i      (gpio_i),
+        .gpio_o      (gpio_o),
+        .gpio_t      (gpio_t),
+        .ctrl_i      (gpio_sync_ctrl_w),
+        .sync_ts_o   (gpio_sync_ts_w),
+        .sync_seq_o  (gpio_sync_seq_w),
+        .gpio_in_o   (gpio_sync_gpin_w)
     );
 
 endmodule

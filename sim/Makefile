@@ -111,6 +111,7 @@ TOP_RTL := \
     $(REPO)/rtl/phase3/pw_frame_saf.sv \
     $(REPO)/rtl/phase3/pw_data_plane_axis.sv \
     $(REPO)/rtl/phase3/pw_icap_reboot.sv \
+    $(REPO)/rtl/phase3/pw_gpio_sync.sv \
     $(REPO)/rtl/phase3/pwfpga_top_phase3.sv
 
 TB       := data_plane_tb/tb_data_plane.sv
@@ -268,7 +269,7 @@ vectors_clean:
 sim_vec: sim_build/wire_vectors $(VECTORS)
 	./sim_build/wire_vectors
 
-sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_chk sim_slice sim_fclass sim_hclass sim_fidmap sim_spi sim_icap sim_tsi sim_full sim_fga sim_fgm sim_fge sim_pax sim_pbnd sim_saf sim_punt sim_inj sim_cdc sim_macloop sim_dpa sim_top sim_vec
+sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_chk sim_slice sim_fclass sim_hclass sim_fidmap sim_spi sim_icap sim_tsi sim_gsync sim_full sim_fga sim_fgm sim_fge sim_pax sim_pbnd sim_saf sim_punt sim_inj sim_cdc sim_macloop sim_dpa sim_top sim_vec
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
@@ -448,3 +449,8 @@ sim_tsi: sim_build/ts_insert
 	./sim_build/ts_insert
 sim_build/ts_insert: $(TSI_RTL) $(TB_TSI)
 	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Mdir sim_build --top-module tb_ts_insert -o ts_insert $(REPO)/rtl/phase3/pw_ts_insert.sv $(TB_TSI)
+
+sim_gsync: sim_build/gpio_sync
+	./sim_build/gpio_sync
+sim_build/gpio_sync: $(REPO)/rtl/phase3/pw_gpio_sync.sv gpio_sync_tb/tb_gpio_sync.sv
+	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Mdir sim_build --top-module tb_gpio_sync -o gpio_sync $(REPO)/rtl/phase3/pw_gpio_sync.sv gpio_sync_tb/tb_gpio_sync.sv

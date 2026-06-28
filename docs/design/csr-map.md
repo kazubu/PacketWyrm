@@ -63,6 +63,17 @@ headers (those are authoritative; this map is intent).
 0x0120  reboot                 W     write 0x52424F54 ("RBOT") -> ICAP IPROG
                                      (reload bitstream from flash; PCIe drops)
 
+0x0130  gpio_sync_ctrl         RW    J5 cross-card time-sync (pw_gpio_sync):
+                                     [0] enable, [1] master (drive pulse),
+                                     [2] repeat (re-drive sync-in to sync-out),
+                                     [6:4] sync-in pin (0..5), [10:8] sync-out pin,
+                                     [19:16] period_log2 (master pulse every 2^N cyc)
+0x0134  gpio_sync_ts_low       R     card-local counter latched at the last sync
+0x0138  gpio_sync_ts_high      R       edge (snapshot pair; read LOW then HIGH)
+0x013c  gpio_sync_seq          R     edge sequence (matches across cards -- SW
+                                     pairs equal seq to get the inter-card offset)
+0x0140  gpio_sync_status       R     [5:0] raw synchronised pad inputs (debug)
+
 0x0800..0x0cff  spi_flash_window       in-system SPI flash master (live
                                        config-flash erase/program/read):
   0x0800  spi_ctrl   W:[0]go [1]cs_hold  R:[0]busy

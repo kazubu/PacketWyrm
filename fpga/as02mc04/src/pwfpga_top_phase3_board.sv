@@ -34,7 +34,8 @@ module pwfpga_top_phase3_board (
     output wire        sfp_tx_n [2],
     output wire        led_hb,
     output wire [3:0]  led,
-    output wire        sfp_led [2]
+    output wire        sfp_led [2],
+    inout  wire [5:0]  gpio                 // J5 header: cross-card time-sync
 );
     import pw_pkg::*;
     localparam int ADDR_W = 16;
@@ -239,8 +240,21 @@ module pwfpga_top_phase3_board (
         .timestamp_i(ts),
         .spi_sck_o(spi_sck), .spi_cs_n_o(spi_cs_n), .spi_mosi_o(spi_mosi), .spi_miso_i(spi_miso),
         .icap_csib_o(icap_csib), .icap_rdwrb_o(icap_rdwrb), .icap_i_o(icap_i),
-        .dp_soft_rst_o(dp_soft_rst_pulse)
+        .dp_soft_rst_o(dp_soft_rst_pulse),
+        .gpio_i(gpio_i), .gpio_o(gpio_o), .gpio_t(gpio_t)
     );
+
+    // --- J5 GPIO bidirectional pads (cross-card time-sync) ----------------
+    // pw_gpio_sync drives only its configured sync-out pin (gpio_t low) and
+    // leaves the rest hi-Z (gpio_t high). The inputs are asynchronous and
+    // synchronised inside pw_gpio_sync; constrained as false_path in timing.xdc.
+    wire [5:0] gpio_i, gpio_o, gpio_t;
+    genvar gg;
+    generate
+        for (gg = 0; gg < 6; gg++) begin : g_gpio_iobuf
+            IOBUF u_iobuf (.I(gpio_o[gg]), .O(gpio_i[gg]), .T(gpio_t[gg]), .IO(gpio[gg]));
+        end
+    endgenerate
 
     // --- in-band reconfiguration via ICAPE3 -------------------------------
     // pw_icap_reboot streams IPROG here on the host's REBOOT magic write;
