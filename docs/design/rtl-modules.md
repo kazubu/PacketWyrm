@@ -139,8 +139,14 @@ data. **The host must not write flow rows until the walk completes.** Benign for
 normal use (configs commit once before a run, long gap before any reconfig), and
 the library enforces it: `bar_flow_commit()` posts the commit write then blocks
 ~200 µs (>> the worst-case walk) so "`flow_commit()` returns ⇒ safe to write the
-next config" still holds. Unwritten staging rows are zero (explicit `initial`,
-matching the old zero-shadow reset) so they walk in inert (`valid=0`).
+next config" still holds. Unwritten staging words read back as zero so they walk
+in inert (`valid=0`) — by two mechanisms: at power-on/config-load the staging
+block RAM is zero-initialised (explicit `initial`), and after a *logic* reset
+(which does not re-zero block RAM) a per-word `word_written` guard (reset to 0,
+set on each CSR word write) makes the commit walk substitute 0 for any word not
+(re)written since reset. So a fully-unwritten or partially-written row decodes
+exactly as the old `pw_csr_window` zero-shadow would have (per-word, not just
+per-row).
 `pw_csr_window` itself is untouched and still backs the legacy flow window + the
 classifier window. The legacy
 per-port `gen_*_o` single-flow selection was also removed (dead in the

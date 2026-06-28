@@ -252,7 +252,12 @@ PWFPGA_REG_FLOW_COMMIT = PWFPGA_WIN_FLOW_TABLE + 0x3FFC
 ```
 
 The flow-table staging is a block RAM (the host writes one 32-bit word per CSR
-write; unwritten rows are zero, so they decode inert with `valid=0`). On commit, a
+write). Unwritten words read back as zero so unconfigured rows decode inert
+(`valid=0`): the staging is zero-initialised at power-on, and after a *logic*
+reset (which does not re-zero block RAM) a per-word `word_written` guard makes the
+commit walk substitute 0 for any word not (re)written since reset — so a single-row
+or partial write after a reset never pulls in stale bytes from a prior session.
+On commit, a
 **word-serial walk** reads the staging one 32-bit word per cycle and decodes each
 row into the per-egress-port live row BRAM — so the commit takes `DEPTH*ROW_DW`
 (= flows × 64) cycles, ≈ 13 µs for 32 rows at 156.25 MHz, not one cycle.
