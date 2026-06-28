@@ -38,20 +38,18 @@ module pw_data_plane_axis #(
     parameter int PW_PORTS          = 2,
     parameter int PW_NUM_FLOWS      = 16,
     parameter int PW_NUM_BUCKETS    = 16,
-    parameter int HDR_BYTES         = 160,  // parser header-capture depth. 160
-                                            // captures the deepest UDP test header
-                                            // (VLAN 4 + outer v6 40 + EtherIP 2 +
-                                            // inner eth 14 + inner v6 40 + UDP 8 +
-                                            // 32 test = 154 B), so all single-encap
-                                            // deep UDP RX (incl. ipip v6-in-v6)
-                                            // classifies. TCP's 20-B L4 pushes the
-                                            // deepest v6-encap-TCP test header to
-                                            // 166 B (> 160): that one case is NOT
-                                            // RX-classified (TX generation is
-                                            // unaffected). Raising to 176 would
-                                            // cover it; kept at 160 for the first
-                                            // TCP build's LUT budget (revisit once
-                                            // the post-route util is known).
+    parameter int HDR_BYTES         = 176,  // parser header-capture depth. 176
+                                            // captures the DEEPEST test header for
+                                            // any L4: VLAN 4 + outer v6 40 + EtherIP
+                                            // 2 + inner eth 14 + inner v6 40 + TCP 20
+                                            // + 32 test = 166 B (TCP's 20-B L4 is
+                                            // the worst case; UDP's deepest is 154).
+                                            // So every single-encap deep RX -- UDP
+                                            // AND TCP, incl. v6-in-v6 -- classifies.
+                                            // Was 160 (covered UDP but not the 166-B
+                                            // v6-encap TCP); raised once the staging
+                                            // ->BRAM LUT savings made room (parser
+                                            // var-offset muxes scale with HDR_BYTES).
     parameter int FRAME_LEN_PAYLOAD = 32,   // flow_gen L4 payload bytes
     parameter int MAP_DEPTH         = 256,   // TEST_RX flow-id map index range
     parameter int NCMP              = 12,    // field comparators (canonical-field sourced)
