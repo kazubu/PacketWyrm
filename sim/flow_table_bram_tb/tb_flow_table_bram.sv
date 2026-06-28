@@ -151,7 +151,8 @@ module tb_flow_table_bram;
         // After a bare reset (which does NOT zero block RAM), write ONLY a
         // different row and commit: the freshly-written row must come up valid,
         // but row 1 -- not (re)written since reset -- must be INERT despite its
-        // stale staging bytes (the row_written guard). This is the contract a
+        // stale staging bytes (the word_written guard zeros every unwritten word
+        // into the row, matching the old zero-shadow). This is the contract a
         // single-row tool relies on.
         rst_n = 0; repeat (4) @(posedge clk); rst_n = 1; @(posedge clk);
         // build row 3: plain IPv4/UDP, valid
@@ -167,12 +168,23 @@ module tb_flow_table_bram;
         csr_write(COMMIT_AD, 32'h1);
         repeat (DEPTH*64 + 16) @(posedge clk);
         chk("post-reset row3 valid",      sched[3].valid, 1);
-        chk("post-reset row3 flow_id",    sched[3].egress, 0);
+        chk("post-reset row3 egress",     sched[3].egress, 0);
         // row 1's stale staging bytes must NOT resurrect it as a live flow
         chk("post-reset row1 INERT",      sched[1].valid, 0);
-        rd_addr[0] = 3'd1;
+        rd_addr[0] = 3'd1; rd_addr[1] = 3'd3;
         @(posedge clk); @(posedge clk);
         chk("post-reset row1 rd_row inert", rd_row[0].valid, 0);
+        chk("post-reset row3 rd_row flow_id", rd_row[1].flow_id, 77);
+
+        // WORD-granular guard: re-write ONLY row 1's word 0 (the enable byte) and
+        // commit. tx_enable (byte 90, word 22) is NOT rewritten this session, so
+        // its stale staging byte must still read back as 0 -> row 1 stays INERT.
+        // (Proves the guard is per-word, not per-row: a partial write does not
+        // pull in the rest of the stale row.)
+        csr_write(WIN_BASE + 16'(1*256), 32'h0000_0001);   // row 1 word 0 = enable only
+        csr_write(COMMIT_AD, 32'h1);
+        repeat (DEPTH*64 + 16) @(posedge clk);
+        chk("partial-write row1 still INERT", sched[1].valid, 0);
 
         if (errors == 0) $display("ALL FLOW_TABLE_BRAM SCENARIOS PASS");
         else             $display("FAILED with %0d error(s)", errors);
