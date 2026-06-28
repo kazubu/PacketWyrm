@@ -50,7 +50,9 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
 Module notes: `pw_parser_axis` is pipelined (3-stage: L2+decap-descent / inner L3-L4 / test extract) and
 auto-decapsulates recognized tunnels (outer IP proto 4/41/47/97 →
 IPIP/GRE/EtherIP), re-basing the L3/L4 parse onto the inner frame so the
-classifier keys on the inner test flow (header capture grew to 160 B);
+classifier keys on the inner test flow (header capture is 176 B — deep enough for
+the deepest TCP test header: VLAN 4 + outer v6 40 + EtherIP 2 + inner eth 14 +
+inner v6 40 + TCP 20 + 32 test = 166 B);
 `pw_field_classifier` (latency-2, parallel priority winner) replaced the legacy
 `pw_classifier`; `pw_lat_histogram` replaced the FF histogram; `pw_frame_saf`
 is BRAM-backed (reset-less write + registered read-ahead drain) — freed
@@ -59,11 +61,15 @@ applies per-field modifiers (static/increment/random + bitmask on
 src/dst IPv4 (or IPv6 low 32 bits) + UDP ports + src/dst MAC (48-bit) +
 VLAN ID, driven by the slot sequence so the DUT sees
 many flows while the fixed test header keeps measurement intact), emits
-a correct IPv4 header checksum, and can emit IPv6/UDP frames (0x86DD,
-40-byte header) for IPv6 flow rows (the flow-table row stride is 256 B to
-carry the 16-byte addresses). For IPv6 it emits a *partial* UDP checksum
-(the mandatory pseudo-header + UDP + payload sum, **minus** the
-tx_timestamp); `pw_ts_insert` folds the departure stamp in (see below).
+a correct IPv4 header checksum, and can emit IPv4/IPv6 **UDP or TCP** frames for
+the flow row (the flow-table row stride is 256 B to carry the 16-byte addresses;
+the row's `l4_proto` byte selects 17=UDP / 6=TCP and `tcp_flags` is the fixed TCP
+flags byte, default 0x02 SYN). TCP is a STATELESS segment generator — a fixed-form
+20-byte TCP header (data-offset 5, flags, window 0xFFFF, seq = test seq, ack 0),
+the 32-byte test header riding in the TCP payload — NOT a connection engine. It
+emits a *partial* L4 checksum (the mandatory pseudo-header + L4 header + payload
+sum, **minus** the tx_timestamp) for both UDP and TCP and both families;
+`pw_ts_insert` folds the departure stamp in (see below).
 IPv4 and IPv6 are at feature parity: both emit the configured DSCP (IPv4
 TOS / IPv6 traffic class) and TTL / hop limit, and both apply the src/dst
 address field modifiers — for IPv4 the 32-bit address, for IPv6 the low 32
@@ -83,8 +89,9 @@ tunnel header (GRE 4 B / EtherIP 2 B + a 14-byte inner Ethernet whose MAC
 comes from the row's dedicated inner-MAC field) ahead of the
 inner IP/UDP/test frame; the outer IPv4 header checksum is precomputed in
 parallel with the inner one (`ip_csum16_o`, tunnel proto in the protocol
-byte). `HDR_MAX_BYTES` grew to 176 to hold the deepest layout (v6-outer
-EtherIP v6-inner + VLAN = 154 B). The inner UDP checksum is unchanged (over
+byte). `HDR_MAX_BYTES` is 176 to hold the deepest layout (VLAN + v6-outer +
+EtherIP + v6-inner + **TCP 20** + 32 test = 166 B; TCP's 20-byte L4 is the worst
+case, UDP's deepest is 154 B). The inner L4 checksum is unchanged (over
 the inner addresses), so egress timestamping still works at the deep offset.
 **Variable frame length:** each slot emits a total L2 frame length that sweeps
 `frame_len_min → frame_len_max` by `frame_len_step` (wrapping); `min == max`
@@ -93,9 +100,10 @@ sizing. The min/max/step live in the scheduling descriptor (FFs) so the per-slot
 sweep position (`cur_len[]`) needs no BRAM read; the effective length is sampled
 at `pick` and flows through the precompute pipeline alongside `seq`. The L4
 payload = `frame_len − header_overhead` (floored at the 32-byte test header, so
-a sub-minimum config clamps to the smallest legal frame); the IPv4/IPv6/UDP
+a sub-minimum config clamps to the smallest legal frame, per L4 proto — TCP's
+20-byte header raises the minimum vs UDP); the IPv4/IPv6 and L4 (UDP/TCP)
 *length fields* and the length-dependent checksum terms track it, while the pad
-beyond the 32-byte test region is zero (adds nothing to the UDP checksum). The
+beyond the 32-byte test region is zero (adds nothing to the L4 checksum). The
 header buffer `fb` only holds the built header + test region (`built_len`); the
 emit FSM streams zero pad from `built_len` out to `frame_len`, so `fb` never has
 to grow to the 1518 B frame size. The token cost meters by the smallest legal
@@ -147,10 +155,15 @@ L3 family (IPv4 0x0800 → tx_ts @62; IPv6 0x86DD → tx_ts @82; +4 if VLAN).
 For an **encapsulated** frame it decodes the outer IP proto (4/41/47/97) and
 tunnel header in-stream to find the *inner* test header's offset, registering
 it before the deep csum/tx_ts beats so the MAC-CRC data path still reads a
-stable lane. For IPv6 (inner) it also **finalizes the UDP checksum**: it adds
+stable lane. It also **finalizes the L4 checksum** and is L4-proto-aware: it adds
 the four departure-stamp 16-bit words to the generator's partial checksum and
-writes the result to the UDP csum field (@60 non-encap, +4 VLAN, or the inner
-offset for a tunnel), applying the RFC 768 `0→0xFFFF` rule. This one-pass fixup works because the csum field
+writes the result to the L4 csum field — for UDP at L4+6 (@60 non-encap, +4 VLAN,
+or the inner offset for a tunnel) applying the RFC 768 `0→0xFFFF` rule; for TCP at
+L4+16, and TCP does NOT apply the zero rule (0 is a valid TCP csum). It fixes up
+{v6 UDP, v4 TCP, v6 TCP} (v4 UDP stays 0); the inner L4 proto is captured from the
+inner IP header so the offsets/rules pick correctly under encap. The fixup is
+gated on the *generator test frame* marker (not `magic_ok`), because for v4 TCP the
+csum field at L4+16 streams out before the magic bytes. This one-pass fixup works because the csum field
 leaves before the tx_ts field, so only the (SOF-latched) *new* stamp is
 needed, never the old one. Which frames to rewrite is gated by a
 "generator test frame" marker the egress arbiter raises (`sel_gen`),

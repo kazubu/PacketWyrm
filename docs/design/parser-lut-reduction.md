@@ -1,10 +1,26 @@
 # Design memo: parser LUT reduction (to make room for TCP / Part C)
 
-**Status:** not implemented — design notes for the next person. The xcku3p is at
-its ceiling (~84% LUT, dp_clk WNS small-positive). Stateless TCP generation
-(Part C, on `phase3-tcp-gen`) is implemented + sim-verified but **LUT-gated**
-(A+B+C hit ~92.8% and would not route). Reviving it needs LUT headroom, and the
-parser is where it is.
+**Status: SUPERSEDED — this refactor is NOT what unblocked TCP, and the variant
+that was tried did not work.** Stateless TCP (Part C) has SHIPPED and is
+HW-validated. The LUT lever that freed the room was NOT the parser refactor below
+— it was **moving the flow-table CSR staging from a register double-buffer to
+BRAM** (a word-serial commit walk; see `rtl-modules.md`, `pw_flow_table_bram`),
+which freed ~15.7K LUT (84.6% → 74.9%) AND improved dp_clk WNS. With that headroom
+A+B+C built at LUT 84.4%, then HDR_BYTES was raised back to **176** (deepest
+v6-encap TCP RX) at LUT 83.5% / WNS +0.082, all HW-validated.
+
+A parser variant of the idea below — eliminating the full `window_o[HDR_BYTES]`
+output and emitting only an inner-relative slice — WAS built and **abandoned**: it
+gave **no LUT reduction** (~84%, synthesis already shares the `eff` decode across
+the scattered reads) and **broke timing** (-1.874 ns: fusing two variable barrel
+shifts into one Stage-A2 cone). See `dp-clk-timing-lessons` memory UPDATE 11/12.
+**Conclusion: the parser is NOT a LUT lever on this device; the register-array →
+BRAM transform is.** The notes below are kept only as a record of the original
+(invalidated) plan.
+
+---
+
+## (Original — invalidated — notes below)
 
 ## Where the LUT goes
 

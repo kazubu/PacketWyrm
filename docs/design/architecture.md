@@ -21,7 +21,9 @@ sub-system designs live in their own documents under `docs/design/`.
 - PCIe SR-IOV / VF enumeration.
 - DPDK PMD.
 - Large PCAP replay or large packet capture.
-- Stateful TCP traffic generation.
+- Stateful TCP traffic generation (handshake / ACK / retransmit / window).
+  *Stateless* TCP segment generation (fixed-flag segments with a correct L4
+  checksum) IS implemented — see Part C.
 - Full IXIA / Spirent-class protocol emulation.
 - Cross-card one-way latency / jitter (no clock sync in Phase 0&ndash;9).
 - PTP / GPS / external clock sync.

@@ -228,22 +228,39 @@ PWFPGA_WIN_FLOW_TABLE + row_index * PWFPGA_FLOW_STRIDE  (256 bytes)
 ```
 
 The row stride grew from 128 B to **256 B** so each row can carry two
-16-byte IPv6 addresses alongside the IPv4 fields. The generator picks the
-L3 family from the row's `ip_version` (4 → 20-byte IPv4 header, ethertype
-0x0800; 6 → 40-byte IPv6 header, ethertype 0x86DD with a mandatory,
-non-zero UDP checksum). The row also carries per-field **modifier**
-descriptors (mode + mask for `src/dst_ipv4` (or IPv6 low-32), `udp_src/dst`,
-`src/dst_mac` (48-bit) and `vlan`) and, optionally, an **encapsulation**
-block (bytes 157..213): `encap_type` (IPIP/GRE/EtherIP), `outer_ip_version`
-+ outer L3 addresses / TTL / DSCP, `rx_expect`, and an EtherIP inner-Ethernet
-MAC. All of this is decoded in `pw_flow_window.sv`; the exact byte offsets are
-the packed `struct pwfpga_flow_config` in `csr.h` (authoritative).
+16-byte IPv6 addresses alongside the IPv4 fields (the packed struct occupies the
+first 240 B). The generator picks the L3 family from the row's `ip_version`
+(4 → 20-byte IPv4 header, ethertype 0x0800; 6 → 40-byte IPv6 header, ethertype
+0x86DD with a mandatory, non-zero L4 checksum). The **L4 protocol** is selected by
+`l4_proto` (**byte 238**: 17 = UDP, 6 = TCP) with `tcp_flags` (**byte 239**: the
+fixed TCP flags byte, default 0x02 SYN) — for TCP the generator emits a stateless
+20-byte TCP header (the 32-byte test header rides in the TCP payload, so
+loss/latency/seq measurement is identical to UDP). The row also carries per-field
+**modifier** descriptors (mode + mask for `src/dst_ipv4` (or full 128-bit IPv6),
+`udp_src/dst`, `src/dst_mac` (48-bit) and `vlan`) and, optionally, an
+**encapsulation** block (bytes 157..213): `encap_type` (IPIP/GRE/EtherIP),
+`outer_ip_version` + outer L3 addresses / TTL / DSCP, `rx_expect`, and an EtherIP
+inner-Ethernet MAC. The exact byte offsets are the packed `struct
+pwfpga_flow_config` in `csr.h` (authoritative); the FPGA decodes a row with
+`pw_decode_flow_row` (`pw_axis_pkg.sv`) during the commit walk in
+`pw_flow_table_bram`.
 
 Commit register at:
 
 ```
 PWFPGA_REG_FLOW_COMMIT = PWFPGA_WIN_FLOW_TABLE + 0x3FFC
 ```
+
+The flow-table staging is a block RAM (the host writes one 32-bit word per CSR
+write; unwritten rows are zero, so they decode inert with `valid=0`). On commit, a
+**word-serial walk** reads the staging one 32-bit word per cycle and decodes each
+row into the per-egress-port live row BRAM — so the commit takes `DEPTH*ROW_DW`
+(= flows × 64) cycles, ≈ 13 µs for 32 rows at 156.25 MHz, not one cycle.
+**The host must NOT write flow rows until the walk completes** (the staging is both
+the write target and the walk source, so a mid-walk write tears the in-flight
+commit). The software library enforces this: `bar_flow_commit()` blocks ~200 µs
+after writing the commit register. Configs are committed before a run, so this is
+benign.
 
 ## Stats snapshot window
 

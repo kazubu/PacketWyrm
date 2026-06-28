@@ -60,8 +60,17 @@ For the TX card, fill in `pwfpga_flow_config`:
 - `egress_local_port = tx_local_port`.
 - `global_flow_id` is carried verbatim into the test header so the
   RX side can correlate even across cards.
-- Frame fields (`dst_mac`, `src_mac`, VLAN, IPv4 / UDP, lengths) come
-  from YAML.
+- Frame fields (`dst_mac`, `src_mac`, VLAN, IPv4/IPv6, L4 ports, lengths)
+  come from YAML.
+- **L4 protocol**: a flow sets exactly one of a `udp:` or `tcp:` block
+  (mutually exclusive). The compiler writes `l4_proto` (17 = UDP, 6 = TCP)
+  and, for TCP, `tcp_flags` (default 0x02 SYN) into the row. TCP is a
+  stateless segment generator (fixed 20-byte header, no handshake/ACK).
+- **Min-legal frame is per-protocol** (`pw_flow_min_legal_frame`): the
+  20-byte TCP header makes the smallest legal frame larger than UDP —
+  IPv4/TCP ≥ 86 B, IPv6/TCP ≥ 106 B (vs 74 / 94 for UDP). A requested
+  `frame_len` below this is clamped up by the RTL; the compiler meters the
+  token cost / `rate_pps` byte basis against this minimum so `cap ≥ cost`.
 - Rate (`rate_bps` / `rate_pps`) + burst (`burst_size`,
   `burst_gap_ticks`).
 - `insert_sequence` and `insert_timestamp` default true.

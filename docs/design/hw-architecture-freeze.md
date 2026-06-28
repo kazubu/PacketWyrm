@@ -17,7 +17,8 @@ depends on them — so we settle the silicon first.
 | Off-chip memory  | none (no DDR/MIG in this design)      | line-rate capture-to-DRAM is OUT of scope this gen |
 
 **Explicitly out of scope this generation** (reserve hooks, don't build):
-25G/100G, DRAM capture, stateful TCP / routing-protocol emulation. Capture stays
+25G/100G, DRAM capture, stateful TCP (handshake/ACK/window — note *stateless* TCP
+segment generation IS in scope and shipped) / routing-protocol emulation. Capture stays
 on the existing PUNT/MIRROR slow path (host TAP).
 
 ## What must go into silicon NOW (retrofit-expensive hooks)
