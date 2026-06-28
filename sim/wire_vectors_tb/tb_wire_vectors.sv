@@ -277,8 +277,10 @@ module tb_wire_vectors;
         check_eq("udp_dst",         ft_rd_row[0].udp_dp, 50001);
         check_eq("smac",            ft_rd_row[0].src_mac, 48'h02_a5_02_00_00_01);
         check_eq("dmac",            ft_rd_row[0].dst_mac, 48'h02_a5_02_00_00_02);
-        // New 238-byte-row fields: IPv6 mask-hi (little-endian byte order; byte 0
-        // = bits [7:0] = 0xA0/0xB0). Catches C-struct <-> RTL-decode drift.
+        // New 240-byte-row fields: l4_proto (6=TCP), tcp_flags, and the IPv6
+        // mask-hi (little-endian byte order: byte 0 = bits [7:0] = 0xA0/0xB0).
+        check_eq("l4_proto (TCP)",  ft_rd_row[0].l4_proto, 8'd6);
+        check_eq("tcp_flags",       ft_rd_row[0].tcp_flags, 8'h12);
         check_eq("sip_mask_hi",     ft_rd_row[0].sip_mask_hi,
                  96'hAB_AA_A9_A8_A7_A6_A5_A4_A3_A2_A1_A0);
         check_eq("dip_mask_hi",     ft_rd_row[0].dip_mask_hi,

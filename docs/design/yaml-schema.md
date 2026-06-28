@@ -122,9 +122,20 @@ flows:
     # egress timestamping as IPv4. The test header is unchanged, so
     # loss/latency measurement is identical.
 
-    udp:
+    udp:                           # exactly one of udp: / tcp: (mutually exclusive)
       src_port: 49152
       dst_port: 50001
+    # tcp:                         # stateless TCP segment generation (alternative
+    #   src_port: 40000            #   to udp:). Emits a fixed-form 20-byte TCP
+    #   dst_port: 80               #   header with a correct L4 checksum (v4 + v6).
+    #   flags: 0x02                #   NOT a connection engine -- no handshake / ACK
+    #                              #   / retransmit / window control. `flags` is the
+    #                              #   fixed TCP flags byte (default 0x02 = SYN). The
+    #                              #   32-byte test header rides in the TCP payload,
+    #                              #   so loss/latency/seq measurement is identical
+    #                              #   to UDP. Min legal frame is larger (IPv4/TCP
+    #                              #   >= 86 B, IPv6/TCP >= 106 B): a smaller
+    #                              #   frame_len clamps up.
 
     traffic:
       frame_len: 512               # total L2 frame bytes (excl FCS); or

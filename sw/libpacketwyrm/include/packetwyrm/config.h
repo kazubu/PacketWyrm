@@ -101,6 +101,11 @@ enum pw_rx_expect { PW_RX_INNER = 0, PW_RX_TUNNELED = 1 };
 struct pw_flow_udp {
     uint16_t src_port;
     uint16_t dst_port;
+    /* L4 protocol: 17 = UDP (default), 6 = TCP (stateless segment generation).
+     * tcp_flags is the fixed TCP flags byte (default 0x02 = SYN). The ports
+     * above are the shared L4 src/dst, used for both UDP and TCP. */
+    uint8_t  l4_proto;
+    uint8_t  tcp_flags;
 };
 
 struct pw_flow_traffic {

@@ -230,8 +230,9 @@ module pw_parser_axis #(
                         k.l4_dst = {hdrA[udp_off + 2], hdrA[udp_off + 3]};
                         k.udp_src = k.l4_src; k.udp_dst = k.l4_dst;
                     end
-                    if (k.is_udp && flen >= eff + ip_hlen + 8) begin
-                        pay_off = eff + ip_hlen + 8;
+                    // Test header sits after the L4 header: UDP +8, TCP +20.
+                    if ((k.is_udp || k.is_tcp) && flen >= eff + ip_hlen + (k.is_tcp ? 20 : 8)) begin
+                        pay_off = eff + ip_hlen + (k.is_tcp ? 20 : 8);
                         telig   = (flen >= pay_off + 32 && pay_off + 32 <= HDR_BYTES);
                     end
                     ok = 1'b1;
@@ -250,8 +251,8 @@ module pw_parser_axis #(
                         k.l4_dst = {hdrA[udp_off + 2], hdrA[udp_off + 3]};
                         k.udp_src = k.l4_src; k.udp_dst = k.l4_dst;
                     end
-                    if (k.is_udp && ip_hlen >= 20 && flen >= eff + ip_hlen + 8) begin
-                        pay_off = eff + ip_hlen + 8;
+                    if ((k.is_udp || k.is_tcp) && ip_hlen >= 20 && flen >= eff + ip_hlen + (k.is_tcp ? 20 : 8)) begin
+                        pay_off = eff + ip_hlen + (k.is_tcp ? 20 : 8);
                         telig   = (flen >= pay_off + 32 && pay_off + 32 <= HDR_BYTES);
                     end
                     ok = 1'b1;

@@ -368,14 +368,22 @@ struct pwfpga_flow_config {
      * low-32-only rotation (back-compatible). Only used when ip_version == 6. */
     uint8_t  src_ipv6_mask_hi[12]; /* bytes 214..225 */
     uint8_t  dst_ipv6_mask_hi[12]; /* bytes 226..237 */
+
+    /* L4 protocol selector: 17 = UDP (default), 6 = TCP (stateless segment
+     * generation -- no handshake/ACK/retransmit). tcp_flags is the fixed flags
+     * byte (default 0x02 = SYN), applied by the generator; ignored for UDP. */
+    uint8_t  l4_proto;             /* byte 238 */
+    uint8_t  tcp_flags;            /* byte 239 */
 } __attribute__((packed));
 
-_Static_assert(sizeof(struct pwfpga_flow_config) == 238,
-               "pwfpga_flow_config wire layout drifted (expected 238 bytes)");
+_Static_assert(sizeof(struct pwfpga_flow_config) == 240,
+               "pwfpga_flow_config wire layout drifted (expected 240 bytes)");
 _Static_assert(offsetof(struct pwfpga_flow_config, src_ipv6_mask_hi) == 214,
                "src_ipv6_mask_hi must be at wire byte 214");
 _Static_assert(offsetof(struct pwfpga_flow_config, dst_ipv6_mask_hi) == 226,
                "dst_ipv6_mask_hi must be at wire byte 226");
+_Static_assert(offsetof(struct pwfpga_flow_config, l4_proto) == 238,
+               "l4_proto must be at wire byte 238");
 
 enum pwfpga_encap_type {
     PWFPGA_ENCAP_NONE    = 0,

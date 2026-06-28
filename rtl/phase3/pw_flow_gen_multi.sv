@@ -272,11 +272,12 @@ module pw_flow_gen_multi #(
     // csum contribute 0. tos = {dscp[5:0],2'b00} (6-bit DSCP, ECN=0).
     function automatic logic [15:0] ip_csum16(input logic [15:0] tot,
                                               input logic [31:0] sip, input logic [31:0] dip,
-                                              input logic [7:0]  dscp, input logic [7:0] ttl);
+                                              input logic [7:0]  dscp, input logic [7:0] ttl,
+                                              input logic [7:0]  proto);
         logic [31:0] s;
         s = {16'b0, 8'h45, dscp[5:0], 2'b00}     // ver/ihl | TOS
           + {16'b0, tot} + 32'h4000              // total length | flags/frag
-          + {16'b0, ttl, 8'h11}                  // TTL | proto (UDP)
+          + {16'b0, ttl, proto}                  // TTL | proto (UDP 17 / TCP 6)
           + {16'b0, sip[31:16]} + {16'b0, sip[15:0]}
           + {16'b0, dip[31:16]} + {16'b0, dip[15:0]};
         s = {16'b0, s[31:16]} + {16'b0, s[15:0]};
@@ -301,49 +302,62 @@ module pw_flow_gen_multi #(
         return ~s[15:0];
     endfunction
 
-    // IPv6 UDP *partial* checksum (the tx_timestamp is deliberately excluded).
-    // Sums the IPv6 pseudo-header (src + dst + upper-layer length + next-
-    // header) + UDP header + the 32-byte L4 payload (test header: magic / ver /
-    // flow_id / seq + 4 pad bytes) but NOT the 8-byte tx_timestamp. The egress
-    // stamper (pw_ts_insert) overwrites tx_timestamp with the departure time
-    // and folds those 4 words into this partial sum, producing the final,
-    // valid UDP checksum on the wire (and applying the RFC 768 0->0xFFFF rule).
-    // Excluding ts here is what lets the stamper fix the checksum in one pass:
-    // the csum field (byte 60) leaves before the ts field (byte 82), so the
-    // stamper can only *add* the (known, SOF-latched) ts, never subtract the
-    // old one. We therefore emit the raw one's-complement (~s, no 0xFFFF rule)
-    // so that ~csum == s exactly for the stamper to extend. Per-flow constant
-    // apart from seq (which the stamper does not touch).
-    // The IPv6 UDP partial checksum is split into TWO half-sums computed in
-    // parallel, registered between the generator's two precompute stages, and
-    // combined (a cheap add + fold) in build(). Fused, the ~30-term sum was the
-    // dp_clk-critical path; splitting it roughly halves the per-stage adder
-    // depth AND puts a register mid-route. Each half is a single multi-term `+`
-    // expression so synthesis builds an adder tree (not a carry chain). Max:
-    // psum_a = 16 words <= 0xFFFF0, psum_b = 14 words <= 0xDFFF2 -> both fit 20b.
-    function automatic logic [19:0] udp6_psum_a(input logic [127:0] src, input logic [127:0] dst);
-        return {4'b0, src[127:112]} + {4'b0, src[111:96]} + {4'b0, src[95:80]} + {4'b0, src[79:64]}
-             + {4'b0, src[63:48]}  + {4'b0, src[47:32]}  + {4'b0, src[31:16]} + {4'b0, src[15:0]}
-             + {4'b0, dst[127:112]} + {4'b0, dst[111:96]} + {4'b0, dst[95:80]} + {4'b0, dst[79:64]}
-             + {4'b0, dst[63:48]}  + {4'b0, dst[47:32]}  + {4'b0, dst[31:16]} + {4'b0, dst[15:0]};
+    // Generalized L4 (UDP/TCP, IPv4/IPv6) *partial* checksum -- the 8-byte
+    // tx_timestamp is deliberately EXCLUDED (pw_ts_insert folds the departure
+    // stamp in at egress, producing the final valid checksum in one pass: the
+    // csum field leaves the MAC before the tx_ts field, so the stamper only
+    // *adds* the SOF-latched ts, never subtracts an old one). Emits the raw
+    // one's-complement (~s, no 0xFFFF rule) so ~csum == partial exactly.
+    //
+    // Applies to {v6 UDP, v4 TCP, v6 TCP}; v4 UDP keeps csum 0 (build() decides).
+    // Split into two registered half-sums (the proven dp_clk timing structure):
+    //   psum_a = pseudo-header address sum (v6: 16 words; v4: 4 words).
+    //   psum_b = pseudo (proto + L4 length) + L4 header (proto-specific, csum=0)
+    //            + the 24-byte non-timestamp test region (magic / ver / flow_id /
+    //            seq -- NOT tx_ts).
+    // Accumulators are 24-bit: psum_b's TCP term count (~17 words) exceeds the
+    // old 20-bit width, so size for the max (<= 0x15FFEA) with margin.
+    function automatic logic [23:0] l4_psum_a(input logic is_v6,
+                                              input logic [31:0] sip, input logic [31:0] dip,
+                                              input logic [127:0] v6src, input logic [127:0] v6dst);
+        logic [23:0] s; s = '0;
+        if (is_v6) begin
+            for (int w = 0; w < 8; w++) s += {8'b0, v6src[w*16 +: 16]};
+            for (int w = 0; w < 8; w++) s += {8'b0, v6dst[w*16 +: 16]};
+        end else begin
+            s = {8'b0, sip[31:16]} + {8'b0, sip[15:0]}
+              + {8'b0, dip[31:16]} + {8'b0, dip[15:0]};
+        end
+        return s;
     endfunction
-    function automatic logic [19:0] udp6_psum_b(input logic [15:0] sport, input logic [15:0] dport,
-                                                input logic [15:0] ulen, input logic [31:0] flow_id,
-                                                input logic [63:0] seq);
-        return {4'b0, ulen} + 20'h0_0011                   // pseudo-hdr: ulen + next-header 17
-             + {4'b0, sport} + {4'b0, dport} + {4'b0, ulen}            // UDP hdr (csum 0)
-             + {4'b0, PW_TEST_HDR_MAGIC[31:16]} + {4'b0, PW_TEST_HDR_MAGIC[15:0]}
-             + 20'h0_0001                                  // version=0x0001, reserved=0
-             + {4'b0, flow_id[31:16]} + {4'b0, flow_id[15:0]}
-             + {4'b0, seq[63:48]} + {4'b0, seq[47:32]} + {4'b0, seq[31:16]} + {4'b0, seq[15:0]};
+    function automatic logic [23:0] l4_psum_b(input logic is_tcp,
+                                              input logic [15:0] sport, input logic [15:0] dport,
+                                              input logic [15:0] l4_len, input logic [31:0] flow_id,
+                                              input logic [63:0] seq, input logic [7:0] tcp_flags);
+        logic [23:0] s;
+        s = {8'b0, l4_len} + (is_tcp ? 24'd6 : 24'd17)     // pseudo-hdr: L4 len + proto
+          + {8'b0, sport} + {8'b0, dport};                 // L4 src/dst port
+        if (is_tcp)
+            // TCP header (csum=0): seq = test-seq low-32, data-offset 5 | flags,
+            // window 0xFFFF. ack=0 / urgent=0 contribute nothing.
+            s += {8'b0, seq[31:16]} + {8'b0, seq[15:0]}
+               + {8'b0, (16'h5000 | {8'h00, tcp_flags})}
+               + 24'h00_FFFF;
+        else
+            s += {8'b0, l4_len};                           // UDP length (csum=0)
+        // 24-byte non-timestamp test region (excl tx_ts):
+        s += {8'b0, PW_TEST_HDR_MAGIC[31:16]} + {8'b0, PW_TEST_HDR_MAGIC[15:0]}
+           + 24'h00_0001                                   // version 0x0001, reserved 0
+           + {8'b0, flow_id[31:16]} + {8'b0, flow_id[15:0]}
+           + {8'b0, seq[63:48]} + {8'b0, seq[47:32]} + {8'b0, seq[31:16]} + {8'b0, seq[15:0]};
+        return s;
     endfunction
-    // Combine the two registered half-sums into the raw one's-complement partial
-    // (no 0xFFFF rule; pw_ts_insert folds in tx_ts and finalizes at egress).
-    function automatic logic [15:0] udp6_fold(input logic [19:0] psa, input logic [19:0] psb);
-        logic [20:0] s;
+    // Combine the two registered half-sums -> raw one's-complement partial.
+    function automatic logic [15:0] l4_fold(input logic [23:0] psa, input logic [23:0] psb);
+        logic [24:0] s;
         s = {1'b0, psa} + {1'b0, psb};
-        s = {5'b0, s[15:0]} + {16'b0, s[20:16]};
-        s = {5'b0, s[15:0]} + {16'b0, s[20:16]};
+        s = {9'b0, s[15:0]} + {16'b0, s[24:16]};
+        s = {9'b0, s[15:0]} + {16'b0, s[24:16]};
         return ~s[15:0];
     endfunction
 
@@ -412,7 +426,9 @@ module pw_flow_gen_multi #(
     logic [47:0]  pc_smac, pc_dmac;
     logic [11:0]  pc_vlan;
     logic [15:0]  pc_sp, pc_dp, pc_csum, pc_ocsum;
-    logic [19:0]  pc_psa, pc_psb;       // IPv6 UDP csum half-sums (folded in build)
+    logic [23:0]  pc_psa, pc_psb;       // L4 csum half-sums (folded in build)
+    logic [15:0]  l4hl_pk;              // L4 header length (UDP 8 / TCP 20)
+    logic [7:0]   l4proto_pk;           // normalized L4 proto (17 UDP / 6 TCP)
     always_comb begin
         logic [15:0] vlan16;
         logic [15:0] outer_tot;
@@ -439,14 +455,22 @@ module pw_flow_gen_multi #(
                           {row_l.dip_mask_hi, row_l.dip_mask}, seq_l, SALT_DIP);
         pc_sp    = mod16(row_l.sp_mod,  row_l.udp_sp,   row_l.sp_mask,  seq_l);
         pc_dp    = mod16(row_l.dp_mod,  row_l.udp_dp,   row_l.dp_mask,  seq_l);
-        pc_csum  = ip_csum16(16'(20 + 8 + int'(paylen_l)), pc_sip, pc_dip,
-                             row_l.dscp, row_l.ttl);
-        pc_psa   = udp6_psum_a(pc_v6src, pc_v6dst);
-        pc_psb   = udp6_psum_b(pc_sp, pc_dp, 16'(8 + int'(paylen_l)), row_l.flow_id, seq_l);
+        // L4 header length (UDP 8 / TCP 20) threads into the IPv4 total-length,
+        // the IPv4-header proto byte, and the L4 checksum's pseudo-header length.
+        // Normalize proto here too (6 -> TCP, else UDP) so the csum matches the
+        // emitted proto byte even if the row wasn't decode-normalized.
+        l4proto_pk = (row_l.l4_proto == 8'd6) ? 8'd6 : 8'd17;
+        l4hl_pk    = (l4proto_pk == 8'd6) ? 16'd20 : 16'd8;
+        pc_csum  = ip_csum16(16'(20 + int'(l4hl_pk) + int'(paylen_l)), pc_sip, pc_dip,
+                             row_l.dscp, row_l.ttl, l4proto_pk);
+        pc_psa   = l4_psum_a(row_l.is_v6, pc_sip, pc_dip, pc_v6src, pc_v6dst);
+        pc_psb   = l4_psum_b(l4proto_pk == 8'd6, pc_sp, pc_dp,
+                             16'(int'(l4hl_pk) + int'(paylen_l)), row_l.flow_id,
+                             seq_l, row_l.tcp_flags);
         // Outer IPv4 header checksum (encap with a v4 outer). tot_len = outer
         // header(20) + encap header + inner IP packet. Static outer addresses.
         outer_tot = 16'(20 + encap_hdr_len(row_l.encap_type)
-                        + (row_l.is_v6 ? 40 : 20) + 8 + int'(paylen_l));
+                        + (row_l.is_v6 ? 40 : 20) + int'(l4hl_pk) + int'(paylen_l));
         pc_ocsum = ip_csum16_o(outer_tot, row_l.outer_src_ipv4, row_l.outer_dst_ipv4,
                                row_l.outer_dscp, row_l.outer_ttl,
                                encap_proto(row_l.encap_type, row_l.is_v6));
@@ -462,7 +486,7 @@ module pw_flow_gen_multi #(
     logic [47:0]      eff_smac_q, eff_dmac_q;
     logic [11:0]      eff_vlan_q;
     logic [15:0]      eff_sp_q, eff_dp_q, csum_q, ocsum_q;
-    logic [19:0]      psa_q, psb_q;       // IPv6 UDP csum half-sums; folded in build()
+    logic [23:0]      psa_q, psb_q;       // L4 csum half-sums; folded in build()
     logic [11:0]      paylen_q;           // L4 payload bytes (>=32) for this frame
     logic [15:0]      eff_len_qq;         // total frame length used (drives sweep advance)
     always_ff @(posedge clk or negedge rst_n) begin
@@ -497,15 +521,19 @@ module pw_flow_gen_multi #(
                          input logic [11:0] eff_vlan,
                          input logic [15:0] eff_sp,  input logic [15:0] eff_dp,
                          input logic [15:0] csum,    input logic [15:0] ocsum,
-                         input logic [19:0] psa,     input logic [19:0] psb,
+                         input logic [23:0] psa,     input logic [23:0] psb,
                          input logic [11:0] pay_len);
-        int off, tl, total_len, o_pl, o_tot;
-        logic [7:0]  tos, o_tos, o_proto;
+        int off, tl, total_len, o_pl, o_tot, l4hl;
+        logic [7:0]  tos, o_tos, o_proto, l4proto;
+        logic        is_tcp;
         logic [15:0] ucsum, inner_et;
+        is_tcp  = (r.l4_proto == 8'd6);
+        l4hl    = is_tcp ? 20 : 8;         // L4 header length
+        l4proto = is_tcp ? 8'd6 : 8'd17;
         tos   = {r.dscp[5:0], 2'b00};      // IPv4 TOS / IPv6 TC byte (DSCP<<2, ECN 0)
-        // Combine the two registered IPv6 UDP-csum half-sums (cheap; the deep
-        // adder is upstream, split across the precompute stages).
-        ucsum = udp6_fold(psa, psb);
+        // Combine the two registered L4-csum half-sums (cheap; the deep adder is
+        // upstream, split across the precompute stages).
+        ucsum = l4_fold(psa, psb);
         inner_et = r.is_v6 ? 16'h86DD : 16'h0800;
         for (int i = 0; i < HDR_MAX_BYTES; i++) fb[i] <= 8'h00;
         // Outer Ethernet (carries the flow's configured MAC/VLAN regardless of
@@ -520,14 +548,14 @@ module pw_flow_gen_multi #(
             fb[off+2]<={4'h0,eff_vlan[11:8]}; fb[off+3]<=eff_vlan[7:0];
             off += 4;
         end
-        tl = 8 + int'(pay_len);            // inner UDP length, common to v4/v6
+        tl = l4hl + int'(pay_len);         // inner L4 length (UDP len / TCP seg), v4/v6
 
         // --- Encapsulation prefix: outer IP + tunnel header ----------------
         if (r.encap_type != 2'd0) begin
             o_proto = encap_proto(r.encap_type, r.is_v6);
             o_tos   = {r.outer_dscp[5:0], 2'b00};
             // Outer IP payload = tunnel header + inner IP packet.
-            o_pl    = encap_hdr_len(r.encap_type) + (r.is_v6 ? 40 : 20) + 8 + int'(pay_len);
+            o_pl    = encap_hdr_len(r.encap_type) + (r.is_v6 ? 40 : 20) + l4hl + int'(pay_len);
             if (r.outer_v6) begin
                 fb[off]<=8'h86; fb[off+1]<=8'hDD; off += 2;    // ethertype IPv6 (outer)
                 fb[off+0]<={4'h6, o_tos[7:4]}; fb[off+1]<={o_tos[3:0], 4'h0};
@@ -579,30 +607,43 @@ module pw_flow_gen_multi #(
             // flow label 0. tc = tos = dscp<<2.
             fb[off+0]<={4'h6, tos[7:4]}; fb[off+1]<={tos[3:0], 4'h0};
             fb[off+2]<=8'h00; fb[off+3]<=8'h00;                // flow label = 0
-            fb[off+4]<=tl[15:8]; fb[off+5]<=tl[7:0];           // payload length = UDP+payload
-            fb[off+6]<=8'd17; fb[off+7]<=r.ttl;                // next-header UDP, hop limit
+            fb[off+4]<=tl[15:8]; fb[off+5]<=tl[7:0];           // payload length = L4+payload
+            fb[off+6]<=l4proto; fb[off+7]<=r.ttl;              // next-header (UDP/TCP), hop limit
             for (int b = 0; b < 16; b++) fb[off+8+b]  <= eff_v6src[127 - b*8 -: 8];
             for (int b = 0; b < 16; b++) fb[off+24+b] <= eff_v6dst[127 - b*8 -: 8];
             off += 40;
         end else begin
-            total_len = 20 + 8 + int'(pay_len);
+            total_len = 20 + l4hl + int'(pay_len);
             fb[off+0]<=8'h45; fb[off+1]<=tos;                  // ver/ihl | TOS (DSCP)
             fb[off+2]<=total_len[15:8]; fb[off+3]<=total_len[7:0];
             fb[off+4]<=8'h00; fb[off+5]<=8'h00; fb[off+6]<=8'h40; fb[off+7]<=8'h00;
-            fb[off+8]<=r.ttl; fb[off+9]<=8'h11; fb[off+10]<=csum[15:8]; fb[off+11]<=csum[7:0];  // TTL | proto
+            fb[off+8]<=r.ttl; fb[off+9]<=l4proto; fb[off+10]<=csum[15:8]; fb[off+11]<=csum[7:0];  // TTL | proto
             fb[off+12]<=eff_sip[31:24]; fb[off+13]<=eff_sip[23:16];
             fb[off+14]<=eff_sip[15:8];  fb[off+15]<=eff_sip[7:0];
             fb[off+16]<=eff_dip[31:24]; fb[off+17]<=eff_dip[23:16];
             fb[off+18]<=eff_dip[15:8];  fb[off+19]<=eff_dip[7:0];
             off += 20;
         end
-        // UDP header (csum: 0 for IPv4, computed/non-zero for IPv6)
+        // L4 header. UDP (8 B): sport/dport/len/csum. TCP (20 B): sport/dport/
+        // seq/ack/(data-offset|flags)/window/csum/urgent. The L4 csum field
+        // carries the partial (ucsum) for {v6 UDP, v4 TCP, v6 TCP}; v4 UDP leaves
+        // it 0. pw_ts_insert folds the departure tx_ts into it at egress.
         fb[off+0]<=eff_sp[15:8]; fb[off+1]<=eff_sp[7:0];
         fb[off+2]<=eff_dp[15:8]; fb[off+3]<=eff_dp[7:0];
-        fb[off+4]<=tl[15:8]; fb[off+5]<=tl[7:0];
-        if (r.is_v6) begin fb[off+6]<=ucsum[15:8]; fb[off+7]<=ucsum[7:0]; end
-        else          begin fb[off+6]<=8'h00;       fb[off+7]<=8'h00;       end
-        off += 8;
+        if (is_tcp) begin
+            fb[off+4]<=seq[31:24]; fb[off+5]<=seq[23:16];      // seq = test-seq low-32
+            fb[off+6]<=seq[15:8];  fb[off+7]<=seq[7:0];
+            fb[off+8]<=8'h00; fb[off+9]<=8'h00; fb[off+10]<=8'h00; fb[off+11]<=8'h00; // ack=0
+            fb[off+12]<=8'h50; fb[off+13]<=r.tcp_flags;        // data offset 5 (<<4) | flags
+            fb[off+14]<=8'hFF; fb[off+15]<=8'hFF;              // window 0xFFFF
+            fb[off+16]<=ucsum[15:8]; fb[off+17]<=ucsum[7:0];   // checksum (partial)
+            fb[off+18]<=8'h00; fb[off+19]<=8'h00;              // urgent pointer 0
+        end else begin
+            fb[off+4]<=tl[15:8]; fb[off+5]<=tl[7:0];           // UDP length
+            if (r.is_v6) begin fb[off+6]<=ucsum[15:8]; fb[off+7]<=ucsum[7:0]; end
+            else          begin fb[off+6]<=8'h00;       fb[off+7]<=8'h00;       end
+        end
+        off += l4hl;
         fb[off+0]<=PW_TEST_HDR_MAGIC[31:24]; fb[off+1]<=PW_TEST_HDR_MAGIC[23:16];
         fb[off+2]<=PW_TEST_HDR_MAGIC[15:8];  fb[off+3]<=PW_TEST_HDR_MAGIC[7:0];
         fb[off+4]<=8'h00; fb[off+5]<=8'h01; fb[off+6]<=8'h00; fb[off+7]<=8'h00;

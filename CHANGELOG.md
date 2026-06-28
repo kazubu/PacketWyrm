@@ -9,6 +9,17 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Stateless TCP segment generation.** A flow selects `tcp:` instead of
+    `udp:` (mutually exclusive) to emit fixed-form TCP segments — a 20-byte TCP
+    header (data-offset 5, configurable `flags` byte defaulting to 0x02 SYN,
+    window 0xFFFF, seq = test sequence, ack/urgent 0) with a correct L4 checksum
+    for both IPv4 and IPv6, the 32-byte test header carried in the TCP payload so
+    loss/latency/sequence measurement is identical to UDP. This is a generator,
+    NOT a connection engine (no handshake / ACK tracking / retransmit / window).
+    The per-proto minimum legal frame (IPv4/TCP ≥ 86 B, IPv6/TCP ≥ 106 B) clamps
+    a smaller `frame_len` up. RX test-header classification covers TCP up to the
+    parser capture depth (the deepest v6-encap TCP test header is not RX-classified
+    at the current 160-byte depth; TX generation is unaffected).
   - **IPv6 source/destination classifier matching.** Forward rules accept
     `ipv6_dst` / `ipv6_src` (address or `addr/prefix`) compiled to masked field
     comparators (all four IPv6-src words are now selectable; `/64` costs 2 of the

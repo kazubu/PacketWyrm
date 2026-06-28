@@ -548,6 +548,61 @@ static void test_header_classify_ipv6_prefix(void) {
     pw_config_free(cfg);
 }
 
+/* protocol: tcp -> l4_proto 6 + flags packed; hash key proto = 6. */
+static void test_tcp_flow_compiles(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n"
+        "  - id: 0\n"
+        "    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "flows:\n"
+        "  - id: 1\n"
+        "    tx_global_port: 0\n"
+        "    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv4: { src: \"198.51.100.1\", dst: \"198.51.100.2\" }\n"
+        "    tcp:  { src_port: 40000, dst_port: 80, flags: 0x12 }\n"
+        "    traffic: { frame_len: 128, rate_bps: 1000000000 }\n"
+        "    classify: header\n";
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    PW_ASSERT_EQ(cfg->flows[0].udp.l4_proto, 6);
+    PW_ASSERT_EQ(cfg->flows[0].udp.tcp_flags, 0x12);
+    PW_ASSERT_EQ(cfg->flows[0].udp.dst_port, 80);
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
+    const struct pwfpga_flow_config *fr = &prog->per_card[0].flow_rows[0];
+    PW_ASSERT_EQ(fr->l4_proto, 6);
+    PW_ASSERT_EQ(fr->tcp_flags, 0x12);
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
+/* udp and tcp blocks are mutually exclusive. */
+static void test_udp_tcp_mutually_exclusive(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n"
+        "  - id: 0\n"
+        "    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "flows:\n"
+        "  - id: 1\n"
+        "    tx_global_port: 0\n"
+        "    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv4: { src: \"198.51.100.1\", dst: \"198.51.100.2\" }\n"
+        "    udp:  { src_port: 1, dst_port: 2 }\n"
+        "    tcp:  { src_port: 3, dst_port: 4 }\n"
+        "    traffic: { frame_len: 128, rate_bps: 1000000000 }\n";
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_E_INVAL);
+    pw_config_free(cfg);
+}
+
 static void test_flow_field_modifiers(void) {
     const char *yaml =
         "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
@@ -1504,6 +1559,8 @@ int main(void) {
         { "header_classify_ipv6_prefix", test_header_classify_ipv6_prefix },
         { "ipv6_flow_compiles", test_ipv6_flow_compiles },
         { "ipv6_modifier_128", test_ipv6_modifier_128 },
+        { "tcp_flow_compiles", test_tcp_flow_compiles },
+        { "udp_tcp_mutually_exclusive", test_udp_tcp_mutually_exclusive },
         { "reject_cross_card_forward", test_reject_cross_card_forward },
         { "flow_field_modifiers", test_flow_field_modifiers },
         { "background_and_match_mask", test_background_and_match_mask },
