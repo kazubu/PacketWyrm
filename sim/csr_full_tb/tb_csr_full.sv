@@ -51,6 +51,7 @@ module tb_csr_full;
     logic [31:0]       rdata;  logic [1:0] rresp; logic rvalid; logic rready;
 
     logic [63:0] ts;
+    logic [31:0] gpio_sync_ctrl_w;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) ts <= '0;
         else        ts <= ts + 64'd1;
@@ -160,6 +161,10 @@ module tb_csr_full;
         .timestamp_i    (ts),
         .global_control_o    (),
         .error_status_set_i  (32'h0),
+        .gpio_sync_ctrl_o    (gpio_sync_ctrl_w),
+        .gpio_sync_ts_i      (64'hCAFE_1234_5678_9ABC),
+        .gpio_sync_seq_i     (32'd42),
+        .gpio_sync_gpio_in_i (6'b101010),
         .port_drops_i        (port_drops),
         .rx_frames_i         (ps_zero),
         .rx_bytes_i          (ps_zero),
@@ -471,6 +476,27 @@ module tb_csr_full;
             // an untouched bucket reads zero
             axi_read(WIN_HIST_BASE + 3*HIST_STRIDE_B + 5*8, lo);
             check_eq("hist flow3 bucket5 zero", lo, 0);
+        end
+
+        // ---- GPIO cross-card time-sync CSR ----
+        begin
+            logic [31:0] v, vlo, vhi;
+            // CTRL is RW: write a config word, read it back + check it reached the
+            // module output (gpio_sync_ctrl_o, captured in gpio_sync_ctrl_w).
+            axi_write(16'h0130, 32'h0009_0117);       // enable+master, in=1,out=1,per=9
+            axi_read (16'h0130, v);
+            check_eq("gpio_sync ctrl readback", v, 32'h0009_0117);
+            check_eq("gpio_sync ctrl -> module", gpio_sync_ctrl_w, 32'h0009_0117);
+            // latched edge timestamp (driven from the constant on the DUT input):
+            // reading LOW latches HIGH for an atomic 64-bit read.
+            axi_read (16'h0134, vlo);
+            axi_read (16'h0138, vhi);
+            check_eq("gpio_sync ts low",  vlo, 32'h5678_9ABC);
+            check_eq("gpio_sync ts high", vhi, 32'hCAFE_1234);
+            axi_read (16'h013C, v);
+            check_eq("gpio_sync seq",     v, 32'd42);
+            axi_read (16'h0140, v);
+            check_eq("gpio_sync status (pad in)", v, 32'h0000_002A);  // 6'b101010
         end
 
         if (errors == 0) begin

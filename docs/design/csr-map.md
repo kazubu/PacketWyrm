@@ -63,6 +63,33 @@ headers (those are authoritative; this map is intent).
 0x0120  reboot                 W     write 0x52424F54 ("RBOT") -> ICAP IPROG
                                      (reload bitstream from flash; PCIe drops)
 
+0x0130  gpio_sync_ctrl         RW    J5 cross-card time-sync (pw_gpio_sync):
+                                     [0] enable, [1] master (drive pulse),
+                                     [2] repeat (re-drive sync-in to sync-out),
+                                     [6:4] sync-in pin (0..5), [10:8] sync-out pin,
+                                     [19:16] period_log2 (master pulse every 2^N cyc)
+0x0134  gpio_sync_ts_low       R     card-local counter latched at the last sync
+0x0138  gpio_sync_ts_high      R       edge (snapshot pair; read LOW then HIGH)
+0x013c  gpio_sync_seq          R     edge sequence (matches across cards -- SW
+                                     pairs equal seq to get the inter-card offset)
+0x0140  gpio_sync_status       R     [5:0] raw synchronised pad inputs (debug)
+
+J5 header pin map (the 6 GPIO; bidirectional, one bitstream is master/slave/
+repeater by config). sync-in/out pin index is SW-selected (ctrl [6:4]/[10:8]);
+the in=0/out=1 split is a wiring convention, not fixed in HW:
+
+  signal    FPGA LOC   J5 pins    suggested use
+  gpio[0]   A14        J5.3,4     sync-IN   (listen for upstream pulse)
+  gpio[1]   E12        J5.5,6     sync-OUT  (drive pulse to next card)
+  gpio[2]   E13        J5.7,8     spare
+  gpio[3]   F10        J5.9,10    spare
+  gpio[4]   C9         J5.11,12   spare
+  gpio[5]   D9         J5.13,14   spare
+
+2-card wiring: card A gpio[1] (out) -> card B gpio[0] (in) + common ground.
+Each "J5.a,b" is a pin pair; confirm signal-vs-ground against the board J5
+silkscreen before wiring. (Authoritative pin LOCs: fpga/as02mc04/xdc/pinout.xdc.)
+
 0x0800..0x0cff  spi_flash_window       in-system SPI flash master (live
                                        config-flash erase/program/read):
   0x0800  spi_ctrl   W:[0]go [1]cs_hold  R:[0]busy

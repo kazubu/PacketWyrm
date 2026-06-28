@@ -31,6 +31,17 @@ enum {
      * its bitstream from flash (PCIe drops; host must re-enumerate). */
     PWFPGA_REG_REBOOT               = 0x0120,
 
+    /* J5 cross-card time-sync (pw_gpio_sync). CTRL bits: [0] enable,
+     * [1] master, [2] repeat, [6:4] sync-in pin, [10:8] sync-out pin,
+     * [19:16] period_log2. TS_LOW/HIGH = card-local counter latched at the last
+     * sync edge (read LOW then HIGH). SEQ = edge count (match across cards for
+     * the inter-card offset). STATUS[5:0] = raw synchronised pad inputs. */
+    PWFPGA_REG_GPIO_SYNC_CTRL       = 0x0130,
+    PWFPGA_REG_GPIO_SYNC_TS_LOW     = 0x0134,
+    PWFPGA_REG_GPIO_SYNC_TS_HIGH    = 0x0138,
+    PWFPGA_REG_GPIO_SYNC_SEQ        = 0x013c,
+    PWFPGA_REG_GPIO_SYNC_STATUS     = 0x0140,
+
     /* NOTE: 0x0200..0x03FF was an early per-port control/status placeholder
      * that pw_csr_full never implemented (per-port status + stats are surfaced
      * through the stats-snapshot window at 0xC000). The low half (0x0200..

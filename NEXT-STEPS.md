@@ -90,12 +90,24 @@ sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
 
 ## Remaining / next
 
+**Cross-card time sync via J5 GPIO (alternative to PTP, HW done):** rather than
+discipline to a grandmaster over PTP packets, the cards share a clean hardware
+sync edge over the J5 header (`pw_gpio_sync`): a master drives a periodic pulse, every
+card latches its free-running counter at the edge (no counter step → Gray-CDC
+safe) + an edge sequence, exposed at CSR 0x0130..0x0140. Software pairs equal
+sequence numbers across cards to get the inter-card offset/skew and corrects raw
+timestamps — same SW-correction model as the PTP plan but with a deterministic
+sub-ns edge instead of packet jitter. RTL + CSR + sim done (single-card,
+non-regression verified); the daisy-chain wiring + the SW offset/skew servo need a
+2nd card (and a J5 jumper to validate the loopback).
+
 Gated on a **second card** (can't proceed on the single-card rig):
 
-1. **RX ingress wire-stamp + full two-clock PTP servo.** The servo-facing
+1. **RX ingress wire-stamp + full two-clock servo.** The servo-facing
    TX/RX wire-timestamp exposure is done (#60: punt RX SOF stamp + inject TX
-   egress stamp); the servo loop (offset/delay + disciplining) and a true RX
-   ingress stamp in the MAC clock domain need a second card.
+   egress stamp) and the GPIO sync edge-capture HW is in; the servo loop
+   (offset/skew correction) and a true RX ingress stamp in the MAC clock domain
+   need a second card. (Sync can come from the J5 GPIO daisy-chain above OR PTP.)
 2. **Multi-card** — cross-card flows + orchestration.
 
 Optional RTL features:
