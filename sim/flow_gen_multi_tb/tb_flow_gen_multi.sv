@@ -8,7 +8,7 @@ import pw_axis_pkg::*;
 import pw_classifier_pkg::*;
 
 module tb_flow_gen_multi;
-    localparam int SLOTS = 4;
+    localparam int SLOTS = 5;
 
     logic clk = 0, rst_n = 0;
     always #5 clk = ~clk;
@@ -115,6 +115,7 @@ module tb_flow_gen_multi;
     // and track the IPv6 dst low byte (byte 53) to verify the address modifier.
     logic [7:0] fbuf [0:127]; int fb_n = 0;
     logic [7:0] cap6 [0:127]; int cap6_n = 0; logic cap6_done = 0;
+    logic [7:0] capt [0:127]; int capt_n = 0; logic capt_done = 0; int tcp_seen = 0;
     int v6_seen = 0;
     logic [255:0] v6_dlo_seen = '0; int v6_dlo_distinct = 0; logic v6_dhi_const = 1'b1;
     // MAC modifier (IPv4 frames): src MAC low byte @11 rotates, byte @10 fixed.
@@ -143,6 +144,14 @@ module tb_flow_gen_multi;
                         v6_dlo_seen[fbuf[53]] = 1'b1; v6_dlo_distinct++;
                     end
                     if (fbuf[52] != 8'h00) v6_dhi_const = 1'b0;   // dst[...:8] fixed
+                end
+                // IPv4 TCP frame (proto byte @23 == 6): capture the first one.
+                if (fb_n >= 54 && fbuf[12] == 8'h08 && fbuf[13] == 8'h00 && fbuf[23] == 8'd6) begin
+                    tcp_seen++;
+                    if (!capt_done) begin
+                        for (int i = 0; i < 128; i++) capt[i] = fbuf[i];
+                        capt_n = fb_n; capt_done <= 1'b1;
+                    end
                 end
                 // IPv4 (untagged) frame: track src MAC modifier (bytes 6..11)
                 if (fb_n >= 34 && fbuf[12] == 8'h08 && fbuf[13] == 8'h00) begin
@@ -225,6 +234,28 @@ module tb_flow_gen_multi;
         end
     end
 
+    // INDEPENDENT IPv4 TCP checksum reference (different arithmetic than the DUT's
+    // l4_psum_*): pseudo-header (sip@26, dip@30, proto 6, tcp_len) + the 20-byte
+    // TCP header @34 (incl the emitted csum field @50) + the test region @54,
+    // EXCLUDING the 8-byte tx_ts. Folds to 0xFFFF iff the emitted partial csum is
+    // correct (the stamper would later fold tx_ts at egress). No-encap layout.
+    function automatic logic tcp_csum_ok();
+        logic [31:0] s; logic [15:0] tcp_len; int test_off;
+        s = 0;
+        tcp_len = {capt[16], capt[17]} - 16'd20;     // IPv4 total_len - IP hdr
+        for (int w = 0; w < 2; w++) s += {capt[26 + w*2], capt[26 + w*2 + 1]};  // sip
+        for (int w = 0; w < 2; w++) s += {capt[30 + w*2], capt[30 + w*2 + 1]};  // dip
+        s += 32'h0000_0006;                          // pseudo: proto = TCP
+        s += {16'b0, tcp_len};                       // pseudo: TCP segment length
+        for (int w = 0; w < 10; w++) s += {capt[34 + w*2], capt[34 + w*2 + 1]};  // TCP hdr (incl csum)
+        test_off = 54;                               // test region (no encap)
+        for (int w = 0; w < 16; w++)                 // 32B test region, minus tx_ts words 10..13
+            if (w < 10 || w > 13) s += {capt[test_off + w*2], capt[test_off + w*2 + 1]};
+        s = (s & 32'hFFFF) + (s >> 16);
+        s = (s & 32'hFFFF) + (s >> 16);
+        return (s[15:0] == 16'hFFFF);
+    endfunction
+
     initial begin
         for (int s = 0; s < SLOTS; s++) begin
             f_rows[s] = '0;
@@ -270,6 +301,14 @@ module tb_flow_gen_multi;
         f_rows[3].src_ipv4=32'h0A000007; f_rows[3].dst_ipv4=32'h0A000008;
         f_rows[3].frame_len_min=16'd128; f_rows[3].frame_len_max=16'd256;
         f_rows[3].frame_len_step=16'd64;
+        // slot 4: IPv4 TCP flow (flow_id 9) -- stateless SYN segment generation.
+        // Low rate so it doesn't starve the metered flows above; just enough to
+        // capture one frame + verify the TCP header layout + L4 checksum.
+        f_rows[4].valid=1; f_rows[4].egress=0; f_rows[4].flow_id=32'd9;
+        f_rows[4].tokens_fp=32'h00080000;
+        f_rows[4].src_ipv4=32'h0A000009; f_rows[4].dst_ipv4=32'h0A00000A;
+        f_rows[4].udp_sp=16'd40000; f_rows[4].udp_dp=16'd80;
+        f_rows[4].l4_proto=8'd6; f_rows[4].tcp_flags=8'h02;   // TCP, SYN
 
         repeat (4) @(posedge clk); rst_n = 1;
         repeat (3000) @(posedge clk);
@@ -309,6 +348,13 @@ module tb_flow_gen_multi;
             ({cap6[38],cap6[39],cap6[40],cap6[41]} != {cap6[50],cap6[51],cap6[52],cap6[53]}));
         chk("IPv6 random: src != dst (field salt)",
             {cap6[22],cap6[23],cap6[24],cap6[25]} != {cap6[38],cap6[39],cap6[40],cap6[41]});
+        // IPv4 TCP flow (flow_id 9 / slot 4): stateless SYN segment generation.
+        chk("IPv4 TCP frames emitted", tcp_seen >= 2);
+        chk("captured IPv4 TCP frame", capt_done && capt_n >= 86);
+        chk("IPv4 TCP proto byte = 6", capt[23] == 8'd6);
+        chk("TCP data offset 5 | flags SYN", capt[46] == 8'h50 && capt[47] == 8'h02);
+        chk("TCP window 0xFFFF", capt[48] == 8'hFF && capt[49] == 8'hFF);
+        chk("IPv4 TCP L4 checksum valid (independent ref)", tcp_csum_ok());
         // MAC modifier (slot 0 src MAC low byte) + VLAN modifier (slot 1 VID).
         chk("src-MAC modifier rotates low byte", smac_lo_distinct >= 4);
         chk("src-MAC modifier keeps high bytes", smac_hi_const);

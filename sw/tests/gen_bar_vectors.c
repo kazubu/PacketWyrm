@@ -72,8 +72,10 @@ int main(int argc, char **argv) {
     fc.tokens_per_tick_fp = 0x00040000u;
     fc.burst_bytes        = 256;
     fc.tx_enable         = 1;
-    /* New 238-byte-row fields: unique non-zero patterns so the RTL decode of the
-     * IPv6 mask-hi byte order is checked too. */
+    /* New 240-byte-row fields: unique non-zero patterns so the RTL decode of
+     * the IPv6 mask-hi byte order, l4_proto and tcp_flags is checked too. */
+    fc.l4_proto  = 6;            /* TCP */
+    fc.tcp_flags = 0x12;
     for (int i = 0; i < 12; i++) {
         fc.src_ipv6_mask_hi[i] = (uint8_t)(0xA0 + i);
         fc.dst_ipv6_mask_hi[i] = (uint8_t)(0xB0 + i);

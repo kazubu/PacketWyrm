@@ -81,6 +81,8 @@ module pw_ts_insert #(
     // UDP csum and tx_ts -- so the derived offsets settle before they are used.
     logic [7:0]  o_proto_q;            // outer IP protocol / next-header
     logic [7:0]  gre_hi_q, eip_hi_q;   // inner-family selector bytes
+    logic [7:0]  inner_l4_proto_q;     // inner IP L4 proto (encap case; captured)
+    logic        inner_tcp_q;          // registered inner_tcp_c (critical path)
 
     // Tunnel kind from the outer IP protocol (matches pw_flow_gen_multi).
     function automatic logic [1:0] enc_of_proto(input logic [7:0] p);
@@ -111,12 +113,22 @@ module pw_ts_insert #(
             ? o3 + (outer_v6_q ? 12'd40 : 12'd20)
             : o3 + (outer_v6_q ? 12'd40 : 12'd20)
                  + enc_hdr_len(encap_c) + (inner_v6_c ? 12'd40 : 12'd20);
-    wire [11:0] magic_off_c = inner_udp_c + 12'd8;
-    wire [11:0] ts_off_c    = inner_udp_c + 12'd28;      // magic(4)+ver(4)+fid(4)+seq(8)
-    wire [11:0] csum_off_c   = inner_udp_c + 12'd6;       // UDP checksum field
+    // Inner L4 protocol: for no-encap it is the (outer) IP proto; for encap it is
+    // captured from the inner IP header's proto byte. TCP shifts the test header
+    // (+20 vs UDP's +8) and moves the checksum field (L4+16 vs L4+6).
+    wire [11:0] inner_l3_start = (encap_c == 2'd0)
+            ? o3 : (enc_start_w + enc_hdr_len(encap_c));
+    wire [11:0] inner_proto_pos = inner_l3_start + (inner_v6_c ? 12'd6 : 12'd9);
+    wire [7:0]  inner_l4_proto_c = (encap_c == 2'd0) ? o_proto_q : inner_l4_proto_q;
+    wire        inner_tcp_c = (inner_l4_proto_c == 8'd6);
+    wire [11:0] l4hl_c      = inner_tcp_c ? 12'd20 : 12'd8;
+    wire [11:0] magic_off_c = inner_udp_c + l4hl_c;
+    wire [11:0] ts_off_c    = inner_udp_c + l4hl_c + 12'd20;   // after magic+ver+fid+seq
+    wire [11:0] csum_off_c  = inner_udp_c + (inner_tcp_c ? 12'd16 : 12'd6);
     // Capture positions (depend only on VLAN + outer family, both settled early).
     wire [11:0] proto_pos = o3 + (outer_v6_q ? 12'd6  : 12'd9);
-    wire [11:0] enc_start = o3 + (outer_v6_q ? 12'd40 : 12'd20);
+    wire [11:0] enc_start_w = o3 + (outer_v6_q ? 12'd40 : 12'd20);
+    wire [11:0] enc_start = enc_start_w;
     wire [11:0] gre_pos   = enc_start + 12'd2;           // GRE protocol-type hi
     wire [11:0] eip_pos   = enc_start + 12'd14;          // EtherIP inner ethertype hi
 
@@ -125,8 +137,10 @@ module pw_ts_insert #(
     // v6 inner keys on the generator marker (the csum fixup must run before the
     // magic streams, so it uses the SOF marker).
     wire stamp_ok = inner_v6_q ? is_gen : magic_ok;
-    // Inner UDP checksum fixup runs only for marked v6-inner generator frames.
-    wire fix_csum = inner_v6_q && is_gen;
+    // L4 checksum fixup runs for marked generator frames whose checksum covers
+    // tx_ts: v6 UDP, and TCP (v4 + v6). v4 UDP keeps csum 0 (no fixup). Gated on
+    // is_gen because the csum field streams before the magic (esp. v4 TCP @L4+16).
+    wire fix_csum = is_gen && (inner_v6_q || inner_tcp_q);
 
     // ---- pass-through handshake + sideband ----
     assign s_tready = m_tready;
@@ -140,15 +154,18 @@ module pw_ts_insert #(
     // The four tx_ts 16-bit words are pre-summed once at SOF (ts_addend, see
     // below) so this is a single add + folds on the (MAC-CRC-critical) data
     // path instead of a 5-term tree.
-    function automatic logic [15:0] finalize_csum(input logic [15:0]  c0,
-                                                  input logic [18:0] addend);
+    function automatic logic [15:0] finalize_csum(input logic [15:0] c0,
+                                                  input logic [18:0] addend,
+                                                  input logic        udp_zero_rule);
         logic [19:0] s;
         logic [15:0] f;
         s = {4'b0, ~c0} + {1'b0, addend};                // ~c0 + sum(tx_ts words)
         s = {4'b0, s[15:0]} + {16'b0, s[19:16]};         // fold
         s = {4'b0, s[15:0]} + {16'b0, s[19:16]};         // fold again
         f = ~s[15:0];
-        return (f == 16'h0000) ? 16'hFFFF : f;           // RFC 768
+        // UDP applies the RFC 768 0 -> 0xFFFF rule; TCP must NOT (0 is a valid
+        // TCP checksum and the field is mandatory either way).
+        return (udp_zero_rule && f == 16'h0000) ? 16'hFFFF : f;
     endfunction
 
     // ---- data: overwrite tx_ts (matched) + IPv6 UDP csum (marked gen) ----
@@ -171,7 +188,7 @@ module pw_ts_insert #(
             if (l[3:0] == csum_lane_q)          c0_hi = s_tdata[l*8 +: 8];
             if (l[3:0] == csum_lane_q + 4'd1)   c0_lo = s_tdata[l*8 +: 8];
         end
-        cnew = finalize_csum({c0_hi, c0_lo}, ts_addend);
+        cnew = finalize_csum({c0_hi, c0_lo}, ts_addend, !inner_tcp_q);
         for (int l = 0; l < DATA_W/8; l++) begin
             bi  = base + 12'(l);
             sel = 6'((7 - (bi - ts_off)) * 8);
@@ -192,6 +209,7 @@ module pw_ts_insert #(
             csum_beat_q <= 12'd7; csum_lane_q <= 4'd4;
             magic_off_q <= 12'd42; ts_off_q <= 12'd62;
             o_proto_q <= 8'd17; gre_hi_q <= 8'h0; eip_hi_q <= 8'h0;
+            inner_l4_proto_q <= 8'd17; inner_tcp_q <= 1'b0;
             for (int k = 0; k < 4; k++) mb[k] <= 8'h0;
         end else if (acc) begin
             // Register the decoded inner-header offsets every beat (they settle
@@ -202,6 +220,7 @@ module pw_ts_insert #(
             magic_off_q <= magic_off_c;
             ts_off_q    <= ts_off_c;
             inner_v6_q  <= inner_v6_c;
+            inner_tcp_q <= inner_tcp_c;
             if (beat == 12'd0) begin
                 ts_lat   <= ts_now;     // departure time of this frame
                 // pre-sum the 4 tx_ts 16-bit words for the csum finalize
@@ -228,9 +247,10 @@ module pw_ts_insert #(
             // and the 4 magic bytes, by position as they stream past.
             for (int l = 0; l < DATA_W/8; l++) begin
                 automatic logic [11:0] bi = base + 12'(l);
-                if (bi == proto_pos) o_proto_q <= s_tdata[l*8 +: 8];
-                if (bi == gre_pos)   gre_hi_q  <= s_tdata[l*8 +: 8];
-                if (bi == eip_pos)   eip_hi_q  <= s_tdata[l*8 +: 8];
+                if (bi == proto_pos)       o_proto_q        <= s_tdata[l*8 +: 8];
+                if (bi == inner_proto_pos) inner_l4_proto_q <= s_tdata[l*8 +: 8];
+                if (bi == gre_pos)         gre_hi_q  <= s_tdata[l*8 +: 8];
+                if (bi == eip_pos)         eip_hi_q  <= s_tdata[l*8 +: 8];
                 for (int k = 0; k < 4; k++)
                     if (bi == magic_off_q + 12'(k)) mb[k] <= s_tdata[l*8 +: 8];
             end

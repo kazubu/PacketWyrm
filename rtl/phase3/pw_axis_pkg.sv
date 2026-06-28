@@ -102,6 +102,11 @@ package pw_axis_pkg;
         // (back-compatible with the original v6 host-ID rotation).
         logic [95:0] sip_mask_hi;
         logic [95:0] dip_mask_hi;
+        // L4 protocol: 17 = UDP (default), 6 = TCP (stateless segment gen).
+        // tcp_flags is the fixed TCP flags byte (default 0x02 = SYN); ignored
+        // for UDP. seq/ack/window are fixed-form (see pw_flow_gen_multi).
+        logic [7:0]  l4_proto;
+        logic [7:0]  tcp_flags;
         logic [1:0]  sp_mod;    logic [15:0] sp_mask;
         logic [1:0]  dp_mod;    logic [15:0] dp_mask;
         // MAC / VLAN modifiers (same scheme; not in any checksum -- the
@@ -202,6 +207,10 @@ package pw_axis_pkg;
             f.sip_mask_hi[b*8 +: 8] = row[(214+b)*8 +: 8];
             f.dip_mask_hi[b*8 +: 8] = row[(226+b)*8 +: 8];
         end
+        // L4 protocol (byte 238): normalize 6 -> TCP, anything else -> UDP (so a
+        // zero from an old/short row means UDP, never "protocol 0").
+        f.l4_proto  = (row[238*8 +: 8] == 8'd6) ? 8'd6 : 8'd17;
+        f.tcp_flags = row[239*8 +: 8];
         return f;
     endfunction
 
@@ -210,7 +219,7 @@ package pw_axis_pkg;
     // Mirrors pw_flow_gen_multi's frame_bytes_row (the generator's token cost).
     function automatic int pw_frame_bytes(input pw_flow_row_t r, input int payload);
         int inner, enc_hdr;
-        inner = (r.is_v6 ? 40 : 20) + 8 + payload;
+        inner = (r.is_v6 ? 40 : 20) + (r.l4_proto == 8'd6 ? 20 : 8) + payload;
         case (r.encap_type)
             2'd2:    enc_hdr = 4;
             2'd3:    enc_hdr = 16;

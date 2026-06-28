@@ -184,6 +184,45 @@ module tb_ts_insert;
         fin[100] = c[15:8]; fin[101] = c[7:0];  // inner partial UDP csum @100
     endtask
 
+    // ---- TCP builders (proto 6; csum field at L4+16, test header at L4+20) ----
+    // IPv4 TCP, no VLAN: IP@14 (proto@23=6), TCP@34 (csum@50), test@54, tx_ts@74.
+    function automatic logic [15:0] partial4_tcp();   // raw ~sum, excl tx_ts + csum word
+        logic [31:0] s; logic [15:0] tcp_len; s = 0;
+        tcp_len = {fin[16], fin[17]} - 16'd20;
+        for (int w = 0; w < 2; w++) s += {fin[26 + w*2], fin[27 + w*2]};   // sip
+        for (int w = 0; w < 2; w++) s += {fin[30 + w*2], fin[31 + w*2]};   // dip
+        s += 32'h0000_0006;                                                // proto TCP
+        s += {16'b0, tcp_len};                                             // pseudo length
+        for (int w = 0; w < 10; w++) if (w != 8)                           // TCP hdr, csum word=0
+            s += {fin[34 + w*2], fin[35 + w*2]};
+        for (int w = 0; w < 16; w++) if (w < 10 || w > 13)                 // test region excl tx_ts
+            s += {fin[54 + w*2], fin[55 + w*2]};
+        s = (s & 32'hFFFF) + (s >> 16); s = (s & 32'hFFFF) + (s >> 16);
+        return ~s[15:0];
+    endfunction
+    function automatic logic full4_tcp_ok(input logic [7:0] f [160]);      // incl csum + stamped ts
+        logic [31:0] s; logic [15:0] tcp_len; s = 0;
+        tcp_len = {f[16], f[17]} - 16'd20;
+        for (int w = 0; w < 2; w++) s += {f[26 + w*2], f[27 + w*2]};
+        for (int w = 0; w < 2; w++) s += {f[30 + w*2], f[31 + w*2]};
+        s += 32'h0000_0006; s += {16'b0, tcp_len};
+        for (int w = 0; w < 10; w++) s += {f[34 + w*2], f[35 + w*2]};       // TCP hdr incl csum
+        for (int w = 0; w < 16; w++) s += {f[54 + w*2], f[55 + w*2]};       // test region incl ts
+        s = (s & 32'hFFFF) + (s >> 16); s = (s & 32'hFFFF) + (s >> 16);
+        return (s[15:0] == 16'hFFFF);
+    endfunction
+    task automatic build_v4_tcp();
+        logic [15:0] c;
+        for (int i = 0; i < 96; i++) fin[i] = 8'(i);
+        fin[12] = 8'h08; fin[13] = 8'h00;                 // IPv4
+        fin[14] = 8'h45; fin[23] = 8'd6;                  // ver/ihl, proto TCP
+        fin[16] = 8'h00; fin[17] = 8'd72;                 // IP total len = 20+20+32
+        fin[54] = 8'hA5; fin[55] = 8'h02; fin[56] = 8'h7E; fin[57] = 8'h57;  // magic @54
+        for (int i = 0; i < 8; i++) fin[74 + i] = 8'hEE;  // tx_ts sentinel @74
+        c = partial4_tcp();
+        fin[50] = c[15:8]; fin[51] = c[7:0];              // partial TCP csum @50
+    endtask
+
     initial begin
         ts_now = 0; s_td = 0; s_tk = 0; s_tv = 0; s_tl = 0; s_tu = 0; m_tr = 0;
         repeat (4) @(posedge clk); rst_n = 1; @(posedge clk);
@@ -266,6 +305,27 @@ module tb_ts_insert;
         if (fout[100] === fin[100] && fout[101] === fin[101]) begin
             $display("[FAIL] ipip66 inner csum field not updated"); errors++;
         end
+
+        // ---- 10: IPv4 TCP -> tx_ts@74 + TCP csum@50 finalized (no zero-rule).
+        // The csum field (@50) streams before the magic (@54), so the fixup is
+        // is_gen-gated (not magic-gated) -- v4 TCP would otherwise never fix it. --
+        build_v4_tcp();
+        run_frame(64'h2122_2324_2526_2728, 1'b1);
+        chk("v4tcp ts[74]", fout[74], 8'h21); chk("v4tcp ts[81]", fout[81], 8'h28);
+        chk("v4tcp magic[54] kept", fout[54], 8'hA5);
+        chk("v4tcp proto[23] kept", fout[23], 8'd6);
+        chk1("v4tcp TCP checksum valid (finalized)", full4_tcp_ok(fout));
+        if (fout[50] === fin[50] && fout[51] === fin[51]) begin
+            $display("[FAIL] v4tcp csum field not updated"); errors++;
+        end
+        // ---- 11: forwarded TCP-looking frame (tuser=0, wrong magic) -> untouched.
+        // Proves the csum fixup is is_gen-gated (a non-generator TCP frame whose
+        // csum field happens to look partial is never rewritten). ----
+        build_v4_tcp();
+        fin[54] = 8'hDE; fin[55] = 8'hAD;                  // not our magic
+        run_frame(64'hFFFF_FFFF_FFFF_FFFF, 1'b0);
+        chk("fwd-v4tcp ts[74] kept", fout[74], 8'hEE);
+        chk("fwd-v4tcp csum[50] kept", fout[50], fin[50]);
 
         if (errors == 0) $display("ALL TS_INSERT SCENARIOS PASS");
         else             $display("TS_INSERT FAILURES: %0d", errors);

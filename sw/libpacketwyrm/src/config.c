@@ -498,17 +498,33 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
         else { diag_set(diag, PW_E_PARSE, path, "rx_expect must be inner|tunneled"); return PW_E_PARSE; }
     }
 
-    /* udp */
+    /* L4: exactly one of `udp:` or `tcp:` (mutually exclusive). TCP is a
+     * stateless segment generator (default flags SYN); both blocks share the
+     * src_port/dst_port shape and normalize to the same internal L4 ports. */
+    f->udp.l4_proto  = 17;
+    f->udp.tcp_flags = 0x02;          /* SYN (default; applied for TCP only) */
     const pw_yaml_node *udp = pw_yaml_map_get(m, "udp");
-    if (!udp) {
-        diag_set(diag, PW_E_MISSING_FIELD, path, "flow requires udp block"); return PW_E_MISSING_FIELD;
+    const pw_yaml_node *tcp = pw_yaml_map_get(m, "tcp");
+    if (udp && tcp) {
+        diag_set(diag, PW_E_INVAL, path, "set exactly one of udp / tcp"); return PW_E_INVAL;
     }
-    char up[96]; snprintf(up, sizeof(up), "%s.udp", path);
-    REQ_MAP(udp, up);
-    if ((r = get_scalar(udp, "src_port", up, true, &s, diag)) != PW_OK) return r;
+    if (!udp && !tcp) {
+        diag_set(diag, PW_E_MISSING_FIELD, path, "flow requires a udp or tcp block"); return PW_E_MISSING_FIELD;
+    }
+    const pw_yaml_node *l4 = tcp ? tcp : udp;
+    char up[96]; snprintf(up, sizeof(up), "%s.%s", path, tcp ? "tcp" : "udp");
+    REQ_MAP(l4, up);
+    if ((r = get_scalar(l4, "src_port", up, true, &s, diag)) != PW_OK) return r;
     if (!pw_parse_u16(s, &f->udp.src_port)) { diag_set(diag, PW_E_PARSE, up, "src_port"); return PW_E_PARSE; }
-    if ((r = get_scalar(udp, "dst_port", up, true, &s, diag)) != PW_OK) return r;
+    if ((r = get_scalar(l4, "dst_port", up, true, &s, diag)) != PW_OK) return r;
     if (!pw_parse_u16(s, &f->udp.dst_port)) { diag_set(diag, PW_E_PARSE, up, "dst_port"); return PW_E_PARSE; }
+    if (tcp) {
+        f->udp.l4_proto = 6;
+        if ((r = get_scalar(tcp, "flags", up, false, &s, diag)) != PW_OK) return r;
+        if (s && !pw_parse_u8(s, &f->udp.tcp_flags)) {
+            diag_set(diag, PW_E_PARSE, up, "tcp flags must be 0..255"); return PW_E_PARSE;
+        }
+    }
 
     /* traffic */
     const pw_yaml_node *tr = pw_yaml_map_get(m, "traffic");

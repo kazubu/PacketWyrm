@@ -140,7 +140,7 @@ static void pw_fc_hash_words(const struct pw_flow *f, uint32_t w[11]) {
     uint32_t eth   = f->ipv6.present ? 0x86DDu : 0x0800u;
     uint32_t vlan16 = f->l2.vlan_set ? (f->l2.vlan & 0x0FFFu) : 0u;
     w[9]  = (vlan16 << 16) | eth;
-    w[10] = 17u;   /* UDP */
+    w[10] = f->udp.l4_proto ? f->udp.l4_proto : 17u;   /* L3 proto: 6 TCP / 17 UDP */
 }
 /* XOR-fold the 11 (masked) words + multiply-shift -> bucket. Identical to RTL. */
 static uint16_t pw_fc_hash_index(const uint32_t w[11], uint32_t seed) {
@@ -221,12 +221,12 @@ static void pw_fc_relax_mask(uint32_t mask[11], const struct pw_flow *f) {
 }
 
 /* Minimum legal on-wire frame (bytes), mirroring RTL pw_frame_bytes(row, 32B
- * test payload). The generator clamps the swept length UP to this and the token
- * cost uses it, so the bucket cap and the rate_pps byte basis must meter at
- * least this many bytes -- else cap < cost (the flow never transmits) and pps is
- * metered against the wrong size. Accounts for VLAN, encap (outer IP + tunnel),
- * and inner IP family. (UDP L4 = 8; the TCP path is on the phase3-tcp-gen
- * branch.) */
+ * test payload). The generator clamps the swept length UP to this, and the
+ * token-bucket cost uses it -- so the bucket cap and the rate_pps byte basis
+ * must both meter at least this many bytes, else the bucket never reaches the
+ * cost (cap < cost -> the flow never transmits) and pps is metered against the
+ * wrong size. Accounts for VLAN, encap (outer IP + tunnel), inner IP family,
+ * and the L4 protocol (TCP 20 / UDP 8). */
 static uint32_t pw_flow_min_legal_frame(const struct pw_flow *f) {
     uint32_t l = 14u;                                       /* Ethernet */
     if (f->l2.vlan_set) l += 4u;                            /* VLAN tag */
@@ -236,7 +236,7 @@ static uint32_t pw_flow_min_legal_frame(const struct pw_flow *f) {
         else if (f->encap.type == PWFPGA_ENCAP_ETHERIP) l += 16u;
     }
     l += f->ipv6.present ? 40u : 20u;                       /* inner IP */
-    l += 8u;                                                /* UDP */
+    l += (f->udp.l4_proto == 6) ? 20u : 8u;                 /* L4 (TCP / UDP) */
     l += 32u;                                               /* test-header region */
     return l;
 }
@@ -313,6 +313,8 @@ static pw_status compile_one_flow(struct pw_program *out,
     }
     tx_row.udp_src_port = f->udp.src_port;
     tx_row.udp_dst_port = f->udp.dst_port;
+    tx_row.l4_proto     = f->udp.l4_proto ? f->udp.l4_proto : 17;  /* 6 TCP / 17 UDP */
+    tx_row.tcp_flags    = f->udp.tcp_flags;
     /* Per-field modifiers (DUT-facing flow diversification). */
     tx_row.src_ipv4_mod  = f->mod.src_ipv4.mode; tx_row.src_ipv4_mask = (uint32_t)f->mod.src_ipv4.mask;
     tx_row.dst_ipv4_mod  = f->mod.dst_ipv4.mode; tx_row.dst_ipv4_mask = (uint32_t)f->mod.dst_ipv4.mask;
