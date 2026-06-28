@@ -64,12 +64,14 @@ from a register double-buffer to BRAM** (a word-serial commit walk): it freed
 headroom let HDR_BYTES go back to 160 (deep v6-encap UDP RX recovered) AND **A+B+C
 including TCP now builds + routes: LUT 84.42%, dp_clk WNS +0.032, HW-validated
 (v4/v6 TCP loopback loss=0, RX-classified; UDP/scale32 no regression).** The
-biggest blocks now: parser ~39K (160 B), generator ~28K, field classifier ~17K
+biggest blocks now: parser ~39K (176 B), generator ~28K, field classifier ~17K
 (flow-table dropped to ~4K LUT). The classifier-winner select is O(N²) on purpose
 (shallow parallel one-hot mux); a "leaner" linear/tree rewrite is DEEPER and
-regresses timing (see the `dp-clk-timing-lessons` memory). Remaining TCP gap: the
-deepest v6-encap TCP test header (166 B > 160) is not RX-classified at HDR 160
-(raise to 176 if a build's util allows; TX generation is unaffected).
+regresses timing (see the `dp-clk-timing-lessons` memory). **HDR_BYTES was then
+raised 160 → 176** so the deepest v6-encap TCP test header (166 B) RX-classifies
+too: build LUT 83.45%, dp_clk WNS +0.082, HW-validated (etherip-v6-in-v6 TCP
+loopback loss=0 + RX-classified, UDP/TCP no regression) — no LUT/timing penalty,
+so all encap depths now classify for both UDP and TCP.
 
 **HDR_BYTES=128 capability boundary:** RX test-header classification spans
 ≤128 B — non-encap + single-encap v4/v6 are fine; the deepest v6-in-v6 *encap*
@@ -108,7 +110,8 @@ Optional RTL features:
    room; it now builds at LUT 84.42% / dp_clk WNS +0.032 and HW-validated (v4/v6
    TCP loopback loss=0, RX-classified). Not a connection engine (no handshake /
    ACK / retransmit). `pw_tcp_syn` (slow-path inject) remains for one-off SYNs.
-   Open follow-up: HDR_BYTES 160→176 to RX-classify the deepest v6-encap TCP.
+   HDR_BYTES was then raised to 176 so the deepest v6-encap TCP (166 B) also
+   RX-classifies (HW-validated, no penalty) — all encap depths now covered.
 4. **Field-modifier extensions — DONE.** Full 128-bit IPv6-address rotation
    (v6-literal mask) with field+lane salts (four distinct lanes, src≠dst,
    de-duplicated deterministic streams, ~2³² period); low-32 hex masks stay
