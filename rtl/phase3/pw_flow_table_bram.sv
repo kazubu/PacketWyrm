@@ -60,6 +60,11 @@ module pw_flow_table_bram #(
     input  wire  [$clog2(DEPTH)-1:0] rd_addr_i [PORTS],
     output pw_flow_row_t             rd_row_o  [PORTS],
 
+    // Pulses for ONE cycle when a commit is ACCEPTED and the walk BEGINS -- NOT
+    // when the live table is fully updated (the walk then takes DEPTH*ROW_DW
+    // cycles, during which the per-port row BRAM is a mix of old/new rows). A
+    // consumer that needs "new table fully live" must wait the walk duration (or
+    // a future commit_done_o would be needed); today this is unconnected.
     output logic                 commit_pulse_o
 );
     localparam int IDXW      = (DEPTH  > 1) ? $clog2(DEPTH) : 1;
@@ -75,12 +80,13 @@ module pw_flow_table_bram #(
     // range [WIN_BASE + N*ROW_BYTES, +ROW_BYTES); word w of row N is at byte
     // offset N*ROW_BYTES + w*4, i.e. flat word index N*ROW_DW + w = rel >> 2.
     (* ram_style = "block" *) logic [31:0] stg [NWORDS];
-    // Zero-init the staging (matches the old pw_csr_window `shadow <= '0` reset
-    // contract): an UNWRITTEN row must walk in as all-zero so pw_decode_flow_row
-    // yields valid=0 (inert) rather than decoding undefined bits to a bogus live
-    // flow. pw_program_card_tables zero-fills every row, but single-row tools
-    // (gen_bar_vectors, the standalone HW utilities) rely on the rest being inert.
-    // Vivado defaults inferred block RAM to 0, but make the contract explicit.
+    // Zero-init the staging so an unwritten row decodes inert (valid=0) at
+    // POWER-ON / config-load (Vivado defaults inferred block RAM to 0; make it
+    // explicit). NOTE: `initial` does NOT fire on a logic reset (rst_n) -- block
+    // RAM has no async reset -- so a bare reset leaves the pre-reset bytes here.
+    // The post-reset inert contract is enforced instead by the `row_written`
+    // guard below (the commit walk forces any row not (re)written since reset to
+    // valid=0), so stale staging bytes can never become a live flow.
     initial begin
         for (int i = 0; i < NWORDS; i++) stg[i] = '0;
     end
@@ -97,6 +103,16 @@ module pw_flow_table_bram #(
     // per-port row BRAM + the sched descriptor at each row boundary.
     logic                    commit_req;
     logic                    walking;
+    // Per-row "written since the last reset" guard. The `initial` zeroes the BRAM
+    // only at power-on/config-load; a logic reset (rst_n) does NOT re-zero block
+    // RAM, so the staging keeps its pre-reset bytes. Without a guard, a commit
+    // after a bare reset would walk those stale bytes in as live valid rows (the
+    // old pw_csr_window zeroed shadow on reset). Instead of an expensive clear
+    // walk (which would also have to stall host writes), track a 1-bit/row
+    // written flag, reset to 0, set on any CSR write to that row; the commit walk
+    // forces an UNWRITTEN row inert (valid=0) regardless of the stale staging
+    // bytes. Cheap (DEPTH FFs), and imposes no post-reset programming delay.
+    logic [DEPTH-1:0]        row_written;
     logic [WADDR_W:0]        rd_ptr;        // 0..NWORDS (NWORDS = all issued)
     logic [31:0]             stg_q;         // registered staging read data
     logic [WADDR_W:0]        rd_ptr_d;      // addr that stg_q corresponds to
@@ -111,9 +127,13 @@ module pw_flow_table_bram #(
             commit_req <= 1'b0; walking <= 1'b0; rd_ptr <= '0;
             rd_ptr_d <= '0; rd_vld_d <= 1'b0; row_done <= 1'b0;
             row_idx <= '0; commit_pulse_o <= 1'b0;
+            row_written <= '0;   // every row inert until (re)written after reset
         end else begin
             commit_pulse_o <= 1'b0;
             row_done       <= 1'b0;
+
+            // mark a row as written when the host writes any of its words
+            if (wr_en && is_row) row_written[wword[WADDR_W-1:WORD_W]] <= 1'b1;
 
             // latch a commit request (write-1 to the commit register)
             if (wr_en && is_commit_reg && wr_data[0]) commit_req <= 1'b1;
@@ -124,7 +144,7 @@ module pw_flow_table_bram #(
                     walking        <= 1'b1;
                     commit_req     <= 1'b0;
                     rd_ptr         <= '0;
-                    commit_pulse_o <= 1'b1;   // commit accepted; walk begins
+                    commit_pulse_o <= 1'b1;   // commit accepted; walk BEGINS (not "live"; see port decl)
                 end
             end else begin
                 if (rd_ptr == (WADDR_W+1)'(NWORDS)) walking <= 1'b0;
@@ -163,6 +183,9 @@ module pw_flow_table_bram #(
         wrow = pw_decode_flow_row(rowflat);
     end
     wire [ROWBITS-1:0] wrow_bits = wrow;
+    // A row not written since reset is forced inert regardless of the stale
+    // staging bytes the walk decoded (see row_written above).
+    wire               row_live  = row_written[row_idx];
 
     // --- scheduling descriptor (registered) ----------------------------------
     always_ff @(posedge clk or negedge rst_n) begin
@@ -176,7 +199,7 @@ module pw_flow_table_bram #(
             automatic int min_legal = pw_frame_bytes(wrow, FRAME_LEN_PAYLOAD);
             automatic int cfg_min    = int'(wrow.frame_len_min);
             automatic int cost_b     = (cfg_min > min_legal) ? cfg_min : min_legal;
-            flow_sched_o[row_idx].valid     <= wrow.valid;
+            flow_sched_o[row_idx].valid     <= row_live ? wrow.valid : 1'b0;
             flow_sched_o[row_idx].egress    <= wrow.egress;
             flow_sched_o[row_idx].tokens_fp <= wrow.tokens_fp;
             flow_sched_o[row_idx].cap       <= {wrow.burst, 16'h0};
@@ -198,7 +221,7 @@ module pw_flow_table_bram #(
             (* ram_style = "block" *) logic [ROWBITS-1:0] mem [DEPTH];
             logic [ROWBITS-1:0] rd_q;
             always_ff @(posedge clk) begin
-                if (row_done) mem[row_idx] <= wrow_bits;   // write (commit walk)
+                if (row_done) mem[row_idx] <= row_live ? wrow_bits : '0;  // write (commit walk; inert if unwritten)
                 rd_q <= mem[rd_addr_i[p]];                 // read (generator pick)
             end
             assign rd_row_o[p] = pw_flow_row_t'(rd_q);

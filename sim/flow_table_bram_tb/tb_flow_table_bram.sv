@@ -146,6 +146,34 @@ module tb_flow_table_bram;
         // second read port returns the same row
         chk("port1 row.flow_id", rd_row[1].flow_id, 9);
 
+        // ---- post-reset staging guard ----
+        // Row 1 is committed + valid (stale bytes now sit in the staging BRAM).
+        // After a bare reset (which does NOT zero block RAM), write ONLY a
+        // different row and commit: the freshly-written row must come up valid,
+        // but row 1 -- not (re)written since reset -- must be INERT despite its
+        // stale staging bytes (the row_written guard). This is the contract a
+        // single-row tool relies on.
+        rst_n = 0; repeat (4) @(posedge clk); rst_n = 1; @(posedge clk);
+        // build row 3: plain IPv4/UDP, valid
+        for (int i=0;i<256;i++) row[i]=8'h00;
+        put8 (0,  8'd1);                 // enable
+        put8 (90, 8'd1);                 // tx_enable -> valid
+        put8 (1,  8'd0);                 // egress 0
+        put32(2,  32'd77);               // flow_id 77
+        put8 (30, 8'd4);                 // inner v4
+        put32(75, 32'h0004_0000);        // tokens_fp
+        put16(79, 16'd256);              // burst
+        write_row(3);
+        csr_write(COMMIT_AD, 32'h1);
+        repeat (DEPTH*64 + 16) @(posedge clk);
+        chk("post-reset row3 valid",      sched[3].valid, 1);
+        chk("post-reset row3 flow_id",    sched[3].egress, 0);
+        // row 1's stale staging bytes must NOT resurrect it as a live flow
+        chk("post-reset row1 INERT",      sched[1].valid, 0);
+        rd_addr[0] = 3'd1;
+        @(posedge clk); @(posedge clk);
+        chk("post-reset row1 rd_row inert", rd_row[0].valid, 0);
+
         if (errors == 0) $display("ALL FLOW_TABLE_BRAM SCENARIOS PASS");
         else             $display("FAILED with %0d error(s)", errors);
         $finish;
