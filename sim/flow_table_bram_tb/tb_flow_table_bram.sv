@@ -100,8 +100,10 @@ module tb_flow_table_bram;
         write_row(1);
         csr_write(COMMIT_AD, 32'h1);
 
-        // Wait for the commit walk to finish.
-        repeat (DEPTH + 4) @(posedge clk);
+        // Wait for the commit walk to finish. The staging is now a 32-bit-word
+        // BRAM walked one word per cycle, so the walk takes DEPTH*ROW_DW (=64)
+        // words + a few pipeline cycles, not DEPTH cycles.
+        repeat (DEPTH*64 + 16) @(posedge clk);
 
         // Scheduling descriptor for slot 1.
         chk("sched[1].valid",  sched[1].valid, 1);

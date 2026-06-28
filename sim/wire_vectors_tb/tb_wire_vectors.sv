@@ -263,9 +263,10 @@ module tb_wire_vectors;
         // ---- verify the C image's flow row decoded by the BRAM flow table ----
         scenario = "flow";
         // The vector programs flow row 0 on egress port 0 and commits; the BRAM
-        // table walks it in. Wait for the walk, then read row 0 via port 0.
+        // table walks it in. The staging is now a 32-bit-word BRAM walked one
+        // word per cycle, so the walk takes NUM_FLOWS*ROW_DW (=64) cycles.
         ft_rd_addr[0] = '0; ft_rd_addr[1] = '0;
-        repeat (NUM_FLOWS + 4) @(posedge clk);
+        repeat (NUM_FLOWS*64 + 16) @(posedge clk);
         check_eq("flow0 valid",     ft_sched[0].valid ? 1 : 0, 1);
         check_eq("flow0 egress",    ft_sched[0].egress, 0);
         check_eq("tokens_per_tick", ft_sched[0].tokens_fp, 32'h00040000);
