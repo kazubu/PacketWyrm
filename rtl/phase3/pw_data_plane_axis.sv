@@ -38,17 +38,20 @@ module pw_data_plane_axis #(
     parameter int PW_PORTS          = 2,
     parameter int PW_NUM_FLOWS      = 16,
     parameter int PW_NUM_BUCKETS    = 16,
-    parameter int HDR_BYTES         = 128,  // parser header-capture depth. Was 160;
-                                            // reduced to 128 to relieve parser LUT
-                                            // (variable-offset byte muxes scale with
-                                            // it) so the IPv6-classifier+modifier
-                                            // work fits + meets dp_clk timing. RX
-                                            // test-header classification now spans
-                                            // <=128 B: non-encap (74) + single-encap
-                                            // v4/v6 (<=~118); the deepest v6-in-v6
-                                            // encap test header (>128) is not
-                                            // RX-classified (TX generation is
-                                            // unaffected).
+    parameter int HDR_BYTES         = 160,  // parser header-capture depth. Cut to
+                                            // 128 for the IPv6-classifier+modifier
+                                            // work (parser variable-offset byte muxes
+                                            // scale with it), which dropped deep
+                                            // v6-in-v6 encap RX classification. Now
+                                            // restored to 160 -- the freed LUT from
+                                            // moving the flow-table CSR staging to
+                                            // BRAM (~15.7K) pays for the parser muxes
+                                            // again. 160 captures the deepest
+                                            // decapsulatable test header: VLAN(4) +
+                                            // outer v6(40) + EtherIP(2) + inner
+                                            // eth(14) + inner v6(40) + UDP(8) + 32 B
+                                            // test = 154 B, so all single-encap deep
+                                            // RX (incl. ipip v6-in-v6) classifies.
     parameter int FRAME_LEN_PAYLOAD = 32,   // flow_gen L4 payload bytes
     parameter int MAP_DEPTH         = 256,   // TEST_RX flow-id map index range
     parameter int NCMP              = 12,    // field comparators (canonical-field sourced)
