@@ -122,10 +122,19 @@ module after the read path went to BRAM). The host writes one 32-bit word per CS
 write into a word-wide staging BRAM; on commit a **word-serial walk** reads it one
 word per cycle, reassembles each row, and feeds the same single decoder. So the
 walk now takes `DEPTH*ROW_DW` (64 words/row) cycles instead of `DEPTH` — ~13 µs
-for 32×256 B at 156.25 MHz, benign because configs are committed before a run (the
-commit-takes-effect-shortly-after contract just has a wider window). The CSR
-address map / commit register / wire model are unchanged. `pw_csr_window` itself
-is untouched and still backs the legacy flow window + the classifier window. The legacy
+for 32×256 B at 156.25 MHz. The CSR address map / commit register / wire model are
+unchanged, but **one timing contract changed**: the staging BRAM is BOTH the host
+write target and the commit-walk read source (the old `pw_csr_window` promoted
+shadow→live atomically into a *separate* live copy), so a `flow_write` landing
+DURING the walk would tear the in-flight commit — unwalked rows pick up the new
+data. **The host must not write flow rows until the walk completes.** Benign for
+normal use (configs commit once before a run, long gap before any reconfig), and
+the library enforces it: `bar_flow_commit()` posts the commit write then blocks
+~200 µs (>> the worst-case walk) so "`flow_commit()` returns ⇒ safe to write the
+next config" still holds. Unwritten staging rows are zero (explicit `initial`,
+matching the old zero-shadow reset) so they walk in inert (`valid=0`).
+`pw_csr_window` itself is untouched and still backs the legacy flow window + the
+classifier window. The legacy
 per-port `gen_*_o` single-flow selection was also removed (dead in the
 multi-flow data plane). The wide-bus `pw_data_plane` / `pw_parser` /
 `pw_flow_gen` and `pw_flow_window` remain only for the legacy sim

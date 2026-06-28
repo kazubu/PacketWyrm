@@ -113,7 +113,18 @@ module tb_flow_table_bram;
         // cost = frame_bytes << 16. IPIP v4-in-v4, no vlan:
         //   14 + outer20 + 0 + inner20 + 8 + 32 = 94
         chk("sched[1].cost",   sched[1].cost, {16'd94, 16'h0});
-        chk("sched[0].valid",  sched[0].valid, 0);   // untouched slot
+        // Unwritten rows must walk in INERT (valid=0), not decode undefined
+        // staging bits to a bogus live flow -- the zero-init staging contract
+        // (the old pw_csr_window reset shadow to 0; the BRAM staging now zero-
+        // inits explicitly). Only row 1 was written, so 0 and 2..DEPTH-1 are all
+        // unwritten; check the boundaries + the descriptor AND the wide row.
+        chk("sched[0].valid",        sched[0].valid, 0);          // untouched slot
+        chk("sched[2].valid",        sched[2].valid, 0);
+        chk("sched[DEPTH-1].valid",  sched[DEPTH-1].valid, 0);
+        rd_addr[0] = 3'd2;
+        @(posedge clk); @(posedge clk);
+        chk("unwritten row valid=0",  rd_row[0].valid, 0);
+        chk("unwritten row egress=0", rd_row[0].egress, 0);
 
         // BRAM read of slot 1 via port 0 (1-cycle latency).
         rd_addr[0] = 3'd1; rd_addr[1] = 3'd1;

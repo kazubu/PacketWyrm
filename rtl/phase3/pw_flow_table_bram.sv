@@ -75,6 +75,15 @@ module pw_flow_table_bram #(
     // range [WIN_BASE + N*ROW_BYTES, +ROW_BYTES); word w of row N is at byte
     // offset N*ROW_BYTES + w*4, i.e. flat word index N*ROW_DW + w = rel >> 2.
     (* ram_style = "block" *) logic [31:0] stg [NWORDS];
+    // Zero-init the staging (matches the old pw_csr_window `shadow <= '0` reset
+    // contract): an UNWRITTEN row must walk in as all-zero so pw_decode_flow_row
+    // yields valid=0 (inert) rather than decoding undefined bits to a bogus live
+    // flow. pw_program_card_tables zero-fills every row, but single-row tools
+    // (gen_bar_vectors, the standalone HW utilities) rely on the rest being inert.
+    // Vivado defaults inferred block RAM to 0, but make the contract explicit.
+    initial begin
+        for (int i = 0; i < NWORDS; i++) stg[i] = '0;
+    end
 
     wire [ADDR_W-1:0] rel           = wr_addr - WIN_BASE;
     wire              is_commit_reg = (wr_addr == (WIN_BASE + COMMIT_OFFSET));

@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 struct bar_ctx {
     void          *base;
@@ -126,6 +127,19 @@ static pw_status bar_flow_commit(void *vctx) {
     struct bar_ctx *c = vctx;
     if (PWFPGA_REG_FLOW_COMMIT + 4 > c->size) return PW_E_OUT_OF_RANGE;
     *reg_at(c, PWFPGA_REG_FLOW_COMMIT) = 1u;
+    /* Make commit SYNCHRONOUS w.r.t. the hardware commit walk. The BRAM-staged
+     * flow table (pw_flow_table_bram) reads its staging one 32-bit word per
+     * dp_clk cycle on commit, so the walk takes num_flows * (PWFPGA_FLOW_STRIDE/4)
+     * cycles -- worst case 32 * 64 = 2048 cycles ~= 13.1 us at 156.25 MHz. Unlike
+     * the old register double-buffer (atomic shadow->live promote), the staging
+     * is BOTH the write target and the walk source, so a flow_write() that lands
+     * DURING the walk would tear the in-flight commit (unwalked rows pick up the
+     * new data). Block here until the walk has certainly finished so the contract
+     * "flow_commit() returns => safe to write the next config" holds. A read-back
+     * posts the commit write first. 200 us covers the walk with a wide margin
+     * (and far more flows than 32) and is negligible vs config time. */
+    (void)*reg_at(c, PWFPGA_REG_FLOW_COMMIT);   /* barrier: post the commit write */
+    usleep(200);
     return PW_OK;
 }
 
