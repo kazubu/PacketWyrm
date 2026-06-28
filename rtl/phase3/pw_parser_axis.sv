@@ -11,10 +11,13 @@
 import pw_classifier_pkg::*;
 
 module pw_parser_axis #(
-    // 160 captures the deepest inner test header we can decapsulate: VLAN +
+    // 176 captures the deepest inner test header we can decapsulate: VLAN +
     // IPv6 outer (40) + EtherIP (2) + inner Ethernet (14) + IPv6 inner (40) +
-    // UDP (8) + 32-byte test header = 154 bytes.
-    parameter int HDR_BYTES = 160
+    // TCP (20) + 32-byte test header = 166 bytes. (TCP's 20-byte L4 is the worst
+    // case; the deepest UDP header is 154.) Matches the production HDR_BYTES that
+    // pw_data_plane_axis passes -- keep the two in step so a standalone/direct
+    // instantiation captures the same depth.
+    parameter int HDR_BYTES = 176
 ) (
     input  wire           clk,
     input  wire           rst_n,
