@@ -88,7 +88,7 @@ the in=0/out=1 split is a wiring convention, not fixed in HW:
 
 2-card wiring: card A gpio[1] (out) -> card B gpio[0] (in) + common ground.
 Each "J5.a,b" is a pin pair; confirm signal-vs-ground against the board J5
-silkscreen before wiring. (Authoritative pin LOCs: fpga/as02mc04/xdc/pinout.xdc.)
+silkscreen before wiring. (Authoritative pin LOCs: fpga/as02mc04/xdc/gpio_phase3.xdc.)
 
 0x0800..0x0cff  spi_flash_window       in-system SPI flash master (live
                                        config-flash erase/program/read):

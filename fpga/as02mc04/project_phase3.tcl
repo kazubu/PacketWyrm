@@ -87,6 +87,7 @@ set pw_srcs [list \
     "$repo_root/rtl/phase3/pw_data_plane_axis.sv" \
     "$repo_root/rtl/phase3/pw_csr_full.sv" \
     "$repo_root/rtl/phase3/pw_icap_reboot.sv" \
+    "$repo_root/rtl/phase3/pw_gpio_sync.sv" \
     "$repo_root/rtl/phase3/pw_ts_gray_cdc.sv" \
     "$repo_root/rtl/phase3/pw_ts_insert.sv" \
     "$repo_root/rtl/phase3/pwfpga_top_phase3.sv" \
@@ -115,6 +116,7 @@ set_property file_type SystemVerilog [get_files *.sv]
 # they run after the netlist exists in implementation.
 add_files -fileset constrs_1 [list \
     "$script_dir/xdc/pinout.xdc" \
+    "$script_dir/xdc/gpio_phase3.xdc" \
     "$script_dir/xdc/timing.xdc" \
     "$script_dir/xdc/physical.xdc" \
     "$script_dir/xdc/sfp.xdc" \
