@@ -70,6 +70,24 @@ module pw_gpio_sync #(
     wire [2:0]  out_sel  = ctrl_i[10:8];
     wire [3:0]  per_log2 = ctrl_i[19:16];
 
+    // Pin-select sanity: the fields are 3-bit but only NGPIO pins exist. Guard
+    // both the variable read and the variable drive against an out-of-range
+    // index (clamp the index to 0 and gate the use), so a stray 6/7 can't X-out
+    // the sim or infer a bogus mux. in/out must be valid to capture/drive.
+    // int comparison (not NGPIO[2:0], which would wrap to 0 for NGPIO==8 and
+    // mark every pin invalid). The sel fields are 3-bit, so NGPIO>8 can't be
+    // fully addressed -- fine, the board has 6.
+    wire        in_ok    = (int'(in_sel)  < NGPIO);
+    wire        out_ok   = (int'(out_sel) < NGPIO);
+    wire [2:0]  in_idx   = in_ok  ? in_sel  : 3'd0;
+    wire [2:0]  out_idx  = out_ok ? out_sel : 3'd0;
+
+    // Effective master period: the outgoing pulse is PW cycles HIGH, so the
+    // period must leave a LOW gap or the far card never sees a fresh rising
+    // edge. Clamp 2^per_log2 to a floor of 2*PW (>= PW high + PW low). With
+    // PW=16 that means a minimum period of 32 cycles (per_log2 >= 5 effective).
+    wire [3:0]  per_eff  = (per_log2 < 4'd5) ? 4'd5 : per_log2;
+
     // ---- 2-FF input synchronisers on every pad (async -> dp_clk) ----
     (* ASYNC_REG = "TRUE" *) logic [NGPIO-1:0] gi_s1, gi_s2;
     logic [NGPIO-1:0] gi_d;     // one more for edge detect
@@ -80,14 +98,14 @@ module pw_gpio_sync #(
     assign gpio_in_o = gi_s2;
 
     // selected sync-in, synchronised; rising edge = the shared sync event
-    wire sync_in_lvl  = gi_s2[in_sel];
-    wire sync_in_d    = gi_d[in_sel];
+    wire sync_in_lvl  = in_ok & gi_s2[in_idx];
+    wire sync_in_d    = in_ok & gi_d[in_idx];
     wire sync_in_rise = sync_in_lvl & ~sync_in_d;
 
     // ---- master pulse generator (period down-counter on dp_clk) ----
-    // Fires for 1 cycle every 2^per_log2 cycles; that tick both starts the
-    // outgoing pulse and is the master's own latch event (so the master records
-    // the same edge it emits, consistent with the slaves' captures).
+    // Fires for 1 cycle every 2^per_eff cycles; that tick starts the outgoing
+    // pulse. The master's own LATCH event is the actual pad rise (see capture
+    // below), not this tick, so the recorded time matches the edge it emits.
     logic [31:0] per_cnt;
     logic        m_tick;
     always_ff @(posedge clk or negedge rst_n) begin
@@ -95,7 +113,7 @@ module pw_gpio_sync #(
         else begin
             m_tick <= 1'b0;
             if (en && master) begin
-                if (per_cnt >= ((32'h1 << per_log2) - 1)) begin
+                if (per_cnt >= ((32'h1 << per_eff) - 1)) begin
                     per_cnt <= '0;
                     m_tick  <= 1'b1;
                 end else begin
@@ -109,12 +127,13 @@ module pw_gpio_sync #(
 
     // ---- outgoing pulse shaper (master originate OR repeater forward) ----
     logic [$clog2(PW+1)-1:0] pulse_cnt;
-    logic                    pulse_active;
+    logic                    pulse_active, pulse_active_q;
     wire                     out_trigger = (en && master   && m_tick)
                                          | (en && repeat_en && sync_in_rise);
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin pulse_cnt <= '0; pulse_active <= 1'b0; end
+        if (!rst_n) begin pulse_cnt <= '0; pulse_active <= 1'b0; pulse_active_q <= 1'b0; end
         else begin
+            pulse_active_q <= pulse_active;
             if (out_trigger) begin
                 pulse_active <= 1'b1;
                 pulse_cnt    <= PW[$clog2(PW+1)-1:0];
@@ -124,21 +143,27 @@ module pw_gpio_sync #(
             end
         end
     end
+    // pad rises the cycle pulse_active goes high -- the true emit edge.
+    wire pulse_rise = pulse_active & ~pulse_active_q;
 
-    // ---- drive only the sync-out pin; everything else hi-Z ----
+    // ---- drive the sync-out pin ONLY when this card originates/forwards ----
+    // A pure listener (master=0, repeat=0) leaves every pin hi-Z so it never
+    // fights the upstream pulse (e.g. a mis-set in_sel==out_sel).
+    wire drive_out = en && (master || repeat_en) && out_ok;
     always_comb begin
         gpio_o = '0;
         gpio_t = '1;                       // default: all inputs / hi-Z
-        if (en) begin
-            gpio_t[out_sel] = 1'b0;        // drive the sync-out pin
-            gpio_o[out_sel] = pulse_active;
+        if (drive_out) begin
+            gpio_t[out_idx] = 1'b0;        // drive the sync-out pin
+            gpio_o[out_idx] = pulse_active;
         end
     end
 
     // ---- the capture: latch the counter + bump the sequence at each edge ----
-    // The latch event is the master's own tick (so it timestamps the edge it
-    // emits) OR, for a listener, the rising edge seen on the sync-in pin.
-    wire capture = en & ((master & m_tick) | (~master & sync_in_rise));
+    // Master: at its own pad RISE (pulse_rise) -- so it records the counter at
+    // the instant the edge actually leaves the pin, matching the slaves.
+    // Listener/repeater: at the synchronised rising edge on the sync-in pin.
+    wire capture = en & ((master & pulse_rise) | (~master & sync_in_rise));
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             sync_ts_o <= '0; sync_seq_o <= '0;

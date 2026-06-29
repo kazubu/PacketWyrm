@@ -33,7 +33,10 @@ enum {
 
     /* J5 cross-card time-sync (pw_gpio_sync). CTRL bits: [0] enable,
      * [1] master, [2] repeat, [6:4] sync-in pin, [10:8] sync-out pin,
-     * [19:16] period_log2. TS_LOW/HIGH = card-local counter latched at the last
+     * [19:16] period_log2 (master pulse every 2^N dp_clk cycles; N<5 is clamped
+     * to 5 in HW -> minimum period 32 cycles, so the 16-cycle pulse keeps a low
+     * gap and the far card sees a fresh edge each period). TS_LOW/HIGH = card-
+     * local counter latched at the last
      * sync edge (read LOW then HIGH). SEQ = edge count (match across cards for
      * the inter-card offset). STATUS[5:0] = raw synchronised pad inputs. */
     PWFPGA_REG_GPIO_SYNC_CTRL       = 0x0130,

@@ -49,10 +49,10 @@ module tb_gpio_sync;
         ctrl = mkctrl(1, 0, 0, /*in*/2, /*out*/3, 0);
         @(negedge clk);
         chk("slave seq starts 0", sync_seq, 0);
-        // only the sync-out pin is driven; all others hi-Z
-        chkb("out pin driven (t=0)",  gpio_t[3] == 1'b0);
-        chkb("in  pin hi-Z (t=1)",    gpio_t[2] == 1'b1);
-        chkb("other pin hi-Z (t=1)",  gpio_t[0] == 1'b1);
+        // a pure listener (master=0, repeat=0) drives NOTHING -- every pin hi-Z
+        chkb("slave out pin hi-Z (t=1)",  gpio_t[3] == 1'b1);
+        chkb("slave in  pin hi-Z (t=1)",  gpio_t[2] == 1'b1);
+        chkb("slave all pins hi-Z",       gpio_t == 6'h3F);
 
         // drive a clean pulse on gpio_i[2]; expect ONE capture on the rising edge
         @(negedge clk); gpio_i[2] = 1'b1;
@@ -69,27 +69,46 @@ module tb_gpio_sync;
         chk("slave second capture", sync_seq, 2);
         gpio_i[2] = 1'b0;
 
-        // ===== MASTER: generate a periodic pulse + self-capture =====
-        // small period (2^4 = 16 cycles) so the test runs quickly. out_sel=1.
+        // ===== MASTER: periodic pulse with a LOW gap + self-capture =====
+        // Request per_log2=4; the RTL clamps it to >=5 (period 32 >= PW 16 + a
+        // 16-cycle low gap) so the far card sees a fresh rising edge each period.
         rst_n = 0; repeat (3) @(posedge clk); rst_n = 1; @(negedge clk);
         ctrl = mkctrl(1, 1, 0, /*in*/0, /*out*/1, /*per_log2*/4);
-        // observe the sync-out pin pulse and the self-capture sequence advance
         begin
-            int seen_high = 0; longint seq0;
+            int rises = 0; int saw_low = 0; logic prev = 1'b0; longint seq0;
+            longint exp_ts = 0;     // counter value the cycle the pad first goes high
             seq0 = sync_seq;
             for (int i = 0; i < 200; i++) begin
                 @(posedge clk);
-                if (gpio_o[1]) seen_high++;
+                if (gpio_o[1] && !prev) begin rises++; exp_ts = ts; end  // pad rise: snapshot ts
+                if (!gpio_o[1])         saw_low++;  // confirm a low gap exists
+                prev = gpio_o[1];
             end
-            chkb("master drove sync-out high", seen_high > 0);
-            chkb("master self-captured edges", sync_seq > seq0);
-            chkb("master out pin driven",      gpio_t[1] == 1'b0);
+            repeat (3) @(posedge clk);   // let the last capture settle
+            chkb("master out pin driven",        gpio_t[1] == 1'b0);
+            chkb("master pulse returns low",     saw_low > 0);           // #2: not stuck high
+            chkb("master emits multiple edges",  rises >= 2);            // #2: re-triggerable
+            chkb("master self-captured >=2",     sync_seq - seq0 >= 2);  // #1: one per pad rise
+            // #1: the latched ts must equal the counter AT the pad rising edge
+            // (not 1 cycle early/late). exp_ts was sampled the cycle gpio_o rose.
+            chk("master ts == pad-rise counter", sync_ts, exp_ts);
         end
+
+        // ===== INVALID PIN: in_sel/out_sel >= NGPIO must not capture/drive =====
+        rst_n = 0; repeat (3) @(posedge clk); rst_n = 1; @(negedge clk);
+        ctrl = mkctrl(1, 0, 0, /*in*/6, /*out*/7, 0);   // both out of range (NGPIO=6)
+        @(negedge clk); gpio_i[5] = 1'b1; gpio_i[4] = 1'b1;  // wiggle real pins
+        repeat (8) @(posedge clk);
+        chk("invalid in_sel: no capture", sync_seq, 0);
+        chkb("invalid out_sel: all hi-Z", gpio_t == 6'h3F);
+        gpio_i[5] = 1'b0; gpio_i[4] = 1'b0;
 
         // ===== REPEATER: forward an incoming edge out the sync-out pin =====
         rst_n = 0; repeat (3) @(posedge clk); rst_n = 1; @(negedge clk);
         ctrl = mkctrl(1, 0, /*rep*/1, /*in*/2, /*out*/3, 0);
-        @(negedge clk); gpio_i[2] = 1'b1;
+        @(negedge clk);
+        chkb("repeater out pin driven (t=0)", gpio_t[3] == 1'b0);
+        gpio_i[2] = 1'b1;
         begin
             int fwd = 0;
             for (int i = 0; i < 24; i++) begin @(posedge clk); if (gpio_o[3]) fwd++; end
