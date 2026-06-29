@@ -74,8 +74,11 @@ module pw_gpio_sync #(
     // both the variable read and the variable drive against an out-of-range
     // index (clamp the index to 0 and gate the use), so a stray 6/7 can't X-out
     // the sim or infer a bogus mux. in/out must be valid to capture/drive.
-    wire        in_ok    = (in_sel  < NGPIO[2:0]);
-    wire        out_ok   = (out_sel < NGPIO[2:0]);
+    // int comparison (not NGPIO[2:0], which would wrap to 0 for NGPIO==8 and
+    // mark every pin invalid). The sel fields are 3-bit, so NGPIO>8 can't be
+    // fully addressed -- fine, the board has 6.
+    wire        in_ok    = (int'(in_sel)  < NGPIO);
+    wire        out_ok   = (int'(out_sel) < NGPIO);
     wire [2:0]  in_idx   = in_ok  ? in_sel  : 3'd0;
     wire [2:0]  out_idx  = out_ok ? out_sel : 3'd0;
 

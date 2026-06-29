@@ -76,17 +76,22 @@ module tb_gpio_sync;
         ctrl = mkctrl(1, 1, 0, /*in*/0, /*out*/1, /*per_log2*/4);
         begin
             int rises = 0; int saw_low = 0; logic prev = 1'b0; longint seq0;
+            longint exp_ts = 0;     // counter value the cycle the pad first goes high
             seq0 = sync_seq;
             for (int i = 0; i < 200; i++) begin
                 @(posedge clk);
-                if (gpio_o[1] && !prev) rises++;   // count rising edges
+                if (gpio_o[1] && !prev) begin rises++; exp_ts = ts; end  // pad rise: snapshot ts
                 if (!gpio_o[1])         saw_low++;  // confirm a low gap exists
                 prev = gpio_o[1];
             end
+            repeat (3) @(posedge clk);   // let the last capture settle
             chkb("master out pin driven",        gpio_t[1] == 1'b0);
             chkb("master pulse returns low",     saw_low > 0);           // #2: not stuck high
             chkb("master emits multiple edges",  rises >= 2);            // #2: re-triggerable
             chkb("master self-captured >=2",     sync_seq - seq0 >= 2);  // #1: one per pad rise
+            // #1: the latched ts must equal the counter AT the pad rising edge
+            // (not 1 cycle early/late). exp_ts was sampled the cycle gpio_o rose.
+            chk("master ts == pad-rise counter", sync_ts, exp_ts);
         end
 
         // ===== INVALID PIN: in_sel/out_sel >= NGPIO must not capture/drive =====

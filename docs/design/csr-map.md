@@ -67,7 +67,10 @@ headers (those are authoritative; this map is intent).
                                      [0] enable, [1] master (drive pulse),
                                      [2] repeat (re-drive sync-in to sync-out),
                                      [6:4] sync-in pin (0..5), [10:8] sync-out pin,
-                                     [19:16] period_log2 (master pulse every 2^N cyc)
+                                     [19:16] period_log2 (master pulse every 2^N
+                                     dp_clk cycles; N<5 is clamped to 5, i.e. a
+                                     minimum period of 32 cycles so the 16-cycle
+                                     pulse always has a low gap)
 0x0134  gpio_sync_ts_low       R     card-local counter latched at the last sync
 0x0138  gpio_sync_ts_high      R       edge (snapshot pair; read LOW then HIGH)
 0x013c  gpio_sync_seq          R     edge sequence (matches across cards -- SW
