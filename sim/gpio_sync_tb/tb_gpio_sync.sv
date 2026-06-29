@@ -25,6 +25,26 @@ module tb_gpio_sync;
         .sync_ts_o(sync_ts), .sync_seq_o(sync_seq), .gpio_in_o(gpio_in)
     );
 
+    // Bulletproof reference (clocked, no post-edge read ambiguity): snapshot the
+    // counter the cycle gpio_o[1] is FIRST high (the wire edge) and the cycle
+    // just before it (pulse-start). Lets the test pin down EXACTLY which cycle's
+    // counter the DUT latched, independent of $display/observe scheduling.
+    logic        o1_d;
+    logic [63:0] ts_d;                 // ts one cycle ago
+    logic [63:0] ref_ts_padhigh;       // counter during the first pad-high cycle
+    logic [63:0] ref_ts_prestart;      // counter the cycle before the pad rose
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin o1_d <= 1'b0; ts_d <= '0; ref_ts_padhigh <= '0; ref_ts_prestart <= '0; end
+        else begin
+            o1_d <= gpio_o[1];
+            ts_d <= ts;
+            if (gpio_o[1] && !o1_d) begin   // rising edge: gpio_o high now, low last cycle
+                ref_ts_padhigh  <= ts;      // counter during this (first-high) cycle
+                ref_ts_prestart <= ts_d;    // counter during the previous (last-low) cycle
+            end
+        end
+    end
+
     int errors = 0;
     task automatic chk(string n, longint got, longint exp);
         if (got !== exp) begin $display("[FAIL] %s got=%0d exp=%0d", n, got, exp); errors++; end
@@ -76,22 +96,25 @@ module tb_gpio_sync;
         ctrl = mkctrl(1, 1, 0, /*in*/0, /*out*/1, /*per_log2*/4);
         begin
             int rises = 0; int saw_low = 0; logic prev = 1'b0; longint seq0;
-            longint exp_ts = 0;     // counter value the cycle the pad first goes high
             seq0 = sync_seq;
             for (int i = 0; i < 200; i++) begin
                 @(posedge clk);
-                if (gpio_o[1] && !prev) begin rises++; exp_ts = ts; end  // pad rise: snapshot ts
+                if (gpio_o[1] && !prev) rises++;
                 if (!gpio_o[1])         saw_low++;  // confirm a low gap exists
                 prev = gpio_o[1];
             end
-            repeat (3) @(posedge clk);   // let the last capture settle
+            repeat (3) @(posedge clk);   // let the last capture + reference settle
             chkb("master out pin driven",        gpio_t[1] == 1'b0);
             chkb("master pulse returns low",     saw_low > 0);           // #2: not stuck high
             chkb("master emits multiple edges",  rises >= 2);            // #2: re-triggerable
             chkb("master self-captured >=2",     sync_seq - seq0 >= 2);  // #1: one per pad rise
-            // #1: the latched ts must equal the counter AT the pad rising edge
-            // (not 1 cycle early/late). exp_ts was sampled the cycle gpio_o rose.
-            chk("master ts == pad-rise counter", sync_ts, exp_ts);
+            // #1/#2: clocked reference pins down EXACTLY which cycle's counter was
+            // latched. sync_ts must equal the FIRST PAD-HIGH cycle (the wire edge),
+            // and must NOT equal the pre-start cycle (that would be 1 dp_clk early)
+            // nor pad-high+1 (1 late). ref_* are sampled in a clocked block.
+            chk("master ts == pad-HIGH cycle (wire edge)", sync_ts, ref_ts_padhigh);
+            chkb("master ts is NOT the pre-start cycle (not 1 early)", sync_ts != ref_ts_prestart);
+            chkb("master ts is NOT 1 late (== padhigh, not padhigh+1)", sync_ts != (ref_ts_padhigh + 1));
         end
 
         // ===== INVALID PIN: in_sel/out_sel >= NGPIO must not capture/drive =====

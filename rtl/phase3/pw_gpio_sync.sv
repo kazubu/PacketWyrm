@@ -160,9 +160,18 @@ module pw_gpio_sync #(
     end
 
     // ---- the capture: latch the counter + bump the sequence at each edge ----
-    // Master: at its own pad RISE (pulse_rise) -- so it records the counter at
-    // the instant the edge actually leaves the pin, matching the slaves.
-    // Listener/repeater: at the synchronised rising edge on the sync-in pin.
+    // Master: at its own pad RISE; listener/repeater: at the sync-in rising edge.
+    //
+    // Timing note (why pulse_rise lands the RIGHT cycle, not 1 late): pulse_rise
+    // is high during the FIRST cycle pulse_active=1, which is the first cycle the
+    // pad is physically high (the wire edge). The capture FF samples timestamp_i
+    // at the posedge ENDING that cycle -- but timestamp_i is a same-clock
+    // registered counter, so NBA samples its PRE-edge value, i.e. the count that
+    // was valid DURING the pad-high cycle. Net: sync_ts == the counter of the
+    // first pad-high cycle (the wire edge) -- neither the pre-start cycle (1
+    // early) nor the next cycle (1 late). tb_gpio_sync pins this down with a
+    // clocked reference (ref_ts_padhigh vs prestart vs padhigh+1). Capturing at
+    // out_trigger instead would record the pre-start cycle = 1 dp_clk early.
     wire capture = en & ((master & pulse_rise) | (~master & sync_in_rise));
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
