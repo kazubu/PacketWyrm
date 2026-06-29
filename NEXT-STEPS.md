@@ -29,6 +29,18 @@ and HW-validated:
   checker/generator (NUM_FLOWS), not the ~16-entry classifier routability wall.
   The parallel classifier carries only non-test rules (PUNT/FORWARD). First
   back-end of the generic slice classifier — `docs/design/generic-classifier.md`.
+- **Encapsulation** generate+decap (IPIP/GRE/EtherIP, v4/v6 inner+outer), the
+  **unified field+UDF classifier** (retired the legacy parallel classifier), the
+  **hash exact table** (high-count payload-agnostic flows), **variable frame
+  length / RFC2544 / IMIX**, **IPv6 src/dst classifier match**, and **full 128-bit
+  IPv6 + field/lane-salted modifiers**.
+- **Stateless TCP segment generation** (`tcp:` vs `udp:`, dual-family L4 csum,
+  L4-proto-aware egress stamp, TCP-20 RX offset) — HW-validated loss=0.
+- **Flow-table CSR staging → BRAM** (word-serial commit walk): freed ~15.7K LUT,
+  which unblocked TCP and let **HDR_BYTES go to 176** (deepest v6-encap TCP RX).
+- **Cross-card time sync over J5 GPIO** (`pw_gpio_sync`): HW path in (master pulse
+  + edge-latch + CSR 0x0130..0x0140); single-card non-regression only — the SW
+  servo + the daisy-chain test need a 2nd card (see Remaining).
 
 As-built design: `docs/design/csr-map.md`, `docs/design/rtl-modules.md`,
 `docs/design/generic-classifier.md`, `docs/design/hw-architecture-freeze.md`.
@@ -39,31 +51,32 @@ All work is **merged to `main`** (the user pushes — `main` is unpushed).
 Recent tip (newest first):
 
 ```
-Merge phase3-varlen-rfc2544: variable frame length + RFC 2544 driver
-Merge phase3-inject-txts: inject TX wire-timestamp -> completes #60
-Merge phase3-punt-rxts: punt RX wire-timestamp (servo PTP hook) [#60]
-Merge phase3-tool-migration: standalone HW tools -> field classifier
-(earlier) hash exact classifier, unified field+UDF classifier, IPv4/IPv6 parity
+Merge phase3-gpio-sync-review: pw_gpio_sync review fixes (2 rounds)
+Merge phase3-gpio-sync: J5 GPIO cross-card time sync (pw_gpio_sync)
+Merge phase3-flowtable-word-guard / -review2: post-reset staging guard (per-word)
+Merge phase3-hdr176: HDR_BYTES 160->176 (deepest v6-encap TCP RX)
+Merge phase3-tcp-revival: stateless TCP segment generation (Part C, HW-validated)
+Merge phase3-generator-lut: flow-table CSR staging -> BRAM (-15.7K LUT)
+(earlier) inject/punt wire-timestamps, varlen/RFC2544, hash+field classifiers
 ```
+NOTE: `main` is many commits ahead of `origin/main` — the user pushes.
 
 Three classification paths coexist (precedence map > hash > field): the flow-id
 map (structured test flows), the hash exact table (high-count payload-agnostic),
 and the field+UDF comparator classifier (punt/forward/few-rule). The generator
 honors `frame_len_min/max/step` (fixed RFC2544 size + IMIX sweep).
 
-**HW state (current = the A+B IPv6-classifier+modifier build):** post-route
-**WNS +0.084 ns (all clocks ≥0), LUT 84.0%**, flashed + booting. To fit A+B the
-device needed **two impl changes**: PLACE directive `AltSpreadLogic_high` →
-`Explore` (the former manufactures congestion at ~90%), and **`HDR_BYTES` 160 →
-128** (parser var-offset muxes scale with it; this freed ~9K LUT). The device is
-at its absolute routability/timing ceiling (~88%): the pre-A+B baseline was
-+0.132 / 87.9%, and A+B+C together overflowed routing (~93% LUT). The
-LUT-reduction pass that unblocked TCP was **moving the flow-table CSR staging
-from a register double-buffer to BRAM** (a word-serial commit walk): it freed
-**~15.7K LUT** (84.6% → 74.9%) and *improved* dp_clk WNS (congestion relief). That
-headroom let HDR_BYTES go back to 160 (deep v6-encap UDP RX recovered) AND **A+B+C
-including TCP now builds + routes: LUT 84.42%, dp_clk WNS +0.032, HW-validated
-(v4/v6 TCP loopback loss=0, RX-classified; UDP/scale32 no regression).** The
+**HW state (history of how the ceiling was beaten):** the A+B IPv6-classifier+
+modifier build closed at WNS +0.084 / LUT 84.0% only after two impl changes: PLACE
+directive `AltSpreadLogic_high` → `Explore` (the former manufactures congestion at
+~90%), and **`HDR_BYTES` 160 → 128** (parser var-offset muxes scale with it; freed
+~9K LUT). A+B+C (TCP) then overflowed routing (~93% LUT). The LUT-reduction pass
+that unblocked TCP was **moving the flow-table CSR staging from a register
+double-buffer to BRAM** (a word-serial commit walk): freed **~15.7K LUT**
+(84.6% → 74.9%) and *improved* dp_clk WNS (congestion relief). That headroom let
+HDR_BYTES go back to 160 then **176** (deep v6-encap UDP *and* TCP RX recovered),
+and **A+B+C including TCP builds + routes, HW-validated (loss=0)**. The current
+flashed build adds GPIO sync (build_id `0x6a41dbaf`, see Timing below). The
 biggest blocks now: parser ~39K (176 B), generator ~28K, field classifier ~17K
 (flow-table dropped to ~4K LUT). The classifier-winner select is O(N²) on purpose
 (shallow parallel one-hot mux); a "leaner" linear/tree rewrite is DEEPER and
@@ -131,9 +144,12 @@ Optional RTL features:
 5. **Classifier extensions — DONE.** IPv6 *src* match (all four words now
    selectable) + masked IPv6 dst/src in forward rules (auto `is_ipv6` guard);
    `match.ipv6_*_prefix` for `classify: header` (hash, per-card-global mask).
-6. **Further LUT reduction** — now on the critical path for shipping TCP (see 3).
-   Largest blocks: parser ~35K LUT (2 ports), generator ~35K, field classifier
-   ~16K.
+6. **Further LUT reduction** — no longer blocking (TCP shipped after the
+   flow-table-staging→BRAM pass). The one proven lever on this KU3P is the
+   register-array→BRAM transform (checker, SPI-flash, flow-table staging); the
+   parser is NOT a lever (build-confirmed twice — see `dp-clk-timing-lessons`
+   UPDATE 11/12). Largest blocks now: parser ~39K LUT (2 ports, 176 B), generator
+   ~28K, field classifier ~16K, flow-table down to ~4K.
 
 Classification is three coexisting paths (precedence map > hash > field): the
 flow-id map (structured test flows), the hash exact table (high-count,
@@ -141,8 +157,13 @@ payload-agnostic), and the field+UDF comparator classifier (punt/forward/
 few-rule). Variable frame length (RFC2544 + IMIX), the RFC2544 driver, and the
 slow-path TCP SYN generator are done.
 
-**Timing:** post-route **WNS +0.014 ns @156.25 MHz** on a FULL (non-incremental)
-resynth — the canonical build is build_id `0x6a3f40f3` / git `1c152435`. The
+**Timing:** the current canonical build (A+B+C TCP + flow-table-staging→BRAM +
+HDR_BYTES 176 + GPIO sync) is build_id `0x6a41dbaf` / git `56a31d1f`: post-route
+**dp_clk WNS +0.201 ns @156.25 MHz**, LUT 88.80% (the gpio module is 60 LUT; the
+rest is run-to-run synth variance — same netlist has landed 83–89%). The worst
+path is in the PCIe vendor IP, not the data plane. Earlier reference point: a FULL
+(non-incremental) resynth landed **WNS +0.014** at build_id `0x6a3f40f3` / git
+`1c152435`. The
 earlier **+0.132** figure was an *incremental*-synth build that reused a lucky
 placement; it also masked that the per-build build_id never reached the netlist
 (incremental reused `pw_csr_full`). Disabling incremental synth (so build_id is
