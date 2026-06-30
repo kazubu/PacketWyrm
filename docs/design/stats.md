@@ -42,12 +42,12 @@ produced and read back as zero.
 | `duplicate_count`        | u64  | yes       | yes        |
 | `out_of_order_count`     | u64  | yes       | yes        |
 | `late_packet_count`      | u64  | yes       | yes        |
-| `min_latency`            | u32  | **yes**   | invalid    |
-| `max_latency`            | u32  | **yes**   | invalid    |
-| `sum_latency`            | u64  | **yes**   | invalid    |
-| `sample_count`           | u64  | **yes**   | invalid    |
-| `jitter_min/max/sum`     | u32/64| **yes**  | invalid    |
-| latency histogram bins   | u64[]| **yes**   | invalid    |
+| `min_latency`            | u32  | **yes**   | **yes** (HW-corrected) |
+| `max_latency`            | u32  | **yes**   | **yes** (HW-corrected) |
+| `sum_latency`            | u64  | **yes**   | **yes** (HW-corrected) |
+| `sample_count`           | u64  | **yes**   | **yes**    |
+| `jitter_min/max/sum`     | u32/64| **yes**  | **yes**    |
+| latency histogram bins   | u64[]| **yes**   | **yes** (HW-corrected) |
 
 Cross-card latency is **now valid too**: the RX checker corrects each sample in
 hardware (the `lat_correction` CSR carries the inter-card offset from the J5

@@ -120,15 +120,20 @@ fresh snapshot on each open card before reading.
 ```
 
 Cross-card flows are supported via the J5 GPIO time-sync, **corrected in
-hardware per sample**: the daemon servo writes the inter-card counter offset to
-each RX card's `lat_correction` CSR (`0x0144/0x0148`) ~10×/s, and the RX checker
-computes `lat = (rx_wire_ts + offset) - tx_ts`. So `min_latency`/`max_latency`/
-`avg_latency` here already hold the true one-way latency -- no read-time
-correction, and `avg_latency` is valid (the 64-bit `sum_latency` accumulates the
-now-small corrected value, so it no longer overflows). Cross-card flows return
-`latency_valid: true`, `latency_method: "gpio-corrected"`, and `offset_ticks`
-(the live servo offset, informational). Same-card flows report `latency_method:
-"same-card"` and run with `lat_correction = 0` (identical to before). `jitter_*`
+hardware per sample, per flow**: the daemon servo writes each cross-card flow's
+inter-card counter offset to its slot in the per-flow correction window
+(`0x0180 + slot*8`, slot = the RX `local_flow_id`) every `-S` ms (default 10 ms;
+1 ms in precision runs), and the RX checker computes `lat = (rx_wire_ts +
+corr[slot]) - tx_ts`. So `min_latency`/`max_latency`/`avg_latency` here already
+hold the true one-way latency -- no read-time correction, and `avg_latency` is
+valid (the 64-bit `sum_latency` accumulates the now-small corrected value, so it
+no longer overflows). Because correction is per flow, one RX card can mix
+same-card and cross-card flows and take cross-card traffic from multiple TX
+cards. Cross-card flows return `latency_valid: true`, `latency_method:
+"gpio-corrected"`, and `offset_ticks` (the live servo offset, informational).
+Same-card flows report `latency_method: "same-card"` and run with their slot's
+`corr = 0` (identical to before). `latency_valid` is also gated on the counter
+read succeeding (`read_ok`). `jitter_*`
 is valid in both cases. Requires the cards' J5 headers to be wired. Because the
 correction is tracked per sample, min/max/avg no longer smear over a long
 accumulation (the earlier read-time single-offset scheme did, under the ~ppm
