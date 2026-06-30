@@ -67,11 +67,14 @@ module pw_data_plane_axis #(
 
     input  wire [63:0]            timestamp_i,
 
-    // Signed cross-card latency correction (CSR-written, two's complement),
-    // broadcast to every port's RX checker (global per card). The SW servo sets
-    // it to the inter-card counter offset so the checker accumulates the true
-    // one-way latency on cross-card flows; 0 (default) for same-card -> unchanged.
-    input  wire [63:0]            lat_correction_i,
+    // Per-flow cross-card latency correction table write port (from the CSR
+    // window via pw_csr_full). Each checker slot has its own signed 64-bit
+    // correction: same-card slots stay 0 (-> unchanged), cross-card slots carry
+    // their TX card's inter-card offset so the checker accumulates the true
+    // one-way latency per sample. The SW servo writes these per flow.
+    input  wire                              lat_corr_wr_en_i,
+    input  wire [$clog2(PW_NUM_FLOWS)-1:0]   lat_corr_wr_slot_i,
+    input  wire [63:0]                       lat_corr_wr_data_i,
 
     // Soft clear pulse (from a CSR write): re-baselines all flow checkers.
     input  wire                   stats_clear_i,
@@ -521,10 +524,51 @@ module pw_data_plane_axis #(
     logic [15:0] hev_fl [PW_PORTS];
     logic [15:0] hev_bk [PW_PORTS];
 
+    // ------------------------------------------------------------
+    // Per-flow latency correction table (Stage 2). One signed 64-bit correction
+    // per checker slot: same-card slots stay 0, cross-card slots carry their TX
+    // card's inter-card offset (SW servo). Written by the CSR window pulse. Read
+    // per event by the flow slot and applied in the checker. This replaces the
+    // Stage-1 single global correction (which forced same-card-only / single-TX
+    // per RX card); per-flow lifts that.
+    // ------------------------------------------------------------
+    logic [63:0] lat_corr_table [PW_NUM_FLOWS];
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (int i = 0; i < PW_NUM_FLOWS; i++) lat_corr_table[i] <= '0;
+        end else if (lat_corr_wr_en_i) begin
+            lat_corr_table[lat_corr_wr_slot_i] <= lat_corr_wr_data_i;
+        end
+    end
+
     generate
         for (gp = 0; gp < PW_PORTS; gp++) begin : g_chk
-            wire chk_ev = rx_kv_d[gp] && rx_eff[gp].hit &&
-                          (rx_eff[gp].action == PW_ACT_TEST_RX);
+            // Per-flow correction: look up corr[slot] at +4 by the event's flow
+            // slot, REGISTER it (and the key/wts/eff) one cycle to +5, and feed
+            // the checker at +5. Keeping the 16:1 table mux in its own stage (not
+            // folded into the checker's latency-calc cycle) holds dp_clk timing;
+            // the checker itself is unchanged (still a registered lat_correction).
+            // Only the checker path shifts to +5 -- the SAF/drop/punt consumers
+            // stay at +4 (their timing contract with the parser is unchanged).
+            logic [63:0]      corr_sel_q;
+            logic             chk_kv_q;
+            pw_match_key_t    chk_key_q;
+            logic [63:0]      chk_wts_q;
+            pw_class_result_t chk_eff_q;
+            always_ff @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    corr_sel_q <= '0; chk_kv_q <= 1'b0; chk_key_q <= '0;
+                    chk_wts_q  <= '0; chk_eff_q <= '0;
+                end else begin
+                    corr_sel_q <= lat_corr_table[rx_eff[gp].local_flow_id[$clog2(PW_NUM_FLOWS)-1:0]];
+                    chk_kv_q   <= rx_kv_d[gp];
+                    chk_key_q  <= rx_key_d[gp];
+                    chk_wts_q  <= rx_wts_d[gp];
+                    chk_eff_q  <= rx_eff[gp];
+                end
+            end
+            wire chk_ev = chk_kv_q && chk_eff_q.hit &&
+                          (chk_eff_q.action == PW_ACT_TEST_RX);
             pw_test_rx_checker_bram #(
                 .NUM_FLOWS       (PW_NUM_FLOWS),
                 .NUM_BUCKETS     (PW_NUM_BUCKETS)
@@ -532,13 +576,14 @@ module pw_data_plane_axis #(
                 .clk             (clk),
                 .rst_n           (rst_n),
                 .clear_i         (stats_clear_i),
-                // RX "now" = this frame's wire-arrival time (aligned with the
-                // delayed key), so latency = TX-wire-stamp .. RX-wire-stamp,
-                // free of the post-FIFO + parser + classifier pipeline delay.
-                .timestamp_i     (rx_wts_d[gp]),
-                .lat_correction_i(lat_correction_i),
-                .key_i           (rx_key_d[gp]),
-                .result_i        (rx_eff[gp]),
+                // RX "now" = this frame's wire-arrival time (+5, aligned with the
+                // registered key + per-flow correction), so latency = TX-wire-stamp
+                // .. RX-wire-stamp, free of the post-FIFO + parser + classifier
+                // pipeline delay, plus the per-flow cross-card offset.
+                .timestamp_i     (chk_wts_q),
+                .lat_correction_i(corr_sel_q),
+                .key_i           (chk_key_q),
+                .result_i        (chk_eff_q),
                 .event_valid_i   (chk_ev),
                 .hist_ev_o       (hev_v[gp]),
                 .hist_flow_o     (hev_fl[gp]),

@@ -103,10 +103,9 @@ static const char *cfg_dual_cross_card_with_latency =
 "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
 "    measurements: { loss: true, latency: true }\n";
 
-/* STAGE-1 lat_correction is global per card, so a card that is the RX side of a
- * cross-card flow may not ALSO receive a same-card flow (the correction would be
- * wrongly applied to the same-card one). card1 receives flow 7 (cross, from
- * card0) AND flow 8 (same-card, card1->card1) -> must be rejected. */
+/* card1 receives flow 7 (cross-card, from card0) AND flow 8 (same-card,
+ * card1->card1). Stage 2 per-flow lat_correction supports this (slot 7 gets the
+ * offset, slot 8 stays 0). */
 static const char *cfg_xcard_mixed_same_card =
 "system: { name: pw-dual, mode: multi-card, default_speed: 10g }\n"
 "cards:\n"
@@ -124,9 +123,9 @@ static const char *cfg_xcard_mixed_same_card =
 "      udp:  { src_port: 49154, dst_port: 50003 },\n"
 "      traffic: { frame_len: 512, rate_bps: 1000000000 }, measurements: { latency: true } }\n";
 
-/* STAGE-1: a single RX card may not receive cross-card flows from more than one
- * TX card (one global correction can't serve two different offsets). card1
- * receives flow 7 from card0 and flow 8 from card2 -> must be rejected. */
+/* card1 receives flow 7 from card0 and flow 8 from card2. Stage 2 per-flow
+ * lat_correction supports this (each cross-card flow's slot gets its source
+ * card's inter-card offset). */
 static const char *cfg_xcard_two_tx_sources =
 "system: { name: pw-tri, mode: multi-card, default_speed: 10g }\n"
 "cards:\n"
@@ -225,27 +224,29 @@ static void test_accept_cross_card_latency(void) {
     pw_config_free(cfg);
 }
 
-static void test_reject_xcard_mixed_same_card(void) {
-    /* STAGE-1 global lat_correction: same-card + cross-card on one RX card. */
+static void test_accept_xcard_mixed_same_card(void) {
+    /* Stage 2 per-flow lat_correction: same-card + cross-card on one RX card is
+     * now supported (each flow's slot gets its own correction). */
     struct pw_config *cfg = pw_config_new();
     struct pw_diag d = {0};
     pw_status r = pw_config_parse_string(cfg_xcard_mixed_same_card,
                                          strlen(cfg_xcard_mixed_same_card), cfg, &d);
     PW_ASSERT_EQ(r, PW_OK);
     r = pw_config_validate(cfg, &d);
-    PW_ASSERT_EQ(r, PW_E_INVAL);
+    PW_ASSERT_EQ(r, PW_OK);
     pw_config_free(cfg);
 }
 
-static void test_reject_xcard_two_tx_sources(void) {
-    /* STAGE-1 global lat_correction: one RX card fed by two TX cards. */
+static void test_accept_xcard_two_tx_sources(void) {
+    /* Stage 2 per-flow lat_correction: one RX card fed by two TX cards is now
+     * supported (each cross-card flow's slot gets its source's offset). */
     struct pw_config *cfg = pw_config_new();
     struct pw_diag d = {0};
     pw_status r = pw_config_parse_string(cfg_xcard_two_tx_sources,
                                          strlen(cfg_xcard_two_tx_sources), cfg, &d);
     PW_ASSERT_EQ(r, PW_OK);
     r = pw_config_validate(cfg, &d);
-    PW_ASSERT_EQ(r, PW_E_INVAL);
+    PW_ASSERT_EQ(r, PW_OK);
     pw_config_free(cfg);
 }
 
@@ -1612,8 +1613,8 @@ int main(void) {
         { "tap_name", test_tap_name },
         { "parse_single_card", test_parse_single_card },
         { "accept_cross_card_latency", test_accept_cross_card_latency },
-        { "reject_xcard_mixed_same_card", test_reject_xcard_mixed_same_card },
-        { "reject_xcard_two_tx_sources", test_reject_xcard_two_tx_sources },
+        { "accept_xcard_mixed_same_card", test_accept_xcard_mixed_same_card },
+        { "accept_xcard_two_tx_sources", test_accept_xcard_two_tx_sources },
         { "traffic_validation", test_traffic_validation },
         { "rate_pps_compiles_nonzero", test_rate_pps_compiles_nonzero },
         { "min_legal_frame_clamp", test_min_legal_frame_clamp },

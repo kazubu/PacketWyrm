@@ -45,16 +45,15 @@ enum {
     PWFPGA_REG_GPIO_SYNC_SEQ        = 0x013c,
     PWFPGA_REG_GPIO_SYNC_STATUS     = 0x0140,
 
-    /* Cross-card latency correction (signed 64-bit, two's complement; LO then
-     * HI 32-bit words). Broadcast to every RX checker, which computes
-     * lat = (rx_wire_ts + lat_correction) - tx_ts, so it accumulates the true
-     * one-way latency per sample on cross-card flows (min/max/avg/histogram all
-     * corrected in HW -- no SW post-hoc skew smear). The daemon servo writes the
-     * inter-card counter offset (A_cnt - B_cnt) here ~10x/s. 0 (default) for
-     * same-card flows -> identical to the uncorrected path. The free-running
-     * counter is never disciplined (Gray-CDC safe); only this term is. */
-    PWFPGA_REG_LAT_CORRECTION_LO    = 0x0144,
-    PWFPGA_REG_LAT_CORRECTION_HI    = 0x0148,
+    /* Per-flow cross-card latency correction window. Slot i (= the RX checker
+     * local_flow_id) at BASE + i*8: +0 = LO [31:0] (signed), +4 = HI [63:32].
+     * Write LO then HI -- LO stages a shadow, HI commits {HI,shadow} atomically
+     * to slot i's entry in the data-plane correction table. The RX checker then
+     * computes lat = (rx_wire_ts + corr[slot]) - tx_ts PER FLOW, so a single RX
+     * card can mix same-card flows (corr 0) and cross-card flows from different
+     * TX cards (each its own inter-card offset). The daemon servo writes these.
+     * Replaces the Stage-1 single global correction (0x0144/0x0148). */
+    PWFPGA_REG_LAT_CORRECTION_BASE  = 0x0180,   /* .. 0x0180 + NUM_FLOWS*8 */
 
     /* NOTE: 0x0200..0x03FF was an early per-port control/status placeholder
      * that pw_csr_full never implemented (per-port status + stats are surfaced

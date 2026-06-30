@@ -219,7 +219,12 @@ module tb_data_plane_axis;
         .clk              (clk),
         .rst_n            (rst_n),
         .timestamp_i      (ts),
-        .lat_correction_i (64'd0),   // same-card: no correction (unchanged path)
+        // per-flow lat correction table left unwritten -> all slots 0 (same-card,
+        // unchanged path); the per-flow correction itself is covered in sim by
+        // tb_test_rx_checker_bram (nonzero lat_correction_i case).
+        .lat_corr_wr_en_i (1'b0),
+        .lat_corr_wr_slot_i('0),
+        .lat_corr_wr_data_i(64'd0),
         .stats_clear_i    (stats_clear),
         .dp_soft_rst_i    (dp_soft_rst),
         .s_axis_rx_tdata  (rx_tdata),

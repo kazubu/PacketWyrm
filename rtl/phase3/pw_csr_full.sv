@@ -77,10 +77,11 @@ module pw_csr_full #(
     input  wire [31:0]       gpio_sync_seq_i,
     input  wire [5:0]        gpio_sync_gpio_in_i,
 
-    // Signed cross-card latency correction (two 32-bit words, lo then hi),
-    // broadcast to the data-plane RX checkers. The SW servo writes the
-    // inter-card counter offset here so the checker corrects latency per sample.
-    output wire [63:0]       lat_correction_o,
+    // Per-flow cross-card latency correction: a committed 64-bit value + its
+    // flow slot, pulsed to the data plane's correction table on each HI write.
+    output reg                            lat_corr_wr_en_o,
+    output reg [$clog2(NUM_FLOWS)-1:0]    lat_corr_wr_slot_o,
+    output reg [63:0]                     lat_corr_wr_data_o,
 
     // Counters from the data plane (driven into the stats /
     // histogram snapshot modules).
@@ -226,8 +227,12 @@ module pw_csr_full #(
     localparam logic [15:0] REG_GPIO_SYNC_TS_HIGH = 16'h0138; // R : high half (latched on TS_LOW read)
     localparam logic [15:0] REG_GPIO_SYNC_SEQ     = 16'h013C; // R : edge sequence (matches across cards)
     localparam logic [15:0] REG_GPIO_SYNC_STATUS  = 16'h0140; // R : raw synchronised pad inputs (debug)
-    localparam logic [15:0] REG_LAT_CORRECTION_LO = 16'h0144; // RW: cross-card latency correction [31:0] (signed)
-    localparam logic [15:0] REG_LAT_CORRECTION_HI = 16'h0148; // RW: cross-card latency correction [63:32]
+    // Per-flow cross-card latency correction window: slot i at BASE + i*8 (LO,
+    // signed [31:0]) / +4 (HI, [63:32]). Write LO then HI: LO stages a shadow,
+    // HI commits {HI,shadow} as a single 64-bit write pulse to the data plane's
+    // per-slot table (so the RX checker corrects each flow independently --
+    // same-card slots keep 0, cross-card slots carry their TX card's offset).
+    localparam logic [15:0] REG_LAT_CORRECTION_BASE = 16'h0180; // .. 0x0180 + NUM_FLOWS*8
     localparam logic [31:0] REBOOT_MAGIC       = 32'h5242_4F54;  // "RBOT"
 
     // Wide CSR address map (64 flows / 64 classifier rows). Each
@@ -289,23 +294,17 @@ module pw_csr_full #(
     reg  [31:0]       timestamp_high_latched;
     reg  [31:0]       gpio_sync_ctrl_q;
     reg  [31:0]       gpio_sync_ts_high_latched;
-    // Cross-card latency correction is a 64-bit value the host writes as two
-    // 32-bit words (LO then HI). To avoid a torn transient on lat_correction_o
-    // (the checker would otherwise see {old_hi, new_lo} or {new_hi, old_lo} for
-    // one cycle -- e.g. 0 -> a sign-flipped huge value that one sample could
-    // latch into max/sum/hist), the LO write only STAGES into a shadow; the HI
-    // write COMMITS {wdata_hi, shadow} to the live register in a single cycle.
-    // Software contract: always write LO before HI (the lib + servo do).
-    reg  [31:0]       lat_correction_lo_q;     // committed low word (also readback)
-    reg  [31:0]       lat_correction_hi_q;     // committed high word
-    reg  [31:0]       lat_correction_lo_shadow; // staged by a LO write
+    // Per-flow lat correction: a LO write stages into this shadow; the matching
+    // HI write commits {wdata_hi, shadow} as a single 64-bit pulse to the data
+    // plane (atomic: the checker never sees a torn {old_hi,new_lo} value, which
+    // a sample could latch into max/sum/hist). SW writes LO then HI per slot.
+    reg  [31:0]       lat_corr_lo_shadow;
 
     wire [31:0] timestamp_low  = timestamp_i[31:0];
     wire [31:0] timestamp_high = timestamp_i[63:32];
 
     assign global_control_o = global_control_q;
     assign gpio_sync_ctrl_o = gpio_sync_ctrl_q;
-    assign lat_correction_o = {lat_correction_hi_q, lat_correction_lo_q};
 
     // Strobe to the windows when an AXI-Lite write transaction completes.
     logic              wr_en;
@@ -354,9 +353,10 @@ module pw_csr_full #(
             awaddr_q         <= '0;
             global_control_q <= '0;
             gpio_sync_ctrl_q <= '0;
-            lat_correction_lo_q <= '0;
-            lat_correction_hi_q <= '0;
-            lat_correction_lo_shadow <= '0;
+            lat_corr_lo_shadow  <= '0;
+            lat_corr_wr_en_o    <= 1'b0;
+            lat_corr_wr_slot_o  <= '0;
+            lat_corr_wr_data_o  <= '0;
             error_status_q   <= '0;
             wr_en            <= 1'b0;
             wr_addr          <= '0;
@@ -373,6 +373,7 @@ module pw_csr_full #(
             wr_en            <= 1'b0;
             map_wr_en_o      <= 1'b0;
             hash_wr_en_o     <= 1'b0;
+            lat_corr_wr_en_o <= 1'b0;   // pulse: set only on a lat-corr HI write below
             hk_wr_q          <= 1'b0;   // pulse: cleared each cycle, set on a hash word write below
             // Apply the pipelined hash-key word write (registered last cycle).
             if (hk_wr_q) hash_acc_key[hk_word_q*32 +: 32] <= hk_data_q;
@@ -401,15 +402,24 @@ module pw_csr_full #(
                 case (awaddr_q)
                     REG_GLOBAL_CONTROL: global_control_q <= s_axi_wdata;
                     REG_GPIO_SYNC_CTRL: gpio_sync_ctrl_q <= s_axi_wdata;
-                    // LO stages into the shadow; HI commits {hi, shadow} atomically.
-                    REG_LAT_CORRECTION_LO: lat_correction_lo_shadow <= s_axi_wdata;
-                    REG_LAT_CORRECTION_HI: begin
-                        lat_correction_hi_q <= s_axi_wdata;
-                        lat_correction_lo_q <= lat_correction_lo_shadow;
-                    end
                     REG_ERROR_STATUS:   error_status_q   <= error_status_q & ~s_axi_wdata;
                     default: /* defer to windows */ ;
                 endcase
+                // Per-flow lat correction window (0x0180 .. +NUM_FLOWS*8). LO
+                // (offset&4==0) stages the shadow; HI (offset&4) commits
+                // {wdata, shadow} as a one-cycle write pulse to slot off>>3.
+                if (awaddr_q >= REG_LAT_CORRECTION_BASE &&
+                    awaddr_q <  REG_LAT_CORRECTION_BASE + 16'(NUM_FLOWS*8)) begin
+                    logic [15:0] lc_off;
+                    lc_off = awaddr_q - REG_LAT_CORRECTION_BASE;
+                    if (lc_off[2]) begin
+                        lat_corr_wr_data_o <= {s_axi_wdata, lat_corr_lo_shadow};
+                        lat_corr_wr_slot_o <= lc_off[3 +: $clog2(NUM_FLOWS)];
+                        lat_corr_wr_en_o   <= 1'b1;
+                    end else begin
+                        lat_corr_lo_shadow <= s_axi_wdata;
+                    end
+                end
                 // Window strobe
                 wr_en   <= 1'b1;
                 wr_addr <= awaddr_q;
@@ -732,8 +742,6 @@ module pw_csr_full #(
                             REG_GPIO_SYNC_TS_HIGH: s_axi_rdata <= gpio_sync_ts_high_latched;
                             REG_GPIO_SYNC_SEQ:     s_axi_rdata <= gpio_sync_seq_i;
                             REG_GPIO_SYNC_STATUS:  s_axi_rdata <= {26'h0, gpio_sync_gpio_in_i};
-                            REG_LAT_CORRECTION_LO: s_axi_rdata <= lat_correction_lo_q;
-                            REG_LAT_CORRECTION_HI: s_axi_rdata <= lat_correction_hi_q;
                             REG_ERROR_STATUS:   s_axi_rdata <= error_status_q;
                             default: begin
                                 s_axi_rdata <= 32'h0;
