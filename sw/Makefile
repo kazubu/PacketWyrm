@@ -137,7 +137,11 @@ pw_dp_reset_recover: $(BUILD_DIR)/pw_dp_reset_recover
 $(BUILD_DIR)/pw_dp_reset_recover: tests/pw_dp_reset_recover.c $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_dp_reset_recover.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
-.PHONY: e2e gen_bar_vectors pw_card_probe pw_sfp_test pw_phase3_loopback pw_phase3_forward pw_phase3_punt pw_phase3_inject pw_phase3_modgen pw_phase3_ipv6gen pw_dp_reset_recover
+pw_soak: $(BUILD_DIR)/pw_soak
+$(BUILD_DIR)/pw_soak: tests/pw_soak.c $(LIBA) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_soak.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+
+.PHONY: e2e gen_bar_vectors pw_card_probe pw_sfp_test pw_phase3_loopback pw_phase3_forward pw_phase3_punt pw_phase3_inject pw_phase3_modgen pw_phase3_ipv6gen pw_dp_reset_recover pw_soak
 e2e: $(DAEMON_BIN) $(CLI_BIN)
 	tests/integration/e2e_smoke.sh
 
