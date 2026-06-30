@@ -15,7 +15,15 @@
  * after a SHORT traffic burst and corrects with the average; the before/after
  * spread bounds the residual skew error. Min latency is the cleanest figure.
  *
- *   sudo pw_xcard_latency <bdfA-gen> <bdfB-rx> [burst_ms=300] [flow_id=7]
+ * DUT measurement workflow (one-shot zero, no servo needed): each run measures
+ * its OWN offset, so the fixed GPIO-sync-path bias + the direct-link latency
+ * CANCEL when you subtract a baseline:
+ *   1. cards back-to-back (A.port0 -DAC- B.port0): run -> note CORRECTED min as L0.
+ *   2. insert the DUT (A -> DUT -> B): run with baseline=L0 -> reports DUT latency
+ *      = corrected - L0. The bias cancels; skew is irrelevant between runs (each
+ *      run re-measures offset).
+ *
+ *   sudo pw_xcard_latency <bdfA-gen> <bdfB-rx> [burst_ms=20] [flow_id=7] [baseline_ticks=0]
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -42,12 +50,13 @@ static uint32_t gpio_ctrl(int en,int master,int rep,int in_sel,int out_sel,int p
 
 int main(int argc, char **argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s <bdfA-gen> <bdfB-rx> [burst_ms=300] [flow_id=7]\n", argv[0]);
+        fprintf(stderr, "usage: %s <bdfA-gen> <bdfB-rx> [burst_ms=20] [flow_id=7] [baseline_ticks=0]\n", argv[0]);
         return 2;
     }
     const char *bdfA = argv[1], *bdfB = argv[2];
-    int burst_ms = (argc > 3) ? atoi(argv[3]) : 300;
+    int burst_ms = (argc > 3) ? atoi(argv[3]) : 20;
     uint32_t fid = (argc > 4) ? (uint32_t)atoi(argv[4]) : 7;
+    int32_t baseline = (argc > 5) ? (int32_t)atoi(argv[5]) : 0;
     const uint32_t SLOT = 0;
 
     pw_vfio_bind(bdfA); pw_vfio_bind(bdfB);
@@ -116,11 +125,13 @@ int main(int argc, char **argv) {
     oa->write32(ba.ctx, PWFPGA_REG_GPIO_SYNC_CTRL, 0);
     ob->write32(bb.ctx, PWFPGA_REG_GPIO_SYNC_CTRL, 0);
 
-    /* --- correct: true_one_way = raw + offset(A-B), 32-bit (min/max are u32) --- */
+    /* --- correct: true_one_way = raw + offset(A-B), 32-bit (min/max are u32).
+     * Display signed so a near-zero / slightly-negative result (the corrected
+     * value carries a small fixed bias) reads naturally instead of wrapping. --- */
     uint64_t avg_off = off_before + (off_after - off_before) / 2;
     uint32_t off32   = (uint32_t)avg_off;
-    uint32_t cmin = (uint32_t)(rs.min_latency + off32);
-    uint32_t cmax = (uint32_t)(rs.max_latency + off32);
+    int32_t cmin = (int32_t)(uint32_t)(rs.min_latency + off32);
+    int32_t cmax = (int32_t)(uint32_t)(rs.max_latency + off32);
     long long drift = (long long)(off_after - off_before);
 
     printf("\n=== cross-card link + latency ===\n");
@@ -135,10 +146,18 @@ int main(int argc, char **argv) {
            (unsigned long long)avg_off, drift);
     printf("raw checker latency (B-timebase, uncorrected): min=%u max=%u ticks\n",
            rs.min_latency, rs.max_latency);
-    printf("CORRECTED one-way latency: min=%u max=%u ticks  =>  min=%.1f ns  max=%.1f ns\n",
+    printf("CORRECTED one-way latency: min=%d max=%d ticks  =>  min=%.1f ns  max=%.1f ns\n",
            cmin, cmax, cmin * 6.4, cmax * 6.4);
     printf("  (residual precision bounded by skew drift over the burst: ~%lld ticks = %.1f ns)\n",
            drift < 0 ? -drift : drift, (drift < 0 ? -drift : drift) * 6.4);
+    if (baseline == 0) {
+        printf("ZERO-POINT: with cards back-to-back, re-run with baseline_ticks=%d to report\n"
+               "            DUT-attributable latency (corrected - baseline; bias cancels).\n", cmin);
+    } else {
+        printf("DUT latency (corrected - baseline %d): min=%d max=%d ticks => min=%.1f ns max=%.1f ns\n",
+               baseline, cmin - baseline, cmax - baseline,
+               (cmin - baseline) * 6.4, (cmax - baseline) * 6.4);
+    }
 
     pw_card_backend_close(&ba);
     pw_card_backend_close(&bb);
