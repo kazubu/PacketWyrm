@@ -75,11 +75,15 @@ static void *card_worker_main(void *arg) {
 
 static void usage(const char *prog) {
     fprintf(stderr,
-        "usage: %s [-c CONFIG] [-n] [-v] [-s INTERVAL_MS] [-p PROMETHEUS_PORT] [-F]\n"
+        "usage: %s [-c CONFIG] [-n] [-v] [-s INTERVAL_MS] [-S SERVO_MS] [-p PROMETHEUS_PORT] [-F]\n"
         "  -c CONFIG         path to packetwyrm.yaml\n"
         "  -n                dry run: parse + validate + compile, exit\n"
         "  -v                verbose\n"
         "  -s INTERVAL_MS    stats print interval (default 5000, 0 = off)\n"
+        "  -S SERVO_MS       cross-card lat_correction servo period (default 10;\n"
+        "                    smaller = less ~ppm-skew residual between updates --\n"
+        "                    1.6 ppm x period; 10 ms ~= 16 ns, 1 ms ~= 1.6 ns. The\n"
+        "                    J5 edge updates every ~210 us so below that is moot)\n"
         "  -p PORT           bind a Prometheus /metrics exporter on this TCP\n"
         "                    port; 0 (default) leaves it disabled\n"
         "  -F                allow falling back to the no-op fake backend when a\n"
@@ -1149,15 +1153,17 @@ int main(int argc, char **argv) {
     bool verbose        = false;
     bool allow_fake     = false;
     int  stats_interval = 5000;
+    int  servo_interval = 10;     /* cross-card lat_correction servo period (ms) */
     int  prom_port      = 0;
 
     int opt;
-    while ((opt = getopt(argc, argv, "c:nvs:p:Fh")) != -1) {
+    while ((opt = getopt(argc, argv, "c:nvs:S:p:Fh")) != -1) {
         switch (opt) {
         case 'c': cfg_path = optarg; break;
         case 'n': dry_run = true; break;
         case 'v': verbose = true; break;
         case 's': stats_interval = atoi(optarg); break;
+        case 'S': servo_interval = atoi(optarg); if (servo_interval < 1) servo_interval = 1; break;
         case 'p': prom_port = atoi(optarg); break;
         case 'F': allow_fake = true; break;
         case 'h': default: usage(argv[0]); return opt == 'h' ? 0 : 2;
@@ -1269,7 +1275,10 @@ int main(int argc, char **argv) {
             prom_idx = np;
             pfds[np++] = (struct pollfd){ .fd = prom_fd, .events = POLLIN };
         }
-        (void)poll(np ? pfds : NULL, np, 100);
+        /* Wake at least as often as the servo period so -S can actually tighten
+         * the servo cadence (the loop otherwise idles in poll). */
+        int poll_ms = servo_interval < 100 ? servo_interval : 100;
+        (void)poll(np ? pfds : NULL, np, poll_ms);
 
         if (listen_idx != (size_t)-1 && (pfds[listen_idx].revents & POLLIN)) {
             int cfd = accept(ipc_listen_fd, NULL, NULL);
@@ -1292,10 +1301,11 @@ int main(int argc, char **argv) {
             last_stats = now_ms();
         }
 
-        /* Cross-card latency servo (~10x/s): track the inter-card offset into
-         * the HW lat_correction CSR. cfg/prog are owned by this thread (the
+        /* Cross-card latency servo: track the inter-card offset into the HW
+         * lat_correction CSR every servo_interval ms (default 10 -> ~16 ns skew
+         * residual; -S tunes it). cfg/prog are owned by this thread (the
          * config.load swap in handle_client runs here too), so no locking. */
-        if ((int)(now_ms() - last_servo) >= 100) {
+        if ((int)(now_ms() - last_servo) >= servo_interval) {
             servo_lat_correction(cfg, prog, cards);
             last_servo = now_ms();
         }

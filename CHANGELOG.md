@@ -31,7 +31,12 @@ For where work is going next, see `NEXT-STEPS.md`.
     on an incoherent read; `flows`/`flow.stats` report `latency_method` with
     `latency_valid: true` for cross-card; and `pw_stats_aggregate` now surfaces
     cross-card latency too (`latency_valid: true` + a `cross_card` flag) instead
-    of zeroing it.
+    of zeroing it. The servo period is tunable via `packetwyrmd -S SERVO_MS`
+    (default 10 ms): the residual from the ~1.6 ppm clock skew between updates is
+    `skew x period` (~16 ns at 10 ms, ~1.6 ns at 1 ms), so a tighter period
+    sharpens cross-card max/jitter with no bitstream change (the J5 edge refreshes
+    every ~210 us, the floor below which it's moot). `flow.stats` `offset_ticks`
+    surfaces the live (edge-coherent) offset the servo is applying.
   - **Cross-card one-way latency in packetwyrmd/pktwyrm.** A flow whose TX and RX
     ports are on different cards now reports latency (previously rejected as
     "cross-card flow does not support latency/jitter"). The daemon brings up the
