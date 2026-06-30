@@ -153,7 +153,11 @@ pw_xcard_latency: $(BUILD_DIR)/pw_xcard_latency
 $(BUILD_DIR)/pw_xcard_latency: tests/pw_xcard_latency.c $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_xcard_latency.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
-.PHONY: e2e gen_bar_vectors pw_card_probe pw_sfp_test pw_phase3_loopback pw_phase3_forward pw_phase3_punt pw_phase3_inject pw_phase3_modgen pw_phase3_ipv6gen pw_dp_reset_recover pw_soak pw_gpio_sync pw_gpio_offset pw_xcard_latency
+pw_port_latency: $(BUILD_DIR)/pw_port_latency
+$(BUILD_DIR)/pw_port_latency: tests/pw_port_latency.c $(LIBA) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_port_latency.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+
+.PHONY: e2e gen_bar_vectors pw_card_probe pw_sfp_test pw_phase3_loopback pw_phase3_forward pw_phase3_punt pw_phase3_inject pw_phase3_modgen pw_phase3_ipv6gen pw_dp_reset_recover pw_soak pw_gpio_sync pw_gpio_offset pw_xcard_latency pw_port_latency
 e2e: $(DAEMON_BIN) $(CLI_BIN)
 	tests/integration/e2e_smoke.sh
 
