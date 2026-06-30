@@ -77,6 +77,11 @@ module pw_csr_full #(
     input  wire [31:0]       gpio_sync_seq_i,
     input  wire [5:0]        gpio_sync_gpio_in_i,
 
+    // Signed cross-card latency correction (two 32-bit words, lo then hi),
+    // broadcast to the data-plane RX checkers. The SW servo writes the
+    // inter-card counter offset here so the checker corrects latency per sample.
+    output wire [63:0]       lat_correction_o,
+
     // Counters from the data plane (driven into the stats /
     // histogram snapshot modules).
     input  wire [31:0]       port_drops_i      [NUM_PORTS],
@@ -221,6 +226,8 @@ module pw_csr_full #(
     localparam logic [15:0] REG_GPIO_SYNC_TS_HIGH = 16'h0138; // R : high half (latched on TS_LOW read)
     localparam logic [15:0] REG_GPIO_SYNC_SEQ     = 16'h013C; // R : edge sequence (matches across cards)
     localparam logic [15:0] REG_GPIO_SYNC_STATUS  = 16'h0140; // R : raw synchronised pad inputs (debug)
+    localparam logic [15:0] REG_LAT_CORRECTION_LO = 16'h0144; // RW: cross-card latency correction [31:0] (signed)
+    localparam logic [15:0] REG_LAT_CORRECTION_HI = 16'h0148; // RW: cross-card latency correction [63:32]
     localparam logic [31:0] REBOOT_MAGIC       = 32'h5242_4F54;  // "RBOT"
 
     // Wide CSR address map (64 flows / 64 classifier rows). Each
@@ -282,12 +289,15 @@ module pw_csr_full #(
     reg  [31:0]       timestamp_high_latched;
     reg  [31:0]       gpio_sync_ctrl_q;
     reg  [31:0]       gpio_sync_ts_high_latched;
+    reg  [31:0]       lat_correction_lo_q;
+    reg  [31:0]       lat_correction_hi_q;
 
     wire [31:0] timestamp_low  = timestamp_i[31:0];
     wire [31:0] timestamp_high = timestamp_i[63:32];
 
     assign global_control_o = global_control_q;
     assign gpio_sync_ctrl_o = gpio_sync_ctrl_q;
+    assign lat_correction_o = {lat_correction_hi_q, lat_correction_lo_q};
 
     // Strobe to the windows when an AXI-Lite write transaction completes.
     logic              wr_en;
@@ -336,6 +346,8 @@ module pw_csr_full #(
             awaddr_q         <= '0;
             global_control_q <= '0;
             gpio_sync_ctrl_q <= '0;
+            lat_correction_lo_q <= '0;
+            lat_correction_hi_q <= '0;
             error_status_q   <= '0;
             wr_en            <= 1'b0;
             wr_addr          <= '0;
@@ -380,6 +392,8 @@ module pw_csr_full #(
                 case (awaddr_q)
                     REG_GLOBAL_CONTROL: global_control_q <= s_axi_wdata;
                     REG_GPIO_SYNC_CTRL: gpio_sync_ctrl_q <= s_axi_wdata;
+                    REG_LAT_CORRECTION_LO: lat_correction_lo_q <= s_axi_wdata;
+                    REG_LAT_CORRECTION_HI: lat_correction_hi_q <= s_axi_wdata;
                     REG_ERROR_STATUS:   error_status_q   <= error_status_q & ~s_axi_wdata;
                     default: /* defer to windows */ ;
                 endcase
@@ -705,6 +719,8 @@ module pw_csr_full #(
                             REG_GPIO_SYNC_TS_HIGH: s_axi_rdata <= gpio_sync_ts_high_latched;
                             REG_GPIO_SYNC_SEQ:     s_axi_rdata <= gpio_sync_seq_i;
                             REG_GPIO_SYNC_STATUS:  s_axi_rdata <= {26'h0, gpio_sync_gpio_in_i};
+                            REG_LAT_CORRECTION_LO: s_axi_rdata <= lat_correction_lo_q;
+                            REG_LAT_CORRECTION_HI: s_axi_rdata <= lat_correction_hi_q;
                             REG_ERROR_STATUS:   s_axi_rdata <= error_status_q;
                             default: begin
                                 s_axi_rdata <= 32'h0;

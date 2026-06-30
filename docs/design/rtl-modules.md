@@ -201,6 +201,22 @@ in the punt metadata (RX_TS regs). The dp_clk→rx_clk crossing is constrained i
 is modest (loopback jitter is already ~0); the real payoff is cross-card one-way
 latency, where the two cards share a time base via the J5 GPIO sync.
 
+**Cross-card latency HW correction (`lat_correction`).** The two cards' free-
+running counters differ by an inter-card offset (the J5 GPIO sync measures it),
+so a raw cross-card latency `rx_wire_ts_B − tx_ts_A` is in the wrong timebase
+(it even wraps negative). The RX checker now takes a signed 64-bit
+`lat_correction_i` (CSR `0x0144/0x0148`, broadcast to every port's checker by the
+data plane) and computes `lat = (rx_wire_ts + lat_correction) − tx_ts`, so it
+accumulates the **true** one-way latency *per sample* — min/max/sum and the
+histogram all bin the corrected value. This replaces the earlier SW read-time
+single-offset correction, which left min/max/avg smeared by the ~1.6 ppm clock
+skew over a long accumulation (the offset drifts; one read-time number can't
+un-smear a window of raw samples). The daemon servo re-writes the register from
+the GPIO offset ~10×/s (residual ≈ drift per interval, ~tens of ns). The
+free-running counter itself is **never** stepped (Gray-CDC safe — see the RX
+wire-stamp note above); only this latency computation is disciplined. Same-card
+flows leave `lat_correction = 0` → bit-identical to the uncorrected path.
+
 ## Top-level module hierarchy (original design sketch)
 
 ```

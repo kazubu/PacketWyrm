@@ -45,6 +45,17 @@ enum {
     PWFPGA_REG_GPIO_SYNC_SEQ        = 0x013c,
     PWFPGA_REG_GPIO_SYNC_STATUS     = 0x0140,
 
+    /* Cross-card latency correction (signed 64-bit, two's complement; LO then
+     * HI 32-bit words). Broadcast to every RX checker, which computes
+     * lat = (rx_wire_ts + lat_correction) - tx_ts, so it accumulates the true
+     * one-way latency per sample on cross-card flows (min/max/avg/histogram all
+     * corrected in HW -- no SW post-hoc skew smear). The daemon servo writes the
+     * inter-card counter offset (A_cnt - B_cnt) here ~10x/s. 0 (default) for
+     * same-card flows -> identical to the uncorrected path. The free-running
+     * counter is never disciplined (Gray-CDC safe); only this term is. */
+    PWFPGA_REG_LAT_CORRECTION_LO    = 0x0144,
+    PWFPGA_REG_LAT_CORRECTION_HI    = 0x0148,
+
     /* NOTE: 0x0200..0x03FF was an early per-port control/status placeholder
      * that pw_csr_full never implemented (per-port status + stats are surfaced
      * through the stats-snapshot window at 0xC000). The low half (0x0200..

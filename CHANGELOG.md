@@ -9,6 +9,17 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Cross-card latency HW correction (`lat_correction` CSR).** The RX checker
+    now takes a signed 64-bit correction (CSR `0x0144/0x0148`, broadcast to every
+    port's checker) and computes `lat = (rx_wire_ts + lat_correction) − tx_ts`, so
+    cross-card latency is corrected **per sample in hardware** — min/max/sum and
+    the histogram all accumulate the true one-way value. This supersedes the
+    earlier SW read-time single-offset correction, which left max/avg smeared by
+    the ~1.6 ppm clock skew over a long accumulation (and forced avg-omit +
+    histogram-unsupported for cross-card). Same-card flows use `lat_correction = 0`
+    → bit-identical to before. The free-running counter is still never disciplined
+    (Gray-CDC safe); only this computation is. Daemon servo + `flow.stats` cleanup
+    land alongside.
   - **Cross-card one-way latency in packetwyrmd/pktwyrm.** A flow whose TX and RX
     ports are on different cards now reports latency (previously rejected as
     "cross-card flow does not support latency/jitter"). The daemon brings up the

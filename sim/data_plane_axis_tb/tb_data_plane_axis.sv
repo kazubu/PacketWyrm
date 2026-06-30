@@ -219,6 +219,7 @@ module tb_data_plane_axis;
         .clk              (clk),
         .rst_n            (rst_n),
         .timestamp_i      (ts),
+        .lat_correction_i (64'd0),   // same-card: no correction (unchanged path)
         .stats_clear_i    (stats_clear),
         .dp_soft_rst_i    (dp_soft_rst),
         .s_axis_rx_tdata  (rx_tdata),

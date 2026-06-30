@@ -40,6 +40,15 @@ module pw_test_rx_checker_bram #(
     input  wire                  clear_i,
 
     input  wire [63:0]           timestamp_i,
+    // Signed cross-card latency correction (two's complement), added to the RX
+    // "now" before the tx-stamp subtract: lat = (timestamp_i + lat_correction_i)
+    // - tx_ts. On an RX card it carries the inter-card counter offset (A_cnt -
+    // B_cnt) so rx_wire_ts_B is re-expressed in the TX card's timebase and HW
+    // accumulates the TRUE one-way latency per sample (min/max/sum/histogram all
+    // corrected -> no SW post-hoc skew smear). 0 for same-card flows (default) ->
+    // bit-identical to the uncorrected path. The free-running counter itself is
+    // NEVER disciplined (Gray-CDC safe); only this computation is corrected.
+    input  wire [63:0]           lat_correction_i,
     input  pw_match_key_t        key_i,
     input  pw_class_result_t     result_i,
     input  wire                  event_valid_i,
@@ -164,7 +173,7 @@ module pw_test_rx_checker_bram #(
             if (clear_idx == NUM_FLOWS[AW:0]) clearing <= 1'b0;
             else clear_idx <= clear_idx + 1'b1;
         end else begin
-            automatic logic [63:0] lat = timestamp_i - key_i.test_tx_timestamp;
+            automatic logic [63:0] lat = (timestamp_i + lat_correction_i) - key_i.test_tx_timestamp;
             automatic int          b   = log2_bucket(lat);
             if (b >= NUM_BUCKETS) b = NUM_BUCKETS - 1;
             s1_valid  <= event_take;

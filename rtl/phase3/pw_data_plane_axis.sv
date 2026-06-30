@@ -67,6 +67,12 @@ module pw_data_plane_axis #(
 
     input  wire [63:0]            timestamp_i,
 
+    // Signed cross-card latency correction (CSR-written, two's complement),
+    // broadcast to every port's RX checker (global per card). The SW servo sets
+    // it to the inter-card counter offset so the checker accumulates the true
+    // one-way latency on cross-card flows; 0 (default) for same-card -> unchanged.
+    input  wire [63:0]            lat_correction_i,
+
     // Soft clear pulse (from a CSR write): re-baselines all flow checkers.
     input  wire                   stats_clear_i,
 
@@ -530,6 +536,7 @@ module pw_data_plane_axis #(
                 // delayed key), so latency = TX-wire-stamp .. RX-wire-stamp,
                 // free of the post-FIFO + parser + classifier pipeline delay.
                 .timestamp_i     (rx_wts_d[gp]),
+                .lat_correction_i(lat_correction_i),
                 .key_i           (rx_key_d[gp]),
                 .result_i        (rx_eff[gp]),
                 .event_valid_i   (chk_ev),
