@@ -413,9 +413,13 @@ Two cheap, routable stages:
   and accumulates `|latency[n] - latency[n-1]|` into jitter min / max /
   sum (the first sample of a flow only seeds `prev_latency`). Surfaces in
   the flow stats block at jitter_min@104 / jitter_max@108 / jitter_sum@112.
-- Cross-card flows still hit `test_rx_checker`; daemon flags
-  `latency_valid = false` on those flows and the host does not surface
-  the (invalid) latency numbers.
+- Cross-card flows are corrected per sample in hardware: the checker computes
+  `lat = (rx_wire_ts + lat_correction) - tx_ts`, where the daemon servo keeps
+  `lat_correction` at the inter-card offset (J5 GPIO sync). So min/max/sum and
+  the histogram hold the true one-way latency for cross-card too; the daemon
+  reports `latency_valid = true` with `latency_method = "gpio-corrected"`
+  (same-card runs with `lat_correction = 0`). See the "Cross-card latency HW
+  correction" note above.
 
 ### punt_queue
 

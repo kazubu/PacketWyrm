@@ -295,9 +295,13 @@ static void servo_lat_correction(const struct pw_config *cfg,
 /* One-shot priming of the HW latency correction after (re)programming, to close
  * the window where cross-card flows would accumulate raw (correction-0) latency.
  * No cross-card flow -> nothing to do (correction stays 0; setup_gpio_sync also
- * zeroed it). Otherwise: wait (bounded) for the J5 sync to latch a real edge on
- * every open card (seq != 0), write the initial correction, then stats-clear
- * every card so the polluted startup samples are discarded. */
+ * zeroed it). Otherwise, per cross-card RX card: write a CONFIRMED edge-coherent
+ * correction (retrying while the J5 sync comes up), and only THEN stats-clear
+ * that card so its polluted startup samples are discarded against a known-good
+ * correction. If no coherent offset materialises in the budget, the card is left
+ * un-cleared (NOT started "clean" on a stale/0 correction) and a warning is
+ * logged; the main-loop servo keeps trying and converges, and a later
+ * stats.clear / test.arm gives the clean baseline. */
 static void prime_lat_correction(const struct pw_config *cfg,
                                  const struct pw_program *prog,
                                  struct card_runtime cards[]) {
@@ -306,25 +310,47 @@ static void prime_lat_correction(const struct pw_config *cfg,
         if (prog->flow_meta[i].tx_card_id != prog->flow_meta[i].rx_card_id) { any_cross = true; break; }
     if (!any_cross) return;
 
-    /* Wait for a valid shared edge on all open cards (period_log2=15 -> ~210us;
-     * 50x1ms = 50ms is ~240 periods of headroom). Best-effort: proceed anyway on
-     * timeout (the servo will converge within ~100ms regardless). */
-    for (int tries = 0; tries < 50; tries++) {
-        bool all = true;
-        for (size_t ci = 0; ci < cfg->n_cards; ci++)
-            if (cards[ci].open && pw_gpio_sync_seq(&cards[ci].backend) == 0) { all = false; break; }
-        if (all) break;
-        usleep(1000);
+    /* Zero the correction on every non-cross-card-RX card up front (a sync slave
+     * that only carries same-card flows must not keep a stale correction). */
+    servo_lat_correction(cfg, prog, cards);
+
+    for (size_t rx_ci = 0; rx_ci < cfg->n_cards; rx_ci++) {
+        if (!cards[rx_ci].open) continue;
+        /* this card's single cross-card TX source (stage-1: at most one) */
+        size_t tx_ci = (size_t)-1;
+        for (size_t i = 0; i < prog->n_flow_meta; i++) {
+            const struct pw_flow_meta *m = &prog->flow_meta[i];
+            if (m->tx_card_id == m->rx_card_id) continue;
+            if (cfg->cards[rx_ci].id != m->rx_card_id) continue;
+            for (size_t ci = 0; ci < cfg->n_cards; ci++)
+                if (cfg->cards[ci].id == m->tx_card_id) { tx_ci = ci; break; }
+            break;
+        }
+        if (tx_ci == (size_t)-1 || !cards[tx_ci].open) continue;   /* not a cross-card RX */
+
+        /* Retry for the J5 sync to come up (period ~210us; 200x1ms = 200ms of
+         * headroom) and a coherent offset to be readable; write it, then clear. */
+        bool wrote = false;
+        for (int tries = 0; tries < 200 && !wrote; tries++) {
+            int64_t corr;
+            if (pw_gpio_sync_offset_coherent(&cards[tx_ci].backend, &cards[rx_ci].backend, &corr)) {
+                pw_gpio_sync_write_correction(&cards[rx_ci].backend, corr);
+                wrote = true;
+                break;
+            }
+            usleep(1000);
+        }
+        if (wrote) {
+            if (cards[rx_ci].backend.ops->write32)
+                (void)cards[rx_ci].backend.ops->write32(
+                    cards[rx_ci].backend.ctx, PWFPGA_REG_STATS_CLEAR, 1u);
+        } else {
+            fprintf(stderr, "warning: card%u cross-card latency correction not "
+                    "ready (no coherent J5 offset); stats left as-is, the servo "
+                    "will converge -- stats.clear once it's up for a clean run\n",
+                    (unsigned)cfg->cards[rx_ci].id);
+        }
     }
-
-    servo_lat_correction(cfg, prog, cards);   /* write the initial correction */
-
-    /* Discard samples taken before the correction was live (programming above
-     * already started the generators). */
-    for (size_t ci = 0; ci < cfg->n_cards; ci++)
-        if (cards[ci].open && cards[ci].backend.ops->write32)
-            (void)cards[ci].backend.ops->write32(
-                cards[ci].backend.ctx, PWFPGA_REG_STATS_CLEAR, 1u);
 }
 
 static pw_status program_backends(const struct pw_program *prog,
