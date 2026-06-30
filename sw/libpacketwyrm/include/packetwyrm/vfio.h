@@ -37,4 +37,10 @@ void pw_vfio_close(struct pw_vfio_handle *h);
  * on success. Requires the vfio-pci module to be loaded/registered. */
 pw_status pw_vfio_bind(const char *bdf);
 
+/* Prepare a device for BAR access: pin it in D0 (defeat PCI runtime-PM
+ * autosuspend to D3, which makes BARs read all-1s) and enable PCI_COMMAND
+ * memory + bus-master decoding, both via sysfs. Idempotent, best-effort, root.
+ * Called automatically by pw_bar_backend_open before either mmap path. */
+void pw_vfio_prep_device(const char *bdf);
+
 #endif
