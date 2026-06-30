@@ -323,6 +323,71 @@ static void pretty_print_stats(const char *json, size_t len) {
     json_object_put(root);
 }
 
+/* Pretty-print per-flow one-way latency from the "flow.stats" response. Shows
+ * the measurement method per flow: "same-card" (counter-direct, exact) or
+ * "gpio-corrected" (cross-card, J5-offset-corrected). 1 tick = 6.4 ns. */
+static void pretty_print_latency(const char *json, size_t len) {
+    struct json_tokener *tok = json_tokener_new();
+    struct json_object *root = json_tokener_parse_ex(tok, json, (int)len);
+    json_tokener_free(tok);
+    if (!root) { printf("%.*s\n", (int)len, json); return; }
+    struct json_object *err;
+    if (json_object_object_get_ex(root, "error", &err)) {
+        printf("error: %s\n", json_object_get_string(err)); json_object_put(root); return;
+    }
+    struct json_object *arr;
+    if (!json_object_object_get_ex(root, "flows", &arr) ||
+        json_object_get_type(arr) != json_type_array) {
+        printf("%.*s\n", (int)len, json); json_object_put(root); return;
+    }
+    printf("%-5s %-7s %10s %10s %8s %8s  %s\n",
+           "flow", "path", "min(ns)", "max(ns)", "jit(ns)", "samples", "method");
+    size_t n = json_object_array_length(arr);
+    for (size_t i = 0; i < n; i++) {
+        struct json_object *f = json_object_array_get_idx(arr, i), *v;
+        int id=0, txc=0, rxc=0; int valid=0;
+        long mn=0, mx=0, jmx=0, samp=0; const char *meth="?";
+        if (json_object_object_get_ex(f,"id",&v))            id=json_object_get_int(v);
+        if (json_object_object_get_ex(f,"tx_card_id",&v))    txc=json_object_get_int(v);
+        if (json_object_object_get_ex(f,"rx_card_id",&v))    rxc=json_object_get_int(v);
+        if (json_object_object_get_ex(f,"latency_valid",&v)) valid=json_object_get_boolean(v);
+        if (json_object_object_get_ex(f,"min_latency",&v))   mn=json_object_get_int64(v);
+        if (json_object_object_get_ex(f,"max_latency",&v))   mx=json_object_get_int64(v);
+        if (json_object_object_get_ex(f,"jitter_max",&v))    jmx=json_object_get_int64(v);
+        if (json_object_object_get_ex(f,"sample_count",&v))  samp=json_object_get_int64(v);
+        if (json_object_object_get_ex(f,"latency_method",&v))meth=json_object_get_string(v);
+        char path[16]; snprintf(path, sizeof(path), "c%d->c%d", txc, rxc);
+        if (valid)
+            printf("%-5d %-7s %10.1f %10.1f %8.1f %8ld  %s\n",
+                   id, path, mn*6.4, mx*6.4, jmx*6.4, samp, meth);
+        else
+            printf("%-5d %-7s %10s %10s %8s %8ld  %s\n",
+                   id, path, "-", "-", "-", samp, "no latency");
+    }
+    json_object_put(root);
+}
+
+static int cmd_latency(int argc, char **argv) {
+    /* pktwyrm latency [--socket PATH] [--flow N] [--json] */
+    const char *sock = PW_IPC_DEFAULT_PATH;
+    int flow = -1; bool raw = false;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
+        else if (!strcmp(argv[i], "--flow") && i + 1 < argc) flow = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--json")) raw = true;
+    }
+    char req[128];
+    if (flow >= 0) snprintf(req, sizeof(req), "{\"rpc\":\"flow.stats\",\"id\":%d}", flow);
+    else           snprintf(req, sizeof(req), "{\"rpc\":\"flow.stats\"}");
+    char resp[PW_IPC_FRAME_MAX]; size_t got = 0;
+    if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
+        fprintf(stderr, "rpc call failed (socket=%s)\n", sock); return 1;
+    }
+    if (raw) { fwrite(resp, 1, got, stdout); fputc('\n', stdout); }
+    else     pretty_print_latency(resp, got);
+    return 0;
+}
+
 static int cmd_stats(int argc, char **argv) {
     /* pktwyrm stats [--socket PATH] [--card N] [--watch MS] [--json] */
     const char *sock = PW_IPC_DEFAULT_PATH;
@@ -430,6 +495,8 @@ static int cmd_help(void) {
     puts("  pktwyrm rpc version");
     puts("  pktwyrm rpc cards|ports|flows|stats [--socket PATH] [--card N]");
     puts("  pktwyrm stats [--socket PATH] [--card N] [--watch MS] [--json]");
+    puts("  pktwyrm latency [--flow N] [--socket PATH] [--json]   per-flow one-way latency");
+    puts("                  (same-card: exact; cross-card: J5 GPIO-corrected)");
     puts("  pktwyrm flow start|stop <id> [--socket PATH]");
     puts("  pktwyrm flow stats [--flow N] [--socket PATH] [--watch MS] [--json]");
     puts("  pktwyrm test arm|start|stop [--socket PATH]");
@@ -450,6 +517,7 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "map"))    return cmd_map(argc - 2, argv + 2);
     if (!strcmp(sub, "load"))   return cmd_load(argc - 2, argv + 2);
     if (!strcmp(sub, "rpc"))    return cmd_rpc(argc - 2, argv + 2);
+    if (!strcmp(sub, "latency")) return cmd_latency(argc - 2, argv + 2);
     if (!strcmp(sub, "stats")) {
         /* `pktwyrm stats clear` -> re-baseline all counters (RX checkers,
          * per-port frames/bytes, drops, histogram) via the daemon, independent
