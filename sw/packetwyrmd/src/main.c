@@ -243,9 +243,43 @@ static void setup_gpio_sync(const struct pw_config *cfg,
     if (master_ci < 0) return;
     for (size_t ci = 0; ci < cfg->n_cards; ci++) {
         if (!cards[ci].open) continue;
-        if (!any_cross)              pw_gpio_sync_disable(&cards[ci].backend);
-        else if ((int)ci == master_ci) pw_gpio_sync_master(&cards[ci].backend, 1, 15);
+        if (!any_cross) {
+            pw_gpio_sync_disable(&cards[ci].backend);
+            /* No cross-card flow -> reset the HW latency correction to 0 so any
+             * leftover offset from a previous config can't bias same-card or
+             * fresh measurements. The servo only writes nonzero for cross-card. */
+            pw_gpio_sync_write_correction(&cards[ci].backend, 0);
+        } else if ((int)ci == master_ci) pw_gpio_sync_master(&cards[ci].backend, 1, 15);
         else                          pw_gpio_sync_slave(&cards[ci].backend, 0);
+    }
+}
+
+/* Cross-card latency servo. For every open card, write its desired HW latency
+ * correction to the lat_correction CSR: 0 if the card is not the RX side of any
+ * cross-card flow, else the current inter-card counter offset (tx_cnt - rx_cnt)
+ * so the RX checker accumulates the TRUE one-way latency per sample (the ~ppm
+ * skew is re-tracked each tick, so min/max/avg/histogram stay un-smeared). Run
+ * ~10x/s from the main loop. STAGE 1 is global-per-RX-card: a card that receives
+ * BOTH a cross-card and a same-card flow would apply the correction to both --
+ * the validated rigs don't do that; per-flow correction is a later stage. */
+static void servo_lat_correction(const struct pw_config *cfg,
+                                 const struct pw_program *prog,
+                                 struct card_runtime cards[]) {
+    for (size_t rx_ci = 0; rx_ci < cfg->n_cards; rx_ci++) {
+        if (!cards[rx_ci].open) continue;
+        int64_t corr = 0;
+        for (size_t i = 0; i < prog->n_flow_meta; i++) {
+            const struct pw_flow_meta *m = &prog->flow_meta[i];
+            if (m->tx_card_id == m->rx_card_id) continue;        /* same-card: 0 */
+            if (cfg->cards[rx_ci].id != m->rx_card_id) continue; /* not this RX card */
+            size_t tx_ci = (size_t)-1;
+            for (size_t ci = 0; ci < cfg->n_cards; ci++)
+                if (cfg->cards[ci].id == m->tx_card_id) { tx_ci = ci; break; }
+            if (tx_ci == (size_t)-1 || !cards[tx_ci].open) continue;
+            corr = pw_gpio_sync_offset(&cards[tx_ci].backend, &cards[rx_ci].backend);
+            break;   /* one cross-card source per RX card (stage-1 assumption) */
+        }
+        pw_gpio_sync_write_correction(&cards[rx_ci].backend, corr);
     }
 }
 
@@ -563,13 +597,10 @@ static struct json_object *build_flow_hist(const struct pw_config *cfg,
         json_object_object_add(r, "error", json_object_new_string("unknown flow"));
         return r;
     }
-    if (!m->latency_valid) {
-        json_object_object_add(r, "id", json_object_new_int(flow_id));
-        json_object_object_add(r, "latency_valid", json_object_new_boolean(false));
-        json_object_object_add(r, "reason",
-            json_object_new_string("cross-card flow; latency not supported"));
-        return r;
-    }
+    /* Cross-card histogram is now supported: the HW bins the per-sample
+     * latency AFTER the lat_correction offset (the servo keeps it current), so
+     * the buckets hold the true one-way latency, same as same-card. (Previously
+     * punted: the HW binned the raw, uncorrected latency.) */
     size_t rx_ci = (size_t)-1;
     for (size_t ci = 0; ci < cfg->n_cards; ci++)
         if (cfg->cards[ci].id == m->rx_card_id) { rx_ci = ci; break; }
@@ -671,31 +702,21 @@ static struct json_object *build_flow_stats(const struct pw_config *cfg,
         json_object_object_add(f, "seq_gap",   json_object_new_int64((int64_t)rs.sequence_gap_count));
         json_object_object_add(f, "expected_seq", json_object_new_int64((int64_t)rs.expected_sequence));
 
-        /* Cross-card latency is now supported via the J5 GPIO offset: the raw
-         * checker latency (rx_wire_ts_rx - tx_ts_tx) is in two different card
-         * counters = true_latency - offset(tx-rx); add the offset back. Offset
-         * cancels in jitter (a diff of consecutive latencies), so jitter is
-         * valid uncorrected. Same-card flows use offset 0 (unchanged output). */
+        /* Cross-card latency is corrected PER SAMPLE in hardware: the daemon
+         * servo writes the inter-card offset to each RX card's lat_correction
+         * CSR, and the checker computes lat = (rx_wire_ts + offset) - tx_ts. So
+         * min/max/sum/histogram already hold the true one-way latency here -- no
+         * read-time correction, and avg (from the now-small 64-bit sum) is valid
+         * for cross-card too. Same-card flows run with correction 0 (unchanged).
+         * offset_ticks is reported for visibility (the live servo offset). */
         bool xcard = (m->tx_card_id != m->rx_card_id);
         bool lat_ok = m->latency_valid || (xcard && read_ok);
         json_object_object_add(f, "latency_valid", json_object_new_boolean(lat_ok));
         if (lat_ok) {
-            uint32_t off = 0;
-            if (xcard && tx_ci != (size_t)-1 && rx_ci != (size_t)-1)
-                off = (uint32_t)pw_gpio_sync_offset(&cards[tx_ci].backend, &cards[rx_ci].backend);
-            uint32_t mn = (uint32_t)(rs.min_latency + off);
-            uint32_t mx = (uint32_t)(rs.max_latency + off);
-            json_object_object_add(f, "min_latency", json_object_new_int64((int64_t)mn));
-            json_object_object_add(f, "max_latency", json_object_new_int64((int64_t)mx));
-            /* avg comes from the 64-bit sum_latency. For a cross-card flow the
-             * raw per-sample latency is ~2^64 - offset (wraps negative), so the
-             * sum overflows u64 and is NOT correctable -- report min/max (low-32,
-             * exact) only. (min is the standard one-way figure anyway.) Same-card
-             * sum is a true small value, so avg is valid there. */
-            if (!xcard) {
-                int64_t avg = rs.sample_count ? (int64_t)(rs.sum_latency / rs.sample_count) : 0;
-                json_object_object_add(f, "avg_latency", json_object_new_int64(avg));
-            }
+            json_object_object_add(f, "min_latency", json_object_new_int64((int64_t)(uint32_t)rs.min_latency));
+            json_object_object_add(f, "max_latency", json_object_new_int64((int64_t)(uint32_t)rs.max_latency));
+            int64_t avg = rs.sample_count ? (int64_t)(rs.sum_latency / rs.sample_count) : 0;
+            json_object_object_add(f, "avg_latency", json_object_new_int64(avg));
             json_object_object_add(f, "sample_count",
                                    json_object_new_int64((int64_t)rs.sample_count));
             json_object_object_add(f, "jitter_min", json_object_new_int64((int64_t)rs.jitter_min));
@@ -706,8 +727,10 @@ static struct json_object *build_flow_stats(const struct pw_config *cfg,
             json_object_object_add(f, "jitter_avg", json_object_new_int64(jit_avg));
             json_object_object_add(f, "latency_method",
                 json_object_new_string(xcard ? "gpio-corrected" : "same-card"));
-            if (xcard)
-                json_object_object_add(f, "offset_ticks", json_object_new_int64((int64_t)(int32_t)off));
+            if (xcard && tx_ci != (size_t)-1 && rx_ci != (size_t)-1) {
+                int64_t off = pw_gpio_sync_offset(&cards[tx_ci].backend, &cards[rx_ci].backend);
+                json_object_object_add(f, "offset_ticks", json_object_new_int64(off));
+            }
         }
         json_object_array_add(arr, f);
     }
@@ -1147,6 +1170,7 @@ int main(int argc, char **argv) {
     }
 
     uint64_t last_stats = now_ms();
+    uint64_t last_servo = now_ms();
     while (!g_stop) {
         struct pollfd pfds[2];
         size_t np = 0;
@@ -1180,6 +1204,14 @@ int main(int argc, char **argv) {
             (int)(now_ms() - last_stats) >= stats_interval) {
             print_stats(cfg, cards, hps);
             last_stats = now_ms();
+        }
+
+        /* Cross-card latency servo (~10x/s): track the inter-card offset into
+         * the HW lat_correction CSR. cfg/prog are owned by this thread (the
+         * config.load swap in handle_client runs here too), so no locking. */
+        if ((int)(now_ms() - last_servo) >= 100) {
+            servo_lat_correction(cfg, prog, cards);
+            last_servo = now_ms();
         }
     }
 

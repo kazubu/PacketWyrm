@@ -36,3 +36,9 @@ int64_t pw_gpio_sync_offset(const struct pw_card_backend *tx,
                             const struct pw_card_backend *rx) {
     return (int64_t)(pw_gpio_sync_ts(tx) - pw_gpio_sync_ts(rx));
 }
+
+void pw_gpio_sync_write_correction(const struct pw_card_backend *be, int64_t corr) {
+    uint64_t u = (uint64_t)corr;
+    wr(be, PWFPGA_REG_LAT_CORRECTION_LO, (uint32_t)u);          /* low word  */
+    wr(be, PWFPGA_REG_LAT_CORRECTION_HI, (uint32_t)(u >> 32));  /* high word */
+}

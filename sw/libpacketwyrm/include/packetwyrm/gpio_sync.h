@@ -28,4 +28,12 @@ uint64_t pw_gpio_sync_ts(const struct pw_card_backend *be);
 int64_t pw_gpio_sync_offset(const struct pw_card_backend *tx,
                             const struct pw_card_backend *rx);
 
+/* Write the signed 64-bit cross-card latency correction to a card's
+ * lat_correction CSR (lo then hi words). The RX checker computes
+ * lat = (rx_wire_ts + correction) - tx_ts, so writing the inter-card offset
+ * (= pw_gpio_sync_offset(tx, rx)) makes it accumulate the TRUE one-way latency
+ * per sample. The daemon servo re-writes this ~10x/s; 0 = same-card (no
+ * correction). Best-effort (needs a real BAR backend with write32). */
+void pw_gpio_sync_write_correction(const struct pw_card_backend *be, int64_t corr);
+
 #endif /* PACKETWYRM_GPIO_SYNC_H */
