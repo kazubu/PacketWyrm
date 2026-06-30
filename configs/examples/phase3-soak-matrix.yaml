@@ -1,0 +1,448 @@
+# Phase 3 HW SOAK: MAX SCALE (32 flows), ENCAP MATRIX x {UDP, TCP}.
+# 32 flows cycle through L4 {UDP, TCP} x encap {none, IPIP, GRE, EtherIP} x
+# {v4,v6}, so the parser's full auto-decap + inner-L3/L4 (UDP and TCP) +
+# test-header classification is exercised across the matrix -- including the
+# deepest classify (EtherIP v6-in-v6 TCP = 166 B, the HDR_BYTES=176 worst case).
+# TCP here is the stateless segment generator (fixed 20-B header, SYN). 32 x
+# 200 Mbps = 6.4 G aggregate (under 10 G): lost_est must stay 0, so any
+# loss/ooo/dup/fcs over the run is a real problem, not oversubscription.
+system: { name: "pw-soak-matrix", mode: "multi-card", default_speed: "10g",
+          control_socket: "/tmp/pw-soak.sock" }
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+logical_interfaces:
+  - id: 1000
+    global_port: 0
+    vlan: 100
+    mac: "02:a5:02:00:00:64"
+    mtu: 9000
+    punt: { arp: false, ipv6_nd: false, lldp: false, icmp: false, bgp: false, ospf: false }
+flows:
+  - id: 1
+    name: "udp-plain-v4-1"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:01:01", dst_mac: "02:a5:02:00:01:02", vlan: 100 }
+    ipv4: { src: "192.0.2.2", dst: "198.51.100.2" }
+    udp:  { src_port: 49152, dst_port: 50001 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 2
+    name: "udp-plain-v6-2"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:02:01", dst_mac: "02:a5:02:00:02:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::2", dst: "2001:db8:2::2" }
+    udp:  { src_port: 49152, dst_port: 50002 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 3
+    name: "udp-ipip-v4v4-3"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:03:01", dst_mac: "02:a5:02:00:03:02", vlan: 100 }
+    ipv4: { src: "192.0.2.4", dst: "198.51.100.4" }
+    udp:  { src_port: 49152, dst_port: 50003 }
+    encap:
+      type: ipip
+      outer: { ipv4: { src: "10.0.0.3", dst: "10.1.0.3" } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 4
+    name: "udp-ipip-v6v6-4"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:04:01", dst_mac: "02:a5:02:00:04:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::4", dst: "2001:db8:2::4" }
+    udp:  { src_port: 49152, dst_port: 50004 }
+    encap:
+      type: ipip
+      outer: { ipv6: { src: "fd00:a::4", dst: "fd00:b::4" } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 5
+    name: "udp-gre-v6v6-5"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:05:01", dst_mac: "02:a5:02:00:05:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::5", dst: "2001:db8:2::5" }
+    udp:  { src_port: 49152, dst_port: 50005 }
+    encap:
+      type: gre
+      outer: { ipv6: { src: "fd00:a::5", dst: "fd00:b::5" } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 6
+    name: "udp-gre-v4v6-6"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:06:01", dst_mac: "02:a5:02:00:06:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::6", dst: "2001:db8:2::6" }
+    udp:  { src_port: 49152, dst_port: 50006 }
+    encap:
+      type: gre
+      outer: { ipv4: { src: "10.0.0.6", dst: "10.1.0.6" } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 7
+    name: "udp-etherip-v4v4-7"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:07:01", dst_mac: "02:a5:02:00:07:02", vlan: 100 }
+    ipv4: { src: "192.0.2.8", dst: "198.51.100.8" }
+    udp:  { src_port: 49152, dst_port: 50007 }
+    encap:
+      type: etherip
+      outer: { ipv4: { src: "10.0.0.7", dst: "10.1.0.7" } }
+      inner_l2: { src_mac: "02:bb:00:00:00:07", dst_mac: "02:bb:00:01:00:07" }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 8
+    name: "udp-etherip-v6v6-8"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:08:01", dst_mac: "02:a5:02:00:08:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::8", dst: "2001:db8:2::8" }
+    udp:  { src_port: 49152, dst_port: 50008 }
+    encap:
+      type: etherip
+      outer: { ipv6: { src: "fd00:a::8", dst: "fd00:b::8" } }
+      inner_l2: { src_mac: "02:bb:00:00:00:08", dst_mac: "02:bb:00:01:00:08" }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 9
+    name: "tcp-plain-v4-9"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:09:01", dst_mac: "02:a5:02:00:09:02", vlan: 100 }
+    ipv4: { src: "192.0.2.10", dst: "198.51.100.10" }
+    tcp:  { src_port: 40000, dst_port: 50009, flags: 0x02 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 10
+    name: "tcp-plain-v6-10"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:0a:01", dst_mac: "02:a5:02:00:0a:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::a", dst: "2001:db8:2::a" }
+    tcp:  { src_port: 40000, dst_port: 50010, flags: 0x02 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 11
+    name: "tcp-ipip-v4v4-11"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:0b:01", dst_mac: "02:a5:02:00:0b:02", vlan: 100 }
+    ipv4: { src: "192.0.2.12", dst: "198.51.100.12" }
+    tcp:  { src_port: 40000, dst_port: 50011, flags: 0x02 }
+    encap:
+      type: ipip
+      outer: { ipv4: { src: "10.0.0.11", dst: "10.1.0.11" } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 12
+    name: "tcp-ipip-v6v6-12"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:0c:01", dst_mac: "02:a5:02:00:0c:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::c", dst: "2001:db8:2::c" }
+    tcp:  { src_port: 40000, dst_port: 50012, flags: 0x02 }
+    encap:
+      type: ipip
+      outer: { ipv6: { src: "fd00:a::c", dst: "fd00:b::c" } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 13
+    name: "tcp-gre-v6v6-13"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:0d:01", dst_mac: "02:a5:02:00:0d:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::d", dst: "2001:db8:2::d" }
+    tcp:  { src_port: 40000, dst_port: 50013, flags: 0x02 }
+    encap:
+      type: gre
+      outer: { ipv6: { src: "fd00:a::d", dst: "fd00:b::d" } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 14
+    name: "tcp-gre-v6v4-14"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:0e:01", dst_mac: "02:a5:02:00:0e:02", vlan: 100 }
+    ipv4: { src: "192.0.2.15", dst: "198.51.100.15" }
+    tcp:  { src_port: 40000, dst_port: 50014, flags: 0x02 }
+    encap:
+      type: gre
+      outer: { ipv6: { src: "fd00:a::e", dst: "fd00:b::e" } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 15
+    name: "tcp-etherip-v4v4-15"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:0f:01", dst_mac: "02:a5:02:00:0f:02", vlan: 100 }
+    ipv4: { src: "192.0.2.16", dst: "198.51.100.16" }
+    tcp:  { src_port: 40000, dst_port: 50015, flags: 0x02 }
+    encap:
+      type: etherip
+      outer: { ipv4: { src: "10.0.0.15", dst: "10.1.0.15" } }
+      inner_l2: { src_mac: "02:bb:00:00:00:0f", dst_mac: "02:bb:00:01:00:0f" }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 16
+    name: "tcp-etherip-v6v6-16"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:10:01", dst_mac: "02:a5:02:00:10:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::10", dst: "2001:db8:2::10" }
+    tcp:  { src_port: 40000, dst_port: 50016, flags: 0x02 }
+    encap:
+      type: etherip
+      outer: { ipv6: { src: "fd00:a::10", dst: "fd00:b::10" } }
+      inner_l2: { src_mac: "02:bb:00:00:00:10", dst_mac: "02:bb:00:01:00:10" }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 17
+    name: "udp-plain-v4-17"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:11:01", dst_mac: "02:a5:02:00:11:02", vlan: 100 }
+    ipv4: { src: "192.0.2.18", dst: "198.51.100.18" }
+    udp:  { src_port: 49152, dst_port: 50017 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 18
+    name: "udp-plain-v6-18"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:12:01", dst_mac: "02:a5:02:00:12:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::12", dst: "2001:db8:2::12" }
+    udp:  { src_port: 49152, dst_port: 50018 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 19
+    name: "udp-ipip-v4v4-19"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:13:01", dst_mac: "02:a5:02:00:13:02", vlan: 100 }
+    ipv4: { src: "192.0.2.20", dst: "198.51.100.20" }
+    udp:  { src_port: 49152, dst_port: 50019 }
+    encap:
+      type: ipip
+      outer: { ipv4: { src: "10.0.0.19", dst: "10.1.0.19" } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 20
+    name: "udp-ipip-v6v6-20"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:14:01", dst_mac: "02:a5:02:00:14:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::14", dst: "2001:db8:2::14" }
+    udp:  { src_port: 49152, dst_port: 50020 }
+    encap:
+      type: ipip
+      outer: { ipv6: { src: "fd00:a::14", dst: "fd00:b::14" } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 21
+    name: "udp-gre-v6v6-21"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:15:01", dst_mac: "02:a5:02:00:15:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::15", dst: "2001:db8:2::15" }
+    udp:  { src_port: 49152, dst_port: 50021 }
+    encap:
+      type: gre
+      outer: { ipv6: { src: "fd00:a::15", dst: "fd00:b::15" } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 22
+    name: "udp-gre-v4v6-22"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:16:01", dst_mac: "02:a5:02:00:16:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::16", dst: "2001:db8:2::16" }
+    udp:  { src_port: 49152, dst_port: 50022 }
+    encap:
+      type: gre
+      outer: { ipv4: { src: "10.0.0.22", dst: "10.1.0.22" } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 23
+    name: "udp-etherip-v4v4-23"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:17:01", dst_mac: "02:a5:02:00:17:02", vlan: 100 }
+    ipv4: { src: "192.0.2.24", dst: "198.51.100.24" }
+    udp:  { src_port: 49152, dst_port: 50023 }
+    encap:
+      type: etherip
+      outer: { ipv4: { src: "10.0.0.23", dst: "10.1.0.23" } }
+      inner_l2: { src_mac: "02:bb:00:00:00:17", dst_mac: "02:bb:00:01:00:17" }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 24
+    name: "udp-etherip-v6v6-24"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:18:01", dst_mac: "02:a5:02:00:18:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::18", dst: "2001:db8:2::18" }
+    udp:  { src_port: 49152, dst_port: 50024 }
+    encap:
+      type: etherip
+      outer: { ipv6: { src: "fd00:a::18", dst: "fd00:b::18" } }
+      inner_l2: { src_mac: "02:bb:00:00:00:18", dst_mac: "02:bb:00:01:00:18" }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 25
+    name: "tcp-plain-v4-25"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:19:01", dst_mac: "02:a5:02:00:19:02", vlan: 100 }
+    ipv4: { src: "192.0.2.26", dst: "198.51.100.26" }
+    tcp:  { src_port: 40000, dst_port: 50025, flags: 0x02 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 26
+    name: "tcp-plain-v6-26"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:1a:01", dst_mac: "02:a5:02:00:1a:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::1a", dst: "2001:db8:2::1a" }
+    tcp:  { src_port: 40000, dst_port: 50026, flags: 0x02 }
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 27
+    name: "tcp-ipip-v4v4-27"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:1b:01", dst_mac: "02:a5:02:00:1b:02", vlan: 100 }
+    ipv4: { src: "192.0.2.28", dst: "198.51.100.28" }
+    tcp:  { src_port: 40000, dst_port: 50027, flags: 0x02 }
+    encap:
+      type: ipip
+      outer: { ipv4: { src: "10.0.0.27", dst: "10.1.0.27" } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 28
+    name: "tcp-ipip-v6v6-28"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:1c:01", dst_mac: "02:a5:02:00:1c:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::1c", dst: "2001:db8:2::1c" }
+    tcp:  { src_port: 40000, dst_port: 50028, flags: 0x02 }
+    encap:
+      type: ipip
+      outer: { ipv6: { src: "fd00:a::1c", dst: "fd00:b::1c" } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 29
+    name: "tcp-gre-v6v6-29"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:1d:01", dst_mac: "02:a5:02:00:1d:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::1d", dst: "2001:db8:2::1d" }
+    tcp:  { src_port: 40000, dst_port: 50029, flags: 0x02 }
+    encap:
+      type: gre
+      outer: { ipv6: { src: "fd00:a::1d", dst: "fd00:b::1d" } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 30
+    name: "tcp-gre-v6v4-30"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:1e:01", dst_mac: "02:a5:02:00:1e:02", vlan: 100 }
+    ipv4: { src: "192.0.2.31", dst: "198.51.100.31" }
+    tcp:  { src_port: 40000, dst_port: 50030, flags: 0x02 }
+    encap:
+      type: gre
+      outer: { ipv6: { src: "fd00:a::1e", dst: "fd00:b::1e" } }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 31
+    name: "tcp-etherip-v4v4-31"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:1f:01", dst_mac: "02:a5:02:00:1f:02", vlan: 100 }
+    ipv4: { src: "192.0.2.32", dst: "198.51.100.32" }
+    tcp:  { src_port: 40000, dst_port: 50031, flags: 0x02 }
+    encap:
+      type: etherip
+      outer: { ipv4: { src: "10.0.0.31", dst: "10.1.0.31" } }
+      inner_l2: { src_mac: "02:bb:00:00:00:1f", dst_mac: "02:bb:00:01:00:1f" }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
+
+  - id: 32
+    name: "tcp-etherip-v6v6-32"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2: { src_mac: "02:a5:02:00:20:01", dst_mac: "02:a5:02:00:20:02", vlan: 100 }
+    ipv6: { src: "2001:db8:1::20", dst: "2001:db8:2::20" }
+    tcp:  { src_port: 40000, dst_port: 50032, flags: 0x02 }
+    encap:
+      type: etherip
+      outer: { ipv6: { src: "fd00:a::20", dst: "fd00:b::20" } }
+      inner_l2: { src_mac: "02:bb:00:00:00:20", dst_mac: "02:bb:00:01:00:20" }
+    rx_expect: tunneled
+    traffic: { frame_len: 256, rate_bps: 200000000 }
+    measurements: { loss: true, latency: true, jitter: true }
