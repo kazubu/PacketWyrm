@@ -52,7 +52,21 @@ module tb_csr_full;
 
     logic [63:0] ts;
     logic [31:0] gpio_sync_ctrl_w;
-    logic [63:0] lat_correction_w;
+    logic                              lat_corr_wr_en_w;
+    logic [$clog2(NUM_FLOWS)-1:0]      lat_corr_wr_slot_w;
+    logic [63:0]                       lat_corr_wr_data_w;
+    // Capture per-flow lat-correction commit pulses (one cycle each) so the test
+    // can verify atomicity (no pulse on a LO-only write) + the committed value.
+    int                                lc_pulse_cnt = 0;
+    logic [$clog2(NUM_FLOWS)-1:0]      lc_slot;
+    logic [63:0]                       lc_data;
+    always_ff @(posedge clk) begin
+        if (lat_corr_wr_en_w) begin
+            lc_pulse_cnt <= lc_pulse_cnt + 1;
+            lc_slot      <= lat_corr_wr_slot_w;
+            lc_data      <= lat_corr_wr_data_w;
+        end
+    end
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) ts <= '0;
         else        ts <= ts + 64'd1;
@@ -166,7 +180,9 @@ module tb_csr_full;
         .gpio_sync_ts_i      (64'hCAFE_1234_5678_9ABC),
         .gpio_sync_seq_i     (32'd42),
         .gpio_sync_gpio_in_i (6'b101010),
-        .lat_correction_o    (lat_correction_w),
+        .lat_corr_wr_en_o    (lat_corr_wr_en_w),
+        .lat_corr_wr_slot_o  (lat_corr_wr_slot_w),
+        .lat_corr_wr_data_o  (lat_corr_wr_data_w),
         .port_drops_i        (port_drops),
         .rx_frames_i         (ps_zero),
         .rx_bytes_i          (ps_zero),
@@ -500,23 +516,32 @@ module tb_csr_full;
             axi_read (16'h0140, v);
             check_eq("gpio_sync status (pad in)", v, 32'h0000_002A);  // 6'b101010
 
-            // Cross-card latency correction: RW lo/hi words -> 64-bit module out.
-            axi_write(16'h0144, 32'h1234_5678);       // LO
-            axi_write(16'h0148, 32'hFFFF_FF9C);       // HI (-100 in the high word)
-            axi_read (16'h0144, vlo);
-            axi_read (16'h0148, vhi);
-            check_eq("lat_correction lo readback", vlo, 32'h1234_5678);
-            check_eq("lat_correction hi readback", vhi, 32'hFFFF_FF9C);
-            check_eq("lat_correction -> module lo", lat_correction_w[31:0],  32'h1234_5678);
-            check_eq("lat_correction -> module hi", lat_correction_w[63:32], 32'hFFFF_FF9C);
-            /* Atomicity: a LO write alone only STAGES -- the live 64-bit output
-             * must not move until the committing HI write (no torn transient). */
-            axi_write(16'h0144, 32'hAAAA_BBBB);       // stage a new LO
-            check_eq("lat_correction LO-only stays staged (lo)", lat_correction_w[31:0],  32'h1234_5678);
-            check_eq("lat_correction LO-only stays staged (hi)", lat_correction_w[63:32], 32'hFFFF_FF9C);
-            axi_write(16'h0148, 32'h0000_0000);       // HI commits {0, staged-lo}
-            check_eq("lat_correction commit lo", lat_correction_w[31:0],  32'hAAAA_BBBB);
-            check_eq("lat_correction commit hi", lat_correction_w[63:32], 32'h0000_0000);
+            // Per-flow lat correction window (0x0180 + slot*8). LO stages, HI
+            // commits {hi,shadow} as a one-cycle write pulse {slot,data} to the
+            // data-plane table (captured by lc_pulse_cnt/lc_slot/lc_data below).
+            // slot 3: LO=0x1234_5678, HI=0xFFFF_FF9C (a negative correction).
+            begin
+                int c0;
+                c0 = lc_pulse_cnt;
+                axi_write(16'h0180 + 16'(3*8) + 0, 32'h1234_5678);   // slot 3 LO -> stage
+                repeat (3) @(posedge clk);
+                check_eq("lat_corr LO-only: no commit pulse", lc_pulse_cnt, c0);  // atomic
+                axi_write(16'h0180 + 16'(3*8) + 4, 32'hFFFF_FF9C);   // slot 3 HI -> commit
+                repeat (3) @(posedge clk);
+                check_eq("lat_corr commit pulsed",  lc_pulse_cnt, c0 + 1);
+                check_eq("lat_corr commit slot",    lc_slot, 3);
+                check_eq("lat_corr commit data lo", lc_data[31:0],  32'h1234_5678);
+                check_eq("lat_corr commit data hi", lc_data[63:32], 32'hFFFF_FF9C);
+                // a different slot commits independently with its own staged lo
+                c0 = lc_pulse_cnt;
+                axi_write(16'h0180 + 16'(5*8) + 0, 32'hAAAA_BBBB);   // slot 5 LO
+                axi_write(16'h0180 + 16'(5*8) + 4, 32'h0000_0000);   // slot 5 HI
+                repeat (3) @(posedge clk);
+                check_eq("lat_corr slot5 pulsed",   lc_pulse_cnt, c0 + 1);
+                check_eq("lat_corr slot5 slot",     lc_slot, 5);
+                check_eq("lat_corr slot5 data lo",  lc_data[31:0],  32'hAAAA_BBBB);
+                check_eq("lat_corr slot5 data hi",  lc_data[63:32], 32'h0000_0000);
+            end
         end
 
         if (errors == 0) begin

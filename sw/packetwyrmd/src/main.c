@@ -247,52 +247,43 @@ static void setup_gpio_sync(const struct pw_config *cfg,
     if (master_ci < 0) return;
     for (size_t ci = 0; ci < cfg->n_cards; ci++) {
         if (!cards[ci].open) continue;
-        if (!any_cross) {
-            pw_gpio_sync_disable(&cards[ci].backend);
-            /* No cross-card flow -> reset the HW latency correction to 0 so any
-             * leftover offset from a previous config can't bias same-card or
-             * fresh measurements. The servo only writes nonzero for cross-card. */
-            pw_gpio_sync_write_correction(&cards[ci].backend, 0);
-        } else if ((int)ci == master_ci) pw_gpio_sync_master(&cards[ci].backend, 1, 15);
+        if (!any_cross)                pw_gpio_sync_disable(&cards[ci].backend);
+        else if ((int)ci == master_ci) pw_gpio_sync_master(&cards[ci].backend, 1, 15);
         else                          pw_gpio_sync_slave(&cards[ci].backend, 0);
     }
+    /* Per-flow corrections (including zeroing same-card slots) are written by
+     * prime_lat_correction / the servo, not here. */
 }
 
-/* Cross-card latency servo. For every open card, write its desired HW latency
- * correction to the lat_correction CSR: 0 if the card is not the RX side of any
- * cross-card flow, else the current inter-card counter offset (tx_cnt - rx_cnt)
- * so the RX checker accumulates the TRUE one-way latency per sample (the ~ppm
- * skew is re-tracked each tick, so min/max/avg/histogram stay un-smeared). Run
- * ~10x/s from the main loop. STAGE 1 is global-per-RX-card: a card that receives
- * BOTH a cross-card and a same-card flow would apply the correction to both --
- * the validated rigs don't do that; per-flow correction is a later stage. */
+/* Map a config card id -> cards[] index, or -1. */
+static int card_idx_by_id(const struct pw_config *cfg, uint16_t card_id) {
+    for (size_t ci = 0; ci < cfg->n_cards; ci++)
+        if (cfg->cards[ci].id == card_id) return (int)ci;
+    return -1;
+}
+
+/* Cross-card latency servo (PER FLOW). For each cross-card flow, write the
+ * current inter-card offset (tx_cnt - rx_cnt) to that flow's slot
+ * (rx_local_flow_id) in the RX card's correction table, so the checker
+ * accumulates the TRUE one-way latency per sample (the ~ppm skew is re-tracked
+ * each -S period, keeping min/max/avg/histogram un-smeared). Same-card slots are
+ * 0 and set once in prime (not touched here). Per-flow means one RX card can mix
+ * same-card and cross-card flows, and take cross-card from multiple TX cards --
+ * each slot gets its own offset. Run every -S ms from the main loop. */
 static void servo_lat_correction(const struct pw_config *cfg,
                                  const struct pw_program *prog,
                                  struct card_runtime cards[]) {
-    for (size_t rx_ci = 0; rx_ci < cfg->n_cards; rx_ci++) {
-        if (!cards[rx_ci].open) continue;
-        /* Find this card's single cross-card TX source (stage-1: at most one,
-         * enforced by the validator). */
-        size_t tx_ci = (size_t)-1;
-        for (size_t i = 0; i < prog->n_flow_meta; i++) {
-            const struct pw_flow_meta *m = &prog->flow_meta[i];
-            if (m->tx_card_id == m->rx_card_id) continue;        /* same-card: no corr */
-            if (cfg->cards[rx_ci].id != m->rx_card_id) continue; /* not this RX card */
-            for (size_t ci = 0; ci < cfg->n_cards; ci++)
-                if (cfg->cards[ci].id == m->tx_card_id) { tx_ci = ci; break; }
-            break;   /* one cross-card source per RX card (stage-1 assumption) */
-        }
-        if (tx_ci == (size_t)-1) {                  /* not a cross-card RX card */
-            pw_gpio_sync_write_correction(&cards[rx_ci].backend, 0);
-            continue;
-        }
-        if (!cards[tx_ci].open) continue;
-        int64_t corr = 0;
-        /* Only write an EDGE-COHERENT offset; on an incoherent read (an edge fell
-         * mid-sample -> a ~1-period-wrong value) skip this tick and keep the
-         * current correction, rather than briefly corrupt the latency. */
+    for (size_t i = 0; i < prog->n_flow_meta; i++) {
+        const struct pw_flow_meta *m = &prog->flow_meta[i];
+        if (m->tx_card_id == m->rx_card_id) continue;   /* same-card slot: stays 0 */
+        int rx_ci = card_idx_by_id(cfg, m->rx_card_id);
+        int tx_ci = card_idx_by_id(cfg, m->tx_card_id);
+        if (rx_ci < 0 || tx_ci < 0 || !cards[rx_ci].open || !cards[tx_ci].open) continue;
+        int64_t corr;
+        /* Only write an EDGE-COHERENT offset; on an incoherent read skip this
+         * tick (keep the current correction) rather than briefly corrupt it. */
         if (pw_gpio_sync_offset_coherent(&cards[tx_ci].backend, &cards[rx_ci].backend, &corr))
-            pw_gpio_sync_write_correction(&cards[rx_ci].backend, corr);
+            pw_gpio_sync_write_correction(&cards[rx_ci].backend, m->rx_local_flow_id, corr);
     }
 }
 
@@ -309,50 +300,55 @@ static void servo_lat_correction(const struct pw_config *cfg,
 static void prime_lat_correction(const struct pw_config *cfg,
                                  const struct pw_program *prog,
                                  struct card_runtime cards[]) {
-    bool any_cross = false;
-    for (size_t i = 0; i < prog->n_flow_meta; i++)
-        if (prog->flow_meta[i].tx_card_id != prog->flow_meta[i].rx_card_id) { any_cross = true; break; }
-    if (!any_cross) return;
+    /* Per RX card: did it have a cross-card flow, and did every such flow get a
+     * confirmed coherent correction? Only stats.clear a card once all its
+     * cross-card slots are primed (so it doesn't start "clean" on a stale/0
+     * correction); same-card-only cards need no clear (their slots are 0). */
+    bool has_cross[MAX_CARDS] = {false};
+    bool cross_ok[MAX_CARDS];
+    for (size_t i = 0; i < MAX_CARDS; i++) cross_ok[i] = true;
 
-    /* Zero the correction on every non-cross-card-RX card up front (a sync slave
-     * that only carries same-card flows must not keep a stale correction). */
-    servo_lat_correction(cfg, prog, cards);
+    for (size_t i = 0; i < prog->n_flow_meta; i++) {
+        const struct pw_flow_meta *m = &prog->flow_meta[i];
+        int rx_ci = card_idx_by_id(cfg, m->rx_card_id);
+        if (rx_ci < 0 || !cards[rx_ci].open) continue;
+        unsigned slot = m->rx_local_flow_id;
 
-    for (size_t rx_ci = 0; rx_ci < cfg->n_cards; rx_ci++) {
-        if (!cards[rx_ci].open) continue;
-        /* this card's single cross-card TX source (stage-1: at most one) */
-        size_t tx_ci = (size_t)-1;
-        for (size_t i = 0; i < prog->n_flow_meta; i++) {
-            const struct pw_flow_meta *m = &prog->flow_meta[i];
-            if (m->tx_card_id == m->rx_card_id) continue;
-            if (cfg->cards[rx_ci].id != m->rx_card_id) continue;
-            for (size_t ci = 0; ci < cfg->n_cards; ci++)
-                if (cfg->cards[ci].id == m->tx_card_id) { tx_ci = ci; break; }
-            break;
+        if (m->tx_card_id == m->rx_card_id) {
+            pw_gpio_sync_write_correction(&cards[rx_ci].backend, slot, 0);  /* same-card */
+            continue;
         }
-        if (tx_ci == (size_t)-1 || !cards[tx_ci].open) continue;   /* not a cross-card RX */
+        int tx_ci = card_idx_by_id(cfg, m->tx_card_id);
+        if (tx_ci < 0 || !cards[tx_ci].open) continue;
+        has_cross[rx_ci] = true;
 
-        /* Retry for the J5 sync to come up (period ~210us; 200x1ms = 200ms of
-         * headroom) and a coherent offset to be readable; write it, then clear. */
+        /* Retry for the J5 sync to come up (period ~210us; 200x1ms = 200ms) and a
+         * coherent offset to be readable; write this flow's slot. */
         bool wrote = false;
         for (int tries = 0; tries < 200 && !wrote; tries++) {
             int64_t corr;
             if (pw_gpio_sync_offset_coherent(&cards[tx_ci].backend, &cards[rx_ci].backend, &corr)) {
-                pw_gpio_sync_write_correction(&cards[rx_ci].backend, corr);
+                pw_gpio_sync_write_correction(&cards[rx_ci].backend, slot, corr);
                 wrote = true;
                 break;
             }
             usleep(1000);
         }
-        if (wrote) {
-            if (cards[rx_ci].backend.ops->write32)
-                (void)cards[rx_ci].backend.ops->write32(
-                    cards[rx_ci].backend.ctx, PWFPGA_REG_STATS_CLEAR, 1u);
+        if (!wrote) cross_ok[rx_ci] = false;
+    }
+
+    /* Discard the polluted startup samples on each fully-primed cross-card RX. */
+    for (size_t ci = 0; ci < cfg->n_cards && ci < MAX_CARDS; ci++) {
+        if (!cards[ci].open || !has_cross[ci]) continue;
+        if (cross_ok[ci]) {
+            if (cards[ci].backend.ops->write32)
+                (void)cards[ci].backend.ops->write32(
+                    cards[ci].backend.ctx, PWFPGA_REG_STATS_CLEAR, 1u);
         } else {
-            fprintf(stderr, "warning: card%u cross-card latency correction not "
-                    "ready (no coherent J5 offset); stats left as-is, the servo "
-                    "will converge -- stats.clear once it's up for a clean run\n",
-                    (unsigned)cfg->cards[rx_ci].id);
+            fprintf(stderr, "warning: card%u: a cross-card flow's latency "
+                    "correction is not ready (no coherent J5 offset); stats left "
+                    "as-is, the servo will converge -- stats.clear once it's up\n",
+                    (unsigned)cfg->cards[ci].id);
         }
     }
 }

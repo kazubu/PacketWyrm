@@ -71,8 +71,10 @@ bool pw_gpio_sync_offset_coherent(const struct pw_card_backend *tx,
     return false;
 }
 
-void pw_gpio_sync_write_correction(const struct pw_card_backend *be, int64_t corr) {
+void pw_gpio_sync_write_correction(const struct pw_card_backend *be,
+                                   unsigned slot, int64_t corr) {
     uint64_t u = (uint64_t)corr;
-    wr(be, PWFPGA_REG_LAT_CORRECTION_LO, (uint32_t)u);          /* low word  */
-    wr(be, PWFPGA_REG_LAT_CORRECTION_HI, (uint32_t)(u >> 32));  /* high word */
+    uint32_t base = (uint32_t)PWFPGA_REG_LAT_CORRECTION_BASE + slot * 8u;
+    wr(be, base + 0u, (uint32_t)u);          /* LO stages the shadow      */
+    wr(be, base + 4u, (uint32_t)(u >> 32));  /* HI commits {HI,shadow}    */
 }

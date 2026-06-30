@@ -9,6 +9,17 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Per-flow cross-card latency correction (Stage 2).** The single global
+    `lat_correction` CSR (0x0144/0x0148) is replaced by a per-flow window
+    (`0x0180 + slot*8`, atomic LO-stage/HI-commit) feeding a data-plane
+    `lat_corr_table[NUM_FLOWS]`. The RX checker now corrects each flow's slot
+    independently (`lat = (rx_wire_ts + corr[slot]) - tx_ts`), so a single RX
+    card may mix same-card flows (corr 0) with cross-card flows from different TX
+    cards (each its own offset) — the Stage-1 global-per-card validator
+    constraint is removed. To hold dp_clk timing the per-flow table mux is
+    registered one extra cycle (+5) before the checker, off the latency-calc cone
+    (the SAF/drop/punt path stays at +4). Daemon servo + prime write per-slot
+    corrections (`pw_gpio_sync_write_correction(be, slot, corr)`).
   - **Cross-card latency HW correction (`lat_correction` CSR).** The RX checker
     now takes a signed 64-bit correction (CSR `0x0144/0x0148`, broadcast to every
     port's checker) and computes `lat = (rx_wire_ts + lat_correction) − tx_ts`, so

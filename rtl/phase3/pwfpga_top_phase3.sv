@@ -120,8 +120,10 @@ module pwfpga_top_phase3 #(
     logic [63:0] gpio_sync_ts_w;
     logic [31:0] gpio_sync_seq_w;
     logic [5:0]  gpio_sync_gpin_w;
-    // Cross-card latency correction (CSR -> data-plane RX checkers).
-    logic [63:0] lat_correction_w;
+    // Per-flow cross-card latency correction (CSR window -> data-plane table).
+    logic                          lat_corr_wr_en_w;
+    logic [$clog2(NUM_FLOWS)-1:0]  lat_corr_wr_slot_w;
+    logic [63:0]                   lat_corr_wr_data_w;
 
     logic [31:0] port_drops_w  [NUM_PORTS];
     logic [47:0] rx_frames_w   [NUM_PORTS];
@@ -205,7 +207,9 @@ module pwfpga_top_phase3 #(
         .gpio_sync_ts_i      (gpio_sync_ts_w),
         .gpio_sync_seq_i     (gpio_sync_seq_w),
         .gpio_sync_gpio_in_i (gpio_sync_gpin_w),
-        .lat_correction_o    (lat_correction_w),
+        .lat_corr_wr_en_o    (lat_corr_wr_en_w),
+        .lat_corr_wr_slot_o  (lat_corr_wr_slot_w),
+        .lat_corr_wr_data_o  (lat_corr_wr_data_w),
         .port_drops_i        (port_drops_w),
         .rx_fcs_err_i        (rx_fcs_err_w),
         .link_up_cnt_i       (link_up_cnt_w),
@@ -370,7 +374,9 @@ module pwfpga_top_phase3 #(
         .clk               (clk),
         .rst_n             (rst_n),
         .timestamp_i       (timestamp_i),
-        .lat_correction_i  (lat_correction_w),
+        .lat_corr_wr_en_i  (lat_corr_wr_en_w),
+        .lat_corr_wr_slot_i(lat_corr_wr_slot_w),
+        .lat_corr_wr_data_i(lat_corr_wr_data_w),
         .stats_clear_i     (stats_clear_w),
         .dp_soft_rst_i     (dp_soft_rst_w),
         .s_axis_rx_tdata   (s_axis_rx_tdata),

@@ -304,13 +304,10 @@ Constraints:
 - Exactly one of `traffic.frame_len` and the
   `frame_len_min/max/step` triple.
 - `measurements.latency` / `.jitter` are allowed on cross-card flows
-  (HW-corrected via the J5 GPIO sync + the `lat_correction` CSR).
-- **Cross-card latency stage-1 constraint:** the `lat_correction` register is
-  global per card, so a card that is the RX side of a cross-card flow may **not**
-  also receive a same-card flow, and may receive cross-card traffic from only a
-  **single** TX card. Either case is rejected (`PW_E_INVAL`) until per-flow
-  correction lands. (Single cross-card RX per card — the validated topology —
-  is fine.)
+  (HW-corrected per flow via the J5 GPIO sync + the per-flow `lat_correction`
+  table). No cross-card topology restriction: a single RX card may mix same-card
+  and cross-card flows and receive cross-card traffic from multiple TX cards --
+  each flow's checker slot gets its own correction.
 
 ## `forwards`
 
@@ -353,7 +350,7 @@ human-readable diagnostic that names the offending field path,
 for example:
 
 ```
-flows[1]: RX card also receives a cross-card flow; same-card + cross-card on one RX card is unsupported (stage-1 global lat_correction)
+forwards[0]: ingress and egress ports must be on the same card
 ```
 
 ```
