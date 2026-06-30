@@ -32,7 +32,47 @@ uint64_t pw_gpio_sync_ts(const struct pw_card_backend *be) {
     return ((uint64_t)hi << 32) | lo;
 }
 
+uint32_t pw_gpio_sync_seq(const struct pw_card_backend *be) {
+    if (!be || !be->ops || !be->ops->read32) return 0;
+    uint32_t s = 0;
+    be->ops->read32(be->ctx, PWFPGA_REG_GPIO_SYNC_SEQ, &s);
+    return s;
+}
+
 int64_t pw_gpio_sync_offset(const struct pw_card_backend *tx,
                             const struct pw_card_backend *rx) {
     return (int64_t)(pw_gpio_sync_ts(tx) - pw_gpio_sync_ts(rx));
+}
+
+bool pw_gpio_sync_offset_coherent(const struct pw_card_backend *tx,
+                                  const struct pw_card_backend *rx,
+                                  int64_t *offset) {
+    if (!offset) return false;
+    if (!tx || !tx->ops || !tx->ops->read32) return false;
+    if (!rx || !rx->ops || !rx->ops->read32) return false;
+    /* Per-card 64-bit ts read is atomic (reading TS_LOW latches TS_HIGH), so the
+     * only cross-card hazard is a sync edge landing between the tx and rx ts
+     * reads. Bracket the whole sample with both cards' seq and retry if either
+     * advanced -- a stable window means both ts come from the same latest edge. */
+    for (int tries = 0; tries < 8; tries++) {
+        uint32_t s_tx_a = 0, s_rx_a = 0, s_tx_b = 0, s_rx_b = 0;
+        tx->ops->read32(tx->ctx, PWFPGA_REG_GPIO_SYNC_SEQ, &s_tx_a);
+        rx->ops->read32(rx->ctx, PWFPGA_REG_GPIO_SYNC_SEQ, &s_rx_a);
+        uint64_t ts_tx = pw_gpio_sync_ts(tx);
+        uint64_t ts_rx = pw_gpio_sync_ts(rx);
+        tx->ops->read32(tx->ctx, PWFPGA_REG_GPIO_SYNC_SEQ, &s_tx_b);
+        rx->ops->read32(rx->ctx, PWFPGA_REG_GPIO_SYNC_SEQ, &s_rx_b);
+        /* require a real edge seen (seq != 0) AND no edge during the window */
+        if (s_tx_a != 0 && s_rx_a != 0 && s_tx_a == s_tx_b && s_rx_a == s_rx_b) {
+            *offset = (int64_t)(ts_tx - ts_rx);
+            return true;
+        }
+    }
+    return false;
+}
+
+void pw_gpio_sync_write_correction(const struct pw_card_backend *be, int64_t corr) {
+    uint64_t u = (uint64_t)corr;
+    wr(be, PWFPGA_REG_LAT_CORRECTION_LO, (uint32_t)u);          /* low word  */
+    wr(be, PWFPGA_REG_LAT_CORRECTION_HI, (uint32_t)(u >> 32));  /* high word */
 }

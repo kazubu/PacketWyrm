@@ -17,11 +17,14 @@ struct pw_global_flow_stats {
     uint64_t late;
     uint64_t sequence_gap_count;
 
-    /* Latency / jitter: only meaningful when latency_valid == true.
-     * For cross-card flows the aggregator leaves these zero and reports
-     * latency_valid = false; consumers must check this flag before
-     * surfacing latency numbers. */
+    /* Latency / jitter. Now valid for BOTH same-card (counter-direct, exact)
+     * and cross-card flows -- cross-card is corrected per sample in hardware via
+     * the lat_correction CSR + J5 GPIO sync, so the values below are the true
+     * one-way latency in either case and latency_valid is true for both.
+     * cross_card distinguishes the source (true = the HW-corrected path; the
+     * absolute number then also carries a fixed J5-sync-path calibration bias). */
     bool     latency_valid;
+    bool     cross_card;
     uint32_t min_latency_ns;
     uint32_t max_latency_ns;
     uint64_t sum_latency_ns;

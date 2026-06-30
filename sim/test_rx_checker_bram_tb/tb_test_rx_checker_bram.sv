@@ -19,6 +19,7 @@ module tb_test_rx_checker_bram;
 
     logic clear_i = 0;
     logic [63:0] timestamp_i;
+    logic [63:0] lat_correction_i = '0;
     pw_match_key_t key_i;
     pw_class_result_t result_i;
     logic event_valid_i;
@@ -32,7 +33,8 @@ module tb_test_rx_checker_bram;
 
     pw_test_rx_checker_bram #(.NUM_FLOWS(NUM_FLOWS), .NUM_BUCKETS(16)) dut (
         .clk(clk), .rst_n(rst_n), .clear_i(clear_i),
-        .timestamp_i(timestamp_i), .key_i(key_i), .result_i(result_i),
+        .timestamp_i(timestamp_i), .lat_correction_i(lat_correction_i),
+        .key_i(key_i), .result_i(result_i),
         .event_valid_i(event_valid_i),
         .hist_ev_o(), .hist_flow_o(), .hist_bucket_o(),
         .rd_addr_i(rd_addr_i), .rd_en_i(rd_en_i), .rd_valid_o(rd_valid_o),
@@ -128,6 +130,21 @@ module tb_test_rx_checker_bram;
         rd(1);
         chk("f1 rx after clear",   rd_rx,   0);
         chk("f1 samp after clear", rd_samp, 0);
+
+        // cross-card latency correction: the checker computes
+        // lat = (timestamp_i + lat_correction_i) - tx_ts. A signed (negative,
+        // two's complement) correction brings a raw latency down per sample, so
+        // min/max/sum all accumulate the corrected value (no SW post-hoc fix).
+        lat_correction_i = -64'sd100;          // 64'hFFFF_FFFF_FFFF_FF9C
+        ev(5, 0, 200, 1);                      // raw 200 -> corrected 100
+        ev(5, 1, 260, 1);                      // raw 260 -> corrected 160
+        repeat (4) @(negedge clk);
+        rd(5);
+        chk("f5 min_lat (corrected)", rd_minl, 100);
+        chk("f5 max_lat (corrected)", rd_maxl, 160);
+        chk("f5 sum_lat (corrected)", rd_suml, 260);
+        chk("f5 samples",             rd_samp, 2);
+        lat_correction_i = '0;                 // restore (same-card default)
 
         if (errors == 0) $display("ALL CHECKER_BRAM SCENARIOS PASS");
         else begin $display("FAILED with %0d errors", errors); $fatal; end

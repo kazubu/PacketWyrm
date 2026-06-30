@@ -103,6 +103,48 @@ static const char *cfg_dual_cross_card_with_latency =
 "    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
 "    measurements: { loss: true, latency: true }\n";
 
+/* STAGE-1 lat_correction is global per card, so a card that is the RX side of a
+ * cross-card flow may not ALSO receive a same-card flow (the correction would be
+ * wrongly applied to the same-card one). card1 receives flow 7 (cross, from
+ * card0) AND flow 8 (same-card, card1->card1) -> must be rejected. */
+static const char *cfg_xcard_mixed_same_card =
+"system: { name: pw-dual, mode: multi-card, default_speed: 10g }\n"
+"cards:\n"
+"  - { id: 0, pci: \"0000:03:00.0\", ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ] }\n"
+"  - { id: 1, pci: \"0000:04:00.0\", ports: [ { local_port: 0, global_port: 2 }, { local_port: 1, global_port: 3 } ] }\n"
+"flows:\n"
+"  - { id: 7, tx_global_port: 0, rx_global_port: 2,\n"
+"      l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:02:00:01\" },\n"
+"      ipv4: { src: \"198.51.100.1\", dst: \"198.51.100.2\" },\n"
+"      udp:  { src_port: 49153, dst_port: 50002 },\n"
+"      traffic: { frame_len: 512, rate_bps: 1000000000 }, measurements: { latency: true } }\n"
+"  - { id: 8, tx_global_port: 3, rx_global_port: 2,\n"
+"      l2: { src_mac: \"02:a5:02:02:00:02\", dst_mac: \"02:a5:02:02:00:01\" },\n"
+"      ipv4: { src: \"198.51.100.3\", dst: \"198.51.100.2\" },\n"
+"      udp:  { src_port: 49154, dst_port: 50003 },\n"
+"      traffic: { frame_len: 512, rate_bps: 1000000000 }, measurements: { latency: true } }\n";
+
+/* STAGE-1: a single RX card may not receive cross-card flows from more than one
+ * TX card (one global correction can't serve two different offsets). card1
+ * receives flow 7 from card0 and flow 8 from card2 -> must be rejected. */
+static const char *cfg_xcard_two_tx_sources =
+"system: { name: pw-tri, mode: multi-card, default_speed: 10g }\n"
+"cards:\n"
+"  - { id: 0, pci: \"0000:03:00.0\", ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ] }\n"
+"  - { id: 1, pci: \"0000:04:00.0\", ports: [ { local_port: 0, global_port: 2 }, { local_port: 1, global_port: 3 } ] }\n"
+"  - { id: 2, pci: \"0000:05:00.0\", ports: [ { local_port: 0, global_port: 4 }, { local_port: 1, global_port: 5 } ] }\n"
+"flows:\n"
+"  - { id: 7, tx_global_port: 0, rx_global_port: 2,\n"
+"      l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:02:00:01\" },\n"
+"      ipv4: { src: \"198.51.100.1\", dst: \"198.51.100.2\" },\n"
+"      udp:  { src_port: 49153, dst_port: 50002 },\n"
+"      traffic: { frame_len: 512, rate_bps: 1000000000 }, measurements: { latency: true } }\n"
+"  - { id: 8, tx_global_port: 4, rx_global_port: 3,\n"
+"      l2: { src_mac: \"02:a5:02:04:00:01\", dst_mac: \"02:a5:02:02:00:02\" },\n"
+"      ipv4: { src: \"198.51.100.4\", dst: \"198.51.100.5\" },\n"
+"      udp:  { src_port: 49155, dst_port: 50004 },\n"
+"      traffic: { frame_len: 512, rate_bps: 1000000000 }, measurements: { latency: true } }\n";
+
 static const char *cfg_dup_card =
 "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
 "cards:\n"
@@ -180,6 +222,30 @@ static void test_accept_cross_card_latency(void) {
     PW_ASSERT_EQ(r, PW_OK);
     r = pw_config_validate(cfg, &d);
     PW_ASSERT_EQ(r, PW_OK);
+    pw_config_free(cfg);
+}
+
+static void test_reject_xcard_mixed_same_card(void) {
+    /* STAGE-1 global lat_correction: same-card + cross-card on one RX card. */
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    pw_status r = pw_config_parse_string(cfg_xcard_mixed_same_card,
+                                         strlen(cfg_xcard_mixed_same_card), cfg, &d);
+    PW_ASSERT_EQ(r, PW_OK);
+    r = pw_config_validate(cfg, &d);
+    PW_ASSERT_EQ(r, PW_E_INVAL);
+    pw_config_free(cfg);
+}
+
+static void test_reject_xcard_two_tx_sources(void) {
+    /* STAGE-1 global lat_correction: one RX card fed by two TX cards. */
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    pw_status r = pw_config_parse_string(cfg_xcard_two_tx_sources,
+                                         strlen(cfg_xcard_two_tx_sources), cfg, &d);
+    PW_ASSERT_EQ(r, PW_OK);
+    r = pw_config_validate(cfg, &d);
+    PW_ASSERT_EQ(r, PW_E_INVAL);
     pw_config_free(cfg);
 }
 
@@ -1546,6 +1612,8 @@ int main(void) {
         { "tap_name", test_tap_name },
         { "parse_single_card", test_parse_single_card },
         { "accept_cross_card_latency", test_accept_cross_card_latency },
+        { "reject_xcard_mixed_same_card", test_reject_xcard_mixed_same_card },
+        { "reject_xcard_two_tx_sources", test_reject_xcard_two_tx_sources },
         { "traffic_validation", test_traffic_validation },
         { "rate_pps_compiles_nonzero", test_rate_pps_compiles_nonzero },
         { "min_legal_frame_clamp", test_min_legal_frame_clamp },

@@ -60,7 +60,13 @@ response frame then closes. Max frame size is `PW_IPC_FRAME_MAX`
 
 `{ "rpc": "flows" }` &rarr; `{ "flows": [ { "id", "name",
 "tx_global_port", "rx_global_port", "tx_card_id", "rx_card_id",
-"latency_valid" } ] }`
+"latency_valid", "latency_method" } ] }`
+
+`latency_valid` is now `true` for **both** same-card and cross-card flows
+(cross-card is HW-corrected, see `flow.stats`); `latency_method` is
+`"same-card"` or `"gpio-corrected"` so a client can tell them apart. (Clients
+should key latency-UI off `latency_valid` being true, not off the flow being
+same-card.)
 
 ### `stats`
 
@@ -113,19 +119,20 @@ fresh snapshot on each open card before reading.
 }
 ```
 
-Cross-card flows are now supported via the J5 GPIO time-sync: they return
-`latency_valid: true`, `latency_method: "gpio-corrected"`, and an
-`offset_ticks` (the inter-card counter offset added to the raw RX-checker
-latency). `min_latency`/`max_latency` are exact (low-32-bit, offset-corrected);
-`avg_latency` is **omitted** for cross-card flows (the 64-bit `sum_latency`
-overflows under the offset bias and isn't correctable -- use `min_latency`, the
-standard one-way figure). `jitter_*` is valid as-is (the offset cancels in a
-diff of consecutive latencies). Same-card flows report `latency_method:
-"same-card"` and include `avg_latency` (counter-direct, exact). Requires the
-cards' J5 headers to be wired; otherwise the corrected number is meaningless
-(a hardware-setup concern). For tight cross-card `max`, issue `stats.clear`
-then read within a short window -- the ~ppm clock skew smears min/max over a
-long accumulation; the offset is re-measured each read so it stays valid.
+Cross-card flows are supported via the J5 GPIO time-sync, **corrected in
+hardware per sample**: the daemon servo writes the inter-card counter offset to
+each RX card's `lat_correction` CSR (`0x0144/0x0148`) ~10×/s, and the RX checker
+computes `lat = (rx_wire_ts + offset) - tx_ts`. So `min_latency`/`max_latency`/
+`avg_latency` here already hold the true one-way latency -- no read-time
+correction, and `avg_latency` is valid (the 64-bit `sum_latency` accumulates the
+now-small corrected value, so it no longer overflows). Cross-card flows return
+`latency_valid: true`, `latency_method: "gpio-corrected"`, and `offset_ticks`
+(the live servo offset, informational). Same-card flows report `latency_method:
+"same-card"` and run with `lat_correction = 0` (identical to before). `jitter_*`
+is valid in both cases. Requires the cards' J5 headers to be wired. Because the
+correction is tracked per sample, min/max/avg no longer smear over a long
+accumulation (the earlier read-time single-offset scheme did, under the ~ppm
+clock skew) -- a `stats.clear` short-window workaround is no longer needed.
 
 ### `flow.hist`
 
@@ -143,11 +150,10 @@ Per-flow power-of-two latency histogram.
 }
 ```
 
-For cross-card flows the **histogram** is still unavailable
-(`{ "id": <n>, "latency_valid": false, "reason": "..." }`, no bucket array):
-the buckets are binned in hardware on the *uncorrected* raw latency, so the
-GPIO offset can't be applied after the fact. Use `flow.stats` (min/max are
-offset-corrected) for cross-card latency.
+Cross-card histograms are now supported too: the hardware bins the per-sample
+latency *after* the `lat_correction` offset (kept current by the daemon servo),
+so the buckets hold the true one-way latency, exactly like same-card. (This was
+previously punted, when the HW binned the raw uncorrected latency.)
 
 ### `flow.start` / `flow.stop`
 

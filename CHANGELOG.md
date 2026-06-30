@@ -9,18 +9,45 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Cross-card latency HW correction (`lat_correction` CSR).** The RX checker
+    now takes a signed 64-bit correction (CSR `0x0144/0x0148`, broadcast to every
+    port's checker) and computes `lat = (rx_wire_ts + lat_correction) − tx_ts`, so
+    cross-card latency is corrected **per sample in hardware** — min/max/sum and
+    the histogram all accumulate the true one-way value. This supersedes the
+    earlier SW read-time single-offset correction, which left max/avg smeared by
+    the ~1.6 ppm clock skew over a long accumulation (and forced avg-omit +
+    histogram-unsupported for cross-card). Same-card flows use `lat_correction = 0`
+    → bit-identical to before. The free-running counter is still never disciplined
+    (Gray-CDC safe); only this computation is. Daemon servo + `flow.stats` cleanup
+    land alongside. Robustness: the CSR commits atomically (LO stages a shadow,
+    HI commits the 64-bit pair in one cycle -- no torn transient); the daemon
+    primes the correction + `stats.clear`s on (re)program so the startup window
+    can't pollute min/max/hist; the validator enforces the stage-1
+    global-per-card limit (a cross-card RX card may not also receive a same-card
+    flow, nor cross-card traffic from >1 TX card); the servo reads an
+    EDGE-COHERENT offset (`pw_gpio_sync_offset_coherent` brackets the two-card
+    read with seq re-reads, rejecting a sample where a sync edge landed mid-read
+    -- which would otherwise write a ~1-period-wrong offset), skipping the write
+    on an incoherent read; `flows`/`flow.stats` report `latency_method` with
+    `latency_valid: true` for cross-card; and `pw_stats_aggregate` now surfaces
+    cross-card latency too (`latency_valid: true` + a `cross_card` flag) instead
+    of zeroing it. The servo period is tunable via `packetwyrmd -S SERVO_MS`
+    (default 10 ms): the residual from the ~1.6 ppm clock skew between updates is
+    `skew x period` (~16 ns at 10 ms, ~1.6 ns at 1 ms), so a tighter period
+    sharpens cross-card max/jitter with no bitstream change (the J5 edge refreshes
+    every ~210 us, the floor below which it's moot). `flow.stats` `offset_ticks`
+    surfaces the live (edge-coherent) offset the servo is applying.
   - **Cross-card one-way latency in packetwyrmd/pktwyrm.** A flow whose TX and RX
     ports are on different cards now reports latency (previously rejected as
     "cross-card flow does not support latency/jitter"). The daemon brings up the
-    J5 GPIO time-sync on load (one master, others slave), and `flow.stats`
-    offset-corrects the RX-checker latency: `latency_method: "gpio-corrected"`,
-    `offset_ticks`, exact `min`/`max` (avg omitted -- the 64-bit sum overflows
-    under the offset; jitter is valid as-is since the offset cancels). New
-    `pktwyrm latency` prints per-flow one-way latency (same-card exact /
-    cross-card GPIO-corrected). HW-validated: cross-card min ~30 ticks (~192 ns),
-    matching the single-card wire-to-wire figure. Library helpers
-    `pw_gpio_sync_*` (libpacketwyrm/gpio_sync). Needs the J5 headers wired; the
-    histogram stays cross-card-unsupported (binned in HW on the raw latency).
+    J5 GPIO time-sync on load (one master, others slave); new `pktwyrm latency`
+    prints per-flow one-way latency (same-card exact / cross-card corrected).
+    HW-validated: cross-card min ~30 ticks (~192 ns), matching the single-card
+    wire-to-wire figure. Library helpers `pw_gpio_sync_*`
+    (libpacketwyrm/gpio_sync). Needs the J5 headers wired. **Correction now
+    happens per sample in hardware** (see the `lat_correction` entry above) --
+    this superseded the initial read-time offset scheme, which left avg/max
+    smeared and the histogram cross-card-unsupported.
   - **RX ingress wire-stamp.** Received frames are now timestamped in the MAC RX
     clock domain at SOF (a second `pw_ts_gray_cdc` per port, dp_clk→`sfp_rx_clk`),
     carried through the RX async FIFO as widened `tuser` (`pw_mac_axis_cdc`

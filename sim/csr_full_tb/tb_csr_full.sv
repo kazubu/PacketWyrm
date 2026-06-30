@@ -52,6 +52,7 @@ module tb_csr_full;
 
     logic [63:0] ts;
     logic [31:0] gpio_sync_ctrl_w;
+    logic [63:0] lat_correction_w;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) ts <= '0;
         else        ts <= ts + 64'd1;
@@ -165,6 +166,7 @@ module tb_csr_full;
         .gpio_sync_ts_i      (64'hCAFE_1234_5678_9ABC),
         .gpio_sync_seq_i     (32'd42),
         .gpio_sync_gpio_in_i (6'b101010),
+        .lat_correction_o    (lat_correction_w),
         .port_drops_i        (port_drops),
         .rx_frames_i         (ps_zero),
         .rx_bytes_i          (ps_zero),
@@ -497,6 +499,24 @@ module tb_csr_full;
             check_eq("gpio_sync seq",     v, 32'd42);
             axi_read (16'h0140, v);
             check_eq("gpio_sync status (pad in)", v, 32'h0000_002A);  // 6'b101010
+
+            // Cross-card latency correction: RW lo/hi words -> 64-bit module out.
+            axi_write(16'h0144, 32'h1234_5678);       // LO
+            axi_write(16'h0148, 32'hFFFF_FF9C);       // HI (-100 in the high word)
+            axi_read (16'h0144, vlo);
+            axi_read (16'h0148, vhi);
+            check_eq("lat_correction lo readback", vlo, 32'h1234_5678);
+            check_eq("lat_correction hi readback", vhi, 32'hFFFF_FF9C);
+            check_eq("lat_correction -> module lo", lat_correction_w[31:0],  32'h1234_5678);
+            check_eq("lat_correction -> module hi", lat_correction_w[63:32], 32'hFFFF_FF9C);
+            /* Atomicity: a LO write alone only STAGES -- the live 64-bit output
+             * must not move until the committing HI write (no torn transient). */
+            axi_write(16'h0144, 32'hAAAA_BBBB);       // stage a new LO
+            check_eq("lat_correction LO-only stays staged (lo)", lat_correction_w[31:0],  32'h1234_5678);
+            check_eq("lat_correction LO-only stays staged (hi)", lat_correction_w[63:32], 32'hFFFF_FF9C);
+            axi_write(16'h0148, 32'h0000_0000);       // HI commits {0, staged-lo}
+            check_eq("lat_correction commit lo", lat_correction_w[31:0],  32'hAAAA_BBBB);
+            check_eq("lat_correction commit hi", lat_correction_w[63:32], 32'h0000_0000);
         end
 
         if (errors == 0) begin

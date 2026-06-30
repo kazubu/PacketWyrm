@@ -76,6 +76,25 @@ headers (those are authoritative; this map is intent).
 0x013c  gpio_sync_seq          R     edge sequence (matches across cards -- SW
                                      pairs equal seq to get the inter-card offset)
 0x0140  gpio_sync_status       R     [5:0] raw synchronised pad inputs (debug)
+0x0144  lat_correction_lo      RW    signed 64-bit cross-card latency correction,
+0x0148  lat_correction_hi      RW      low/high words. Write LO **then** HI: LO
+                                     only STAGES into a shadow, HI commits
+                                     {HI, shadow} to the live register in one
+                                     cycle -- so the checker never sees a torn
+                                     {old_hi,new_lo} transient (which could be a
+                                     sign-flipped huge value one sample latches).
+                                     Broadcast to every RX
+                                     checker, which computes lat = (rx_wire_ts +
+                                     lat_correction) - tx_ts, so it accumulates
+                                     the TRUE one-way latency per sample on
+                                     cross-card flows (min/max/avg/histogram all
+                                     corrected in HW -- no SW post-hoc skew
+                                     smear). The daemon servo writes the
+                                     inter-card counter offset (A_cnt - B_cnt)
+                                     here ~10x/s. 0 (default) = same-card,
+                                     identical to the uncorrected path. The
+                                     free-running counter is never disciplined
+                                     (Gray-CDC safe); only this term is.
 
 J5 header pin map (the 6 GPIO; bidirectional, one bitstream is master/slave/
 repeater by config). sync-in/out pin index is SW-selected (ctrl [6:4]/[10:8]);
