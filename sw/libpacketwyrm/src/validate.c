@@ -135,6 +135,42 @@ pw_status pw_config_validate(const struct pw_config *cfg, struct pw_diag *d) {
         }
     }
 
+    /* STAGE-1 cross-card latency-correction constraint. The lat_correction CSR
+     * is GLOBAL per card (broadcast to both RX checkers), so a card that is the
+     * RX side of a cross-card flow must (a) NOT also receive a same-card flow,
+     * and (b) receive cross-card traffic from a SINGLE TX card -- otherwise one
+     * global correction would be applied to flows needing a different (or zero)
+     * correction, silently skewing their latency / histogram. (Per-flow
+     * correction is a later stage; until then this is enforced rather than
+     * left as a quiet footgun.) O(n^2) over the small flow set. */
+    for (size_t i = 0; i < cfg->n_flows; i++) {
+        struct pwfpga_port_ref txi, rxi;
+        if (pw_config_resolve_port(cfg, cfg->flows[i].tx_global_port, &txi) != PW_OK) continue;
+        if (pw_config_resolve_port(cfg, cfg->flows[i].rx_global_port, &rxi) != PW_OK) continue;
+        if (txi.card_id == rxi.card_id) continue;   /* same-card: not a corrected RX card */
+        for (size_t j = 0; j < cfg->n_flows; j++) {
+            if (j == i) continue;
+            struct pwfpga_port_ref txj, rxj;
+            if (pw_config_resolve_port(cfg, cfg->flows[j].tx_global_port, &txj) != PW_OK) continue;
+            if (pw_config_resolve_port(cfg, cfg->flows[j].rx_global_port, &rxj) != PW_OK) continue;
+            if (rxj.card_id != rxi.card_id) continue;       /* different RX card */
+            if (txj.card_id == rxj.card_id) {               /* same-card flow on this RX card */
+                char p[80]; snprintf(p, sizeof(p), "flows[%zu]", j);
+                diag(d, PW_E_INVAL, p, "RX card also receives a cross-card flow; "
+                     "same-card + cross-card on one RX card is unsupported "
+                     "(stage-1 global lat_correction)");
+                return PW_E_INVAL;
+            }
+            if (txj.card_id != txi.card_id) {               /* >1 cross-card TX source */
+                char p[80]; snprintf(p, sizeof(p), "flows[%zu]", j);
+                diag(d, PW_E_INVAL, p, "RX card receives cross-card flows from more "
+                     "than one TX card; unsupported (stage-1 global per-card "
+                     "lat_correction)");
+                return PW_E_INVAL;
+            }
+        }
+    }
+
     /* forward rules: both ports resolve and live on the same card (the
      * classifier is per-card; egress_local_port is a local port). */
     for (size_t i = 0; i < cfg->n_forwards; i++) {

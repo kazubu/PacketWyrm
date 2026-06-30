@@ -509,6 +509,14 @@ module tb_csr_full;
             check_eq("lat_correction hi readback", vhi, 32'hFFFF_FF9C);
             check_eq("lat_correction -> module lo", lat_correction_w[31:0],  32'h1234_5678);
             check_eq("lat_correction -> module hi", lat_correction_w[63:32], 32'hFFFF_FF9C);
+            /* Atomicity: a LO write alone only STAGES -- the live 64-bit output
+             * must not move until the committing HI write (no torn transient). */
+            axi_write(16'h0144, 32'hAAAA_BBBB);       // stage a new LO
+            check_eq("lat_correction LO-only stays staged (lo)", lat_correction_w[31:0],  32'h1234_5678);
+            check_eq("lat_correction LO-only stays staged (hi)", lat_correction_w[63:32], 32'hFFFF_FF9C);
+            axi_write(16'h0148, 32'h0000_0000);       // HI commits {0, staged-lo}
+            check_eq("lat_correction commit lo", lat_correction_w[31:0],  32'hAAAA_BBBB);
+            check_eq("lat_correction commit hi", lat_correction_w[63:32], 32'h0000_0000);
         end
 
         if (errors == 0) begin

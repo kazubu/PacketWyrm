@@ -11,7 +11,12 @@ struct pw_flow_meta {
     uint16_t rx_card_id;
     uint32_t tx_local_flow_id;
     uint32_t rx_local_flow_id;
-    bool     latency_valid;              /* false for cross-card */
+    bool     latency_valid;              /* true = same-card (counter-direct, exact).
+                                          * false = cross-card: latency is STILL
+                                          * reported, via HW lat_correction + J5
+                                          * sync (latency_method "gpio-corrected").
+                                          * This flag now distinguishes the method,
+                                          * not availability. */
 };
 
 /* TEST_RX flow-id map entry: a test flow's wire flow_id -> its local checker

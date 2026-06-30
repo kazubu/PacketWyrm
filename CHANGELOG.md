@@ -19,7 +19,13 @@ For where work is going next, see `NEXT-STEPS.md`.
     histogram-unsupported for cross-card). Same-card flows use `lat_correction = 0`
     → bit-identical to before. The free-running counter is still never disciplined
     (Gray-CDC safe); only this computation is. Daemon servo + `flow.stats` cleanup
-    land alongside.
+    land alongside. Robustness: the CSR commits atomically (LO stages a shadow,
+    HI commits the 64-bit pair in one cycle -- no torn transient); the daemon
+    primes the correction + `stats.clear`s on (re)program so the startup window
+    can't pollute min/max/hist; the validator enforces the stage-1
+    global-per-card limit (a cross-card RX card may not also receive a same-card
+    flow, nor cross-card traffic from >1 TX card); and `flows`/`flow.stats`
+    report `latency_method` with `latency_valid: true` for cross-card.
   - **Cross-card one-way latency in packetwyrmd/pktwyrm.** A flow whose TX and RX
     ports are on different cards now reports latency (previously rejected as
     "cross-card flow does not support latency/jitter"). The daemon brings up the

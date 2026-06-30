@@ -60,7 +60,13 @@ response frame then closes. Max frame size is `PW_IPC_FRAME_MAX`
 
 `{ "rpc": "flows" }` &rarr; `{ "flows": [ { "id", "name",
 "tx_global_port", "rx_global_port", "tx_card_id", "rx_card_id",
-"latency_valid" } ] }`
+"latency_valid", "latency_method" } ] }`
+
+`latency_valid` is now `true` for **both** same-card and cross-card flows
+(cross-card is HW-corrected, see `flow.stats`); `latency_method` is
+`"same-card"` or `"gpio-corrected"` so a client can tell them apart. (Clients
+should key latency-UI off `latency_valid` being true, not off the flow being
+same-card.)
 
 ### `stats`
 

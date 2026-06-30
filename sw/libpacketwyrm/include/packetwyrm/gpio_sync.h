@@ -22,6 +22,12 @@ void pw_gpio_sync_disable(const struct pw_card_backend *be);
  * for a coherent 64-bit value). Returns 0 if the backend can't read. */
 uint64_t pw_gpio_sync_ts(const struct pw_card_backend *be);
 
+/* Read the edge sequence counter (REG_GPIO_SYNC_SEQ). Non-zero means the card
+ * has latched at least one shared sync edge, so its pw_gpio_sync_ts (and an
+ * offset computed from it) is meaningful rather than the post-reset 0. Returns
+ * 0 if the backend can't read. */
+uint32_t pw_gpio_sync_seq(const struct pw_card_backend *be);
+
 /* Inter-card counter offset = tx_card_counter - rx_card_counter at the shared
  * edge, read back-to-back. Add to a raw cross-card latency
  * (rx_wire_ts_rx - tx_ts_tx) to recover the true one-way latency. */

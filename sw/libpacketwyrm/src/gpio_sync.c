@@ -32,6 +32,13 @@ uint64_t pw_gpio_sync_ts(const struct pw_card_backend *be) {
     return ((uint64_t)hi << 32) | lo;
 }
 
+uint32_t pw_gpio_sync_seq(const struct pw_card_backend *be) {
+    if (!be || !be->ops || !be->ops->read32) return 0;
+    uint32_t s = 0;
+    be->ops->read32(be->ctx, PWFPGA_REG_GPIO_SYNC_SEQ, &s);
+    return s;
+}
+
 int64_t pw_gpio_sync_offset(const struct pw_card_backend *tx,
                             const struct pw_card_backend *rx) {
     return (int64_t)(pw_gpio_sync_ts(tx) - pw_gpio_sync_ts(rx));

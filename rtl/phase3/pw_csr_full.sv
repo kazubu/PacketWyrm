@@ -289,8 +289,16 @@ module pw_csr_full #(
     reg  [31:0]       timestamp_high_latched;
     reg  [31:0]       gpio_sync_ctrl_q;
     reg  [31:0]       gpio_sync_ts_high_latched;
-    reg  [31:0]       lat_correction_lo_q;
-    reg  [31:0]       lat_correction_hi_q;
+    // Cross-card latency correction is a 64-bit value the host writes as two
+    // 32-bit words (LO then HI). To avoid a torn transient on lat_correction_o
+    // (the checker would otherwise see {old_hi, new_lo} or {new_hi, old_lo} for
+    // one cycle -- e.g. 0 -> a sign-flipped huge value that one sample could
+    // latch into max/sum/hist), the LO write only STAGES into a shadow; the HI
+    // write COMMITS {wdata_hi, shadow} to the live register in a single cycle.
+    // Software contract: always write LO before HI (the lib + servo do).
+    reg  [31:0]       lat_correction_lo_q;     // committed low word (also readback)
+    reg  [31:0]       lat_correction_hi_q;     // committed high word
+    reg  [31:0]       lat_correction_lo_shadow; // staged by a LO write
 
     wire [31:0] timestamp_low  = timestamp_i[31:0];
     wire [31:0] timestamp_high = timestamp_i[63:32];
@@ -348,6 +356,7 @@ module pw_csr_full #(
             gpio_sync_ctrl_q <= '0;
             lat_correction_lo_q <= '0;
             lat_correction_hi_q <= '0;
+            lat_correction_lo_shadow <= '0;
             error_status_q   <= '0;
             wr_en            <= 1'b0;
             wr_addr          <= '0;
@@ -392,8 +401,12 @@ module pw_csr_full #(
                 case (awaddr_q)
                     REG_GLOBAL_CONTROL: global_control_q <= s_axi_wdata;
                     REG_GPIO_SYNC_CTRL: gpio_sync_ctrl_q <= s_axi_wdata;
-                    REG_LAT_CORRECTION_LO: lat_correction_lo_q <= s_axi_wdata;
-                    REG_LAT_CORRECTION_HI: lat_correction_hi_q <= s_axi_wdata;
+                    // LO stages into the shadow; HI commits {hi, shadow} atomically.
+                    REG_LAT_CORRECTION_LO: lat_correction_lo_shadow <= s_axi_wdata;
+                    REG_LAT_CORRECTION_HI: begin
+                        lat_correction_hi_q <= s_axi_wdata;
+                        lat_correction_lo_q <= lat_correction_lo_shadow;
+                    end
                     REG_ERROR_STATUS:   error_status_q   <= error_status_q & ~s_axi_wdata;
                     default: /* defer to windows */ ;
                 endcase

@@ -96,9 +96,9 @@ static void print_summary(const struct pw_config *cfg, const struct pw_program *
     for (size_t i = 0; i < cfg->n_flows; i++) {
         const struct pw_flow *f = &cfg->flows[i];
         const struct pw_flow_meta *m = &prog->flow_meta[i];
-        printf("  flow id=%u tx=p%u rx=p%u latency_valid=%s\n",
+        printf("  flow id=%u tx=p%u rx=p%u latency=%s\n",
                f->id, f->tx_global_port, f->rx_global_port,
-               m->latency_valid ? "yes" : "no (cross-card)");
+               m->latency_valid ? "same-card" : "gpio-corrected (cross-card)");
     }
 }
 
@@ -283,6 +283,41 @@ static void servo_lat_correction(const struct pw_config *cfg,
     }
 }
 
+/* One-shot priming of the HW latency correction after (re)programming, to close
+ * the window where cross-card flows would accumulate raw (correction-0) latency.
+ * No cross-card flow -> nothing to do (correction stays 0; setup_gpio_sync also
+ * zeroed it). Otherwise: wait (bounded) for the J5 sync to latch a real edge on
+ * every open card (seq != 0), write the initial correction, then stats-clear
+ * every card so the polluted startup samples are discarded. */
+static void prime_lat_correction(const struct pw_config *cfg,
+                                 const struct pw_program *prog,
+                                 struct card_runtime cards[]) {
+    bool any_cross = false;
+    for (size_t i = 0; i < prog->n_flow_meta; i++)
+        if (prog->flow_meta[i].tx_card_id != prog->flow_meta[i].rx_card_id) { any_cross = true; break; }
+    if (!any_cross) return;
+
+    /* Wait for a valid shared edge on all open cards (period_log2=15 -> ~210us;
+     * 50x1ms = 50ms is ~240 periods of headroom). Best-effort: proceed anyway on
+     * timeout (the servo will converge within ~100ms regardless). */
+    for (int tries = 0; tries < 50; tries++) {
+        bool all = true;
+        for (size_t ci = 0; ci < cfg->n_cards; ci++)
+            if (cards[ci].open && pw_gpio_sync_seq(&cards[ci].backend) == 0) { all = false; break; }
+        if (all) break;
+        usleep(1000);
+    }
+
+    servo_lat_correction(cfg, prog, cards);   /* write the initial correction */
+
+    /* Discard samples taken before the correction was live (programming above
+     * already started the generators). */
+    for (size_t ci = 0; ci < cfg->n_cards; ci++)
+        if (cards[ci].open && cards[ci].backend.ops->write32)
+            (void)cards[ci].backend.ops->write32(
+                cards[ci].backend.ctx, PWFPGA_REG_STATS_CLEAR, 1u);
+}
+
 static pw_status program_backends(const struct pw_program *prog,
                                   const struct pw_config *cfg,
                                   struct card_runtime cards[]) {
@@ -305,6 +340,14 @@ static pw_status program_backends(const struct pw_program *prog,
     }
     /* Bring up J5 time-sync for cross-card flows (latency offset correction). */
     setup_gpio_sync(cfg, prog, cards);
+    /* Close the startup window: programming above already enabled the flow
+     * generators (tx_enable in the rows), so the RX checker is ALREADY counting
+     * -- with lat_correction still 0. For a cross-card flow that means the first
+     * samples accumulate the raw (wrong-timebase, huge-wrap) latency into
+     * max/sum/histogram. So once the J5 sync has produced a valid edge, write
+     * the initial correction and stats-clear every card, so accumulation starts
+     * from the corrected baseline. (The main-loop servo then maintains it.) */
+    prime_lat_correction(cfg, prog, cards);
     return worst;
 }
 
@@ -540,7 +583,14 @@ static struct json_object *build_flows(const struct pw_config *cfg,
         json_object_object_add(fl, "rx_global_port",json_object_new_int(f->rx_global_port));
         json_object_object_add(fl, "tx_card_id",    json_object_new_int(m->tx_card_id));
         json_object_object_add(fl, "rx_card_id",    json_object_new_int(m->rx_card_id));
-        json_object_object_add(fl, "latency_valid", json_object_new_boolean(m->latency_valid));
+        /* Latency is now available for BOTH same-card (counter-direct) and
+         * cross-card (HW lat_correction + J5 sync) flows, so latency_valid is
+         * true for either; latency_method tells them apart (matches flow.stats).
+         * m->latency_valid alone means "same-card exact" -- kept as the method. */
+        bool xcard = (m->tx_card_id != m->rx_card_id);
+        json_object_object_add(fl, "latency_valid", json_object_new_boolean(true));
+        json_object_object_add(fl, "latency_method",
+            json_object_new_string(xcard ? "gpio-corrected" : "same-card"));
         json_object_array_add(arr, fl);
     }
     json_object_object_add(r, "flows", arr);
