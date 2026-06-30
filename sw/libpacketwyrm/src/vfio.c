@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/vfio.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -28,6 +29,41 @@ static int iommu_group_of(const char *bdf) {
     return grp;
 }
 
+/* Prepare a (vfio-bound) device so its BARs are actually readable. Two fresh-
+ * host hazards both make every BAR read return all-1s (0xffffffff) while config
+ * space still reads -- i.e. they look exactly like a dead card:
+ *
+ *   1. The kernel's PCI runtime PM autosuspends the idle (fd-closed) device to
+ *      D3hot. Pin it in D0 via power/control = "on".
+ *   2. PCI_COMMAND Memory Space decoding is disabled on a fresh bind
+ *      (lspci "Mem-", regions "[disabled]"). Set MEMORY|MASTER.
+ *
+ * Both are done via SYSFS (config space + power/control), the same path setpci
+ * uses -- a write through the *vfio* config region is virtualised by vfio-pci
+ * and does NOT reach the real command register, so it must be sysfs. Root only;
+ * best-effort (a later BAR read surfaces any failure). Order matters: resume to
+ * D0 first, then enable memory decoding. */
+void pw_vfio_prep_device(const char *bdf) {
+    char path[160];
+
+    /* (1) pin in D0 */
+    snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/power/control", bdf);
+    int fd = open(path, O_WRONLY);
+    if (fd >= 0) { ssize_t w = write(fd, "on", 2); (void)w; close(fd); }
+
+    /* (2) PCI_COMMAND |= MEMORY|MASTER, read-modify-write at config offset 0x04 */
+    snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/config", bdf);
+    fd = open(path, O_RDWR);
+    if (fd >= 0) {
+        uint16_t cmd = 0;
+        if (pread(fd, &cmd, sizeof(cmd), 0x04) == (ssize_t)sizeof(cmd)) {
+            uint16_t want = cmd | 0x0006u;
+            if (want != cmd) { ssize_t w = pwrite(fd, &want, sizeof(want), 0x04); (void)w; }
+        }
+        close(fd);
+    }
+}
+
 void pw_vfio_close(struct pw_vfio_handle *h) {
     if (!h) return;
     if (h->base && h->base != MAP_FAILED) munmap(h->base, h->size);
@@ -42,6 +78,9 @@ void pw_vfio_close(struct pw_vfio_handle *h) {
 pw_status pw_vfio_open_bar(const char *bdf, int bar_index,
                            struct pw_vfio_handle *h) {
     if (!bdf || !h || bar_index < 0 || bar_index > 5) return PW_E_INVAL;
+
+    /* Ensure the device is in D0 with memory decoding on before we mmap/read. */
+    pw_vfio_prep_device(bdf);
 
     h->container_fd = h->group_fd = h->device_fd = -1;
     h->base = NULL;

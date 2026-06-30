@@ -328,6 +328,13 @@ pw_status pw_bar_backend_open_vfio(const char *pci_bdf,
 pw_status pw_bar_backend_open(const char *pci_bdf, struct pw_card_backend *out) {
     if (!pci_bdf || !out) return PW_E_INVAL;
 
+    /* Pin D0 + enable PCI memory decoding BEFORE either mmap path -- otherwise a
+     * runtime-suspended (D3) or fresh-bound (Mem-) card reads all-1s on BOTH the
+     * sysfs-resource and vfio mmaps, looking like a dead card. Must run here
+     * (not just in the vfio path): on some hosts the sysfs-resource mmap
+     * succeeds even while vfio-bound, so the vfio fallback never runs. */
+    pw_vfio_prep_device(pci_bdf);
+
     /* PW_BACKEND=vfio|sysfs forces a path; default auto-selects sysfs
      * and falls back to VFIO when the sysfs resource mmap is denied
      * (e.g. kernel lockdown under Secure Boot). */
