@@ -23,12 +23,19 @@
 # the signal vs ground is per the board's J5 silkscreen (confirm before wiring).
 # Wiring (2-card): card A gpio[1] (out) -> card B gpio[0] (in), common ground.
 
-set_property -dict {LOC A14 IOSTANDARD LVCMOS33} [get_ports {gpio[0]}] ;# J5.3,4   sync-in
-set_property -dict {LOC E12 IOSTANDARD LVCMOS33} [get_ports {gpio[1]}] ;# J5.5,6   sync-out
-set_property -dict {LOC E13 IOSTANDARD LVCMOS33} [get_ports {gpio[2]}] ;# J5.7,8   spare
-set_property -dict {LOC F10 IOSTANDARD LVCMOS33} [get_ports {gpio[3]}] ;# J5.9,10  spare
-set_property -dict {LOC C9  IOSTANDARD LVCMOS33} [get_ports {gpio[4]}] ;# J5.11,12 spare
-set_property -dict {LOC D9  IOSTANDARD LVCMOS33} [get_ports {gpio[5]}] ;# J5.13,14 spare
+# PULLDOWN: when no card is driving a line (a slave/listener leaves its sync-out
+# hi-Z), the far card's input would otherwise float and the 2-FF synchroniser
+# could latch noise as spurious edges. The sync line idles LOW (the pulse is
+# active-high, rising-edge detected), so a weak pulldown holds an undriven input
+# at the idle level -- harmless when the line IS driven (the driver wins). This
+# lets the J5 be cross-wired (A.out<->B.in both ways) so master/slave can be
+# chosen at runtime without re-wiring; the unused reverse leg sits cleanly low.
+set_property -dict {LOC A14 IOSTANDARD LVCMOS33 PULLTYPE PULLDOWN} [get_ports {gpio[0]}] ;# J5.3,4   sync-in
+set_property -dict {LOC E12 IOSTANDARD LVCMOS33 PULLTYPE PULLDOWN} [get_ports {gpio[1]}] ;# J5.5,6   sync-out
+set_property -dict {LOC E13 IOSTANDARD LVCMOS33 PULLTYPE PULLDOWN} [get_ports {gpio[2]}] ;# J5.7,8   spare
+set_property -dict {LOC F10 IOSTANDARD LVCMOS33 PULLTYPE PULLDOWN} [get_ports {gpio[3]}] ;# J5.9,10  spare
+set_property -dict {LOC C9  IOSTANDARD LVCMOS33 PULLTYPE PULLDOWN} [get_ports {gpio[4]}] ;# J5.11,12 spare
+set_property -dict {LOC D9  IOSTANDARD LVCMOS33 PULLTYPE PULLDOWN} [get_ports {gpio[5]}] ;# J5.13,14 spare
 
 # Async sync line: inputs land in pw_gpio_sync's 2-FF synchroniser, outputs are a
 # free-running pulse to the far card -- no setup/hold relationship either way.
