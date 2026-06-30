@@ -34,16 +34,20 @@ pw_status pw_stats_aggregate(const struct pw_program *prog,
         out[i].late      = rx_s->late_packet_count;
         out[i].sequence_gap_count = rx_s->sequence_gap_count;
 
-        out[i].latency_valid = m->latency_valid;
-        if (m->latency_valid) {
-            out[i].min_latency_ns = rx_s->min_latency;
-            out[i].max_latency_ns = rx_s->max_latency;
-            out[i].sum_latency_ns = rx_s->sum_latency;
-            out[i].sample_count   = rx_s->sample_count;
-            out[i].jitter_min_ns  = rx_s->jitter_min;
-            out[i].jitter_max_ns  = rx_s->jitter_max;
-            out[i].jitter_sum_ns  = rx_s->jitter_sum;
-        }
+        /* Latency is now available for both same- and cross-card flows: the RX
+         * checker stores the HW-corrected value for cross-card (lat_correction +
+         * J5 sync), so rx_s already holds the true one-way latency either way.
+         * latency_valid (= m->latency_valid) is repurposed as the same-card flag,
+         * surfaced here as cross_card; the numbers are copied unconditionally. */
+        out[i].latency_valid = true;
+        out[i].cross_card    = !m->latency_valid;
+        out[i].min_latency_ns = rx_s->min_latency;
+        out[i].max_latency_ns = rx_s->max_latency;
+        out[i].sum_latency_ns = rx_s->sum_latency;
+        out[i].sample_count   = rx_s->sample_count;
+        out[i].jitter_min_ns  = rx_s->jitter_min;
+        out[i].jitter_max_ns  = rx_s->jitter_max;
+        out[i].jitter_sum_ns  = rx_s->jitter_sum;
     }
     return PW_OK;
 }

@@ -267,19 +267,28 @@ static void servo_lat_correction(const struct pw_config *cfg,
                                  struct card_runtime cards[]) {
     for (size_t rx_ci = 0; rx_ci < cfg->n_cards; rx_ci++) {
         if (!cards[rx_ci].open) continue;
-        int64_t corr = 0;
+        /* Find this card's single cross-card TX source (stage-1: at most one,
+         * enforced by the validator). */
+        size_t tx_ci = (size_t)-1;
         for (size_t i = 0; i < prog->n_flow_meta; i++) {
             const struct pw_flow_meta *m = &prog->flow_meta[i];
-            if (m->tx_card_id == m->rx_card_id) continue;        /* same-card: 0 */
+            if (m->tx_card_id == m->rx_card_id) continue;        /* same-card: no corr */
             if (cfg->cards[rx_ci].id != m->rx_card_id) continue; /* not this RX card */
-            size_t tx_ci = (size_t)-1;
             for (size_t ci = 0; ci < cfg->n_cards; ci++)
                 if (cfg->cards[ci].id == m->tx_card_id) { tx_ci = ci; break; }
-            if (tx_ci == (size_t)-1 || !cards[tx_ci].open) continue;
-            corr = pw_gpio_sync_offset(&cards[tx_ci].backend, &cards[rx_ci].backend);
             break;   /* one cross-card source per RX card (stage-1 assumption) */
         }
-        pw_gpio_sync_write_correction(&cards[rx_ci].backend, corr);
+        if (tx_ci == (size_t)-1) {                  /* not a cross-card RX card */
+            pw_gpio_sync_write_correction(&cards[rx_ci].backend, 0);
+            continue;
+        }
+        if (!cards[tx_ci].open) continue;
+        int64_t corr = 0;
+        /* Only write an EDGE-COHERENT offset; on an incoherent read (an edge fell
+         * mid-sample -> a ~1-period-wrong value) skip this tick and keep the
+         * current correction, rather than briefly corrupt the latency. */
+        if (pw_gpio_sync_offset_coherent(&cards[tx_ci].backend, &cards[rx_ci].backend, &corr))
+            pw_gpio_sync_write_correction(&cards[rx_ci].backend, corr);
     }
 }
 
@@ -778,8 +787,9 @@ static struct json_object *build_flow_stats(const struct pw_config *cfg,
             json_object_object_add(f, "latency_method",
                 json_object_new_string(xcard ? "gpio-corrected" : "same-card"));
             if (xcard && tx_ci != (size_t)-1 && rx_ci != (size_t)-1) {
-                int64_t off = pw_gpio_sync_offset(&cards[tx_ci].backend, &cards[rx_ci].backend);
-                json_object_object_add(f, "offset_ticks", json_object_new_int64(off));
+                int64_t off = 0;   /* informational: the live (edge-coherent) servo offset */
+                if (pw_gpio_sync_offset_coherent(&cards[tx_ci].backend, &cards[rx_ci].backend, &off))
+                    json_object_object_add(f, "offset_ticks", json_object_new_int64(off));
             }
         }
         json_object_array_add(arr, f);

@@ -24,8 +24,14 @@ For where work is going next, see `NEXT-STEPS.md`.
     primes the correction + `stats.clear`s on (re)program so the startup window
     can't pollute min/max/hist; the validator enforces the stage-1
     global-per-card limit (a cross-card RX card may not also receive a same-card
-    flow, nor cross-card traffic from >1 TX card); and `flows`/`flow.stats`
-    report `latency_method` with `latency_valid: true` for cross-card.
+    flow, nor cross-card traffic from >1 TX card); the servo reads an
+    EDGE-COHERENT offset (`pw_gpio_sync_offset_coherent` brackets the two-card
+    read with seq re-reads, rejecting a sample where a sync edge landed mid-read
+    -- which would otherwise write a ~1-period-wrong offset), skipping the write
+    on an incoherent read; `flows`/`flow.stats` report `latency_method` with
+    `latency_valid: true` for cross-card; and `pw_stats_aggregate` now surfaces
+    cross-card latency too (`latency_valid: true` + a `cross_card` flag) instead
+    of zeroing it.
   - **Cross-card one-way latency in packetwyrmd/pktwyrm.** A flow whose TX and RX
     ports are on different cards now reports latency (previously rejected as
     "cross-card flow does not support latency/jitter"). The daemon brings up the

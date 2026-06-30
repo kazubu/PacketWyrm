@@ -49,11 +49,13 @@ produced and read back as zero.
 | `jitter_min/max/sum`     | u32/64| **yes**  | invalid    |
 | latency histogram bins   | u64[]| **yes**   | invalid    |
 
-The "invalid" entries are computed by the FPGA anyway (it has no
-notion of cross-card), but the daemon discards them and reports
-`latency: unsupported` for the flow. The stats aggregator does this
-based on the compiler's `latency_valid` annotation; the FPGA is not
-authoritative.
+Cross-card latency is **now valid too**: the RX checker corrects each sample in
+hardware (the `lat_correction` CSR carries the inter-card offset from the J5
+GPIO sync, kept current by the daemon servo), so min/max/sum and the histogram
+hold the true one-way latency for cross-card exactly as for same-card. The
+aggregator therefore reports `latency_valid = true` for both and sets a
+`cross_card` flag to distinguish the source; the compiler's `latency_valid`
+annotation is repurposed as the same-card indicator, no longer a gate.
 
 ## Snapshot protocol
 
@@ -82,8 +84,10 @@ The aggregator joins per-card snapshots into a global view keyed by
   `local_flow_id`.
 - `rx_*`, `lost_est`, `duplicate`, `out_of_order`, `late`,
   `expected_sequence`, `sequence_gap_count` &larr; RX card's counters.
-- `latency` / `jitter`: same-card only. If cross-card, set
-  `latency_valid = false` and skip latency / jitter in output.
+- `latency` / `jitter`: valid for BOTH same-card and cross-card. The RX card's
+  counters already hold the HW-corrected one-way latency (cross-card via
+  `lat_correction` + the J5 GPIO sync servo), so they are copied unconditionally;
+  `latency_valid = true` either way, with `cross_card` marking the corrected path.
 - `loss = max(0, tx_frames - rx_frames)` for reporting; the flow's
   own `lost_packets_estimated` is the authoritative loss number.
 
@@ -100,9 +104,9 @@ $ pktwyrm stats --flow 1
 Flow  TX       RX       Loss   Dup  Reord  Late  MinLat  AvgLat  MaxLat
 1     12345    12340    5      0    0      0     1.20us  1.34us  2.10us
 
-$ pktwyrm stats --flow 2
-Flow  TX       RX       Loss   Dup  Reord  Late  Latency
-2     12345    12340    5      0    0      0     unsupported (cross-card)
+$ pktwyrm stats --flow 2     # cross-card: HW-corrected, so latency is reported
+Flow  TX       RX       Loss   Dup  Reord  Late  MinLat  AvgLat  MaxLat
+2     12345    12340    5      0    0      0     0.19us  0.21us  0.24us
 ```
 
 ### JSON
@@ -130,8 +134,10 @@ Flow  TX       RX       Loss   Dup  Reord  Late  Latency
       "duplicate": 0,
       "out_of_order": 0,
       "late": 0,
-      "latency_valid": false,
-      "latency_reason": "cross-card without clock sync"
+      "latency_valid": true,
+      "cross_card": true,
+      "latency_ns": { "min": 190, "avg": 210, "max": 240 },
+      "jitter_ns":  { "min": 0,   "max": 80,  "avg": 13 }
     }
   ]
 }
