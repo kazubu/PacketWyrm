@@ -787,15 +787,18 @@ static struct json_object *build_flow_stats(const struct pw_config *cfg,
         json_object_object_add(f, "seq_gap",   json_object_new_int64((int64_t)rs.sequence_gap_count));
         json_object_object_add(f, "expected_seq", json_object_new_int64((int64_t)rs.expected_sequence));
 
-        /* Cross-card latency is corrected PER SAMPLE in hardware: the daemon
-         * servo writes the inter-card offset to each RX card's lat_correction
-         * CSR, and the checker computes lat = (rx_wire_ts + offset) - tx_ts. So
+        /* Cross-card latency is corrected PER FLOW in hardware: the daemon servo
+         * writes each cross-card flow's slot in the lat_correction table, and the
+         * checker computes lat = (rx_wire_ts + corr[slot]) - tx_ts. So
          * min/max/sum/histogram already hold the true one-way latency here -- no
          * read-time correction, and avg (from the now-small 64-bit sum) is valid
          * for cross-card too. Same-card flows run with correction 0 (unchanged).
-         * offset_ticks is reported for visibility (the live servo offset). */
+         * offset_ticks is reported for visibility (the live servo offset).
+         * latency is valid for both same- and cross-card, but ONLY if the
+         * counter read actually succeeded (read_ok) -- otherwise the fields are
+         * stale/zero, not a real measurement. */
         bool xcard = (m->tx_card_id != m->rx_card_id);
-        bool lat_ok = m->latency_valid || (xcard && read_ok);
+        bool lat_ok = read_ok && (m->latency_valid || xcard);
         json_object_object_add(f, "latency_valid", json_object_new_boolean(lat_ok));
         if (lat_ok) {
             json_object_object_add(f, "min_latency", json_object_new_int64((int64_t)(uint32_t)rs.min_latency));
