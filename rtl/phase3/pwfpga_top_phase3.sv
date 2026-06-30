@@ -62,6 +62,9 @@ module pwfpga_top_phase3 #(
     output wire              s_axis_rx_tready [NUM_PORTS],
     input  wire              s_axis_rx_tlast  [NUM_PORTS],
     input  wire              s_axis_rx_tuser  [NUM_PORTS],
+    // RX ingress wire-timestamp per port (board top samples it in the MAC RX
+    // clock domain). Routed to the data plane's RX checker as the true RX time.
+    input  wire [63:0]       s_axis_rx_wire_ts [NUM_PORTS],
 
     // Link-health status levels (async MAC/PCS), synchronized in the data plane.
     input  wire              link_up_i        [NUM_PORTS],
@@ -372,6 +375,7 @@ module pwfpga_top_phase3 #(
         .s_axis_rx_tready  (s_axis_rx_tready),
         .s_axis_rx_tlast   (s_axis_rx_tlast),
         .s_axis_rx_tuser   (s_axis_rx_tuser),
+        .s_axis_rx_wire_ts (s_axis_rx_wire_ts),
         .link_up_i         (link_up_i),
         .block_lock_i      (block_lock_i),
         .m_axis_tx_tdata   (m_axis_tx_tdata),

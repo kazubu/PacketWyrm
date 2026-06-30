@@ -124,8 +124,44 @@ module pwfpga_top_phase3_board (
 
     // --- AXIS CDC: MAC per-port clocks <-> data-plane clock (axi_aclk) ------
     wire [63:0] dprx_d[2], dptx_d[2];  wire [7:0] dprx_k[2], dptx_k[2];
-    wire dprx_v[2], dprx_r[2], dprx_l[2], dprx_u[2];
+    wire dprx_v[2], dprx_r[2], dprx_l[2];
+    wire [64:0] dprx_uwide[2];                 // CDC RX user = {rx_wire_ts[63:0], err}
+    wire        dprx_err[2];  wire [63:0] dprx_wts[2];   // split for the data plane
     wire dptx_v[2], dptx_r[2], dptx_l[2], dptx_u[2];
+
+    // --- RX ingress wire-timestamp (MAC RX clock domain) -------------------
+    // Sample the dp_clk free-running timestamp in each port's MAC RX clock and
+    // latch it at the frame's wire arrival (SOF). It rides the RX async FIFO as
+    // extra tuser bits (RX_USER_W widened to 65) so it stays glued to its frame
+    // across the CDC; the data plane reads it as the true wire-to-wire RX time
+    // (frame-size independent, unlike a dp_clk sample taken AFTER the store-and-
+    // forward FIFO). The dp_clk->rx_clk crossing reuses the Gray-coded scheme of
+    // the egress pw_ts_insert path (constrained in xdc/phase3_cdc.xdc).
+    wire [63:0] ts_rx[2];
+    wire [64:0] mac_rx_uwide[2];               // {rx_wire_ts[63:0], mac_rx_err}
+    for (genvar prx = 0; prx < 2; prx++) begin : g_rx_wirestamp
+        pw_ts_gray_cdc #(.W(64)) u_rxtscdc (
+            .src_clk(dp_clk), .src_bin(ts), .dst_clk(sfp_rx_clk[prx]), .dst_bin(ts_rx[prx])
+        );
+        logic        rx_in_frame = 1'b0;
+        logic [63:0] rx_wts_held = '0;
+        always_ff @(posedge sfp_rx_clk[prx] or posedge sfp_rx_rst[prx]) begin
+            if (sfp_rx_rst[prx]) begin rx_in_frame <= 1'b0; rx_wts_held <= '0; end
+            else if (mac_rx_v[prx]) begin
+                if (!rx_in_frame) rx_wts_held <= ts_rx[prx];   // latch the SOF wire time
+                rx_in_frame <= !mac_rx_l[prx];
+            end
+        end
+        // Present the wire-ts on every beat. The SOF beat carries ts_rx directly
+        // (rx_wts_held only updates a cycle later, via NBA), later beats carry the
+        // held value -- so whichever beat the data plane reads sees this frame's
+        // wire time. err stays at bit 0 (the RX FIFO's bad-frame mask = bit 0).
+        assign mac_rx_uwide[prx] = {(rx_in_frame ? rx_wts_held : ts_rx[prx]), mac_rx_u[prx]};
+    end
+    for (genvar prx = 0; prx < 2; prx++) begin : g_rx_split
+        assign dprx_err[prx] = dprx_uwide[prx][0];
+        assign dprx_wts[prx] = dprx_uwide[prx][64:1];
+    end
 
     // DEPTH is the per-direction MAC<->dp_clk frame-FIFO byte capacity (taxi
     // FRAME_FIFO + DROP_OVERSIZE). It must hold a whole frame, so 2048 covers a
@@ -142,16 +178,16 @@ module pwfpga_top_phase3_board (
     wire dp_soft_rst_pulse;
     wire tx_soft_flush_w [2];
 
-    pw_mac_axis_cdc #(.PORTS(2), .DATA_W(64), .DEPTH(2048)) u_cdc (
+    pw_mac_axis_cdc #(.PORTS(2), .DATA_W(64), .DEPTH(2048), .RX_USER_W(65)) u_cdc (
         .dp_clk(dp_clk), .dp_rst(dp_rst),
         .rx_clk(sfp_rx_clk), .rx_rst(sfp_rx_rst), .tx_clk(sfp_tx_clk), .tx_rst(sfp_tx_rst),
         .dp_soft_flush(dp_soft_rst_pulse), .tx_soft_flush_o(tx_soft_flush_w),
         .mac_rx_tdata(mac_rx_d), .mac_rx_tkeep(mac_rx_k), .mac_rx_tvalid(mac_rx_v),
-        .mac_rx_tlast(mac_rx_l), .mac_rx_tuser(mac_rx_u),
+        .mac_rx_tlast(mac_rx_l), .mac_rx_tuser(mac_rx_uwide),
         .mac_tx_tdata(cdc_tx_d), .mac_tx_tkeep(cdc_tx_k), .mac_tx_tvalid(cdc_tx_v),
         .mac_tx_tready(cdc_tx_r), .mac_tx_tlast(cdc_tx_l), .mac_tx_tuser(cdc_tx_u),
         .dp_rx_tdata(dprx_d), .dp_rx_tkeep(dprx_k), .dp_rx_tvalid(dprx_v),
-        .dp_rx_tready(dprx_r), .dp_rx_tlast(dprx_l), .dp_rx_tuser(dprx_u),
+        .dp_rx_tready(dprx_r), .dp_rx_tlast(dprx_l), .dp_rx_tuser(dprx_uwide),
         .dp_tx_tdata(dptx_d), .dp_tx_tkeep(dptx_k), .dp_tx_tvalid(dptx_v),
         .dp_tx_tready(dptx_r), .dp_tx_tlast(dptx_l), .dp_tx_tuser(dptx_u)
     );
@@ -232,7 +268,8 @@ module pwfpga_top_phase3_board (
         .s_axi_araddr(dar), .s_axi_arvalid(darv), .s_axi_arready(darr),
         .s_axi_rdata(drd), .s_axi_rresp(drresp), .s_axi_rvalid(drv), .s_axi_rready(drr),
         .s_axis_rx_tdata(dprx_d), .s_axis_rx_tkeep(dprx_k), .s_axis_rx_tvalid(dprx_v),
-        .s_axis_rx_tready(dprx_r), .s_axis_rx_tlast(dprx_l), .s_axis_rx_tuser(dprx_u),
+        .s_axis_rx_tready(dprx_r), .s_axis_rx_tlast(dprx_l), .s_axis_rx_tuser(dprx_err),
+        .s_axis_rx_wire_ts(dprx_wts),
         // link-health status levels (async; synchronized in the data plane)
         .link_up_i(sfp_rx_status), .block_lock_i(sfp_block_lock),
         .m_axis_tx_tdata(dptx_d), .m_axis_tx_tkeep(dptx_k), .m_axis_tx_tvalid(dptx_v),

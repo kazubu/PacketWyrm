@@ -30,8 +30,17 @@ module pw_parser_axis #(
     input  wire           s_tlast,
     input  wire [3:0]     ingress_port_i,
 
+    // RX ingress wire-timestamp: the free-running counter sampled in the MAC
+    // RX clock domain at the frame's wire arrival (board top), constant for the
+    // whole frame. Carried through the parse pipeline so it lands aligned with
+    // key_valid_o -- the RX checker uses it as the true wire-to-wire RX time
+    // (frame-size independent, unlike a dp_clk timestamp taken post-FIFO). Tie
+    // to 0 where unused; rx_wire_ts_o then just mirrors it.
+    input  wire [63:0]    rx_wire_ts_i,
+
     output pw_match_key_t key_o,
     output logic          key_valid_o,
+    output logic [63:0]   rx_wire_ts_o,  // aligned with key_valid_o
 
     // Captured header byte-window + inner-frame base offset, aligned with
     // key_valid_o, for the generic slice classifier (pw_slice_classifier).
@@ -61,6 +70,8 @@ module pw_parser_axis #(
     logic [15:0]               frame_len_q;  // total bytes of the frame just ended
     logic [3:0]                ingress_q;
     logic                      eof_q;        // parse trigger (1 cycle after tlast)
+    logic [63:0]               wts_q;        // RX wire-ts of the frame ending now
+                                             // (frame-constant; latched at EOF)
 
     function automatic int popk(input logic [7:0] kp);
         int n; n = 0;
@@ -71,6 +82,7 @@ module pw_parser_axis #(
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             byte_off <= '0; frame_len_q <= '0; eof_q <= 1'b0; ingress_q <= '0;
+            wts_q <= '0;
         end else begin
             eof_q <= 1'b0;
             if (s_tvalid && s_tready) begin
@@ -83,6 +95,10 @@ module pw_parser_axis #(
                     ingress_q   <= ingress_port_i;
                     eof_q       <= 1'b1;
                     byte_off    <= '0;
+                    // rx_wire_ts_i is frame-constant (held on tuser by the RX
+                    // FIFO), so latching it at the EOF beat captures this frame's
+                    // wire arrival time unambiguously (no SOF/next-frame race).
+                    wts_q       <= rx_wire_ts_i;
                 end else begin
                     byte_off <= byte_off + 16'(popk(s_tkeep));
                 end
@@ -106,6 +122,7 @@ module pw_parser_axis #(
     logic                      inner_v4A, inner_v6A;
     logic [15:0]               flenA;      // frame_len carried to Stage A2
     logic [HDR_BYTES-1:0][7:0] hdrA;       // header snapshot carried forward
+    logic [63:0]               wtsA;       // RX wire-ts carried alongside the key
 
     always_ff @(posedge clk or negedge rst_n) begin
         automatic pw_match_key_t k;
@@ -125,7 +142,7 @@ module pw_parser_axis #(
 
         if (!rst_n) begin
             keyA <= '0; validA <= 1'b0; eff_offA <= '0;
-            inner_v4A <= 1'b0; inner_v6A <= 1'b0; flenA <= '0;
+            inner_v4A <= 1'b0; inner_v6A <= 1'b0; flenA <= '0; wtsA <= '0;
         end else begin
             k = '0; etype0 = '0; proc = 1'b0;
             l3_off = 14; eff_off = 14; o_proto = '0; enc = 2'd0;
@@ -198,6 +215,7 @@ module pw_parser_axis #(
             inner_v6A  <= inner_v6;
             flenA      <= frame_len_q;
             hdrA       <= hdr;
+            wtsA       <= wts_q;
         end
     end
 
@@ -208,6 +226,7 @@ module pw_parser_axis #(
     logic [15:0]               pay_offA2;
     logic [15:0]               eff_offA2;   // inner base carried to Stage B
     logic [HDR_BYTES-1:0][7:0] hdrA2;
+    logic [63:0]               wtsA2;       // RX wire-ts carried to Stage B
 
     always_ff @(posedge clk or negedge rst_n) begin
         automatic pw_match_key_t k;
@@ -215,6 +234,7 @@ module pw_parser_axis #(
         automatic logic          telig, ok;
         if (!rst_n) begin
             keyA2 <= '0; validA2 <= 1'b0; test_eligA2 <= 1'b0; pay_offA2 <= '0; eff_offA2 <= '0;
+            wtsA2 <= '0;
         end else begin
             k = keyA; ok = 1'b0; telig = 1'b0; ip_hlen = 20; udp_off = 0; pay_off = 0;
             eff = int'(eff_offA); flen = int'(flenA);
@@ -270,20 +290,24 @@ module pw_parser_axis #(
             pay_offA2   <= pay_off[15:0];
             eff_offA2   <= eff_offA;
             hdrA2       <= hdrA;
+            wtsA2       <= wtsA;
         end
     end
 
     // Stage B: extract the test header at the registered offset, finalise key.
     pw_match_key_t key_q;
     logic          key_valid_q;
-    assign key_o       = key_q;
-    assign key_valid_o = key_valid_q;
+    logic [63:0]   wts_out_q;
+    assign key_o        = key_q;
+    assign key_valid_o  = key_valid_q;
+    assign rx_wire_ts_o = wts_out_q;
 
     always_ff @(posedge clk or negedge rst_n) begin
         automatic pw_match_key_t k;
         automatic int            po;
         if (!rst_n) begin
             key_q <= '0; key_valid_q <= 1'b0; window_o <= '0; base_o <= '0;
+            wts_out_q <= '0;
         end else begin
             k  = keyA2;
             po = int'(pay_offA2);
@@ -300,6 +324,7 @@ module pw_parser_axis #(
             end
             key_q       <= k;
             key_valid_q <= validA2;
+            wts_out_q   <= wtsA2;
         end
     end
 

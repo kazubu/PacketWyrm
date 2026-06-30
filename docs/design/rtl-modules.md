@@ -14,7 +14,8 @@ streaming Phase 3 plane diverged from it (no wide frame bus, no serdes).
 pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
 +-- pcie (XDMA) + axi_clk_conv    BAR -> AXI-Lite, 250 -> 156.25 MHz
 +-- pw_sfp_10g + pw_mac_axis_cdc  dual 10GBASE-R (Taxi MAC/GTY) <-> dp_clk
-+-- STARTUPE3  + pw_ts_gray_cdc + pw_ts_insert   egress HW timestamping
+|                                (RX FIFO user widened to 65b: {rx_wire_ts,err})
++-- pw_ts_gray_cdc (x2 dir) + pw_ts_insert       egress + RX-ingress HW timestamping
 +-- ICAPE3     <- pw_icap_reboot                 in-band IPROG reload
 +-- pwfpga_top_phase3            board-agnostic core
     +-- pw_csr_full              AXI-Lite slave: identity + windows +
@@ -24,8 +25,9 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
     |   +-- pw_spi_flash         CSR SPI master (live config-flash access)
     |   +-- DP_RESET / REBOOT / STATS_CLEAR / SNAPSHOT triggers
     +-- pw_punt_rx_window        punt AXIS -> CSR-polled frame buffer (host RX);
-    |                            carries a 64-bit RX wire timestamp (SOF-latched,
-    |                            servo-facing) in the punt metadata -> RX_TS regs
+    |                            carries the 64-bit RX wire timestamp (sampled in
+    |                            the MAC RX clock at SOF -- the TRUE wire arrival,
+    |                            not a post-FIFO dp_clk sample) -> RX_TS regs
     +-- pw_inject_tx_window      CSR frame buffer -> AXIS into egress (host TX);
     |                            latches the egress wire timestamp of the injected
     |                            frame (servo-facing) -> INJECT_TX_TS regs
@@ -39,7 +41,9 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
         |                      checker slot) -> pw_frame_saf
         |                      (effective result: map > hash > field classifier)
         +-- per ingress port: pw_test_rx_checker (loss/dup/ooo/min/max/sum +
-        |                      RFC-3393 IPDV jitter min/max/sum)
+        |                      RFC-3393 IPDV jitter min/max/sum; latency =
+        |                      rx_wire_ts - tx_wire_ts, i.e. wire-to-wire, free of
+        |                      the post-FIFO + parser + classifier pipeline delay)
         +-- link health: per-port 2-FF sync + edge count of MAC link_up /
         |                block_lock; FCS errors from RX tuser-on-tlast
         +-- pw_lat_histogram     shared BRAM latency histogram
@@ -176,6 +180,26 @@ needed, never the old one. Which frames to rewrite is gated by a
 carried as AXIS `tuser` through the MAC-TX CDC — so forwarded / injected
 frames (including genuine IPv6/UDP DUT traffic) are never touched. That
 `tuser` is consumed here; the MAC sees `m_tuser=0` (no tx-error).
+
+**RX ingress wire-stamp.** `pw_ts_insert` stamps tx_timestamp with the
+**TX SOF** time (latched at beat 0). For a symmetric, frame-size-independent
+wire-to-wire latency the RX side must reference the **RX SOF** the same way, so
+the board top runs a second `pw_ts_gray_cdc` per port (`u_rxtscdc`, dp_clk →
+each MAC `sfp_rx_clk`) and latches the counter at each frame's RX SOF. That
+64-bit stamp rides the RX async FIFO as extra `tuser` bits (`pw_mac_axis_cdc`
+`RX_USER_W` widened 1→65: `{rx_wire_ts[63:0], fcs_err}`, the FCS/runt error kept
+at bit 0 so the FIFO's bad-frame mask is unchanged) — so it stays glued to its
+frame across the CDC. `pw_parser_axis` carries `rx_wire_ts` through its 3 stages
+aligned with `key_valid_o`; the data plane delays it the same 4 cycles as the
+key and feeds it to the RX checker as the "now" — so checker latency =
+`rx_wire_ts − tx_timestamp` = **wire-to-wire**, free of the store-and-forward
+FIFO + parser + classifier pipeline delay (frame-size independent; the two
+Gray-CDC fixed offsets cancel). The same stamp is the servo-facing RX event time
+in the punt metadata (RX_TS regs). The dp_clk→rx_clk crossing is constrained in
+`xdc/phase3_cdc.xdc` exactly like the egress CDC (per-port `set_max_delay
+-datapath_only` + `set_bus_skew`, TIMING-6/7 waived). On a single card the gain
+is modest (loopback jitter is already ~0); the real payoff is cross-card one-way
+latency, where the two cards share a time base via the J5 GPIO sync.
 
 ## Top-level module hierarchy (original design sketch)
 

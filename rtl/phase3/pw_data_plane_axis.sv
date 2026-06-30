@@ -92,6 +92,13 @@ module pw_data_plane_axis #(
     // MAC RX tuser asserted on tlast = errored frame (FCS/runt); counted
     // per port as rx_fcs_error. Tie low if the MAC doesn't surface it.
     input  wire                   s_axis_rx_tuser  [PW_PORTS],
+    // RX ingress wire-timestamp per port: the free-running counter sampled in
+    // the MAC RX clock domain at the frame's wire arrival (board top), held
+    // constant across the frame's beats. The parser carries it to align with
+    // key_valid; the RX checker uses it as the true wire-to-wire RX time
+    // (frame-size independent). Tie to 0 in a standalone/loopback-less build --
+    // the checker then measures the dp_clk pipeline latency as before.
+    input  wire [63:0]            s_axis_rx_wire_ts [PW_PORTS],
 
     // Per-port AXIS TX (data plane egress -> MAC). Forwarded frames take
     // priority; the per-port flow generator fills idle slots.
@@ -280,13 +287,25 @@ module pw_data_plane_axis #(
     // the checker arbiter, the SAF decision, and the drop counter by four cycles.
     logic             [PW_PORTS-1:0] rx_kv_d1, rx_kv_d2, rx_kv_d3, rx_kv_d;
     pw_match_key_t    [PW_PORTS-1:0] rx_key_d1, rx_key_d2, rx_key_d3, rx_key_d;
+    // Per-port RX wire-timestamp from the parser (aligned with rx_kv); delayed
+    // by the same four cycles so it lands aligned with rx_key_d / rx_kv_d at the
+    // checker. Fed to the checker as its "now" -> latency = wire-to-wire.
+    logic [63:0] rx_wts [PW_PORTS];
+    logic [63:0] rx_wts_d1 [PW_PORTS], rx_wts_d2 [PW_PORTS], rx_wts_d3 [PW_PORTS], rx_wts_d [PW_PORTS];
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             rx_kv_d1  <= '0; rx_kv_d2  <= '0; rx_kv_d3  <= '0; rx_kv_d  <= '0;
             rx_key_d1 <= '0; rx_key_d2 <= '0; rx_key_d3 <= '0; rx_key_d <= '0;
+            for (int p = 0; p < PW_PORTS; p++) begin
+                rx_wts_d1[p] <= '0; rx_wts_d2[p] <= '0; rx_wts_d3[p] <= '0; rx_wts_d[p] <= '0;
+            end
         end else begin
             rx_kv_d1  <= rx_kv;   rx_kv_d2  <= rx_kv_d1;  rx_kv_d3  <= rx_kv_d2;  rx_kv_d  <= rx_kv_d3;
             rx_key_d1 <= rx_key;  rx_key_d2 <= rx_key_d1; rx_key_d3 <= rx_key_d2; rx_key_d <= rx_key_d3;
+            for (int p = 0; p < PW_PORTS; p++) begin
+                rx_wts_d1[p] <= rx_wts[p];   rx_wts_d2[p] <= rx_wts_d1[p];
+                rx_wts_d3[p] <= rx_wts_d2[p]; rx_wts_d[p] <= rx_wts_d3[p];
+            end
         end
     end
 
@@ -315,8 +334,10 @@ module pw_data_plane_axis #(
                 .s_tready       (),                 // parser holds ready=1 internally
                 .s_tlast        (s_axis_rx_tlast[gp]),
                 .ingress_port_i (4'(gp)),
+                .rx_wire_ts_i   (s_axis_rx_wire_ts[gp]),
                 .key_o          (rx_key[gp]),
                 .key_valid_o    (rx_kv[gp]),
+                .rx_wire_ts_o   (rx_wts[gp]),
                 .window_o       (rx_win[gp]),
                 .base_o         (rx_base[gp])
             );
@@ -421,20 +442,22 @@ module pw_data_plane_axis #(
             wire act_punt = (rx_eff[gp].action == PW_ACT_PUNT_TO_HOST) ||
                             (rx_eff[gp].action == PW_ACT_MIRROR_TO_HOST);
 
-            // RX wire timestamp (servo-facing): latch the free-running counter at
-            // the frame's first beat (SOF), snapshot it at EOF into frame_ts.
-            // frame_ts holds this frame's SOF time until the next frame's EOF
-            // (>> the classifier decision latency), so it is still valid when the
-            // SAF decision lands -- carried in the punt metadata to the host.
+            // RX wire timestamp (servo-facing): the wire-arrival time of this
+            // frame (sampled in the MAC RX clock domain, board top) rides on
+            // s_axis_rx_wire_ts, held constant across the frame. Snapshot it at
+            // EOF into frame_ts and carry it in the punt metadata to the host --
+            // a true wire stamp, not a post-FIFO dp_clk sample. frame_ts holds
+            // until the next frame's EOF (>> the classifier decision latency),
+            // so it is still valid when the SAF decision lands.
             logic        in_frame;
             logic [63:0] sof_ts, frame_ts;
             always_ff @(posedge clk or negedge rst_n) begin
                 if (!rst_n) begin in_frame <= 1'b0; sof_ts <= '0; frame_ts <= '0; end
                 else if (s_axis_rx_tvalid[gp]) begin
-                    if (!in_frame) sof_ts <= timestamp_i;
+                    if (!in_frame) sof_ts <= s_axis_rx_wire_ts[gp];
                     in_frame <= !s_axis_rx_tlast[gp];
                     if (s_axis_rx_tlast[gp])
-                        frame_ts <= in_frame ? sof_ts : timestamp_i;  // single-beat -> this beat
+                        frame_ts <= in_frame ? sof_ts : s_axis_rx_wire_ts[gp];  // single-beat -> this beat
                 end
             end
 
@@ -503,7 +526,10 @@ module pw_data_plane_axis #(
                 .clk             (clk),
                 .rst_n           (rst_n),
                 .clear_i         (stats_clear_i),
-                .timestamp_i     (timestamp_i),
+                // RX "now" = this frame's wire-arrival time (aligned with the
+                // delayed key), so latency = TX-wire-stamp .. RX-wire-stamp,
+                // free of the post-FIFO + parser + classifier pipeline delay.
+                .timestamp_i     (rx_wts_d[gp]),
                 .key_i           (rx_key_d[gp]),
                 .result_i        (rx_eff[gp]),
                 .event_valid_i   (chk_ev),

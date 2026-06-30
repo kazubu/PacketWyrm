@@ -114,8 +114,10 @@ silkscreen before wiring. (Authoritative pin LOCs: fpga/as02mc04/xdc/gpio_phase3
   0x1004  punt_info    R:[13:0]byte_len [19:16]ingress_port
   0x1008  punt_lif     R: logical_if_id of the punted frame
   0x100c  punt_pop     W:1 -> release the current frame
-  0x1010  punt_rx_ts_lo R: RX wire timestamp [31:0] (free-running counter latched
-  0x1014  punt_rx_ts_hi R: at the frame's SOF -- servo-facing PTP RX event time)
+  0x1010  punt_rx_ts_lo R: RX wire timestamp [31:0] (counter sampled in the MAC RX
+  0x1014  punt_rx_ts_hi R: clock at the frame's SOF = true wire arrival, carried
+                           through the RX FIFO; servo-facing PTP RX event time.
+                           Same stamp the RX checker uses for wire-to-wire latency.)
   0x1020  punt_data    R: frame word i at +i*4 (little-endian; up to 2 KB)
 
 # Wide table windows (64 flows / 64 classifier rows max). The

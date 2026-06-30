@@ -101,6 +101,29 @@ module tb_phase3_top;
         else        ts <= ts + 64'd1;
     end
 
+    // RX ingress wire-timestamp, emulating the board top: per port, latch ts at
+    // the frame's SOF beat and present it (constant) for the whole frame. The
+    // SOF beat presents ts directly (the held reg updates one cycle later), so
+    // whichever beat the data plane reads sees this frame's wire time. This is
+    // the same SOF reference the generator stamps tx_timestamp with (build() at
+    // emit-start), so checker latency = RX_SOF - TX_SOF = wire-to-wire.
+    logic [63:0] rx_wire_ts  [NUM_PORTS];
+    logic        rx_inframe  [NUM_PORTS] = '{default: 1'b0};
+    logic [63:0] rx_held     [NUM_PORTS] = '{default: '0};
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (int p = 0; p < NUM_PORTS; p++) begin rx_inframe[p] <= 1'b0; rx_held[p] <= '0; end
+        end else begin
+            for (int p = 0; p < NUM_PORTS; p++) if (rx_tvalid[p]) begin
+                if (!rx_inframe[p]) rx_held[p] <= ts;     // latch SOF wire time
+                rx_inframe[p] <= !rx_tlast[p];
+            end
+        end
+    end
+    always_comb
+        for (int p = 0; p < NUM_PORTS; p++)
+            rx_wire_ts[p] = rx_inframe[p] ? rx_held[p] : ts;
+
     pwfpga_top_phase3 #(
         .NUM_PORTS    (NUM_PORTS),
         .NUM_FLOWS    (NUM_FLOWS),
@@ -121,6 +144,7 @@ module tb_phase3_top;
         .s_axis_rx_tready (rx_tready),
         .s_axis_rx_tlast  (rx_tlast),
         .s_axis_rx_tuser  (rx_tuser),
+        .s_axis_rx_wire_ts(rx_wire_ts),
         .link_up_i        (link_up_t),
         .block_lock_i     (block_lock_t),
         .m_axis_tx_tdata  (tx_tdata),
@@ -342,11 +366,18 @@ module tb_phase3_top;
         @(posedge clk);
         @(posedge clk);
         begin
-            logic [31:0] lo, hi;
+            logic [31:0] lo, hi, minlat;
             axi_read(STATS_FLOW_BASE + 0*128 + OFF_RX_FRAMES,     lo);
             axi_read(STATS_FLOW_BASE + 0*128 + OFF_RX_FRAMES + 4, hi);
             check_eq("snap flow0 rx_frames > 0", (lo > 0) ? 1 : 0, 1);
             check_eq("snap flow0 rx_frames hi   = 0", hi, 0);
+            // RX wire-stamp: latency is now RX_SOF - TX_SOF (both SOF-referenced,
+            // wire-to-wire), so in this tight loopback it must be small + bounded
+            // -- NOT the old post-FIFO+parser+classifier pipeline figure, and
+            // never a wrapped/huge value. (offset 80 = min_latency, u32.)
+            axi_read(STATS_FLOW_BASE + 0*128 + 80, minlat);
+            check_eq("snap flow0 min_latency bounded (wire-to-wire)",
+                     (minlat > 0 && minlat < 32'd256) ? 1 : 0, 1);
         end
 
         // ---- ARP punt path: drive an ARP frame on RX[0], drain it from

@@ -12,7 +12,14 @@
 module pw_mac_axis_cdc #(
     parameter int PORTS  = 2,
     parameter int DATA_W = 64,
-    parameter int DEPTH  = 1024
+    parameter int DEPTH  = 1024,
+    // RX-path tuser width. Default 1 = the MAC's FCS/runt error bit only
+    // (bit 0). The Phase 3 board widens this to carry an RX ingress wire-
+    // timestamp alongside the error bit: tuser = {rx_wire_ts[63:0], err}.
+    // The error bit MUST stay at bit 0 -- the RX FIFO's bad-frame drop uses
+    // the default USER_BAD_FRAME_MASK = 1 (bit 0), so the extra ts bits never
+    // affect frame dropping. TX-path tuser is always 1 bit.
+    parameter int RX_USER_W = 1
 ) (
     input  wire logic              dp_clk,
     input  wire logic              dp_rst,
@@ -28,7 +35,7 @@ module pw_mac_axis_cdc #(
     input  wire logic [DATA_W/8-1:0] mac_rx_tkeep  [PORTS],
     input  wire logic                mac_rx_tvalid [PORTS],
     input  wire logic                mac_rx_tlast  [PORTS],
-    input  wire logic                mac_rx_tuser  [PORTS],
+    input  wire logic [RX_USER_W-1:0] mac_rx_tuser [PORTS],
 
     // MAC TX (tx_clk) flat out -> pw_sfp_10g
     output wire logic [DATA_W-1:0]   mac_tx_tdata  [PORTS],
@@ -44,7 +51,7 @@ module pw_mac_axis_cdc #(
     output wire logic                dp_rx_tvalid [PORTS],
     input  wire logic                dp_rx_tready [PORTS],
     output wire logic                dp_rx_tlast  [PORTS],
-    output wire logic                dp_rx_tuser  [PORTS],
+    output wire logic [RX_USER_W-1:0] dp_rx_tuser [PORTS],
 
     // Data-plane side (dp_clk): TX in from data plane
     input  wire logic [DATA_W-1:0]   dp_tx_tdata  [PORTS],
@@ -102,8 +109,8 @@ module pw_mac_axis_cdc #(
 
     for (genvar p = 0; p < PORTS; p++) begin : g_cdc
 
-        taxi_axis_if #(.DATA_W(DATA_W), .USER_EN(1), .USER_W(1)) rx_s ();
-        taxi_axis_if #(.DATA_W(DATA_W), .USER_EN(1), .USER_W(1)) rx_m ();
+        taxi_axis_if #(.DATA_W(DATA_W), .USER_EN(1), .USER_W(RX_USER_W)) rx_s ();
+        taxi_axis_if #(.DATA_W(DATA_W), .USER_EN(1), .USER_W(RX_USER_W)) rx_m ();
         taxi_axis_if #(.DATA_W(DATA_W), .USER_EN(1), .USER_W(1)) tx_s ();
         taxi_axis_if #(.DATA_W(DATA_W), .USER_EN(1), .USER_W(1)) tx_m ();
 
