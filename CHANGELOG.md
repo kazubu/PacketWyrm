@@ -9,6 +9,17 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **RX ingress wire-stamp.** Received frames are now timestamped in the MAC RX
+    clock domain at SOF (a second `pw_ts_gray_cdc` per port, dp_clk→`sfp_rx_clk`),
+    carried through the RX async FIFO as widened `tuser` (`pw_mac_axis_cdc`
+    `RX_USER_W` 1→65 = `{rx_wire_ts, fcs_err}`) and through `pw_parser_axis`
+    aligned with the key. The RX checker now computes latency as
+    `rx_wire_ts − tx_wire_ts` (both SOF-referenced) = true **wire-to-wire**, free
+    of the store-and-forward FIFO + parser + classifier pipeline delay and
+    frame-size independent. The same stamp is the servo-facing RX event time in
+    the punt metadata (previously a post-FIFO dp_clk sample). Single-card payoff
+    is modest (loopback jitter already ~0); the real value is cross-card one-way
+    latency once two cards share a time base via the J5 GPIO sync.
   - **Stateless TCP segment generation.** A flow selects `tcp:` instead of
     `udp:` (mutually exclusive) to emit fixed-form TCP segments — a 20-byte TCP
     header (data-offset 5, configurable `flags` byte defaulting to 0x02 SYN,

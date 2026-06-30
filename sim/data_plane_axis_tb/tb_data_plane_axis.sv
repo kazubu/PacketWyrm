@@ -184,6 +184,27 @@ module tb_data_plane_axis;
     logic [47:0] fcs_d  [PORTS];
     logic [31:0] luc_d  [PORTS], ldc_d [PORTS], bllc_d [PORTS];
 
+    // RX ingress wire-timestamp, emulating the board top: latch ts at each
+    // frame's SOF beat, present it (constant) across the frame. Same SOF
+    // reference the generator stamps tx_timestamp with -> checker latency is
+    // wire-to-wire (RX_SOF - TX_SOF).
+    logic [63:0] rx_wire_ts  [PORTS];
+    logic        rx_wts_inf  [PORTS] = '{default: 1'b0};
+    logic [63:0] rx_wts_hld  [PORTS] = '{default: '0};
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (int p = 0; p < PORTS; p++) begin rx_wts_inf[p] <= 1'b0; rx_wts_hld[p] <= '0; end
+        end else begin
+            for (int p = 0; p < PORTS; p++) if (rx_tvalid[p]) begin
+                if (!rx_wts_inf[p]) rx_wts_hld[p] <= ts;
+                rx_wts_inf[p] <= !rx_tlast[p];
+            end
+        end
+    end
+    always_comb
+        for (int p = 0; p < PORTS; p++)
+            rx_wire_ts[p] = rx_wts_inf[p] ? rx_wts_hld[p] : ts;
+
     pw_data_plane_axis #(
         .PW_PORTS         (PORTS),
         .PW_NUM_FLOWS     (FLOWS),
@@ -206,6 +227,7 @@ module tb_data_plane_axis;
         .s_axis_rx_tready (rx_tready),
         .s_axis_rx_tlast  (rx_tlast),
         .s_axis_rx_tuser  (rx_tuser),
+        .s_axis_rx_wire_ts(rx_wire_ts),
         .link_up_i        (link_up_dp),
         .block_lock_i     (block_lock_dp),
         .m_axis_tx_tdata  (tx_tdata),

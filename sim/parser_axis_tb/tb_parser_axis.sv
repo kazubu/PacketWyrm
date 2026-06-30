@@ -13,6 +13,8 @@ module tb_parser_axis;
     logic [63:0] ts = 0;
 
     pw_match_key_t key; logic key_valid;
+    logic [63:0]   rx_wire_ts;       // parser RX wire-ts output (aligned w/ key_valid)
+    logic [63:0]   eof_ts;           // ts captured at each frame's tlast beat
 
     int g_pass = 0, g_fail = 0;
     task chk(input string n, input logic c);
@@ -36,14 +38,21 @@ module tb_parser_axis;
         .clk(clk), .rst_n(rst_n),
         .s_tdata(td), .s_tkeep(tk), .s_tvalid(tv), .s_tready(), .s_tlast(tl),
         .ingress_port_i(4'd3),
-        .key_o(key), .key_valid_o(key_valid), .window_o(), .base_o()
+        .rx_wire_ts_i(ts),
+        .key_o(key), .key_valid_o(key_valid), .rx_wire_ts_o(rx_wire_ts),
+        .window_o(), .base_o()
     );
 
     int seen = 0;
     logic [63:0] last_seq;
+    // Capture the wire-ts source at each frame's tlast beat; the parser latches
+    // rx_wire_ts_i there and carries it out aligned with key_valid 4 cycles
+    // later, so rx_wire_ts_o must equal this frame's eof_ts.
+    always_ff @(posedge clk) if (tv && tl) eof_ts <= ts;
     always_ff @(posedge clk) begin
         ts <= ts + 1;
         if (rst_n && key_valid && key.is_test) begin
+            chk($sformatf("rx_wire_ts == eof_ts #%0d", seen), rx_wire_ts == eof_ts);
             if (seen == 0) begin
                 chk("is_ipv4",       key.is_ipv4);
                 chk("is_udp",        key.is_udp);

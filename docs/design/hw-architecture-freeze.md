@@ -32,15 +32,18 @@ sample can resolve to garbage → corrupted wire timestamps. So we do **not**
 discipline the HW counter. Instead:
 
 - The dp_clk counter stays free-running `+1`/cycle (Gray-CDC unchanged).
-- HW captures **raw wire timestamps** (TX egress already does; add RX ingress).
+- HW captures **raw wire timestamps** (TX egress and RX ingress both DONE: TX at
+  SOF in `pw_ts_insert`; RX at SOF via a per-port `pw_ts_gray_cdc` dp_clk→rx_clk,
+  carried through the RX FIFO `tuser` + parser to the checker — wire-to-wire).
 - The SW PTP servo measures each card's offset/skew vs the grandmaster from PTP
   packet exchanges and **corrects the raw timestamps in software**. Adequate for
   a latency tester (one-way latency = corrected rx_wire_ts − corrected tx_wire_ts).
 
 So the original "disciplinable counter" (item 1 below) is **dropped**, and
 "atomic snapshot" is moot (the flow snapshot is a BRAM walk, coherent per-flow;
-final loss uses stop→drain→snapshot). The remaining HW hook is the RX ingress
-wire-stamp (item, was step 3) + exposing TX/RX wire timestamps for PTP packets.
+final loss uses stop→drain→snapshot). The HW timestamp hooks are now in place
+(TX + RX wire-stamps); what remains is SW-side: the PTP/GPIO servo that turns the
+raw cross-card stamps into corrected one-way latencies (needs ≥2 cards).
 
 ### 1. (DROPPED) PTP-ready disciplinable timestamp
 
