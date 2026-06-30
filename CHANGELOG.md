@@ -9,6 +9,18 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Cross-card one-way latency in packetwyrmd/pktwyrm.** A flow whose TX and RX
+    ports are on different cards now reports latency (previously rejected as
+    "cross-card flow does not support latency/jitter"). The daemon brings up the
+    J5 GPIO time-sync on load (one master, others slave), and `flow.stats`
+    offset-corrects the RX-checker latency: `latency_method: "gpio-corrected"`,
+    `offset_ticks`, exact `min`/`max` (avg omitted -- the 64-bit sum overflows
+    under the offset; jitter is valid as-is since the offset cancels). New
+    `pktwyrm latency` prints per-flow one-way latency (same-card exact /
+    cross-card GPIO-corrected). HW-validated: cross-card min ~30 ticks (~192 ns),
+    matching the single-card wire-to-wire figure. Library helpers
+    `pw_gpio_sync_*` (libpacketwyrm/gpio_sync). Needs the J5 headers wired; the
+    histogram stays cross-card-unsupported (binned in HW on the raw latency).
   - **RX ingress wire-stamp.** Received frames are now timestamped in the MAC RX
     clock domain at SOF (a second `pw_ts_gray_cdc` per port, dp_clk→`sfp_rx_clk`),
     carried through the RX async FIFO as widened `tuser` (`pw_mac_axis_cdc`

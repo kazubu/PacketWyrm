@@ -113,9 +113,19 @@ fresh snapshot on each open card before reading.
 }
 ```
 
-Cross-card flows return `latency_valid: false` and omit
-`min_latency` etc. The aggregator never invents cross-card
-latency numbers.
+Cross-card flows are now supported via the J5 GPIO time-sync: they return
+`latency_valid: true`, `latency_method: "gpio-corrected"`, and an
+`offset_ticks` (the inter-card counter offset added to the raw RX-checker
+latency). `min_latency`/`max_latency` are exact (low-32-bit, offset-corrected);
+`avg_latency` is **omitted** for cross-card flows (the 64-bit `sum_latency`
+overflows under the offset bias and isn't correctable -- use `min_latency`, the
+standard one-way figure). `jitter_*` is valid as-is (the offset cancels in a
+diff of consecutive latencies). Same-card flows report `latency_method:
+"same-card"` and include `avg_latency` (counter-direct, exact). Requires the
+cards' J5 headers to be wired; otherwise the corrected number is meaningless
+(a hardware-setup concern). For tight cross-card `max`, issue `stats.clear`
+then read within a short window -- the ~ppm clock skew smears min/max over a
+long accumulation; the offset is re-measured each read so it stays valid.
 
 ### `flow.hist`
 
@@ -133,9 +143,11 @@ Per-flow power-of-two latency histogram.
 }
 ```
 
-For cross-card flows the daemon returns
-`{ "id": <n>, "latency_valid": false, "reason": "..." }` &mdash;
-no bucket array.
+For cross-card flows the **histogram** is still unavailable
+(`{ "id": <n>, "latency_valid": false, "reason": "..." }`, no bucket array):
+the buckets are binned in hardware on the *uncorrected* raw latency, so the
+GPIO offset can't be applied after the fact. Use `flow.stats` (min/max are
+offset-corrected) for cross-card latency.
 
 ### `flow.start` / `flow.stop`
 

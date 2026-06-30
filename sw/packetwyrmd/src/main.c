@@ -25,6 +25,7 @@
 
 #include "packetwyrm/packetwyrm.h"
 #include "packetwyrm/spi_flash.h"
+#include "packetwyrm/gpio_sync.h"
 
 static volatile sig_atomic_t g_stop = 0;
 static void on_signal(int sig) { (void)sig; g_stop = 1; }
@@ -225,10 +226,32 @@ static uint64_t now_ms(void) {
  * can report that the FPGA is NOT in sync with the daemon's config. The table
  * write sequence itself lives in libpacketwyrm (pw_program_card_tables) so it is
  * shared with the unit tests; here we add the per-card data-plane quiesce. */
+/* If any flow crosses cards, bring up the J5 time-sync so cross-card latency
+ * can be offset-corrected: one master drives the shared edge, every other card
+ * latches it. A single master suffices -- offset(any pair) = txcard_ts - rxcard_ts
+ * since both latch the same edge. (Cross-wired J5; the master drives out pin 1,
+ * slaves listen on in pin 0; period_log2=15.) Best-effort. */
+static void setup_gpio_sync(const struct pw_config *cfg,
+                            const struct pw_program *prog,
+                            struct card_runtime cards[]) {
+    bool any_cross = false;
+    for (size_t i = 0; i < prog->n_flow_meta; i++)
+        if (prog->flow_meta[i].tx_card_id != prog->flow_meta[i].rx_card_id) { any_cross = true; break; }
+    int master_ci = -1;
+    for (size_t ci = 0; ci < cfg->n_cards; ci++)
+        if (cards[ci].open) { master_ci = (int)ci; break; }
+    if (master_ci < 0) return;
+    for (size_t ci = 0; ci < cfg->n_cards; ci++) {
+        if (!cards[ci].open) continue;
+        if (!any_cross)              pw_gpio_sync_disable(&cards[ci].backend);
+        else if ((int)ci == master_ci) pw_gpio_sync_master(&cards[ci].backend, 1, 15);
+        else                          pw_gpio_sync_slave(&cards[ci].backend, 0);
+    }
+}
+
 static pw_status program_backends(const struct pw_program *prog,
                                   const struct pw_config *cfg,
                                   struct card_runtime cards[]) {
-    (void)cfg;
     pw_status worst = PW_OK;
     for (size_t ci = 0; ci < prog->n_cards; ci++) {
         const struct pw_card_program *cp = &prog->per_card[ci];
@@ -246,6 +269,8 @@ static pw_status program_backends(const struct pw_program *prog,
         pw_status s = pw_program_card_tables(b->ops, b->ctx, cp);
         if (s != PW_OK && worst == PW_OK) worst = s;
     }
+    /* Bring up J5 time-sync for cross-card flows (latency offset correction). */
+    setup_gpio_sync(cfg, prog, cards);
     return worst;
 }
 
@@ -646,15 +671,31 @@ static struct json_object *build_flow_stats(const struct pw_config *cfg,
         json_object_object_add(f, "seq_gap",   json_object_new_int64((int64_t)rs.sequence_gap_count));
         json_object_object_add(f, "expected_seq", json_object_new_int64((int64_t)rs.expected_sequence));
 
-        json_object_object_add(f, "latency_valid",
-                               json_object_new_boolean(m->latency_valid));
-        if (m->latency_valid) {
-            json_object_object_add(f, "min_latency", json_object_new_int64((int64_t)rs.min_latency));
-            json_object_object_add(f, "max_latency", json_object_new_int64((int64_t)rs.max_latency));
-            int64_t avg = rs.sample_count
-                ? (int64_t)(rs.sum_latency / rs.sample_count)
-                : 0;
-            json_object_object_add(f, "avg_latency", json_object_new_int64(avg));
+        /* Cross-card latency is now supported via the J5 GPIO offset: the raw
+         * checker latency (rx_wire_ts_rx - tx_ts_tx) is in two different card
+         * counters = true_latency - offset(tx-rx); add the offset back. Offset
+         * cancels in jitter (a diff of consecutive latencies), so jitter is
+         * valid uncorrected. Same-card flows use offset 0 (unchanged output). */
+        bool xcard = (m->tx_card_id != m->rx_card_id);
+        bool lat_ok = m->latency_valid || (xcard && read_ok);
+        json_object_object_add(f, "latency_valid", json_object_new_boolean(lat_ok));
+        if (lat_ok) {
+            uint32_t off = 0;
+            if (xcard && tx_ci != (size_t)-1 && rx_ci != (size_t)-1)
+                off = (uint32_t)pw_gpio_sync_offset(&cards[tx_ci].backend, &cards[rx_ci].backend);
+            uint32_t mn = (uint32_t)(rs.min_latency + off);
+            uint32_t mx = (uint32_t)(rs.max_latency + off);
+            json_object_object_add(f, "min_latency", json_object_new_int64((int64_t)mn));
+            json_object_object_add(f, "max_latency", json_object_new_int64((int64_t)mx));
+            /* avg comes from the 64-bit sum_latency. For a cross-card flow the
+             * raw per-sample latency is ~2^64 - offset (wraps negative), so the
+             * sum overflows u64 and is NOT correctable -- report min/max (low-32,
+             * exact) only. (min is the standard one-way figure anyway.) Same-card
+             * sum is a true small value, so avg is valid there. */
+            if (!xcard) {
+                int64_t avg = rs.sample_count ? (int64_t)(rs.sum_latency / rs.sample_count) : 0;
+                json_object_object_add(f, "avg_latency", json_object_new_int64(avg));
+            }
             json_object_object_add(f, "sample_count",
                                    json_object_new_int64((int64_t)rs.sample_count));
             json_object_object_add(f, "jitter_min", json_object_new_int64((int64_t)rs.jitter_min));
@@ -663,6 +704,10 @@ static struct json_object *build_flow_stats(const struct pw_config *cfg,
                 ? (int64_t)(rs.jitter_sum / rs.sample_count)
                 : 0;
             json_object_object_add(f, "jitter_avg", json_object_new_int64(jit_avg));
+            json_object_object_add(f, "latency_method",
+                json_object_new_string(xcard ? "gpio-corrected" : "same-card"));
+            if (xcard)
+                json_object_object_add(f, "offset_ticks", json_object_new_int64((int64_t)(int32_t)off));
         }
         json_object_array_add(arr, f);
     }

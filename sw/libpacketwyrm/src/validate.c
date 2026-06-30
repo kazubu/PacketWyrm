@@ -102,13 +102,14 @@ pw_status pw_config_validate(const struct pw_config *cfg, struct pw_diag *d) {
             diag(d, PW_E_UNKNOWN_LOGICAL_IF, p, "logical_if_id is not declared");
             return PW_E_UNKNOWN_LOGICAL_IF;
         }
+        /* Cross-card latency/jitter is now supported: the daemon offset-corrects
+         * the RX checker latency using the J5 GPIO time-sync (and jitter is a
+         * diff of consecutive latencies, so the inter-card offset cancels). This
+         * requires the cards' J5 headers to be wired (cross-chassis sync); if
+         * they are not, the corrected latency is meaningless -- a HARDWARE setup
+         * concern the config validator can't detect, not a config error. */
         bool same_card = (tx.card_id == rx.card_id);
-        if (!same_card && (f->meas.latency || f->meas.jitter)) {
-            char p[96]; snprintf(p, sizeof(p), "flows[%zu].measurements.latency", i);
-            diag(d, PW_E_CROSS_CARD_LATENCY, p,
-                 "cross-card flow does not support latency/jitter (no clock sync yet)");
-            return PW_E_CROSS_CARD_LATENCY;
-        }
+        (void)same_card;
         /* traffic exclusivity */
         bool has_fixed = f->traffic.frame_len_fixed_set;
         bool has_range = (f->traffic.frame_len_max != 0);
