@@ -71,7 +71,9 @@ set_property -dict {LOC AF6 } [get_ports {pcie_tx_n[7]}]
 # led_hb (B9, DS5) - 1 Hz heartbeat: FPGA is alive
 # led[1] (C11, DS7) - PCIe link up
 # led[0,2,3] - reserved for SFP / per-port status (Phase 2)
-# sfp_led[0..1], led_r, led_g - left unconnected in Phase 1
+# sfp_led[0..1], led_r, led_g - unconnected in Phase 1. Phase 2+ wires sfp_led
+#   in sfp.xdc; Phase 3 wires the R/G health LED (led_r=A13, led_g=A12) in the
+#   phase3-only gpio_phase3.xdc (those ports don't exist in the Phase 1/2 tops).
 set_property -dict {LOC B9   IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 12} [get_ports led_hb]
 set_property -dict {LOC B11  IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 12} [get_ports {led[0]}]
 set_property -dict {LOC C11  IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 12} [get_ports {led[1]}]
