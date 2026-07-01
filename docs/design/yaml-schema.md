@@ -8,12 +8,26 @@ single-card system simply has a `cards:` list of length one.
 ## Top-level
 
 ```yaml
-system:               # required
-cards:                # required, len >= 1
-logical_interfaces:   # optional, len >= 0
-flows:                # optional, len >= 0
-forwards:             # optional, len >= 0  (store-and-forward rules)
+system:               # required (environment)
+cards:                # required, len >= 1 (environment)
+logical_interfaces:   # optional, len >= 0 (environment)
+flows:                # optional, len >= 0 (test)
+forwards:             # optional, len >= 0 (test; store-and-forward rules)
 ```
+
+## Environment vs test config (split)
+
+The config divides into an **environment** part (rarely changed: `system`,
+`cards`, `logical_interfaces`, and the `secret`) and a **test** part (changed
+often: `flows`, `forwards`). They can live in one combined file (all keys) or
+two files:
+
+- `packetwyrmd -e ENV [-t TEST]` — the daemon reads the environment (default
+  `/etc/packetwyrm/packetwyrm.yaml`) and, optionally, an initial test config; a
+  combined single file via `-e` still works.
+- `pktwyrm load TEST.yaml` — ships **flows/forwards only**; the daemon merges
+  them onto its running environment (`config.load`). A test-only file omits
+  `system`/`cards` (those stay optional when parsing a test config).
 
 ## `system`
 
@@ -24,6 +38,12 @@ system:
   default_speed: "10g"          # required for now; only "10g"
   stats_poll_interval_ms: 100   # optional, default 100
   control_socket: "/var/run/packetwyrm/packetwyrmd.sock"  # optional
+  secret: "..."                 # optional, ENVIRONMENT ONLY. When set, the
+                                # daemon requires every control-socket request
+                                # to carry it; a client reads it from the env
+                                # config (or --secret / $PACKETWYRM_SECRET), so
+                                # read permission on the env file is the access
+                                # gate. Empty/absent = auth disabled.
 ```
 
 ## `cards`

@@ -84,6 +84,73 @@ static const char *cfg_single_card =
 "      rate_bps: 1000000000\n"
 "    measurements: { loss: true, latency: true, jitter: true }\n";
 
+/* Environment-only config (no flows) with a secret. */
+static const char *cfg_env_only =
+"system:\n"
+"  name: pw-env\n"
+"  mode: multi-card\n"
+"  default_speed: 10g\n"
+"  secret: s3cr3t\n"
+"cards:\n"
+"  - id: 0\n"
+"    pci: \"0000:03:00.0\"\n"
+"    ports:\n"
+"      - { local_port: 0, global_port: 0 }\n"
+"      - { local_port: 1, global_port: 1 }\n"
+"logical_interfaces:\n"
+"  - { id: 1000, global_port: 0, vlan: 100, mac: \"02:a5:02:00:00:64\", punt: { arp: true } }\n";
+
+/* Test-only config (flows, no system/cards) -- references env ports/lif. */
+static const char *cfg_test_only =
+"flows:\n"
+"  - id: 1\n"
+"    name: t\n"
+"    tx_global_port: 0\n"
+"    rx_global_port: 1\n"
+"    logical_if_id: 1000\n"
+"    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\", vlan: 100 }\n"
+"    ipv4: { src: \"192.0.2.1\", dst: \"192.0.2.2\" }\n"
+"    udp:  { src_port: 49152, dst_port: 50001 }\n"
+"    traffic: { frame_len: 512, rate_bps: 1000000000 }\n"
+"    measurements: { loss: true, latency: true }\n";
+
+static void test_config_split_env_test(void) {
+    struct pw_diag d = {0};
+    struct pw_config *env = pw_config_new();
+    PW_ASSERT_EQ(pw_config_parse_string(cfg_env_only, strlen(cfg_env_only), env, &d), PW_OK);
+    PW_ASSERT_EQ(env->n_cards, 1);
+    PW_ASSERT_EQ(env->n_flows, 0);
+    PW_ASSERT_STR_EQ(env->system.secret, "s3cr3t");
+
+    /* test-only fails the default (env) parse (system/cards required) ... */
+    struct pw_config *t0 = pw_config_new();
+    PW_ASSERT(pw_config_parse_string(cfg_test_only, strlen(cfg_test_only), t0, &d) != PW_OK);
+    pw_config_free(t0);
+
+    /* ... but parses with PW_CFG_TEST_ONLY */
+    struct pw_config *t = pw_config_new();
+    PW_ASSERT_EQ(pw_config_parse_string_ex(cfg_test_only, strlen(cfg_test_only),
+                                           PW_CFG_TEST_ONLY, t, &d), PW_OK);
+    PW_ASSERT_EQ(t->n_cards, 0);
+    PW_ASSERT_EQ(t->n_flows, 1);
+
+    /* clone_env + attach test flows -> a valid, compilable merged config */
+    struct pw_config *merged = pw_config_clone_env(env);
+    PW_ASSERT(merged != NULL);
+    PW_ASSERT_EQ(merged->n_cards, 1);
+    PW_ASSERT_STR_EQ(merged->system.secret, "s3cr3t");
+    merged->flows = t->flows; merged->n_flows = t->n_flows; t->flows = NULL; t->n_flows = 0;
+    PW_ASSERT_EQ(pw_config_validate(merged, &d), PW_OK);
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(merged, prog, &d), PW_OK);
+    PW_ASSERT(prog->per_card[0].n_flow_rows >= 1);
+
+    pw_program_free(prog);
+    pw_config_free(merged);
+    pw_config_free(t);
+    pw_config_free(env);
+}
+
 static const char *cfg_dual_cross_card_with_latency =
 "system: { name: pw-dual, mode: multi-card, default_speed: 10g }\n"
 "cards:\n"
@@ -1613,6 +1680,7 @@ int main(void) {
         { "tap_name", test_tap_name },
         { "parse_single_card", test_parse_single_card },
         { "accept_cross_card_latency", test_accept_cross_card_latency },
+        { "config_split_env_test", test_config_split_env_test },
         { "accept_xcard_mixed_same_card", test_accept_xcard_mixed_same_card },
         { "accept_xcard_two_tx_sources", test_accept_xcard_two_tx_sources },
         { "traffic_validation", test_traffic_validation },

@@ -57,7 +57,12 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 %.o: %.c
-	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $<
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -c -o $@ $<
+
+# Header dependency tracking: rebuild objects when an included header changes
+# (e.g. a struct in config.h). Without this, editing a header left stale .o
+# with a mismatched struct layout -> crashes. -MMD emits these .d files.
+-include $(LIB_OBJ:.o=.d)
 
 lib: $(LIBA) $(LIBSO)
 

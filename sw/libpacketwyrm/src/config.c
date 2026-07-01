@@ -152,6 +152,11 @@ static pw_status parse_system(const pw_yaml_node *m, struct pw_system *sys, stru
     copy_str(sys->control_socket, sizeof(sys->control_socket),
              s ? s : "/var/run/packetwyrm/packetwyrmd.sock");
 
+    /* Optional shared secret (environment config). Non-empty -> the daemon
+     * enforces it on the control socket; read access to this file is the gate. */
+    if ((r = get_scalar(m, "secret", "system", false, &s, diag)) != PW_OK) return r;
+    copy_str(sys->secret, sizeof(sys->secret), s ? s : "");
+
     return PW_OK;
 }
 
@@ -775,24 +780,32 @@ static pw_status parse_forward(const pw_yaml_node *m, struct pw_forward_rule *fr
     return PW_OK;
 }
 
-static pw_status parse_root(const pw_yaml_node *root, struct pw_config *cfg, struct pw_diag *diag) {
+static pw_status parse_root(const pw_yaml_node *root, unsigned flags,
+                            struct pw_config *cfg, struct pw_diag *diag) {
     REQ_MAP(root, "");
+    bool test_only = (flags & PW_CFG_TEST_ONLY) != 0;
+    pw_status r;
 
+    /* system + cards are required for an ENVIRONMENT config; optional (parsed if
+     * present) for a TEST-only config. */
     const pw_yaml_node *sys = pw_yaml_map_get(root, "system");
-    pw_status r = parse_system(sys, &cfg->system, diag);
-    if (r != PW_OK) return r;
+    if (sys || !test_only) {
+        if ((r = parse_system(sys, &cfg->system, diag)) != PW_OK) return r;
+    }
 
     const pw_yaml_node *cards = pw_yaml_map_get(root, "cards");
-    REQ_SEQ(cards, "cards");
-    if (cards->u.seq.n > PW_MAX_CARDS) {
-        diag_set(diag, PW_E_OUT_OF_RANGE, "cards", "too many cards (max %d)", PW_MAX_CARDS);
-        return PW_E_OUT_OF_RANGE;
-    }
-    cfg->cards = (struct pw_card *)calloc(cards->u.seq.n, sizeof(struct pw_card));
-    if (!cfg->cards) return PW_E_NO_RESOURCES;
-    cfg->n_cards = cards->u.seq.n;
-    for (size_t i = 0; i < cfg->n_cards; i++) {
-        if ((r = parse_card(cards->u.seq.items[i], &cfg->cards[i], i, diag)) != PW_OK) return r;
+    if (cards || !test_only) {
+        REQ_SEQ(cards, "cards");
+        if (cards->u.seq.n > PW_MAX_CARDS) {
+            diag_set(diag, PW_E_OUT_OF_RANGE, "cards", "too many cards (max %d)", PW_MAX_CARDS);
+            return PW_E_OUT_OF_RANGE;
+        }
+        cfg->cards = (struct pw_card *)calloc(cards->u.seq.n, sizeof(struct pw_card));
+        if (!cfg->cards) return PW_E_NO_RESOURCES;
+        cfg->n_cards = cards->u.seq.n;
+        for (size_t i = 0; i < cfg->n_cards; i++) {
+            if ((r = parse_card(cards->u.seq.items[i], &cfg->cards[i], i, diag)) != PW_OK) return r;
+        }
     }
 
     const pw_yaml_node *lifs = pw_yaml_map_get(root, "logical_interfaces");
@@ -831,7 +844,8 @@ static pw_status parse_root(const pw_yaml_node *root, struct pw_config *cfg, str
     return PW_OK;
 }
 
-pw_status pw_config_parse_string(const char *yaml, size_t len, struct pw_config *cfg, struct pw_diag *diag) {
+pw_status pw_config_parse_string_ex(const char *yaml, size_t len, unsigned flags,
+                                    struct pw_config *cfg, struct pw_diag *diag) {
     if (!yaml || !cfg) return PW_E_INVAL;
     if (diag) { diag->code = PW_OK; diag->path[0] = 0; diag->message[0] = 0; }
     pw_yaml_err yerr = { .message = {0}, .line = 0 };
@@ -845,12 +859,17 @@ pw_status pw_config_parse_string(const char *yaml, size_t len, struct pw_config 
         }
         return PW_E_PARSE;
     }
-    pw_status r = parse_root(root, cfg, diag);
+    pw_status r = parse_root(root, flags, cfg, diag);
     pw_yaml_free(root);
     return r;
 }
 
-pw_status pw_config_parse_file(const char *path, struct pw_config *cfg, struct pw_diag *diag) {
+pw_status pw_config_parse_string(const char *yaml, size_t len, struct pw_config *cfg, struct pw_diag *diag) {
+    return pw_config_parse_string_ex(yaml, len, 0u, cfg, diag);
+}
+
+pw_status pw_config_parse_file_ex(const char *path, unsigned flags,
+                                  struct pw_config *cfg, struct pw_diag *diag) {
     if (!path || !cfg) return PW_E_INVAL;
     FILE *f = fopen(path, "rb");
     if (!f) {
@@ -870,7 +889,32 @@ pw_status pw_config_parse_file(const char *path, struct pw_config *cfg, struct p
     size_t got = fread(buf, 1, (size_t)sz, f);
     buf[got] = '\0';
     fclose(f);
-    pw_status r = pw_config_parse_string(buf, got, cfg, diag);
+    pw_status r = pw_config_parse_string_ex(buf, got, flags, cfg, diag);
     free(buf);
     return r;
+}
+
+pw_status pw_config_parse_file(const char *path, struct pw_config *cfg, struct pw_diag *diag) {
+    return pw_config_parse_file_ex(path, 0u, cfg, diag);
+}
+
+struct pw_config *pw_config_clone_env(const struct pw_config *src) {
+    if (!src) return NULL;
+    struct pw_config *c = pw_config_new();
+    if (!c) return NULL;
+    c->system = src->system;                 /* POD (incl. secret) */
+    if (src->n_cards) {
+        c->cards = (struct pw_card *)calloc(src->n_cards, sizeof(struct pw_card));
+        if (!c->cards) { pw_config_free(c); return NULL; }
+        memcpy(c->cards, src->cards, src->n_cards * sizeof(struct pw_card));
+        c->n_cards = src->n_cards;
+    }
+    if (src->n_logical_if) {
+        c->logical_if = (struct pw_logical_if *)calloc(src->n_logical_if, sizeof(struct pw_logical_if));
+        if (!c->logical_if) { pw_config_free(c); return NULL; }
+        memcpy(c->logical_if, src->logical_if, src->n_logical_if * sizeof(struct pw_logical_if));
+        c->n_logical_if = src->n_logical_if;
+    }
+    /* flows / forwards intentionally left empty -- caller attaches the test set. */
+    return c;
 }

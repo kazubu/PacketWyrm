@@ -9,6 +9,20 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Environment/test config split + control-socket secret.** The config now
+    divides into an environment part (rarely changed: `system`, `cards`,
+    `logical_interfaces`, and a new `secret`) and a test part (changed often:
+    `flows`, `forwards`). `packetwyrmd -e ENV [-t TEST]` (env default
+    `/etc/packetwyrm/packetwyrm.yaml`; `-c` is an alias); `pktwyrm load` ships
+    flows/forwards only and the daemon merges them onto its running environment
+    (`config.load`). A combined single file still works. When `system.secret` is
+    set, the daemon requires a matching `secret` on every control-socket request
+    (constant-time compare, else `unauthorized`); `pktwyrm` supplies it from
+    `--secret` / `$PACKETWYRM_SECRET` / the env config (`--env`), so **read
+    permission on the env config file is the access gate**. No secret = auth off.
+    New lib: `pw_config_parse_*_ex` (PW_CFG_TEST_ONLY), `pw_config_clone_env`.
+    Build fix: `-MMD` header-dependency tracking (a header change now rebuilds
+    dependent objects instead of leaving a stale, mismatched-layout `.o`).
   - **Front-panel R/G health LED.** The previously-unconnected bicolor status LED
     (led_r=A13 / led_g=A12, active-low) now shows data-plane health: **red** =
     sticky error since the last `stats.clear` (a checker sequence-loss event, or

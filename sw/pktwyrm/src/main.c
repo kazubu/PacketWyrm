@@ -23,6 +23,31 @@ static inline unsigned long pw_ticks_to_ns(unsigned long long ticks) {
 
 static int cmd_help(void);
 
+/* --- control-socket secret (access control) --------------------------------
+ * The daemon requires a matching secret when the environment config sets one.
+ * Resolution precedence: --secret ARG  >  $PACKETWYRM_SECRET  >  the `secret`
+ * key of the environment config (--env PATH, default /etc/packetwyrm/
+ * packetwyrm.yaml). Read permission on that file is thus the access gate. */
+static const char *g_secret_arg = NULL;   /* --secret */
+static const char *g_env_arg    = NULL;   /* --env */
+
+static const char *resolve_secret(void) {
+    static char cache[PW_SECRET_MAX];
+    static int  done = 0;
+    if (done) return cache;
+    done = 1;
+    cache[0] = '\0';
+    if (g_secret_arg) { snprintf(cache, sizeof(cache), "%s", g_secret_arg); return cache; }
+    const char *env = getenv("PACKETWYRM_SECRET");
+    if (env && env[0]) { snprintf(cache, sizeof(cache), "%s", env); return cache; }
+    const char *path = g_env_arg ? g_env_arg : "/etc/packetwyrm/packetwyrm.yaml";
+    struct pw_config *c = pw_config_new();
+    if (c && pw_config_parse_file(path, c, NULL) == PW_OK)
+        snprintf(cache, sizeof(cache), "%s", c->system.secret);
+    pw_config_free(c);
+    return cache;   /* "" if unreadable / no secret -> daemon may reject */
+}
+
 static int load_config(const char *path, struct pw_config **out_cfg,
                        struct pw_program **out_prog) {
     struct pw_config *cfg = pw_config_new();
@@ -266,14 +291,28 @@ static int cmd_flow_show(int argc, char **argv) {
  * `*out_len`). 0 on success, -1 on failure. */
 static int rpc_call(const char *sock, const char *json_req,
                     char *resp, size_t resp_cap, size_t *out_len) {
+    /* Inject the access secret (if any) into the request object -- via json-c so
+     * it is escaped correctly. Falls back to the raw request if the secret is
+     * empty or the request doesn't parse (shouldn't happen). */
+    const char *sec = resolve_secret();
+    const char *send = json_req;
+    struct json_object *o = NULL;
+    if (sec && sec[0]) {
+        o = json_tokener_parse(json_req);
+        if (o) {
+            json_object_object_add(o, "secret", json_object_new_string(sec));
+            send = json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN);
+        }
+    }
     int fd = -1;
-    if (pw_ipc_connect(sock, &fd) != PW_OK) return -1;
+    if (pw_ipc_connect(sock, &fd) != PW_OK) { if (o) json_object_put(o); return -1; }
     int rc = -1;
-    if (pw_ipc_write_frame(fd, json_req, strlen(json_req)) == PW_OK &&
+    if (pw_ipc_write_frame(fd, send, strlen(send)) == PW_OK &&
         pw_ipc_read_frame(fd, resp, resp_cap, out_len) == PW_OK) {
         rc = 0;
     }
     close(fd);
+    if (o) json_object_put(o);
     return rc;
 }
 
@@ -590,6 +629,13 @@ static int cmd_help(void) {
 
 int main(int argc, char **argv) {
     if (argc < 2) return cmd_help();
+    /* Global flags (may appear anywhere): --secret S / --env PATH set where the
+     * control-socket secret comes from (see resolve_secret). Scanned here so
+     * every subcommand's rpc_call picks them up. */
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--secret") && i + 1 < argc) g_secret_arg = argv[i + 1];
+        else if (!strcmp(argv[i], "--env") && i + 1 < argc) g_env_arg = argv[i + 1];
+    }
     const char *sub = argv[1];
     if (!strcmp(sub, "help") || !strcmp(sub, "-h") || !strcmp(sub, "--help")) return cmd_help();
     if (!strcmp(sub, "version") || !strcmp(sub, "--version")) {

@@ -222,11 +222,13 @@ program to every open backend (idempotent resync). `start` and
 ### `config.load`
 
 Live reload: parse, validate, and compile a YAML body, then swap
-it into the running daemon. The request must carry the full YAML
-configuration as a string (UTF-8).
+it into the running daemon. The `yaml` body is normally a **test
+config** (flows/forwards only) which is merged onto the daemon's
+running environment (cards / logical_interfaces stay). A full
+combined config (with `cards`) is also accepted for back-compat.
 
 ```json
-{ "rpc": "config.load", "yaml": "system:\n  name: pw\n..." }
+{ "rpc": "config.load", "yaml": "flows:\n  - id: 1\n..." }
 ```
 &rarr; on success:
 ```json
@@ -235,11 +237,12 @@ configuration as a string (UTF-8).
 
 Constraints:
 
-- The new config **must** have the same cards and logical
-  interfaces (by id) as the running config. Topology changes
-  require a full daemon restart, because live unplugging a
-  TAP / backend mid-traffic isn't safe. Topology mismatch is
-  rejected with `{"error": "topology change ..."}`.
+- A test-only body (no `cards`) is merged onto the running
+  environment. A combined body (with `cards`) **must** have the
+  same cards and logical interfaces (by id) as the running config;
+  topology changes require a full daemon restart (live unplugging a
+  TAP / backend mid-traffic isn't safe) and are rejected with
+  `{"error": "topology change ..."}`.
 - Old flows are stopped (enable bit cleared) before the new
   program is pushed. There is a brief window with no flows
   enabled; accept it as the cost of correctness for V1.
@@ -250,6 +253,19 @@ Constraints:
 `pktwyrm load <config.yaml> --socket PATH` is the user-facing
 front-end: it compiles offline first (for clean syntax errors),
 then ships the YAML body to the daemon.
+
+## Access control (secret)
+
+When the environment config sets `system.secret`, every request must carry a
+matching `"secret"` string field; the daemon compares it (constant-time) and
+otherwise replies `{ "error": "unauthorized" }`. A client obtains the secret in
+this precedence: `pktwyrm --secret S`  >  `$PACKETWYRM_SECRET`  >  the `secret`
+key of the environment config (`--env PATH`, default
+`/etc/packetwyrm/packetwyrm.yaml`). So **read permission on the environment
+config file is the access gate** — a process that can't read it can't obtain the
+secret and is rejected. If no secret is configured, auth is disabled (the socket
+is otherwise open, mode 0666). The `secret` field is injected by `pktwyrm`
+automatically; a raw `pktwyrm rpc` also picks it up.
 
 ## Errors
 
