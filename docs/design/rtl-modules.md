@@ -315,7 +315,11 @@ pwfpga_top
 - The same bit-bang bus also **writes** the EEPROM (`pw_sfp_write` / `pw_sfp ...
   write`), single-byte with ACK-polling for the write cycle — no RTL change (the
   CSR is symmetric). Guarded (dry-run + read-back verify); writing 0x50 can
-  re-code a module, so it's a deliberate lab operation.
+  re-code a module, so it's a deliberate lab operation. The SFF-8472 write
+  password unlocks protected regions: `pw_sfp ... unlock <pw>` enters it, and
+  `pw_sfp ... findpw [start] [end]` brute-forces it (range-bounded/resumable).
+- Read is also exposed through the daemon: `sfp.info` RPC + `pktwyrm sfp` (see
+  `rpc-protocol.md`) return identifier + DOM for each open card's module.
 
 ### Front-panel status LEDs
 
