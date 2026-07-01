@@ -661,9 +661,13 @@ async function pollVersions(cards) {
     if (c.fpga_version != null)
       rows.push({comp:`card ${c.id} FPGA`,
         ver:`v${c.fpga_version}  build ${c.build_id||"?"}  dev ${c.device_id||"?"}  git ${c.git_hash||"?"}`});
-    if (c.temp_c != null)
+    if (c.temp_c != null) {
+      // Each rail is reported by the daemon only once its SYSMON code is valid,
+      // so format per field ("—" when a rail hasn't been sampled yet).
+      const volt = (v) => v != null ? `${fmt3(v)} V` : "—";
       rows.push({comp:`card ${c.id} SYSMON`,
-        ver:`${fmt3(c.temp_c)} °C   VCCINT ${fmt3(c.vccint_v)} V   VCCAUX ${fmt3(c.vccaux_v)} V`});
+        ver:`${fmt3(c.temp_c)} °C   VCCINT ${volt(c.vccint_v)}   VCCAUX ${volt(c.vccaux_v)}`});
+    }
   });
   setBox("#d-versions", tableFrom(rows, [
     {h:"component",get:r=>r.comp},{h:"version",get:r=>r.ver}]));
