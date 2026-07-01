@@ -380,13 +380,21 @@ module pwfpga_top_phase3_board (
     //   GREEN solid   : up, clean, idle
     //   OFF           : not up (PCIe down / not configured); red overrides green
     wire status_err_dp, status_act_dp;    // from the core (dp_clk)
-    (* ASYNC_REG = "true" *) logic [1:0] err_sync, act_sync, pcie_sync;
+    // 2-FF synchronisers (first stage = the async capture, false-pathed in
+    // timing.xdc like lu_sync0/bl_sync0). Separate *_sync0/*_sync1 names so the
+    // false_path can target the capture FF unambiguously (no bracket-glob).
+    (* ASYNC_REG = "true" *) logic err_sync0, err_sync1;
+    (* ASYNC_REG = "true" *) logic act_sync0, act_sync1;
+    (* ASYNC_REG = "true" *) logic pcie_sync0, pcie_sync1;
     always_ff @(posedge clk_100mhz or negedge rst_n_100) begin
-        if (!rst_n_100) begin err_sync <= '0; act_sync <= '0; pcie_sync <= '0; end
-        else begin
-            err_sync  <= {err_sync[0],  status_err_dp};
-            act_sync  <= {act_sync[0],  status_act_dp};
-            pcie_sync <= {pcie_sync[0], pcie_link_up};
+        if (!rst_n_100) begin
+            err_sync0 <= 1'b0; err_sync1 <= 1'b0;
+            act_sync0 <= 1'b0; act_sync1 <= 1'b0;
+            pcie_sync0 <= 1'b0; pcie_sync1 <= 1'b0;
+        end else begin
+            err_sync0  <= status_err_dp; err_sync1  <= err_sync0;
+            act_sync0  <= status_act_dp; act_sync1  <= act_sync0;
+            pcie_sync0 <= pcie_link_up;  pcie_sync1 <= pcie_sync0;
         end
     end
     // ~3 Hz blink from a free-running counter's top bit.
@@ -395,9 +403,9 @@ module pwfpga_top_phase3_board (
         if (!rst_n_100) blink_cnt <= '0; else blink_cnt <= blink_cnt + 1'b1;
     end
     wire blink = blink_cnt[24];
-    wire up    = pcie_sync[1];
-    wire err   = err_sync[1];
-    wire act   = act_sync[1];
+    wire up    = pcie_sync1;
+    wire err   = err_sync1;
+    wire act   = act_sync1;
     wire red_on = up &&  err;
     wire grn_on = up && !err && (act ? blink : 1'b1);
     assign led_r = ~red_on;   // active-low
