@@ -160,6 +160,33 @@ latency *after* the `lat_correction` offset (kept current by the daemon servo),
 so the buckets hold the true one-way latency, exactly like same-card. (This was
 previously punted, when the HW binned the raw uncorrected latency.)
 
+### `sfp.info`
+
+Per-SFP module identifier + DOM, read over each card's I2C management bus.
+
+```json
+{ "rpc": "sfp.info" }                        // all open cards, both ports
+{ "rpc": "sfp.info", "card": 0 }             // one card
+{ "rpc": "sfp.info", "card": 0, "port": 1 }  // one port
+```
+&rarr;
+```json
+{ "sfp": [
+  { "card_id": 0, "port": 0, "present": true,
+    "identifier": 3, "connector": 7,
+    "vendor": "FINISAR CORP.", "part": "FTLX1471D3BCL", "revision": "A",
+    "serial": "UJ702MB", "date_code": "100816", "br_nominal_mbaud": 10300,
+    "dom_supported": true, "dom_external_cal": false, "dom_valid": true,
+    "temp_c": 54.2, "vcc_v": 3.29, "tx_bias_ma": 46.7,
+    "tx_power_mw": 0.702, "rx_power_mw": 0.213 } ] }
+```
+
+`present:false` (with `error` for an I2C fault) marks an empty cage. DOM fields
+appear only when `dom_valid` (internally-calibrated DDM module); a passive DAC or
+externally-calibrated module has `dom_supported`/`dom_external_cal` set but no
+DOM values. `pktwyrm sfp [--card N] [--port P] [--json]` pretty-prints it (TX/RX
+in dBm). Requires the `REG_SFP_I2C` bitstream on the card.
+
 ### `flow.start` / `flow.stop`
 
 Toggle the TX-side enable bit of a flow.

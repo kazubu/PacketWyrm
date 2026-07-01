@@ -73,7 +73,7 @@ $(DAEMON_BIN): $(DAEMON_SRC) $(LIBA) | $(BUILD_DIR)
 
 cli: $(CLI_BIN)
 $(CLI_BIN): $(CLI_SRC) $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(CLI_SRC) $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(CLI_SRC) $(LIBA) $(EXTRA_LIBS) $(LDFLAGS) -lm
 
 test: $(TEST_BIN)
 	$(TEST_BIN)

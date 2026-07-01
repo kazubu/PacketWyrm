@@ -41,6 +41,11 @@ For where work is going next, see `NEXT-STEPS.md`.
     2^32 sweep is impractical over bit-bang I2C, ~weeks). HW-validated: password
     0x0 unlocks the dev-card Finisar modules; a base-ID write then verifies and
     is restored.
+  - **`sfp.info` RPC + `pktwyrm sfp`.** The daemon exposes SFP identifier + DOM
+    over JSON-RPC (`sfp.info`, optional `card`/`port` filter), reading each open
+    card's module via `pw_sfp_probe`. `pktwyrm sfp [--card N] [--port P] [--json]`
+    pretty-prints it (vendor/part/serial/bit-rate + DOM temp/Vcc/bias/TX+RX in
+    dBm). HW-validated on the dev card (both Finisar 10G-LR read via the daemon).
 
 ### Fixed
   - **Deep-encap UDF classifier matching.** A UDF slice comparator reads inner

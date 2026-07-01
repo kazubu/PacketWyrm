@@ -26,6 +26,7 @@
 #include "packetwyrm/packetwyrm.h"
 #include "packetwyrm/spi_flash.h"
 #include "packetwyrm/gpio_sync.h"
+#include "packetwyrm/sfp.h"
 
 static volatile sig_atomic_t g_stop = 0;
 static void on_signal(int sig) { (void)sig; g_stop = 1; }
@@ -586,6 +587,58 @@ static struct json_object *build_cards(const struct pw_config *cfg,
     return r;
 }
 
+/* Per-SFP module identifier + DOM, read over the card's I2C management bus.
+ * card_filter/port_filter = -1 means "all". Skips absent/closed cards. Needs
+ * the REG_SFP_I2C bitstream on the card (older images just read no ACK). */
+static struct json_object *build_sfp_info(const struct pw_config *cfg,
+                                          struct card_runtime cards[],
+                                          int card_filter, int port_filter) {
+    struct json_object *r = json_object_new_object();
+    struct json_object *arr = json_object_new_array();
+    for (size_t i = 0; i < cfg->n_cards; i++) {
+        if (card_filter >= 0 && cfg->cards[i].id != card_filter) continue;
+        if (!cards[i].open) continue;
+        for (int p = 0; p < 2; p++) {
+            if (port_filter >= 0 && p != port_filter) continue;
+            struct pw_sfp_info s;
+            struct json_object *o = json_object_new_object();
+            json_object_object_add(o, "card_id", json_object_new_int(cfg->cards[i].id));
+            json_object_object_add(o, "port", json_object_new_int(p));
+            if (pw_sfp_probe(&cards[i].backend, p, &s) != PW_OK) {
+                json_object_object_add(o, "present", json_object_new_boolean(false));
+                json_object_object_add(o, "error", json_object_new_string("i2c error"));
+                json_object_array_add(arr, o);
+                continue;
+            }
+            json_object_object_add(o, "present", json_object_new_boolean(s.present));
+            if (s.present) {
+                json_object_object_add(o, "identifier", json_object_new_int(s.identifier));
+                json_object_object_add(o, "connector",  json_object_new_int(s.connector));
+                json_object_object_add(o, "vendor",     json_object_new_string(s.vendor));
+                json_object_object_add(o, "part",       json_object_new_string(s.part));
+                json_object_object_add(o, "revision",   json_object_new_string(s.revision));
+                json_object_object_add(o, "serial",     json_object_new_string(s.serial));
+                json_object_object_add(o, "date_code",  json_object_new_string(s.date_code));
+                json_object_object_add(o, "br_nominal_mbaud",
+                                       json_object_new_int(s.br_nominal * 100));
+                json_object_object_add(o, "dom_supported", json_object_new_boolean(s.dom_supported));
+                json_object_object_add(o, "dom_external_cal", json_object_new_boolean(s.dom_external_cal));
+                json_object_object_add(o, "dom_valid",   json_object_new_boolean(s.dom_valid));
+                if (s.dom_valid) {
+                    json_object_object_add(o, "temp_c",      json_object_new_double(s.temp_c));
+                    json_object_object_add(o, "vcc_v",       json_object_new_double(s.vcc_v));
+                    json_object_object_add(o, "tx_bias_ma",  json_object_new_double(s.tx_bias_ma));
+                    json_object_object_add(o, "tx_power_mw", json_object_new_double(s.tx_power_mw));
+                    json_object_object_add(o, "rx_power_mw", json_object_new_double(s.rx_power_mw));
+                }
+            }
+            json_object_array_add(arr, o);
+        }
+    }
+    json_object_object_add(r, "sfp", arr);
+    return r;
+}
+
 static struct json_object *build_ports(const struct pw_config *cfg) {
     struct json_object *r = json_object_new_object();
     struct json_object *arr = json_object_new_array();
@@ -885,6 +938,12 @@ static void handle_client(int cfd,
             if (json_object_object_get_ex(req, "id", &jc))
                 filter = json_object_get_int(jc);
             resp = build_flow_stats(cfg, prog, cards, filter);
+        } else if (!strcmp(name, "sfp.info")) {
+            struct json_object *jc;
+            int cardf = -1, portf = -1;
+            if (json_object_object_get_ex(req, "card", &jc)) cardf = json_object_get_int(jc);
+            if (json_object_object_get_ex(req, "port", &jc)) portf = json_object_get_int(jc);
+            resp = build_sfp_info(cfg, cards, cardf, portf);
         } else if (!strcmp(name, "test.start") || !strcmp(name, "test.stop") ||
                    !strcmp(name, "test.arm")) {
             bool en = (strcmp(name, "test.start") == 0);

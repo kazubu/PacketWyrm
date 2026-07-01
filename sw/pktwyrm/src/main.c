@@ -8,6 +8,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <math.h>
 
 #include <json-c/json.h>
 
@@ -388,6 +389,87 @@ static int cmd_latency(int argc, char **argv) {
     return 0;
 }
 
+/* Pretty-print the "sfp.info" response: one block per present module. */
+static void pretty_print_sfp(const char *json, size_t len) {
+    struct json_tokener *tok = json_tokener_new();
+    struct json_object *root = json_tokener_parse_ex(tok, json, (int)len);
+    json_tokener_free(tok);
+    if (!root) { fprintf(stderr, "bad response\n"); return; }
+    struct json_object *err;
+    if (json_object_object_get_ex(root, "error", &err)) {
+        printf("error: %s\n", json_object_get_string(err)); json_object_put(root); return;
+    }
+    struct json_object *arr;
+    if (!json_object_object_get_ex(root, "sfp", &arr)) { json_object_put(root); return; }
+    size_t n = json_object_array_length(arr);
+    for (size_t i = 0; i < n; i++) {
+        struct json_object *o = json_object_array_get_idx(arr, i), *v;
+        int card = 0, port = 0; bool present = false;
+        if (json_object_object_get_ex(o, "card_id", &v)) card = json_object_get_int(v);
+        if (json_object_object_get_ex(o, "port", &v))    port = json_object_get_int(v);
+        if (json_object_object_get_ex(o, "present", &v)) present = json_object_get_boolean(v);
+        printf("card %d port %d: ", card, port);
+        if (!present) {
+            if (json_object_object_get_ex(o, "error", &v))
+                printf("%s\n", json_object_get_string(v));
+            else printf("no module\n");
+            continue;
+        }
+        const char *vendor = "", *part = "", *ser = "";
+        if (json_object_object_get_ex(o, "vendor", &v)) vendor = json_object_get_string(v);
+        if (json_object_object_get_ex(o, "part", &v))   part   = json_object_get_string(v);
+        if (json_object_object_get_ex(o, "serial", &v)) ser    = json_object_get_string(v);
+        int br = 0;
+        if (json_object_object_get_ex(o, "br_nominal_mbaud", &v)) br = json_object_get_int(v);
+        printf("%s %s  s/n %s  %.1f Gb/s\n", vendor, part, ser, br / 1000.0);
+        bool domv = false, doms = false, ext = false;
+        if (json_object_object_get_ex(o, "dom_valid", &v))     domv = json_object_get_boolean(v);
+        if (json_object_object_get_ex(o, "dom_supported", &v)) doms = json_object_get_boolean(v);
+        if (json_object_object_get_ex(o, "dom_external_cal", &v)) ext = json_object_get_boolean(v);
+        if (domv) {
+            double t=0,vcc=0,bias=0,txp=0,rxp=0;
+            if (json_object_object_get_ex(o,"temp_c",&v))      t=json_object_get_double(v);
+            if (json_object_object_get_ex(o,"vcc_v",&v))       vcc=json_object_get_double(v);
+            if (json_object_object_get_ex(o,"tx_bias_ma",&v))  bias=json_object_get_double(v);
+            if (json_object_object_get_ex(o,"tx_power_mw",&v)) txp=json_object_get_double(v);
+            if (json_object_object_get_ex(o,"rx_power_mw",&v)) rxp=json_object_get_double(v);
+            printf("    DOM: %.1f C  %.2f V  bias %.1f mA  TX %.2f dBm  RX %.2f dBm\n",
+                   t, vcc, bias,
+                   txp > 0 ? 10.0 * log10(txp) : -40.0,
+                   rxp > 0 ? 10.0 * log10(rxp) : -40.0);
+        } else if (ext) {
+            printf("    DOM: externally calibrated -- not decoded\n");
+        } else if (!doms) {
+            printf("    DOM: not supported (e.g. passive DAC)\n");
+        }
+    }
+    json_object_put(root);
+}
+
+static int cmd_sfp(int argc, char **argv) {
+    /* pktwyrm sfp [--socket PATH] [--card N] [--port P] [--json] */
+    const char *sock = PW_IPC_DEFAULT_PATH;
+    int card = -1, port = -1; bool raw = false;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
+        else if (!strcmp(argv[i], "--card") && i + 1 < argc) card = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--port") && i + 1 < argc) port = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--json")) raw = true;
+    }
+    char req[128];
+    int off = snprintf(req, sizeof(req), "{\"rpc\":\"sfp.info\"");
+    if (card >= 0) off += snprintf(req + off, sizeof(req) - off, ",\"card\":%d", card);
+    if (port >= 0) off += snprintf(req + off, sizeof(req) - off, ",\"port\":%d", port);
+    snprintf(req + off, sizeof(req) - off, "}");
+    char resp[PW_IPC_FRAME_MAX]; size_t got = 0;
+    if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
+        fprintf(stderr, "rpc call failed (socket=%s)\n", sock); return 1;
+    }
+    if (raw) { fwrite(resp, 1, got, stdout); fputc('\n', stdout); }
+    else     pretty_print_sfp(resp, got);
+    return 0;
+}
+
 static int cmd_stats(int argc, char **argv) {
     /* pktwyrm stats [--socket PATH] [--card N] [--watch MS] [--json] */
     const char *sock = PW_IPC_DEFAULT_PATH;
@@ -497,6 +579,7 @@ static int cmd_help(void) {
     puts("  pktwyrm stats [--socket PATH] [--card N] [--watch MS] [--json]");
     puts("  pktwyrm latency [--flow N] [--socket PATH] [--json]   per-flow one-way latency");
     puts("                  (same-card: exact; cross-card: J5 GPIO-corrected)");
+    puts("  pktwyrm sfp [--card N] [--port P] [--socket PATH] [--json]  SFP id + DOM");
     puts("  pktwyrm flow start|stop <id> [--socket PATH]");
     puts("  pktwyrm flow stats [--flow N] [--socket PATH] [--watch MS] [--json]");
     puts("  pktwyrm test arm|start|stop [--socket PATH]");
@@ -518,6 +601,7 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "load"))   return cmd_load(argc - 2, argv + 2);
     if (!strcmp(sub, "rpc"))    return cmd_rpc(argc - 2, argv + 2);
     if (!strcmp(sub, "latency")) return cmd_latency(argc - 2, argv + 2);
+    if (!strcmp(sub, "sfp"))    return cmd_sfp(argc - 2, argv + 2);
     if (!strcmp(sub, "stats")) {
         /* `pktwyrm stats clear` -> re-baseline all counters (RX checkers,
          * per-port frames/bytes, drops, histogram) via the daemon, independent
