@@ -157,6 +157,20 @@ static double now_s(void) {
     return (double)t.tv_sec + (double)t.tv_nsec * 1e-9;
 }
 
+/* Format a duration (seconds) as "Dd Hh Mm Ss", dropping leading zero units
+ * (e.g. "5s", "3m 20s", "2d 4h 11m 5s"). Writes into buf. */
+static void fmt_dur(double secs, char *buf, size_t n) {
+    if (secs < 0) secs = 0;
+    unsigned long long s = (unsigned long long)(secs + 0.5);
+    unsigned d = (unsigned)(s / 86400); s %= 86400;
+    unsigned h = (unsigned)(s / 3600);  s %= 3600;
+    unsigned m = (unsigned)(s / 60);    unsigned sec = (unsigned)(s % 60);
+    if (d)      snprintf(buf, n, "%ud %uh %um %us", d, h, m, sec);
+    else if (h) snprintf(buf, n, "%uh %um %us", h, m, sec);
+    else if (m) snprintf(buf, n, "%um %us", m, sec);
+    else        snprintf(buf, n, "%us", sec);
+}
+
 /* Enter a write password: pw_sfp <bdf> <port> unlock <password_hex> */
 static int do_unlock(struct pw_card_backend *be, int port, int argc, char **argv) {
     if (argc < 5) {
@@ -218,8 +232,9 @@ static int do_findpw(struct pw_card_backend *be, int port, int argc, char **argv
         if (tn - tlast >= 2.0) {
             double rate = done / (tn - t0);
             double eta  = rate > 0 ? (double)(total - done) / rate : 0;
-            printf("\r  at 0x%08x  %.0f/s  ETA %.0f s  (%.2f%%)      ",
-                   (unsigned)pv, rate, eta, 100.0 * done / total);
+            char etabuf[48]; fmt_dur(eta, etabuf, sizeof(etabuf));
+            printf("\r  at 0x%08x  %.0f/s  ETA %s  (%.2f%%)          ",
+                   (unsigned)pv, rate, etabuf, 100.0 * done / total);
             fflush(stdout);
             tlast = tn;
         }
