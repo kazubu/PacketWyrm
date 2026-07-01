@@ -270,6 +270,27 @@ remote authed client shouldn't be able to read the secret back out).
   "secret_set": true }
 ```
 
+### `config.get_test`
+
+Return the active **test-config** YAML (flows / forwards) text so a GUI can
+load and edit the running flows. The daemon stashes this text from the `-t`
+file at startup and from each successful `config.load` (it otherwise keeps
+only the parsed `pw_config`, not the source).
+
+```json
+{ "rpc": "config.get_test" }
+```
+&rarr;
+```json
+{ "yaml": "flows:\n  - id: 1\n  ...", "loaded": true }
+```
+
+`loaded` is `false` (and `yaml` empty) when no test config has been loaded
+this session — e.g. flows came only from a combined `-e` file, or none yet.
+This is lossless (it is the exact submitted text, including
+encap/modifiers/match), so it is the reliable way to round-trip an existing
+test config through the GUI. Backs the Flows tab's **Load current** button.
+
 ### `config.save`
 
 Validate a full environment YAML (parse + validate) and, on success,

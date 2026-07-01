@@ -178,6 +178,11 @@ print(r.read().decode())
 PY
 )
 check "config.load GUI YAML (v4/udp + v6/tcp)" '"n_flows":2' "$loaded"
+# config.get_test returns the just-loaded test config so the GUI can edit it.
+gettest=$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc \
+    -d '{"rpc":"config.get_test","secret":"e2e-secret"}')
+check "config.get_test loaded" '"loaded":true' "$gettest"
+check "config.get_test has the loaded flow" 'v6tcp' "$gettest"
 kill "$PXP" 2>/dev/null || true; PXP=""
 
 # --- TLS gateway (loopback, self-signed) ---

@@ -449,6 +449,16 @@ static struct json_object *build_error(const char *msg);
  * target ONLY this path -- never an arbitrary client-supplied path. */
 static const char *g_env_path = "/etc/packetwyrm/packetwyrm.yaml";
 
+/* The active test-config YAML text (flows/forwards), stashed so the GUI can
+ * load and edit the currently-running flows (config.get_test). Updated from
+ * the `-t` file at startup and from each successful config.load. The daemon
+ * doesn't otherwise keep the source text (it parses into pw_config). */
+static char *g_test_yaml = NULL;
+static void set_test_yaml(const char *s) {
+    free(g_test_yaml);
+    g_test_yaml = s ? strdup(s) : NULL;
+}
+
 /* Attempt a live program swap from a YAML string. Returns a JSON
  * response describing success or the failure mode. On any failure
  * before the actual swap, the in-flight program stays live; the
@@ -569,6 +579,9 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
     pw_config_free(*cfg_pp);
     *cfg_pp  = new_cfg;
     *prog_pp = new_prog;
+
+    /* Stash the loaded test YAML so the GUI can read back / edit it. */
+    set_test_yaml(yaml);
 
     resp = json_object_new_object();
     json_object_object_add(resp, "ok", json_object_new_boolean(true));
@@ -744,6 +757,18 @@ static struct json_object *do_config_save(struct pw_config **cfg_pp,
     json_object_object_add(resp, "path", json_object_new_string(g_env_path));
     json_object_object_add(resp, "restart_required",
                            json_object_new_boolean(restart_required));
+    return resp;
+}
+
+/* config.get_test: return the active test-config YAML (flows/forwards) text so
+ * the GUI can load and edit the running flows. Empty when none has been loaded
+ * (e.g. flows came only from a combined `-e` file, or nothing loaded yet). */
+static struct json_object *build_config_get_test(void) {
+    struct json_object *resp = json_object_new_object();
+    json_object_object_add(resp, "yaml",
+                           json_object_new_string(g_test_yaml ? g_test_yaml : ""));
+    json_object_object_add(resp, "loaded",
+                           json_object_new_boolean(g_test_yaml != NULL));
     return resp;
 }
 
@@ -1199,6 +1224,8 @@ static void handle_client(int cfd,
             resp = do_config_load(cfg_pp, prog_pp, cards, req);
         } else if (!strcmp(name, "config.get_raw")) {
             resp = build_config_get_raw(cfg);
+        } else if (!strcmp(name, "config.get_test")) {
+            resp = build_config_get_test();
         } else if (!strcmp(name, "config.save")) {
             resp = do_config_save(cfg_pp, req);
             /* refresh local snapshots after a successful swap */
@@ -1462,6 +1489,18 @@ int main(int argc, char **argv) {
         cfg->flows = t->flows; cfg->n_flows = t->n_flows; t->flows = NULL; t->n_flows = 0;
         cfg->forwards = t->forwards; cfg->n_forwards = t->n_forwards; t->forwards = NULL; t->n_forwards = 0;
         pw_config_free(t);
+        /* Stash the raw text so config.get_test can serve the running flows. */
+        FILE *tf = fopen(test_path, "r");
+        if (tf) {
+            char *tb = NULL; size_t tcap = 0, tlen = 0; int ch;
+            while ((ch = fgetc(tf)) != EOF) {
+                if (tlen + 2 > tcap) { tcap = tcap ? tcap * 2 : 4096;
+                    char *nb = realloc(tb, tcap); if (!nb) { free(tb); tb = NULL; break; } tb = nb; }
+                tb[tlen++] = (char)ch;
+            }
+            fclose(tf);
+            if (tb) { tb[tlen] = '\0'; set_test_yaml(tb); free(tb); }
+        }
     }
     if ((r = pw_config_validate(cfg, &diag)) != PW_OK) {
         fprintf(stderr, "validate: %s at %s: %s\n", pw_strerror(r), diag.path, diag.message);
