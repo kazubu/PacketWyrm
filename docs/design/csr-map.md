@@ -50,12 +50,19 @@ headers (those are authoritative; this map is intent).
 ```
 0x0100  global_control         RW    [0] enable, [1] arm, [2] reset_counters
 0x0104  global_status          R     [0] ready, [1] armed, [2] running,
-                                     [3] error, [4] degraded
+                                     [3] error = err_sticky (drives the
+                                     front-panel LED; latches on any lost/
+                                     decode/FCS error since stats-clear),
+                                     [4] degraded, [5] activity (recent traffic)
 0x0108  timestamp_low          R     FPGA timestamp counter, snapshot pair
 0x010c  timestamp_high         R
 0x0110  error_status           W1C   sticky error bits
 0x0114  irq_status             W1C   sticky interrupt sources (future)
 0x0118  irq_mask               RW    interrupt mask (future)
+0x0124  sysmon_temp            R     on-chip SYSMONE4 die-temperature ADC code
+                                     ([15:4]); PWFPGA_SYSMON_TEMP_C() -> °C
+0x0128  sysmon_supply          R     [15:0] VCCINT code, [31:16] VCCAUX code;
+                                     PWFPGA_SYSMON_SUPPLY_V() -> volts
 
 0x0200..0x03ff  reserved  (was an unimplemented per-port control placeholder;
                            per-port status/stats live in the stats snapshot window)

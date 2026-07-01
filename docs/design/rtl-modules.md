@@ -17,6 +17,8 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
 |                                (RX FIFO user widened to 65b: {rx_wire_ts,err})
 +-- pw_ts_gray_cdc (x2 dir) + pw_ts_insert       egress + RX-ingress HW timestamping
 +-- ICAPE3     <- pw_icap_reboot                 in-band IPROG reload
++-- SYSMONE4   <- pw_sysmon (DRP reader)         on-chip die temp + VCCINT/VCCAUX
+|                                                -> REG_SYSMON_TEMP/SUPPLY
 +-- pwfpga_top_phase3            board-agnostic core
     +-- pw_csr_full              AXI-Lite slave: identity + windows +
     |   +-- pw_stats_snapshot   (flow + field-classifier tables moved to the

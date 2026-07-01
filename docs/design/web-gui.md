@@ -87,12 +87,14 @@ dependencies). Tabs:
 
 - **Dashboard** — polls every ~1.5 s: a **Versions** panel (packetwyrmd via
   `version`, packetwyrm-proxyd via `GET /proxyd/version`, per-card FPGA
-  device/version/build/git from `cards`); a **Health / LED** panel per card
-  (derived from data-plane stats — red on sticky errors/drops, green on
-  clean/idle — mirroring the front-panel R/G LED, with the causing counters
-  listed); `cards` / `ports` / `sfp.info` (numbers capped to 3 decimals);
+  device/version/build/git + SYSMON die-temp/VCCINT/VCCAUX from `cards`); a
+  **Health / LED** panel per card showing the FPGA's real `err_sticky` LED bit
+  (`cards.err_sticky` when the bitstream exposes it, else inferred from live
+  counters), with the causing counters incl. per-port FCS from `ports.stats`;
+  a **Ports** table with per-port pps/bps (`ports.stats` deltas over the FPGA
+  timestamp) + `sfp.info` (numbers capped to 3 decimals);
   **Aggregate counters** (total / per rx-card / per rx-port, with frames/s
-  rates); **Flow statistics** with Started/Stopped state, tx/rx frames + rates,
+  rates); **Flow statistics** with Started/Stopped state, tx/rx frames + pps + rx bps,
   and error counters (lost/dup/reorder) highlighted red when non-zero; and a
   per-flow **latency histogram** (`flow.hist`) with time-unit bucket labels
   (ns/µs/ms, from the 6.4 ns/tick clock).

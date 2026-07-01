@@ -1140,6 +1140,30 @@ static struct json_object *build_cards(const struct pw_config *cfg,
             snprintf(hx, sizeof hx, "0x%08x", info.git_hash);
             json_object_object_add(c, "git_hash", json_object_new_string(hx));
         }
+        /* Live health + on-chip SYSMON telemetry (via generic read32). On an
+         * older bitstream GLOBAL_STATUS is a constant and the SYSMON regs read
+         * 0, so err_sticky/activity come out false and temp/volt are omitted. */
+        if (cards[i].open && cards[i].backend.ops->read32) {
+            void *bx = cards[i].backend.ctx;
+            uint32_t gs = 0, tc = 0, sup = 0;
+            if (cards[i].backend.ops->read32(bx, PWFPGA_REG_GLOBAL_STATUS, &gs) == PW_OK) {
+                json_object_object_add(c, "err_sticky",
+                    json_object_new_boolean((gs & PWFPGA_GSTAT_ERROR) != 0));
+                json_object_object_add(c, "activity",
+                    json_object_new_boolean((gs & PWFPGA_GSTAT_ACTIVITY) != 0));
+            }
+            if (cards[i].backend.ops->read32(bx, PWFPGA_REG_SYSMON_TEMP, &tc) == PW_OK &&
+                PWFPGA_SYSMON_CODE(tc) != 0) {   /* code 0 => no SYSMON on this image */
+                json_object_object_add(c, "temp_c",
+                    json_object_new_double(PWFPGA_SYSMON_TEMP_C(tc)));
+                if (cards[i].backend.ops->read32(bx, PWFPGA_REG_SYSMON_SUPPLY, &sup) == PW_OK) {
+                    json_object_object_add(c, "vccint_v",
+                        json_object_new_double(PWFPGA_SYSMON_SUPPLY_V(sup & 0xFFFF)));
+                    json_object_object_add(c, "vccaux_v",
+                        json_object_new_double(PWFPGA_SYSMON_SUPPLY_V(sup >> 16)));
+                }
+            }
+        }
         json_object_array_add(arr, c);
     }
     json_object_object_add(r, "cards", arr);
@@ -1280,6 +1304,57 @@ static struct json_object *build_stats(const struct pw_config *cfg,
     return r;
 }
 
+/* ports.stats: per-port wire counters (frames/bytes/FCS/link) from the MAC,
+ * plus an FPGA timestamp so a client can derive exact per-port pps/bps. This
+ * is authoritative per-port traffic (all frames, not just test flows) and
+ * surfaces FCS errors -- one of the inputs to the front-panel LED err_sticky. */
+static struct json_object *build_port_stats(const struct pw_config *cfg,
+                                            struct card_runtime cards[]) {
+    struct json_object *r = json_object_new_object();
+    /* snapshot each open card first (same trigger as flow.stats) */
+    for (size_t ci = 0; ci < cfg->n_cards; ci++)
+        if (cards[ci].open && cards[ci].backend.ops->stats_snapshot)
+            (void)cards[ci].backend.ops->stats_snapshot(cards[ci].backend.ctx);
+    for (size_t ci = 0; ci < cfg->n_cards; ci++) {
+        if (!cards[ci].open || !cards[ci].backend.ops->read32) continue;
+        uint32_t lo = 0, hi = 0;
+        if (cards[ci].backend.ops->read32(cards[ci].backend.ctx,
+                PWFPGA_REG_TIMESTAMP_LOW, &lo) == PW_OK &&
+            cards[ci].backend.ops->read32(cards[ci].backend.ctx,
+                PWFPGA_REG_TIMESTAMP_HIGH, &hi) == PW_OK) {
+            json_object_object_add(r, "fpga_ts_lo", json_object_new_int64((int64_t)lo));
+            json_object_object_add(r, "fpga_ts_hi", json_object_new_int64((int64_t)hi));
+        }
+        break;
+    }
+    struct json_object *arr = json_object_new_array();
+    for (size_t i = 0; i < cfg->n_cards; i++) {
+        const struct pw_card *cc = &cfg->cards[i];
+        if (!cards[i].open || !cards[i].backend.ops->port_stats_read) continue;
+        for (size_t p = 0; p < cc->n_ports; p++) {
+            struct pw_port_stats ps = {0};
+            if (cards[i].backend.ops->port_stats_read(
+                    cards[i].backend.ctx, cc->ports[p].local_port, &ps) != PW_OK)
+                continue;
+            struct json_object *o = json_object_new_object();
+            json_object_object_add(o, "card_id", json_object_new_int(cc->id));
+            json_object_object_add(o, "local_port", json_object_new_int(cc->ports[p].local_port));
+            json_object_object_add(o, "global_port", json_object_new_int(cc->ports[p].global_port));
+            json_object_object_add(o, "rx_frames", json_object_new_int64((int64_t)ps.rx_frames));
+            json_object_object_add(o, "rx_bytes",  json_object_new_int64((int64_t)ps.rx_bytes));
+            json_object_object_add(o, "tx_frames", json_object_new_int64((int64_t)ps.tx_frames));
+            json_object_object_add(o, "tx_bytes",  json_object_new_int64((int64_t)ps.tx_bytes));
+            json_object_object_add(o, "rx_fcs_error", json_object_new_int64((int64_t)ps.rx_fcs_error));
+            json_object_object_add(o, "rx_bad_frame", json_object_new_int64((int64_t)ps.rx_bad_frame));
+            json_object_object_add(o, "link_up_count", json_object_new_int64((int64_t)ps.link_up_count));
+            json_object_object_add(o, "block_lock_loss", json_object_new_int64((int64_t)ps.block_lock_loss));
+            json_object_array_add(arr, o);
+        }
+    }
+    json_object_object_add(r, "ports", arr);
+    return r;
+}
+
 /* Per-flow latency histogram. */
 static struct json_object *build_flow_hist(const struct pw_config *cfg,
                                            const struct pw_program *prog,
@@ -1348,6 +1423,21 @@ static struct json_object *build_flow_stats(const struct pw_config *cfg,
     }
 
     struct json_object *r   = json_object_new_object();
+    /* FPGA free-running timestamp (6.4 ns/tick) at snapshot time, so a client
+     * can compute exact frame/byte rates as Δcounter / Δticks -- independent of
+     * host poll jitter. Read LOW first (latches HIGH) from the first open card. */
+    for (size_t ci = 0; ci < cfg->n_cards; ci++) {
+        if (!cards[ci].open || !cards[ci].backend.ops->read32) continue;
+        uint32_t lo = 0, hi = 0;
+        if (cards[ci].backend.ops->read32(cards[ci].backend.ctx,
+                PWFPGA_REG_TIMESTAMP_LOW, &lo) == PW_OK &&
+            cards[ci].backend.ops->read32(cards[ci].backend.ctx,
+                PWFPGA_REG_TIMESTAMP_HIGH, &hi) == PW_OK) {
+            json_object_object_add(r, "fpga_ts_lo", json_object_new_int64((int64_t)lo));
+            json_object_object_add(r, "fpga_ts_hi", json_object_new_int64((int64_t)hi));
+        }
+        break;
+    }
     struct json_object *arr = json_object_new_array();
     for (size_t i = 0; i < prog->n_flow_meta; i++) {
         const struct pw_flow_meta *m = &prog->flow_meta[i];
@@ -1504,6 +1594,8 @@ static void handle_client(int cfd,
                 card_filter = json_object_get_int(jc);
             }
             resp = build_stats(cfg, cards, hps, card_filter);
+        } else if (!strcmp(name, "ports.stats")) {
+            resp = build_port_stats(cfg, cards);
         } else if (!strcmp(name, "flow.hist")) {
             struct json_object *jid;
             if (!json_object_object_get_ex(req, "id", &jid)) {

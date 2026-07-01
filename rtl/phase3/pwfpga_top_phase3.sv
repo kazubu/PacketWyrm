@@ -124,7 +124,13 @@ module pwfpga_top_phase3 #(
     // since the last stats-clear (loss / FCS / drop); status_activity = traffic
     // recent (green blink).
     output wire              status_err_o,
-    output wire              status_activity_o
+    output wire              status_activity_o,
+
+    // On-chip SYSMON telemetry (raw DRP ADC codes, measurement in [15:4]),
+    // produced by pw_sysmon + SYSMONE4 in the board top. Same clk domain.
+    input  wire [15:0]       sysmon_temp_i,
+    input  wire [15:0]       sysmon_vccint_i,
+    input  wire [15:0]       sysmon_vccaux_i
 );
 
     // --- Data-plane <-> CSR_full wiring -------------------------
@@ -232,6 +238,12 @@ module pwfpga_top_phase3 #(
         .timestamp_i         (timestamp_i),
         .global_control_o    (),
         .error_status_set_i  (32'h0),
+        // Live LED/health readback (same clk domain, no CDC) + SYSMON telemetry.
+        .status_err_i        (status_err_o),
+        .status_activity_i   (status_activity_o),
+        .sysmon_temp_i       (sysmon_temp_i),
+        .sysmon_vccint_i     (sysmon_vccint_i),
+        .sysmon_vccaux_i     (sysmon_vccaux_i),
         .gpio_sync_ctrl_o    (gpio_sync_ctrl_w),
         .gpio_sync_ts_i      (gpio_sync_ts_w),
         .gpio_sync_seq_i     (gpio_sync_seq_w),

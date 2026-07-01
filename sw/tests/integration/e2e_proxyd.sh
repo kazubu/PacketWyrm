@@ -132,6 +132,9 @@ fi
 # /proxyd/version (gateway's own version endpoint)
 check "proxyd version endpoint" '"version"' \
     "$(curl -s http://127.0.0.1:$PLAIN_PORT/proxyd/version)"
+# ports.stats (per-port MAC counters for pps/bps + FCS)
+check "ports.stats per-port counters" '"rx_frames"' \
+    "$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"ports.stats","secret":"e2e-secret"}')"
 
 # config.load with a GUI-shaped test config (mirrors the Flows-editor YAML
 # emitter: v4/udp + v6/tcp, vlan, measurements). Guards emitter/parser drift.

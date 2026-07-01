@@ -70,6 +70,21 @@ module pw_csr_full #(
     output wire [31:0]       global_control_o,
     input  wire [31:0]       error_status_set_i,
 
+    // Live data-plane health for GLOBAL_STATUS readback (same clk domain as the
+    // CSR, so no CDC): the sticky error bit that drives the front-panel R/G LED
+    // (set on any lost/decode error since the last stats-clear) and an activity
+    // flag. Lets software read the true LED state (err_sticky was previously
+    // unreadable). See PWFPGA_GLOBAL_STATUS_* in csr.h.
+    input  wire              status_err_i,
+    input  wire              status_activity_i,
+
+    // On-chip SYSMON telemetry (raw ADC codes, MSB-aligned as SYSMONE4 DRP
+    // returns them: measurement in [15:4]). Driven by pw_sysmon in the board
+    // top; readable via REG_SYSMON_*.
+    input  wire [15:0]       sysmon_temp_i,
+    input  wire [15:0]       sysmon_vccint_i,
+    input  wire [15:0]       sysmon_vccaux_i,
+
     // GPIO cross-card time-sync (pw_gpio_sync): ctrl is host-written, the
     // latched edge timestamp / sequence / raw pad inputs are read back.
     output wire [31:0]       gpio_sync_ctrl_o,
@@ -228,6 +243,8 @@ module pw_csr_full #(
     localparam logic [15:0] REG_TIMESTAMP_LOW  = 16'h0108;
     localparam logic [15:0] REG_TIMESTAMP_HIGH = 16'h010C;
     localparam logic [15:0] REG_ERROR_STATUS   = 16'h0110;
+    localparam logic [15:0] REG_SYSMON_TEMP    = 16'h0124;   // R: [15:0] on-chip temp ADC code (meas in [15:4])
+    localparam logic [15:0] REG_SYSMON_SUPPLY  = 16'h0128;   // R: [15:0] VCCINT code, [31:16] VCCAUX code
     localparam logic [15:0] REG_REBOOT         = 16'h0120;   // write magic -> ICAP IPROG
     // GPIO cross-card time-sync (pw_gpio_sync). Identity region, clear of all windows.
     localparam logic [15:0] REG_GPIO_SYNC_CTRL    = 16'h0130; // RW: enable/master/repeat/pins/period
@@ -741,7 +758,13 @@ module pw_csr_full #(
                             REG_NUM_CLS:        s_axi_rdata <= NUM_CLASSIFIER[31:0];
                             REG_NUM_HIST_BINS:  s_axi_rdata <= NUM_HIST_BINS[31:0];
                             REG_GLOBAL_CONTROL: s_axi_rdata <= global_control_q;
-                            REG_GLOBAL_STATUS:  s_axi_rdata <= 32'h0000_0001;
+                            // bit0=READY(1), bit3=err_sticky (GSTAT_ERROR, drives
+                            // the front-panel LED), bit5=activity. bits1/2/4
+                            // (armed/running/degraded) unimplemented -> 0.
+                            REG_GLOBAL_STATUS:  s_axi_rdata <=
+                                {26'b0, status_activity_i, 1'b0, status_err_i, 3'b001};
+                            REG_SYSMON_TEMP:    s_axi_rdata <= {16'h0, sysmon_temp_i};
+                            REG_SYSMON_SUPPLY:  s_axi_rdata <= {sysmon_vccaux_i, sysmon_vccint_i};
                             REG_TIMESTAMP_LOW: begin
                                 s_axi_rdata            <= timestamp_low;
                                 timestamp_high_latched <= timestamp_high;
