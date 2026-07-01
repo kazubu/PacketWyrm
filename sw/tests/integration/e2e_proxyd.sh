@@ -111,6 +111,19 @@ check "TLS GET /" 'PacketWyrm' "$(curl -sk https://127.0.0.1:$TLS_PORT/)"
 check "TLS rpc version" '"version"' \
     "$(curl -sk https://127.0.0.1:$TLS_PORT/api/rpc \
         -d '{"rpc":"version","secret":"e2e-secret"}')"
+
+# pktwyrm --host over HTTPS (remote CLI). 2>/dev/null drops the one-time
+# "without certificate verification" notice on stderr.
+if [ -x "$CLI" ]; then
+    check "pktwyrm --host rpc version" '"version"' \
+        "$(PACKETWYRM_SECRET=e2e-secret "$CLI" --host 127.0.0.1:$TLS_PORT \
+            rpc version 2>/dev/null)"
+    check "pktwyrm --host rpc cards" '"backend":"fake"' \
+        "$("$CLI" --host 127.0.0.1:$TLS_PORT --secret e2e-secret \
+            rpc cards 2>/dev/null)"
+    check "pktwyrm --host without secret -> unauthorized" 'unauthorized' \
+        "$("$CLI" --host 127.0.0.1:$TLS_PORT rpc version 2>/dev/null)"
+fi
 kill "$PXT" 2>/dev/null || true; PXT=""
 
 echo "proxyd e2e: $pass passed, $fail failed"

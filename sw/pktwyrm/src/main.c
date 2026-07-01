@@ -9,8 +9,12 @@
 #include <time.h>
 #include <unistd.h>
 #include <math.h>
+#include <netdb.h>
+#include <sys/socket.h>
 
 #include <json-c/json.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
 
 #include "packetwyrm/packetwyrm.h"
 
@@ -30,6 +34,9 @@ static int cmd_help(void);
  * packetwyrm.yaml). Read permission on that file is thus the access gate. */
 static const char *g_secret_arg = NULL;   /* --secret */
 static const char *g_env_arg    = NULL;   /* --env */
+/* --host HOST[:PORT]: talk to a remote packetwyrm-proxyd over HTTPS instead
+ * of the local Unix socket. All RPCs then go through POST /api/rpc. */
+static const char *g_host_arg   = NULL;
 
 static const char *resolve_secret(void) {
     static char cache[PW_SECRET_MAX];
@@ -321,6 +328,79 @@ static int cmd_flow_show(int argc, char **argv) {
 
 /* Send one RPC request, return the raw response in `resp` (size in
  * `*out_len`). 0 on success, -1 on failure. */
+/* Remote transport: POST the (already secret-injected) JSON to a
+ * packetwyrm-proxyd over HTTPS and copy the response body into `resp`.
+ * `hostarg` is "HOST" or "HOST:PORT" (default port 8443). The gateway's
+ * cert is self-signed by default, so we do NOT verify it (a lab tool);
+ * a one-time warning is printed. Returns 0 on success, -1 on error. */
+static int https_rpc_call(const char *hostarg, const char *send,
+                          char *resp, size_t resp_cap, size_t *out_len) {
+    char host[256]; const char *port = "8443";
+    snprintf(host, sizeof(host), "%s", hostarg);
+    char *colon = strrchr(host, ':');
+    if (colon) { *colon = '\0'; port = colon + 1; }
+
+    static int warned = 0;
+    if (!warned) {
+        fprintf(stderr, "pktwyrm: connecting to %s:%s over TLS without "
+                        "certificate verification (self-signed)\n", host, port);
+        warned = 1;
+    }
+
+    struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM };
+    struct addrinfo *res = NULL;
+    if (getaddrinfo(host, port, &hints, &res) != 0 || !res) return -1;
+    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (fd < 0 || connect(fd, res->ai_addr, res->ai_addrlen) != 0) {
+        if (fd >= 0) close(fd);
+        freeaddrinfo(res);
+        return -1;
+    }
+    freeaddrinfo(res);
+
+    SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+    SSL *ssl = ctx ? SSL_new(ctx) : NULL;
+    int rc = -1;
+    if (ssl) {
+        SSL_set_fd(ssl, fd);
+        SSL_set_tlsext_host_name(ssl, host);
+        if (SSL_connect(ssl) == 1) {
+            char req[PW_IPC_FRAME_MAX + 512];
+            int hn = snprintf(req, sizeof(req),
+                "POST /api/rpc HTTP/1.1\r\nHost: %s\r\n"
+                "Content-Type: application/json\r\nContent-Length: %zu\r\n"
+                "Connection: close\r\n\r\n%s",
+                host, strlen(send), send);
+            if (hn > 0 && SSL_write(ssl, req, hn) == hn) {
+                /* Read the whole HTTP response. */
+                char buf[PW_IPC_FRAME_MAX + 4096];
+                size_t have = 0;
+                int r;
+                while (have < sizeof(buf) - 1 &&
+                       (r = SSL_read(ssl, buf + have, (int)(sizeof(buf) - 1 - have))) > 0)
+                    have += (size_t)r;
+                buf[have] = '\0';
+                /* Body starts after the header terminator. */
+                char *body = strstr(buf, "\r\n\r\n");
+                if (body) {
+                    body += 4;
+                    size_t blen = have - (size_t)(body - buf);
+                    if (blen > resp_cap) blen = resp_cap;
+                    memcpy(resp, body, blen);
+                    *out_len = blen;
+                    rc = 0;
+                }
+            }
+        } else {
+            ERR_print_errors_fp(stderr);
+        }
+    }
+    if (ssl) { SSL_shutdown(ssl); SSL_free(ssl); }
+    if (ctx) SSL_CTX_free(ctx);
+    close(fd);
+    return rc;
+}
+
 static int rpc_call(const char *sock, const char *json_req,
                     char *resp, size_t resp_cap, size_t *out_len) {
     /* Inject the access secret (if any) into the request object -- via json-c so
@@ -336,14 +416,18 @@ static int rpc_call(const char *sock, const char *json_req,
             send = json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN);
         }
     }
-    int fd = -1;
-    if (pw_ipc_connect(sock, &fd) != PW_OK) { if (o) json_object_put(o); return -1; }
-    int rc = -1;
-    if (pw_ipc_write_frame(fd, send, strlen(send)) == PW_OK &&
-        pw_ipc_read_frame(fd, resp, resp_cap, out_len) == PW_OK) {
-        rc = 0;
+
+    int rc;
+    if (g_host_arg) {
+        /* Remote: HTTPS to a packetwyrm-proxyd. `sock` is ignored. */
+        rc = https_rpc_call(g_host_arg, send, resp, resp_cap, out_len);
+    } else {
+        int fd = -1;
+        if (pw_ipc_connect(sock, &fd) != PW_OK) { if (o) json_object_put(o); return -1; }
+        rc = (pw_ipc_write_frame(fd, send, strlen(send)) == PW_OK &&
+              pw_ipc_read_frame(fd, resp, resp_cap, out_len) == PW_OK) ? 0 : -1;
+        close(fd);
     }
-    close(fd);
     if (o) json_object_put(o);
     return rc;
 }
@@ -599,12 +683,6 @@ static int cmd_rpc(int argc, char **argv) {
         return 2;
     }
 
-    int fd = -1;
-    pw_status r = pw_ipc_connect(sock, &fd);
-    if (r != PW_OK) {
-        fprintf(stderr, "cannot connect to %s: %s\n", sock, pw_strerror(r));
-        return 1;
-    }
     char req[256];
     int rlen;
     if (card_id >= 0) {
@@ -613,18 +691,13 @@ static int cmd_rpc(int argc, char **argv) {
     } else {
         rlen = snprintf(req, sizeof(req), "{\"rpc\":\"%s\"}", method);
     }
-    if (rlen < 0 || (size_t)rlen >= sizeof(req)) { close(fd); return 1; }
-    if (pw_ipc_write_frame(fd, req, (size_t)rlen) != PW_OK) {
-        fprintf(stderr, "write failed\n");
-        close(fd);
-        return 1;
-    }
+    if (rlen < 0 || (size_t)rlen >= sizeof(req)) return 1;
+    /* Route through rpc_call so the secret is injected and --host (remote
+     * HTTPS via packetwyrm-proxyd) is honored, same as every other command. */
     char  resp[PW_IPC_FRAME_MAX];
     size_t got = 0;
-    r = pw_ipc_read_frame(fd, resp, sizeof(resp), &got);
-    close(fd);
-    if (r != PW_OK) {
-        fprintf(stderr, "read failed: %s\n", pw_strerror(r));
+    if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
+        fprintf(stderr, "rpc call failed\n");
         return 1;
     }
     fwrite(resp, 1, got, stdout);
@@ -656,6 +729,12 @@ static int cmd_help(void) {
     puts("  pktwyrm test arm|start|stop [--socket PATH]");
     puts("  pktwyrm hist latency --flow N [--socket PATH]");
     puts("  pktwyrm load <config.yaml> [--socket PATH]");
+    puts("");
+    puts("Global flags (may appear anywhere):");
+    puts("  --secret S     control-socket secret (else $PACKETWYRM_SECRET, else --env file)");
+    puts("  --env PATH     env config to read the secret from (default /etc/packetwyrm/packetwyrm.yaml)");
+    puts("  --host H[:P]   talk to a remote packetwyrm-proxyd over HTTPS (default port 8443)");
+    puts("                 instead of the local Unix socket; --socket is then ignored");
     return 0;
 }
 
@@ -670,6 +749,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--secret") && i + 1 < argc)      g_secret_arg = argv[++i];
         else if (!strcmp(argv[i], "--env") && i + 1 < argc)    g_env_arg    = argv[++i];
+        else if (!strcmp(argv[i], "--host") && i + 1 < argc)   g_host_arg   = argv[++i];
         else fargv[fargc++] = argv[i];
     }
     argv = fargv; argc = fargc;

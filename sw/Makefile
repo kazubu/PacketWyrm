@@ -85,7 +85,7 @@ $(DAEMON_BIN): $(DAEMON_SRC) $(LIBA) | $(BUILD_DIR)
 
 cli: $(CLI_BIN)
 $(CLI_BIN): $(CLI_SRC) $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(CLI_SRC) $(LIBA) $(EXTRA_LIBS) $(LDFLAGS) -lm
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(CLI_SRC) $(LIBA) $(EXTRA_LIBS) $(SSL_LIBS) $(LDFLAGS) -lm
 
 # packetwyrm-proxyd: HTTPS gateway for the Web GUI + remote CLI.
 # The GUI page is embedded via `xxd -i` (run inside the assets dir so the
