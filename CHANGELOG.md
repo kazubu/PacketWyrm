@@ -20,8 +20,9 @@ For where work is going next, see `NEXT-STEPS.md`.
     localhost/tunnel. It refuses a non-loopback bind when the daemon has no
     secret (unless `--insecure-no-auth`), and ships an unprivileged systemd
     unit. The GUI covers a live dashboard (cards/ports/SFP/flow stats +
-    latency histogram), point-and-click flow/forward editors that emit config
-    YAML and apply it via `config.load`, test/flow control, and an environment
+    latency histogram), point-and-click flow/forward editors (full flow schema
+    incl. collapsible match / modifiers / encap sections) that emit config YAML
+    and apply it via `config.load`, test/flow control, and an environment
     editor. New daemon RPCs `config.get_raw` (env file text, secret redacted),
     `config.get_test` (the active flows/forwards YAML, so the GUI's "Load
     current" can round-trip existing flows losslessly), and `config.save`

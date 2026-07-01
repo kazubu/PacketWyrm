@@ -87,15 +87,17 @@ dependencies). Tabs:
 
 - **Dashboard** — polls `cards` / `ports` / `sfp.info` / `flow.stats`
   every ~1.5 s; per-flow latency histogram via `flow.hist`.
-- **Flows** — point-and-click editor for the common flow schema
-  (ports / L2 / L3 v4|v6 / L4 udp|tcp / traffic / measurements /
-  classify / background) with a live generated-YAML preview; **Apply**
-  ships it via `config.load`. **Load current** pulls the running test
-  config (`config.get_test`) into the raw-YAML editor so existing flows —
-  including advanced features the form doesn't model (encap, modifiers,
-  match masks) — can be edited losslessly and re-applied via **Apply raw
-  YAML**. The form is for authoring/quick edits; the YAML it emits is
-  exactly what `packetwyrmd` parses (see `yaml-schema.md`).
+- **Flows** — point-and-click editor for the full flow schema:
+  ports / L2 / L3 v4|v6 / L4 udp|tcp / traffic / measurements / classify /
+  background, plus collapsible advanced sections for **match** (classifier
+  masks), **modifiers** (per-field static/increment/random + mask, incl.
+  128-bit IPv6 literal masks), and **encap** (IPIP / GRE / EtherIP outer
+  v4|v6 + EtherIP inner L2 + `rx_expect`). A live generated-YAML preview
+  shows exactly what **Apply** ships via `config.load`. **Load current**
+  pulls the running test config (`config.get_test`) into the raw-YAML
+  editor for lossless round-trip / bulk edits (**Apply raw YAML**). The
+  YAML the form emits is exactly what `packetwyrmd` parses (see
+  `yaml-schema.md`).
 - **Forwards** — form editor for store-and-forward rules → `config.load`.
 - **Control** — `test.arm` / `test.start` / `test.stop`, `stats.clear`,
   per-flow `flow.start` / `flow.stop`.

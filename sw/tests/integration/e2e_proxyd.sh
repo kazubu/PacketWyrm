@@ -167,6 +167,42 @@ flows:
       loss: true
       latency: true
       jitter: true
+  - id: 3
+    name: "advanced"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2:
+      src_mac: "02:a5:02:00:00:05"
+      dst_mac: "02:a5:02:00:00:06"
+    ipv4:
+      src: "192.0.2.5"
+      dst: "192.0.2.6"
+      ttl: 64
+    udp:
+      src_port: 49152
+      dst_port: 50003
+    traffic:
+      frame_len: 512
+      rate_bps: 1000000000
+      payload: "increment"
+      insert_sequence: true
+      insert_timestamp: true
+    measurements:
+      loss: true
+      latency: true
+      jitter: true
+    match:
+      udp_dst: 0xff00
+      ipv4_dst: 0xffffff00
+    modifiers:
+      src_ipv4: { mode: "increment", mask: 0x0000ffff }
+      udp_src: { mode: "random", mask: 0x00ff }
+      src_ipv6: { mode: "increment", mask: "ffff::" }
+    encap:
+      type: "ipip"
+      outer:
+        ipv4: { src: "10.0.0.1", dst: "10.0.0.2", ttl: 32, dscp: 0 }
+    rx_expect: "tunneled"
 YML
 )
 loaded=$(python3 - "$PLAIN_PORT" <<PY
@@ -177,7 +213,7 @@ r = urllib.request.urlopen("http://127.0.0.1:%s/api/rpc" % sys.argv[1], data=bod
 print(r.read().decode())
 PY
 )
-check "config.load GUI YAML (v4/udp + v6/tcp)" '"n_flows":2' "$loaded"
+check "config.load GUI YAML (v4/udp + v6/tcp + advanced encap/mod/match)" '"n_flows":3' "$loaded"
 # config.get_test returns the just-loaded test config so the GUI can edit it.
 gettest=$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc \
     -d '{"rpc":"config.get_test","secret":"e2e-secret"}')
