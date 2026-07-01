@@ -98,6 +98,71 @@ PY
 )
 check "config.save ok" '"ok":true' "$saved"
 check "config.save no restart (unchanged)" '"restart_required":false' "$saved"
+
+# config.load with a GUI-shaped test config (mirrors the Flows-editor YAML
+# emitter: v4/udp + v6/tcp, vlan, measurements). Guards emitter/parser drift.
+gui_yaml=$(cat <<'YML'
+flows:
+  - id: 1
+    tx_global_port: 0
+    rx_global_port: 1
+    l2:
+      src_mac: "02:a5:02:00:00:01"
+      dst_mac: "02:a5:02:00:00:02"
+      vlan: 100
+    ipv4:
+      src: "192.0.2.1"
+      dst: "192.0.2.2"
+      ttl: 64
+    udp:
+      src_port: 49152
+      dst_port: 50001
+    traffic:
+      frame_len: 512
+      rate_bps: 1000000000
+      payload: "increment"
+      insert_sequence: true
+      insert_timestamp: true
+    measurements:
+      loss: true
+      latency: true
+      jitter: true
+  - id: 2
+    name: "v6tcp"
+    tx_global_port: 0
+    rx_global_port: 1
+    l2:
+      src_mac: "02:a5:02:00:00:03"
+      dst_mac: "02:a5:02:00:00:04"
+    ipv6:
+      src: "2001:db8::1"
+      dst: "2001:db8::2"
+      hop_limit: 64
+    tcp:
+      src_port: 40000
+      dst_port: 80
+      flags: 0x02
+    traffic:
+      frame_len: 512
+      rate_bps: 1000000000
+      payload: "increment"
+      insert_sequence: true
+      insert_timestamp: true
+    measurements:
+      loss: true
+      latency: true
+      jitter: true
+YML
+)
+loaded=$(python3 - "$PLAIN_PORT" <<PY
+import json, sys, urllib.request
+body = json.dumps({"rpc":"config.load","secret":"e2e-secret",
+                   "yaml":$(python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' <<<"$gui_yaml")}).encode()
+r = urllib.request.urlopen("http://127.0.0.1:%s/api/rpc" % sys.argv[1], data=body)
+print(r.read().decode())
+PY
+)
+check "config.load GUI YAML (v4/udp + v6/tcp)" '"n_flows":2' "$loaded"
 kill "$PXP" 2>/dev/null || true; PXP=""
 
 # --- TLS gateway (loopback, self-signed) ---
