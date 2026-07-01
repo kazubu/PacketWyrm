@@ -84,12 +84,78 @@ static void hexdump(const char *label, const uint8_t *b, size_t n) {
     }
 }
 
+/* Parse a contiguous hex string ("0a1bff") into bytes. Returns count or -1. */
+static int parse_hex(const char *s, uint8_t *out, size_t max) {
+    size_t n = strlen(s);
+    if (n == 0 || (n & 1)) return -1;
+    if (n / 2 > max) return -1;
+    for (size_t i = 0; i < n; i += 2) {
+        char c[3] = { s[i], s[i + 1], 0 }; char *end;
+        long v = strtol(c, &end, 16);
+        if (*end || v < 0 || v > 255) return -1;
+        out[i / 2] = (uint8_t)v;
+    }
+    return (int)(n / 2);
+}
+
+static int do_write(struct pw_card_backend *be, int port, int argc, char **argv) {
+    /* argv: [write] <addr 0x50|0x51> <offset> <hexbytes> [commit] */
+    if (argc < 7) {
+        fprintf(stderr, "usage: pw_sfp <bdf> <port> write <0x50|0x51> <offset> <hexbytes> [commit]\n"
+                        "  hexbytes = contiguous hex pairs, e.g. 0a1bff. Without 'commit' it is a\n"
+                        "  DRY RUN (shows current vs new). 'commit' writes + verifies.\n"
+                        "  WARNING: writing 0x50 (base ID) can re-code / brick a module.\n");
+        return 2;
+    }
+    uint8_t addr   = (uint8_t)strtol(argv[4], NULL, 0);
+    uint8_t offset = (uint8_t)strtol(argv[5], NULL, 0);
+    uint8_t data[128];
+    int n = parse_hex(argv[6], data, sizeof(data));
+    if (n <= 0) { fprintf(stderr, "bad hexbytes '%s' (need even-length hex)\n", argv[6]); return 2; }
+    int commit = (argc > 7 && !strcmp(argv[7], "commit"));
+    if (addr != 0x50 && addr != 0x51) {
+        fprintf(stderr, "addr must be 0x50 (base ID) or 0x51 (DOM page)\n"); return 2;
+    }
+
+    uint8_t cur[128];
+    if (pw_sfp_read(be, port, addr, offset, cur, (size_t)n) != PW_OK) {
+        fprintf(stderr, "port %d: no I2C ACK on 0x%02x (module absent / write-protected?)\n", port, addr);
+        return 1;
+    }
+    printf("port %d  i2c 0x%02x  offset 0x%02x  %d byte(s)\n", port, addr, offset, n);
+    printf("  current:");  for (int i = 0; i < n; i++) printf(" %02x", cur[i]);  printf("\n");
+    printf("  new    :");  for (int i = 0; i < n; i++) printf(" %02x", data[i]); printf("\n");
+    if (!commit) {
+        printf("  DRY RUN -- add 'commit' to write. (writing 0x50 can re-code the module)\n");
+        return 0;
+    }
+    printf("  writing...\n");
+    if (pw_sfp_write(be, port, addr, offset, data, (size_t)n) != PW_OK) {
+        fprintf(stderr, "  WRITE FAILED (NAK / timeout -- write-protected region?)\n");
+        return 1;
+    }
+    uint8_t rb[128];
+    if (pw_sfp_read(be, port, addr, offset, rb, (size_t)n) != PW_OK) {
+        fprintf(stderr, "  wrote, but read-back failed\n"); return 1;
+    }
+    if (memcmp(rb, data, (size_t)n) != 0) {
+        printf("  read-back MISMATCH:"); for (int i = 0; i < n; i++) printf(" %02x", rb[i]); printf("\n");
+        printf("  (region may be read-only / shadowed)\n");
+        return 1;
+    }
+    printf("  OK -- verified\n");
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s <bdf> [port|both] [raw]\n", argv[0]);
+        fprintf(stderr, "usage: %s <bdf> [port|both] [raw]\n"
+                        "       %s <bdf> <port> write <0x50|0x51> <offset> <hexbytes> [commit]\n",
+                argv[0], argv[0]);
         return 2;
     }
     const char *bdf = argv[1];
+    int  is_write = (argc > 3 && !strcmp(argv[3], "write"));
     int  do_both = (argc > 2 && !strcmp(argv[2], "both"));
     int  port    = (argc > 2 && !do_both) ? atoi(argv[2]) : 0;
     int  raw     = (argc > 3 && !strcmp(argv[3], "raw"));
@@ -99,6 +165,13 @@ int main(int argc, char **argv) {
     if (pw_bar_backend_open(bdf, &be) != PW_OK) {
         fprintf(stderr, "open %s failed\n", bdf);
         return 1;
+    }
+
+    int rc = 0;
+    if (is_write) {
+        rc = do_write(&be, port, argc, argv);
+        pw_card_backend_close(&be);
+        return rc;
     }
 
     int p0 = do_both ? 0 : port;

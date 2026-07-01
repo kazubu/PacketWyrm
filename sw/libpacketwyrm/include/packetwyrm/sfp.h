@@ -59,4 +59,18 @@ pw_status pw_sfp_read(const struct pw_card_backend *be, int port,
 pw_status pw_sfp_probe(const struct pw_card_backend *be, int port,
                        struct pw_sfp_info *out);
 
+/* Write `len` bytes to a page (i2c_addr 0x50 base / 0x51 DOM-page soft regs)
+ * starting at `offset`, bit-banged over REG_SFP_I2C. Each byte is a single-byte
+ * I2C write followed by an ACK-poll for the EEPROM's internal write cycle, so it
+ * works regardless of the module's page size. Returns PW_OK, or PW_E_IO on a
+ * NAK / write-cycle timeout (e.g. a write-protected or absent module).
+ *
+ * WARNING: this mutates the module's non-volatile EEPROM. Writing the base ID
+ * page (0x50) can re-code or brick a transceiver; many vendor/DOM regions are
+ * password-protected and will NAK. Intended for deliberate lab use on modules
+ * you own -- callers should confirm + read back (pw_sfp_read) to verify. */
+pw_status pw_sfp_write(const struct pw_card_backend *be, int port,
+                       uint8_t i2c_addr, uint8_t offset,
+                       const uint8_t *buf, size_t len);
+
 #endif /* PACKETWYRM_SFP_H */

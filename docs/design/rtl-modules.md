@@ -312,6 +312,10 @@ pwfpga_top
   (0xA0 base ID) and, for DDM-capable optics, live DOM (temperature, Vcc, TX
   bias, TX/RX optical power at 0xA2). SW: `libpacketwyrm/sfp.{c,h}` + the
   `pw_sfp` tool. A passive DAC answers the ID page but has no optical DOM.
+- The same bit-bang bus also **writes** the EEPROM (`pw_sfp_write` / `pw_sfp ...
+  write`), single-byte with ACK-polling for the write cycle — no RTL change (the
+  CSR is symmetric). Guarded (dry-run + read-back verify); writing 0x50 can
+  re-code a module, so it's a deliberate lab operation.
 
 ### Front-panel status LEDs
 

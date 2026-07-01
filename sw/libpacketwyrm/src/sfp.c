@@ -120,6 +120,42 @@ pw_status pw_sfp_read(const struct pw_card_backend *be, int port,
     return PW_OK;
 }
 
+pw_status pw_sfp_write(const struct pw_card_backend *be, int port,
+                       uint8_t i2c_addr, uint8_t offset,
+                       const uint8_t *buf, size_t len) {
+    if (!be || !be->ops || !be->ops->write32 || !be->ops->read32) return PW_E_NOT_IMPLEMENTED;
+    if (port < 0 || port > 1 || !buf) return PW_E_INVAL;
+    if ((size_t)offset + len > 256) return PW_E_INVAL;   /* single 256-B page */
+
+    struct i2c_bus b = { .be = be, .scl = (unsigned)(port * 2),
+                         .sda = (unsigned)(port * 2 + 1), .drive = 0 };
+    set_line(&b, b.scl, 1);
+    set_line(&b, b.sda, 1);
+
+    /* Single-byte writes: START, [addr|W], offset, data, STOP -- then ACK-poll
+     * the device address until it ACKs again (internal write cycle complete).
+     * Byte-at-a-time avoids page-size assumptions across module vendors. */
+    for (size_t i = 0; i < len; i++) {
+        i2c_start(&b);
+        if (i2c_write_byte(&b, (uint8_t)(i2c_addr << 1)))     { i2c_stop(&b); return PW_E_IO; }
+        if (i2c_write_byte(&b, (uint8_t)(offset + i)))         { i2c_stop(&b); return PW_E_IO; }
+        if (i2c_write_byte(&b, buf[i]))                        { i2c_stop(&b); return PW_E_IO; }
+        i2c_stop(&b);
+
+        /* ACK-poll the write cycle (each poll is ~100us of bus time; the SFP
+         * EEPROM write completes within a few ms, so ~50 polls is ample). */
+        int done = 0;
+        for (int t = 0; t < 50; t++) {
+            i2c_start(&b);
+            int ack = i2c_write_byte(&b, (uint8_t)(i2c_addr << 1));
+            i2c_stop(&b);
+            if (ack == 0) { done = 1; break; }
+        }
+        if (!done) return PW_E_IO;
+    }
+    return PW_OK;
+}
+
 /* Copy an EEPROM ASCII field, trimming trailing spaces, into a NUL-terminated
  * buffer of size dst_sz (>= n+1). */
 static void copy_ascii(char *dst, size_t dst_sz, const uint8_t *src, size_t n) {

@@ -28,6 +28,12 @@ For where work is going next, see `NEXT-STEPS.md`.
     optical power, 0xA2 @ 0x51). New `pw_sfp <bdf> [port|both] [raw]` tool prints
     it (with dBm). A passive DAC reports the identifier but no DOM. Pad inputs are
     2FF-synchronised + false-pathed; the I2C lines idle high via PULLUP.
+    `pw_sfp_write()` + `pw_sfp <bdf> <port> write <0x50|0x51> <offset> <hexbytes>
+    [commit]` also write the module EEPROM (single-byte writes with ACK-poll for
+    the write cycle; no RTL change -- same bit-bang CSR). Guarded: a dry run
+    (current vs new) unless `commit` is given, then it writes + reads back to
+    verify. WARNING: writing the base ID page can re-code / brick a module;
+    intended for deliberate lab use on modules you own.
 
 ### Fixed
   - **Deep-encap UDF classifier matching.** A UDF slice comparator reads inner
