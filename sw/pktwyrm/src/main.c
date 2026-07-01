@@ -371,7 +371,13 @@ static int https_rpc_call(const char *hostarg, const char *send,
                 "Content-Type: application/json\r\nContent-Length: %zu\r\n"
                 "Connection: close\r\n\r\n%s",
                 host, strlen(send), send);
-            if (hn > 0 && SSL_write(ssl, req, hn) == hn) {
+            /* TLS allows partial writes -- loop until the whole request is sent. */
+            int wok = hn > 0;
+            for (int off = 0; wok && off < hn; ) {
+                int w = SSL_write(ssl, req + off, hn - off);
+                if (w <= 0) wok = 0; else off += w;
+            }
+            if (wok) {
                 /* Read the whole HTTP response. */
                 char buf[PW_IPC_FRAME_MAX + 4096];
                 size_t have = 0;

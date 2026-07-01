@@ -279,16 +279,20 @@ static void serve(struct conn *c) {
         http_reply(c, 200, "OK", "text/html; charset=utf-8",
                    index_html, index_html_len);
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/rpc") == 0) {
-        static char resp[PW_IPC_FRAME_MAX];
+        /* Per-connection response buffer: worker threads must NOT share it. */
+        char *resp = malloc(PW_IPC_FRAME_MAX);
         size_t rlen = 0;
-        if (body_len == 0) {
+        if (!resp) {
+            http_error(c, 500, "out of memory");
+        } else if (body_len == 0) {
             http_error(c, 400, "empty body");
         } else if (daemon_relay(buf + body_off, body_len,
-                                resp, sizeof(resp), &rlen) == 0) {
+                                resp, PW_IPC_FRAME_MAX, &rlen) == 0) {
             http_reply(c, 200, "OK", "application/json", resp, rlen);
         } else {
             http_error(c, 502, "daemon unreachable");
         }
+        free(resp);
     } else {
         http_error(c, 404, "not found");
     }
@@ -334,11 +338,6 @@ static int probe_daemon_secret(void) {
         return -1;
     resp[rlen < sizeof(resp) ? rlen : sizeof(resp) - 1] = '\0';
     return (strstr(resp, "unauthorized") != NULL) ? 1 : 0;
-}
-
-static bool is_loopback_addr(const char *addr) {
-    return strcmp(addr, "127.0.0.1") == 0 || strcmp(addr, "::1") == 0 ||
-           strcmp(addr, "localhost") == 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -419,19 +418,36 @@ int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
     g_daemon_sock = o.daemon_sock;
 
+    /* Resolve the listen address to a numeric IPv4 up front. We only bind
+     * AF_INET, so reject anything inet_pton can't parse (e.g. an IPv6 literal
+     * or a hostname) rather than silently falling back to 0.0.0.0 -- that
+     * fallback would turn a "loopback-looking" --listen into a public bind. */
+    struct in_addr listen_ia;
+    if (inet_pton(AF_INET, o.listen_addr, &listen_ia) != 1) {
+        fprintf(stderr, "proxyd: --listen address must be a numeric IPv4 "
+                        "address (got '%s'); IPv6/hostnames are not supported\n",
+                o.listen_addr);
+        return 2;
+    }
+    bool loopback = (ntohl(listen_ia.s_addr) >> 24) == 127; /* 127.0.0.0/8 */
+
     printf("packetwyrm-proxyd starting\n");
     printf("  daemon socket: %s\n", o.daemon_sock);
 
-    /* Auth safeguard: refuse to expose an unauthenticated daemon on a
-     * non-loopback address unless the operator opts in. */
+    /* Auth safeguard: on a non-loopback bind, only proceed if the daemon is
+     * KNOWN to require a secret (sec == 1). If it has none (sec == 0) or we
+     * can't tell because it's unreachable at startup (sec == -1), fail CLOSED
+     * -- otherwise a no-secret daemon coming up later would be exposed. */
     int sec = probe_daemon_secret();
-    if (sec == 0 && !is_loopback_addr(o.listen_addr) && !o.insecure_no_auth) {
+    if (!loopback && !o.insecure_no_auth && sec != 1) {
         fprintf(stderr,
-            "proxyd: REFUSING to bind %s:%d -- the daemon has no secret "
-            "configured, so anyone who reaches this port has full control.\n"
+            "proxyd: REFUSING to bind %s:%d -- %s, so a public bind could "
+            "expose full control.\n"
             "        Set system.secret in the daemon env config, bind "
             "127.0.0.1, or pass --insecure-no-auth to override.\n",
-            o.listen_addr, o.listen_port);
+            o.listen_addr, o.listen_port,
+            sec == 0 ? "the daemon has no secret configured"
+                     : "the daemon is unreachable so its auth can't be confirmed");
         return 1;
     }
     if (sec == -1)
@@ -454,9 +470,8 @@ int main(int argc, char **argv) {
     int one = 1;
     setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
     struct sockaddr_in sa = { .sin_family = AF_INET,
-                              .sin_port = htons((uint16_t)o.listen_port) };
-    if (inet_pton(AF_INET, o.listen_addr, &sa.sin_addr) != 1)
-        sa.sin_addr.s_addr = htonl(INADDR_ANY);
+                              .sin_port = htons((uint16_t)o.listen_port),
+                              .sin_addr = listen_ia };
     if (bind(lfd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
         perror("bind");
         return 1;

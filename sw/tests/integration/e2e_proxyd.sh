@@ -53,6 +53,21 @@ check() {
         echo "[FAIL] $name: expected /$expected/, got: $got"; fail=$((fail+1))
     fi
 }
+check_exit() {  # name, expected_rc, actual_rc
+    if [ "$2" = "$3" ]; then echo "[ ok ] $1"; pass=$((pass+1));
+    else echo "[FAIL] $1: expected exit $2, got $3"; fail=$((fail+1)); fi
+}
+
+# --- gateway startup safeguards (no daemon needed for these) ---
+# (rc=0; cmd || rc=$?  keeps `set -e` from aborting on the expected failure.)
+# non-IPv4 --listen must be rejected (not silently bound to 0.0.0.0).
+rc=0; "$PROXYD" --listen ::1:9 --socket "$SOCK" --no-tls >/dev/null 2>&1 || rc=$?
+check_exit "reject IPv6 --listen" 2 "$rc"
+rc=0; "$PROXYD" --listen localhost:9 --socket "$SOCK" --no-tls >/dev/null 2>&1 || rc=$?
+check_exit "reject hostname --listen" 2 "$rc"
+# fail-closed: non-loopback bind against an unreachable daemon must refuse.
+rc=0; "$PROXYD" --listen 0.0.0.0:9 --socket /no/such.sock --no-tls >/dev/null 2>&1 || rc=$?
+check_exit "fail-closed non-loopback + unreachable daemon" 1 "$rc"
 
 # --- plaintext gateway (loopback) ---
 "$PROXYD" --listen 127.0.0.1:$PLAIN_PORT --socket "$SOCK" --no-tls \
