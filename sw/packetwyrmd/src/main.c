@@ -1157,10 +1157,15 @@ static struct json_object *build_cards(const struct pw_config *cfg,
                 json_object_object_add(c, "temp_c",
                     json_object_new_double(PWFPGA_SYSMON_TEMP_C(tc)));
                 if (cards[i].backend.ops->read32(bx, PWFPGA_REG_SYSMON_SUPPLY, &sup) == PW_OK) {
-                    json_object_object_add(c, "vccint_v",
-                        json_object_new_double(PWFPGA_SYSMON_SUPPLY_V(sup & 0xFFFF)));
-                    json_object_object_add(c, "vccaux_v",
-                        json_object_new_double(PWFPGA_SYSMON_SUPPLY_V(sup >> 16)));
+                    /* pw_sysmon reads temp/vccint/vccaux in sequence, so just
+                     * after boot a supply code may still be 0 (not yet sampled);
+                     * only report each rail once its code is non-zero. */
+                    if (PWFPGA_SYSMON_CODE(sup & 0xFFFF))
+                        json_object_object_add(c, "vccint_v",
+                            json_object_new_double(PWFPGA_SYSMON_SUPPLY_V(sup & 0xFFFF)));
+                    if (PWFPGA_SYSMON_CODE(sup >> 16))
+                        json_object_object_add(c, "vccaux_v",
+                            json_object_new_double(PWFPGA_SYSMON_SUPPLY_V(sup >> 16)));
                 }
             }
         }

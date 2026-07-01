@@ -548,8 +548,13 @@ $("#fwd-apply").addEventListener("click", async () => {
 $$("[data-rpc]").forEach(b => b.addEventListener("click", async () => {
   const r = await rpc({ rpc: b.dataset.rpc });
   showMsg("#ctl-msg", r.error ? "err":"ok", JSON.stringify(r));
-  // test.arm/start/stop change every flow's enable -> refresh the per-flow table.
+  // stats.clear resets the FPGA err_sticky (LED) + counters, so drop the
+  // session's "error seen earlier" memory too, else the health stays amber.
+  if (b.dataset.rpc === "stats.clear" && !r.error) healthSeenErr.clear();
+  // test.arm/start/stop change every flow's enable -> refresh the per-flow table;
+  // poll() refreshes the dashboard health/stats after any action.
   renderCtlFlows();
+  poll();
 }));
 function statePill(on) {
   return el("span",{class:on?"pill on":"pill off",text:on?"Started":"Stopped"});
@@ -629,11 +634,19 @@ function errTd(v) {
 // rate tracking: previous per-flow / per-port counters + timestamps. We prefer
 // the FPGA free-running timestamp (fpga_ts_lo, 6.4 ns/tick) for the interval so
 // rates don't depend on browser poll jitter; fall back to wall-clock.
-let ratePrev = new Map(), rateT = 0, portPrev = new Map(), tsLoPrev = null;
-function intervalSec(fpgaTsLo, wallNow) {
-  if (fpgaTsLo != null && tsLoPrev != null) {
-    const dTicks = (fpgaTsLo - tsLoPrev) >>> 0;      // unsigned 32-bit wrap
-    if (dTicks > 0) return dTicks * 6.4e-9;
+let ratePrev = new Map(), rateT = 0, portPrev = new Map(), tsPrev = null;  // tsPrev: BigInt
+// Full 64-bit FPGA timestamp (ticks) from the lo/hi pair. Using both halves
+// avoids the ~27.5 s wrap of the low 32 bits (156.25 MHz) when a poll interval
+// is long (tab backgrounded/asleep).
+function fpgaTicks(lo, hi) {
+  if (lo == null) return null;
+  return (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
+}
+function intervalSec(lo, hi, wallNow) {
+  const cur = fpgaTicks(lo, hi);
+  if (cur != null && tsPrev != null) {
+    const d = cur - tsPrev;
+    if (d > 0n) return Number(d) * 6.4e-9;
   }
   return rateT ? (wallNow - rateT) / 1000 : 0;
 }
@@ -786,9 +799,9 @@ async function poll() {
       rpc({rpc:"ports.stats"})]);
     if (cards.error) { setConn(false, cards.error); return; }
 
-    // interval: prefer the FPGA timestamp (precise), else wall-clock
+    // interval: prefer the FPGA timestamp (precise, wrap-safe), else wall-clock
     const now = Date.now();
-    const dt = intervalSec(fstats.fpga_ts_lo, now);
+    const dt = intervalSec(fstats.fpga_ts_lo, fstats.fpga_ts_hi, now);
     // per-flow rate deltas (frames + bytes -> pps + bps)
     const rates = new Map();
     (fstats.flows||[]).forEach(f => {
@@ -810,7 +823,7 @@ async function poll() {
       portPrev.set(k, { rxf:p.rx_frames, txf:p.tx_frames, rxb:p.rx_bytes, txb:p.tx_bytes });
     });
     rateT = now;
-    if (fstats.fpga_ts_lo != null) tsLoPrev = fstats.fpga_ts_lo;
+    { const cur = fpgaTicks(fstats.fpga_ts_lo, fstats.fpga_ts_hi); if (cur != null) tsPrev = cur; }
 
     const metaById = new Map((flowsMeta.flows||[]).map(f => [f.id,
       {name:f.name, tx:f.tx_global_port, rx:f.rx_global_port, enabled:f.enabled}]));
