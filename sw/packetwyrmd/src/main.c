@@ -482,10 +482,14 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
     struct pw_diag     diag = {0};
     struct json_object *resp = NULL;
 
-    /* Parse the payload as a TEST config (system/cards optional). If it carries
-     * no cards it's flows/forwards only -> merge onto the RUNNING environment
-     * (the split model). If it does carry cards it's a full combined config
-     * (back-compat) -> use as-is, still gated by same_topology. */
+    /* Parse the payload as a TEST config (system/cards optional). config.load
+     * ONLY swaps flows/forwards -- the environment (cards / logical_ifs /
+     * secret) is immutable at runtime (topology changes need a restart). So we
+     * always merge onto a clone of the RUNNING environment and take just the
+     * payload's flows/forwards. A combined body that also carries cards is
+     * accepted for back-compat, but its cards must MATCH the running topology
+     * (checked below) -- they are otherwise ignored, never swapped in (which
+     * would zero system.secret and the rest of the environment). */
     struct pw_config *payload = pw_config_new();
     pw_status r = pw_config_parse_string_ex(yaml, yaml_len, PW_CFG_TEST_ONLY, payload, &diag);
     if (r != PW_OK) {
@@ -496,28 +500,25 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
         pw_config_free(payload);
         goto fail;
     }
-    if (payload->n_cards == 0) {
-        /* test-only: clone the live environment + attach the payload's flows */
-        new_cfg = pw_config_clone_env(*cfg_pp);
-        if (!new_cfg) { resp = build_error("out of memory"); pw_config_free(payload); goto fail; }
-        new_cfg->flows = payload->flows; new_cfg->n_flows = payload->n_flows;
-        payload->flows = NULL; payload->n_flows = 0;
-        new_cfg->forwards = payload->forwards; new_cfg->n_forwards = payload->n_forwards;
-        payload->forwards = NULL; payload->n_forwards = 0;
+    /* A combined body's cards/lifs must match the running environment. */
+    if (payload->n_cards > 0 && !same_topology(*cfg_pp, payload)) {
+        resp = build_error("topology change (cards / logical_ifs) requires restart");
         pw_config_free(payload);
-    } else {
-        new_cfg = payload;   /* full combined config */
+        goto fail;
     }
+    new_cfg = pw_config_clone_env(*cfg_pp);
+    if (!new_cfg) { resp = build_error("out of memory"); pw_config_free(payload); goto fail; }
+    new_cfg->flows = payload->flows; new_cfg->n_flows = payload->n_flows;
+    payload->flows = NULL; payload->n_flows = 0;
+    new_cfg->forwards = payload->forwards; new_cfg->n_forwards = payload->n_forwards;
+    payload->forwards = NULL; payload->n_forwards = 0;
+    pw_config_free(payload);
 
     if ((r = pw_config_validate(new_cfg, &diag)) != PW_OK) {
         char msg[600];
         snprintf(msg, sizeof(msg), "validate: %s at %s: %s",
                  pw_strerror(r), diag.path, diag.message);
         resp = build_error(msg);
-        goto fail;
-    }
-    if (!same_topology(*cfg_pp, new_cfg)) {
-        resp = build_error("topology change (cards / logical_ifs) requires restart");
         goto fail;
     }
     if ((r = pw_flow_compile(new_cfg, new_prog, &diag)) != PW_OK) {
