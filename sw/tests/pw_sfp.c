@@ -56,6 +56,11 @@ static void print_info(int port, const struct pw_sfp_info *s) {
         printf("  DOM        : not supported (no DDM -- e.g. passive DAC)\n");
         return;
     }
+    if (s->dom_external_cal) {
+        printf("  DOM        : externally calibrated -- not decoded "
+               "(needs the A2 56..91 cal constants; not implemented)\n");
+        return;
+    }
     if (!s->dom_valid) {
         printf("  DOM        : supported but 0xA2 read failed\n");
         return;

@@ -139,7 +139,11 @@ pw_status pw_sfp_probe(const struct pw_card_backend *be, int port,
 
     uint8_t a0[96];
     pw_status s = pw_sfp_read(be, port, 0x50, 0, a0, sizeof(a0));
-    if (s != PW_OK) return s;         /* no ACK -> present stays false */
+    /* An I2C NAK (PW_E_IO) means no module in the cage -- that's the normal
+     * "empty" state, reported as present=false + PW_OK (per the API contract).
+     * Only a backend/argument fault (no write32/read32, bad port) is an error. */
+    if (s == PW_E_IO)  return PW_OK;   /* empty cage: present stays false */
+    if (s != PW_OK)    return s;       /* backend not ready / bad args     */
 
     out->present    = true;
     out->identifier = a0[0];
@@ -150,12 +154,14 @@ pw_status pw_sfp_probe(const struct pw_card_backend *be, int port,
     copy_ascii(out->revision,  sizeof(out->revision),  &a0[56], 4);
     copy_ascii(out->serial,    sizeof(out->serial),    &a0[68], 16);
     copy_ascii(out->date_code, sizeof(out->date_code), &a0[84], 8);
-    out->dom_supported = (a0[92] & 0x40) != 0;   /* SFF-8472 byte 92 bit 6 */
+    out->dom_supported    = (a0[92] & 0x40) != 0;   /* SFF-8472 byte 92 bit 6 */
+    out->dom_external_cal = (a0[92] & 0x10) != 0;    /* byte 92 bit 4          */
 
-    if (out->dom_supported) {
-        /* DDM live values live at A2 (0x51) bytes 96..105. Assume internally
-         * calibrated (A0 byte 92 bit 4 = externally calibrated; rare on 10G
-         * modules -- external cal would need the A2 56..91 constants). */
+    /* DOM live values (A2 96..105) use the fixed SFF-8472 scaling below ONLY for
+     * INTERNALLY-calibrated modules. An externally-calibrated module needs the
+     * A2 56..91 slope/offset constants applied first -- not implemented -- so we
+     * leave dom_valid=false rather than misreport temp/Vcc/power. */
+    if (out->dom_supported && !out->dom_external_cal) {
         uint8_t a2[10];
         if (pw_sfp_read(be, port, 0x51, 96, a2, sizeof(a2)) == PW_OK) {
             out->dom_valid   = true;

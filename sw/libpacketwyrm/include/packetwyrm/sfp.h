@@ -33,7 +33,12 @@ struct pw_sfp_info {
     char     date_code[9];       /* A0 bytes 84..91 (YYMMDD[lot])            */
     uint8_t  br_nominal;         /* A0 byte 12, nominal bit rate / 100 Mbaud */
     bool     dom_supported;      /* A0 byte 92 bit 6                         */
-    bool     dom_valid;          /* dom_supported AND the 0xA2 read succeeded */
+    bool     dom_external_cal;   /* A0 byte 92 bit 4: externally calibrated  */
+    bool     dom_valid;          /* dom_supported, internally calibrated, AND
+                                  * the 0xA2 read succeeded. false for an
+                                  * externally-calibrated module (the fixed
+                                  * scaling below would misreport it -- the A2
+                                  * 56..91 cal constants aren't applied yet). */
     /* DDM live values (valid only when dom_valid). SFF-8472 fixed scaling. */
     double   temp_c;             /* module temperature, deg C                */
     double   vcc_v;              /* supply voltage, V                        */
