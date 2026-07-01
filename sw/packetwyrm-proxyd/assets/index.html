@@ -548,6 +548,8 @@ $("#fwd-apply").addEventListener("click", async () => {
 $$("[data-rpc]").forEach(b => b.addEventListener("click", async () => {
   const r = await rpc({ rpc: b.dataset.rpc });
   showMsg("#ctl-msg", r.error ? "err":"ok", JSON.stringify(r));
+  // test.arm/start/stop change every flow's enable -> refresh the per-flow table.
+  renderCtlFlows();
 }));
 function statePill(on) {
   return el("span",{class:on?"pill on":"pill off",text:on?"Started":"Stopped"});
