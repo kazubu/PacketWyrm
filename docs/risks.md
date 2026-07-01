@@ -147,14 +147,22 @@ Mitigations:
 
 ## 12. Cross-card timestamp synchronisation
 
-This is the gating risk for cross-card latency. Until solved, the
-product cannot claim cross-card latency / jitter.
+**RESOLVED (was the gating risk for cross-card latency).** Solved via the J5
+GPIO time-sync (`pw_gpio_sync`) instead of the originally-envisioned PTP/clock-
+sync research phase: a shared hardware sync edge lets the daemon measure each
+card pair's counter offset, which it writes into the RX checker's per-flow
+`lat_correction` table so latency is corrected per sample in hardware
+(min/max/avg/histogram in the true one-way timebase). HW-validated: cross-card
+one-way latency at the ~intrinsic noise floor (spread ~2 ticks @1 ms servo).
 
-Mitigations:
+Residual mitigations still honoured:
 
-- Honest reporting: `latency_valid = false`, never a fake number.
-- Phase 10 is a dedicated research phase; nothing else depends on
-  it.
+- The free-running counter is never disciplined (that would break the Gray-CDC
+  timestamp path); only the latency *computation* is corrected.
+- Honest reporting: latency needs the J5 headers wired; `flow.stats` marks the
+  method (`"gpio-corrected"` vs `"same-card"`) and only reports on a successful
+  counter read. Absolute accuracy still carries a fixed J5-sync-path bias (a
+  future one-time calibration); relative / jitter figures are bias-free.
 
 ## 13. Build / dependency drift
 

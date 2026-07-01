@@ -107,19 +107,23 @@ RX flow row mirrors the TX configuration (so the FPGA knows the
 expected packet shape) but with the generator disabled
 (`tx_enable = 0`, `rx_check_enable = 1`).
 
-### 5. Latency validity decision
+### 5. Latency validity / method decision
 
 ```
-if tx_card == rx_card:
-    latency_valid = True
-else:
-    latency_valid = False
-    if yaml.measurements.latency or yaml.measurements.jitter:
-        REJECT_CONFIG("cross-card latency requires clock sync")
+latency_valid = (tx_card == rx_card)   # true = same-card (exact, counter-direct)
 ```
 
-The compiler annotates each flow with `latency_valid` so the stats
-aggregator knows whether to surface latency / jitter for that flow.
+Latency is now measured for **both** same-card and cross-card flows, so the
+compiler no longer rejects cross-card `latency`/`jitter`. The `latency_valid`
+flag is repurposed as the **method indicator**, not an availability gate:
+`true` = same-card (exact, single FPGA counter); `false` = cross-card, corrected
+per flow in hardware via the J5 GPIO time-sync + the per-flow `lat_correction`
+table (the daemon servo keeps each cross-card slot at its inter-card offset).
+The stats aggregator / `flow.stats` surface latency for both and use this flag
+to emit `latency_method` (`"same-card"` / `"gpio-corrected"`). There is no
+cross-card topology restriction: a single RX card may mix same-card and
+cross-card flows and take cross-card traffic from multiple TX cards (each flow
+gets its own correction slot).
 
 ### 6. Punt rule injection
 
