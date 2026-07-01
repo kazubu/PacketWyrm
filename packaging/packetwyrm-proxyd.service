@@ -1,0 +1,38 @@
+[Unit]
+Description=PacketWyrm Web GUI / remote-RPC gateway (HTTPS -> control socket)
+Documentation=https://github.com/kazubu/packetwyrm
+After=packetwyrmd.service
+Wants=packetwyrmd.service
+
+[Service]
+Type=simple
+# TLS-terminating relay to the daemon's Unix control socket. Serves the
+# embedded Web GUI and POST /api/rpc. Self-signed cert by default; pass
+# --tls-cert/--tls-key for a real certificate. See docs/design/web-gui.md.
+ExecStart=/usr/local/sbin/packetwyrm-proxyd \
+    --listen 0.0.0.0:8443 \
+    --socket /run/packetwyrm/packetwyrmd.sock
+Restart=on-failure
+RestartSec=2s
+
+# Network-facing and holds no hardware: runs unprivileged. It only needs
+# to reach the daemon's 0666 control socket. The daemon remains the sole
+# authority for the access secret (this process forwards it verbatim).
+User=packetwyrm
+Group=packetwyrm
+
+# Hardening.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# No writable paths needed (self-signed cert is generated in memory).
+
+[Install]
+WantedBy=multi-user.target

@@ -41,6 +41,12 @@ and HW-validated:
 - **Cross-card time sync over J5 GPIO** (`pw_gpio_sync`): HW path in (master pulse
   + edge-latch + CSR 0x0130..0x0140); single-card non-regression only — the SW
   servo + the daisy-chain test need a 2nd card (see Remaining).
+- **Web GUI + remote access** (`packetwyrm-proxyd`): separate HTTPS gateway that
+  serves an embedded single-page GUI and relays `POST /api/rpc` onto the daemon
+  socket; `pktwyrm --host` for remote CLI; daemon `config.get_raw`/`config.save`.
+  SW-complete, `make e2e` (`e2e_proxyd.sh`) green; **HW validation pending merge**
+  (RTL unchanged, so no bitstream rebuild — validate against the live card).
+  Design: `docs/design/web-gui.md`.
 
 As-built design: `docs/design/csr-map.md`, `docs/design/rtl-modules.md`,
 `docs/design/generic-classifier.md`, `docs/design/hw-architecture-freeze.md`.
@@ -231,6 +237,7 @@ wire-vector sims catch C↔RTL wire-format drift.
 - `docs/design/rtl-modules.md` — as-built RTL hierarchy.
 - `docs/design/yaml-schema.md` — config schema (`forwards:` included).
 - `docs/design/daemon.md`, `docs/design/rpc-protocol.md` — daemon / CLI.
+- `docs/design/web-gui.md` — `packetwyrm-proxyd` gateway, Web GUI, `--host`.
 - `CHANGELOG.md` — ground truth for "what's working".
 
 Welcome aboard.

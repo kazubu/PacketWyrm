@@ -216,6 +216,7 @@ INST    = $(INSTALL) -m
 install: all
 	$(INST_MK) $(DESTDIR)$(SBINDIR)
 	$(INST) 0755 $(BUILD_DIR)/packetwyrmd $(DESTDIR)$(SBINDIR)/packetwyrmd
+	$(INST) 0755 $(BUILD_DIR)/packetwyrm-proxyd $(DESTDIR)$(SBINDIR)/packetwyrm-proxyd
 	$(INST_MK) $(DESTDIR)$(BINDIR)
 	$(INST) 0755 $(BUILD_DIR)/pktwyrm     $(DESTDIR)$(BINDIR)/pktwyrm
 	$(INST_MK) $(DESTDIR)$(LIBDIR)
@@ -231,6 +232,8 @@ install: all
 	$(INST_MK) $(DESTDIR)$(UNITDIR)
 	$(INST) 0644 $(PKGROOT)/packaging/packetwyrmd.service \
 	    $(DESTDIR)$(UNITDIR)/packetwyrmd.service
+	$(INST) 0644 $(PKGROOT)/packaging/packetwyrm-proxyd.service \
+	    $(DESTDIR)$(UNITDIR)/packetwyrm-proxyd.service
 	$(INST_MK) $(DESTDIR)$(SYSUSERDIR)
 	$(INST) 0644 $(PKGROOT)/packaging/packetwyrm.sysusers \
 	    $(DESTDIR)$(SYSUSERDIR)/packetwyrm.conf
@@ -246,11 +249,13 @@ install: all
 
 uninstall:
 	rm -f $(DESTDIR)$(SBINDIR)/packetwyrmd
+	rm -f $(DESTDIR)$(SBINDIR)/packetwyrm-proxyd
 	rm -f $(DESTDIR)$(BINDIR)/pktwyrm
 	rm -f $(DESTDIR)$(LIBDIR)/libpacketwyrm.a
 	rm -f $(DESTDIR)$(LIBDIR)/libpacketwyrm.so
 	rm -rf $(DESTDIR)$(INCDIR)/packetwyrm
 	rm -f $(DESTDIR)$(UNITDIR)/packetwyrmd.service
+	rm -f $(DESTDIR)$(UNITDIR)/packetwyrm-proxyd.service
 	rm -f $(DESTDIR)$(SYSUSERDIR)/packetwyrm.conf
 	rm -f $(DESTDIR)$(TMPFILESDIR)/packetwyrm.conf
 	rm -f $(DESTDIR)$(UDEVDIR)/99-packetwyrm.rules

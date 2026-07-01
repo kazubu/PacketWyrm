@@ -17,8 +17,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential pkg-config \
-            libyaml-dev libjson-c-dev \
-            iproute2
+            libyaml-dev libjson-c-dev libssl-dev \
+            xxd curl iproute2
       - name: build
         working-directory: sw
         run: make -j
@@ -33,8 +33,10 @@ jobs:
         run: |
           make install DESTDIR=/tmp/pw-staging
           test -x /tmp/pw-staging/usr/local/sbin/packetwyrmd
+          test -x /tmp/pw-staging/usr/local/sbin/packetwyrm-proxyd
           test -x /tmp/pw-staging/usr/local/bin/pktwyrm
           test -f /tmp/pw-staging/lib/systemd/system/packetwyrmd.service
+          test -f /tmp/pw-staging/lib/systemd/system/packetwyrm-proxyd.service
 
   rtl-sim:
     name: RTL data-plane sim (Verilator)

@@ -254,6 +254,55 @@ Constraints:
 front-end: it compiles offline first (for clean syntax errors),
 then ships the YAML body to the daemon.
 
+### `config.get_raw`
+
+Return the raw text of the environment config file (the daemon's `-e`
+path) so a GUI can edit it. The `secret:` value is **redacted** (a
+remote authed client shouldn't be able to read the secret back out).
+
+```json
+{ "rpc": "config.get_raw" }
+```
+&rarr;
+```json
+{ "path": "/etc/packetwyrm/packetwyrm.yaml",
+  "yaml": "system:\n  secret: \"***\"\n  ...",
+  "secret_set": true }
+```
+
+### `config.save`
+
+Validate a full environment YAML (parse + validate) and, on success,
+write it **atomically** (tmp + rename) to the daemon's `-e` path —
+**only** that path, never a client-supplied one.
+
+```json
+{ "rpc": "config.save", "yaml": "system:\n  ...\ncards:\n  ..." }
+```
+&rarr;
+```json
+{ "ok": true, "path": "/etc/packetwyrm/packetwyrm.yaml",
+  "restart_required": true }
+```
+
+`restart_required` is `true` when the new topology (cards /
+logical_interfaces) differs from the running one — `config.load` cannot
+swap topology live, so a daemon restart is needed to apply it. A parse or
+validate failure returns `{"error": "..."}` and writes nothing. Security:
+a root daemon writes its own env file over an authenticated
+(secret + TLS via the gateway) RPC; the write target is fixed and the
+YAML is fully validated first. Used by the Web GUI's Environment tab.
+
+## Web GUI gateway + remote transport
+
+Browsers and remote CLIs do not speak the length-prefixed socket
+protocol directly. `packetwyrm-proxyd` terminates HTTPS and relays
+`POST /api/rpc` bodies verbatim onto this control socket, so **the JSON
+request/response schema above is identical** whether it arrives over the
+Unix socket, `pktwyrm --host` (HTTPS), or the browser. The gateway is a
+stateless relay and the daemon remains the sole auth authority. See
+`web-gui.md`.
+
 ## Access control (secret)
 
 When the environment config sets `system.secret`, every request must carry a
