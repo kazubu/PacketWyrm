@@ -760,15 +760,225 @@ static struct json_object *do_config_save(struct pw_config **cfg_pp,
     return resp;
 }
 
-/* config.get_test: return the active test-config YAML (flows/forwards) text so
- * the GUI can load and edit the running flows. Empty when none has been loaded
- * (e.g. flows came only from a combined `-e` file, or nothing loaded yet). */
-static struct json_object *build_config_get_test(void) {
+/* ---- flow/forward -> GUI-form-model JSON (for config.get_test) ---------- */
+/* These emit the running config in the exact shape the Web GUI's flow/forward
+ * form model uses, so "Load current" can populate the form (not just the raw
+ * YAML). Addresses: IPv4 is stored host-order (htonl before inet_ntop); IPv6
+ * and masks are MSB-first byte arrays. */
+static struct json_object *js_mac(const uint8_t m[6]) {
+    char b[18];
+    snprintf(b, sizeof b, "%02x:%02x:%02x:%02x:%02x:%02x",
+             m[0], m[1], m[2], m[3], m[4], m[5]);
+    return json_object_new_string(b);
+}
+static struct json_object *js_v4(uint32_t host) {
+    struct in_addr a; a.s_addr = htonl(host);
+    char b[INET_ADDRSTRLEN]; inet_ntop(AF_INET, &a, b, sizeof b);
+    return json_object_new_string(b);
+}
+static struct json_object *js_v6(const uint8_t a[16]) {
+    char b[INET6_ADDRSTRLEN]; inet_ntop(AF_INET6, a, b, sizeof b);
+    return json_object_new_string(b);
+}
+static int v6_prefix_len(const uint8_t m[16]) {
+    int n = 0;
+    for (int i = 0; i < 16; i++) {
+        if (m[i] == 0xff) { n += 8; continue; }
+        uint8_t b = m[i]; while (b & 0x80) { n++; b <<= 1; } break;
+    }
+    return n;
+}
+static bool v6_any(const uint8_t m[16]) {
+    for (int i = 0; i < 16; i++) if (m[i]) return true;
+    return false;
+}
+static const char *modestr(uint8_t m) {
+    return m == 1 ? "increment" : m == 2 ? "random" : "static";
+}
+/* One modifier entry { mode, mask } for a hex-mask field (MAC/IPv4/port/vlan). */
+static void add_mod_u64(struct json_object *o, const char *k, uint8_t mode, uint64_t mask) {
+    struct json_object *m = json_object_new_object();
+    json_object_object_add(m, "mode", json_object_new_string(modestr(mode)));
+    if (mode && mask) {
+        char b[24]; snprintf(b, sizeof b, "0x%llx", (unsigned long long)mask);
+        json_object_object_add(m, "mask", json_object_new_string(b));
+    } else json_object_object_add(m, "mask", json_object_new_string(""));
+    json_object_object_add(o, k, m);
+}
+/* One modifier entry for an IPv6-address field (mask is a v6 literal). `active`
+ * is true only for the flow's own family (mode is shared with the v4 slot). */
+static void add_mod_v6(struct json_object *o, const char *k, uint8_t mode,
+                       const uint8_t mask16[16], bool active) {
+    struct json_object *m = json_object_new_object();
+    json_object_object_add(m, "mode",
+                           json_object_new_string(active ? modestr(mode) : "static"));
+    if (active && mode && v6_any(mask16)) json_object_object_add(m, "mask", js_v6(mask16));
+    else json_object_object_add(m, "mask", json_object_new_string(""));
+    json_object_object_add(o, k, m);
+}
+
+static struct json_object *flow_to_form_json(const struct pw_flow *f) {
+    struct json_object *o = json_object_new_object();
+    json_object_object_add(o, "id", json_object_new_int((int)f->id));
+    json_object_object_add(o, "name", json_object_new_string(f->name));
+    json_object_object_add(o, "tx", json_object_new_int(f->tx_global_port));
+    json_object_object_add(o, "rx", json_object_new_int(f->rx_global_port));
+    json_object_object_add(o, "src_mac", js_mac(f->l2.src_mac));
+    json_object_object_add(o, "dst_mac", js_mac(f->l2.dst_mac));
+    if (f->l2.vlan_set) json_object_object_add(o, "vlan", json_object_new_int(f->l2.vlan));
+    else json_object_object_add(o, "vlan", json_object_new_string(""));
+    bool v6 = f->ipv6.present;
+    json_object_object_add(o, "l3", json_object_new_string(v6 ? "ipv6" : "ipv4"));
+    if (v6) {
+        json_object_object_add(o, "ip_src", js_v6(f->ipv6.src));
+        json_object_object_add(o, "ip_dst", js_v6(f->ipv6.dst));
+        json_object_object_add(o, "ttl", json_object_new_int(f->ipv6.hop_limit));
+    } else {
+        json_object_object_add(o, "ip_src", js_v4(f->ipv4.src));
+        json_object_object_add(o, "ip_dst", js_v4(f->ipv4.dst));
+        json_object_object_add(o, "ttl", json_object_new_int(f->ipv4.ttl));
+    }
+    bool tcp = f->udp.l4_proto == 6;
+    json_object_object_add(o, "l4", json_object_new_string(tcp ? "tcp" : "udp"));
+    json_object_object_add(o, "sport", json_object_new_int(f->udp.src_port));
+    json_object_object_add(o, "dport", json_object_new_int(f->udp.dst_port));
+    if (tcp) { char tb[8]; snprintf(tb, sizeof tb, "0x%02x", f->udp.tcp_flags);
+               json_object_object_add(o, "tcp_flags", json_object_new_string(tb)); }
+    else json_object_object_add(o, "tcp_flags", json_object_new_string(""));
+    /* traffic (form has fixed frame_len + rate_bps; range/pps flows are
+     * approximated here and are authoritative in the raw YAML). */
+    json_object_object_add(o, "frame_len", json_object_new_int(
+        f->traffic.frame_len_fixed_set ? f->traffic.frame_len_fixed
+                                       : f->traffic.frame_len_min));
+    json_object_object_add(o, "rate_bps",
+        json_object_new_int64((int64_t)f->traffic.rate_bps));
+    const char *pm = f->traffic.payload_mode == 0 ? "zero" :
+                     f->traffic.payload_mode == 2 ? "prbs" :
+                     f->traffic.payload_mode == 3 ? "random" : "increment";
+    json_object_object_add(o, "payload", json_object_new_string(pm));
+    json_object_object_add(o, "seq", json_object_new_boolean(f->traffic.insert_sequence));
+    json_object_object_add(o, "ts", json_object_new_boolean(f->traffic.insert_timestamp));
+    json_object_object_add(o, "m_loss", json_object_new_boolean(f->meas.loss));
+    json_object_object_add(o, "m_lat", json_object_new_boolean(f->meas.latency));
+    json_object_object_add(o, "m_jit", json_object_new_boolean(f->meas.jitter));
+    json_object_object_add(o, "classify",
+                           json_object_new_string(f->classify_header ? "header" : "map"));
+    json_object_object_add(o, "background", json_object_new_boolean(f->background));
+    /* match (only narrowed fields; blank = exact/wildcard default) */
+    struct json_object *mt = json_object_new_object();
+    char hb[16];
+    if (f->match_udp_dst_mask != 0xFFFF) {
+        snprintf(hb, sizeof hb, "0x%x", f->match_udp_dst_mask);
+        json_object_object_add(mt, "udp_dst", json_object_new_string(hb));
+    } else json_object_object_add(mt, "udp_dst", json_object_new_string(""));
+    if (f->match_ipv4_dst_mask != 0xFFFFFFFFu) {
+        snprintf(hb, sizeof hb, "0x%x", f->match_ipv4_dst_mask);
+        json_object_object_add(mt, "ipv4_dst", json_object_new_string(hb));
+    } else json_object_object_add(mt, "ipv4_dst", json_object_new_string(""));
+    if (f->match_ipv6_dst_set)
+        json_object_object_add(mt, "ipv6_dst_prefix",
+                               json_object_new_int(v6_prefix_len(f->match_ipv6_dst_mask)));
+    else json_object_object_add(mt, "ipv6_dst_prefix", json_object_new_string(""));
+    if (f->match_ipv6_src_set)
+        json_object_object_add(mt, "ipv6_src_prefix",
+                               json_object_new_int(v6_prefix_len(f->match_ipv6_src_mask)));
+    else json_object_object_add(mt, "ipv6_src_prefix", json_object_new_string(""));
+    json_object_object_add(o, "match", mt);
+    /* modifiers (mode for the ipv6 address slot is shared with the ipv4 slot) */
+    struct json_object *md = json_object_new_object();
+    add_mod_u64(md, "src_ipv4", v6 ? 0 : f->mod.src_ipv4.mode, v6 ? 0 : f->mod.src_ipv4.mask);
+    add_mod_u64(md, "dst_ipv4", v6 ? 0 : f->mod.dst_ipv4.mode, v6 ? 0 : f->mod.dst_ipv4.mask);
+    add_mod_v6(md, "src_ipv6", f->mod.src_ipv4.mode, f->mod.src_ipv6_mask, v6);
+    add_mod_v6(md, "dst_ipv6", f->mod.dst_ipv4.mode, f->mod.dst_ipv6_mask, v6);
+    add_mod_u64(md, "udp_src", f->mod.udp_src.mode, f->mod.udp_src.mask);
+    add_mod_u64(md, "udp_dst", f->mod.udp_dst.mode, f->mod.udp_dst.mask);
+    add_mod_u64(md, "src_mac", f->mod.src_mac.mode, f->mod.src_mac.mask);
+    add_mod_u64(md, "dst_mac", f->mod.dst_mac.mode, f->mod.dst_mac.mask);
+    add_mod_u64(md, "vlan", f->mod.vlan.mode, f->mod.vlan.mask);
+    json_object_object_add(o, "mods", md);   /* GUI form-model key (not "modifiers") */
+    /* encap */
+    struct json_object *en = json_object_new_object();
+    const char *et = f->encap.type == 1 ? "ipip" : f->encap.type == 2 ? "gre" :
+                     f->encap.type == 3 ? "etherip" : "none";
+    json_object_object_add(en, "type", json_object_new_string(f->encap.present ? et : "none"));
+    bool ev6 = f->encap.outer_ipv6.present;
+    json_object_object_add(en, "l3", json_object_new_string(ev6 ? "ipv6" : "ipv4"));
+    if (f->encap.present && ev6) {
+        json_object_object_add(en, "src", js_v6(f->encap.outer_ipv6.src));
+        json_object_object_add(en, "dst", js_v6(f->encap.outer_ipv6.dst));
+        json_object_object_add(en, "ttl", json_object_new_int(f->encap.outer_ipv6.hop_limit));
+        json_object_object_add(en, "dscp", json_object_new_int(f->encap.outer_ipv6.dscp));
+    } else if (f->encap.present) {
+        json_object_object_add(en, "src", js_v4(f->encap.outer_ipv4.src));
+        json_object_object_add(en, "dst", js_v4(f->encap.outer_ipv4.dst));
+        json_object_object_add(en, "ttl", json_object_new_int(f->encap.outer_ipv4.ttl));
+        json_object_object_add(en, "dscp", json_object_new_int(f->encap.outer_ipv4.dscp));
+    } else {
+        json_object_object_add(en, "src", json_object_new_string(""));
+        json_object_object_add(en, "dst", json_object_new_string(""));
+        json_object_object_add(en, "ttl", json_object_new_string(""));
+        json_object_object_add(en, "dscp", json_object_new_string(""));
+    }
+    if (f->encap.present && f->encap.inner_mac_set) {
+        json_object_object_add(en, "inner_src_mac", js_mac(f->encap.inner_src_mac));
+        json_object_object_add(en, "inner_dst_mac", js_mac(f->encap.inner_dst_mac));
+    } else {
+        json_object_object_add(en, "inner_src_mac", json_object_new_string(""));
+        json_object_object_add(en, "inner_dst_mac", json_object_new_string(""));
+    }
+    json_object_object_add(o, "encap", en);
+    json_object_object_add(o, "rx_expect",
+                           json_object_new_string(f->rx_expect == 1 ? "tunneled" : "inner"));
+    return o;
+}
+
+static struct json_object *fwd_to_form_json(const struct pw_forward_rule *r) {
+    struct json_object *o = json_object_new_object();
+    json_object_object_add(o, "name", json_object_new_string(r->name));
+    json_object_object_add(o, "ingress", json_object_new_int(r->ingress_port));
+    json_object_object_add(o, "egress", json_object_new_int(r->egress_port));
+    json_object_object_add(o, "priority", json_object_new_int(r->priority));
+    #define OPT16(k, v) json_object_object_add(o, k, \
+        (v) ? json_object_new_int((int)(v)) : json_object_new_string(""))
+    OPT16("ethertype", r->ethertype);
+    OPT16("ip_proto", r->ip_proto);
+    OPT16("udp_dst", r->udp_dst);
+    OPT16("vlan", r->vlan);
+    #undef OPT16
+    for (int which = 0; which < 2; which++) {
+        bool set = which ? r->ipv6_src_set : r->ipv6_dst_set;
+        const uint8_t *a = which ? r->ipv6_src : r->ipv6_dst;
+        const uint8_t *m = which ? r->ipv6_src_mask : r->ipv6_dst_mask;
+        const char *key = which ? "ipv6_src" : "ipv6_dst";
+        if (set) {
+            char ab[INET6_ADDRSTRLEN], b[80];
+            inet_ntop(AF_INET6, a, ab, sizeof ab);
+            snprintf(b, sizeof b, "%s/%d", ab, v6_prefix_len(m));
+            json_object_object_add(o, key, json_object_new_string(b));
+        } else json_object_object_add(o, key, json_object_new_string(""));
+    }
+    return o;
+}
+
+/* config.get_test: return the active test-config YAML (flows/forwards) text AND
+ * the running flows/forwards as structured JSON in the GUI form-model shape, so
+ * "Load current" can populate both the form and the raw YAML editor. `yaml` is
+ * empty / `loaded` false when no test config was loaded via -t or config.load
+ * (flows may still appear in `flows` if they came from a combined `-e` file). */
+static struct json_object *build_config_get_test(const struct pw_config *cfg) {
     struct json_object *resp = json_object_new_object();
     json_object_object_add(resp, "yaml",
                            json_object_new_string(g_test_yaml ? g_test_yaml : ""));
     json_object_object_add(resp, "loaded",
                            json_object_new_boolean(g_test_yaml != NULL));
+    struct json_object *fa = json_object_new_array();
+    for (size_t i = 0; i < cfg->n_flows; i++)
+        json_object_array_add(fa, flow_to_form_json(&cfg->flows[i]));
+    json_object_object_add(resp, "flows", fa);
+    struct json_object *wa = json_object_new_array();
+    for (size_t i = 0; i < cfg->n_forwards; i++)
+        json_object_array_add(wa, fwd_to_form_json(&cfg->forwards[i]));
+    json_object_object_add(resp, "forwards", wa);
     return resp;
 }
 
@@ -1225,7 +1435,7 @@ static void handle_client(int cfd,
         } else if (!strcmp(name, "config.get_raw")) {
             resp = build_config_get_raw(cfg);
         } else if (!strcmp(name, "config.get_test")) {
-            resp = build_config_get_test();
+            resp = build_config_get_test(cfg);
         } else if (!strcmp(name, "config.save")) {
             resp = do_config_save(cfg_pp, req);
             /* refresh local snapshots after a successful swap */

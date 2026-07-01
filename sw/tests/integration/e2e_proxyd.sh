@@ -219,6 +219,13 @@ gettest=$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc \
     -d '{"rpc":"config.get_test","secret":"e2e-secret"}')
 check "config.get_test loaded" '"loaded":true' "$gettest"
 check "config.get_test has the loaded flow" 'v6tcp' "$gettest"
+# Structured flows for form population (Load current -> form): the advanced
+# flow (id 3) must round-trip its modifiers (key "mods", not "modifiers"),
+# match, and encap.
+check "config.get_test structured flows"  '"flows":\[' "$gettest"
+check "config.get_test mods key (not modifiers)" '"mods":' "$gettest"
+check "config.get_test modifier increment"  '"increment"' "$gettest"
+check "config.get_test encap type"  '"type":"ipip"' "$gettest"
 kill "$PXP" 2>/dev/null || true; PXP=""
 
 # --- TLS gateway (loopback, self-signed) ---

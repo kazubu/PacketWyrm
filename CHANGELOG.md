@@ -24,8 +24,10 @@ For where work is going next, see `NEXT-STEPS.md`.
     incl. collapsible match / modifiers / encap sections) that emit config YAML
     and apply it via `config.load`, test/flow control, and an environment
     editor. New daemon RPCs `config.get_raw` (env file text, secret redacted),
-    `config.get_test` (the active flows/forwards YAML, so the GUI's "Load
-    current" can round-trip existing flows losslessly), and `config.save`
+    `config.get_test` (the active flows/forwards as both YAML text and
+    structured form-model JSON, so the GUI's "Load current" populates both the
+    point-and-click form — match/modifiers/encap included — and the raw editor,
+    round-tripping existing flows losslessly), and `config.save`
     (validate + atomic write of the env file, reports `restart_required`).
     `pktwyrm --host HOST[:PORT]` sends every RPC through
     the gateway over HTTPS (default port 8443); `pktwyrm rpc` now injects the
