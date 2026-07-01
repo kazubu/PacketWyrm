@@ -9,6 +9,22 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Web GUI dashboard depth + hardening (review round).** Dashboard gained a
+    Versions panel (daemon / proxyd / per-card FPGA device/version/build/git via
+    new `cards` fields + `GET /proxyd/version`), a derived Health/LED panel per
+    card (mirrors the front-panel R/G LED from data-plane stats, lists the
+    causing counters), Aggregate counters (total / per rx-card / per rx-port
+    with frames/s rates), per-flow Started/Stopped state + a state-aware toggle
+    (new `enabled` field on `flows` / `flow.stats`), tx/rx frame rates, red
+    highlighting of non-zero lost/dup/reorder, SFP values capped to 3 decimals,
+    and a latency histogram labeled in ns/µs/ms. Security/robustness fixes:
+    `config.get_raw` now redacts the secret **structurally** (only the
+    `secret:` line, no blanket value replacement — no infinite loop, no
+    collateral clobbering); `config.save` recognizes the redaction sentinel and
+    **preserves the running secret** (saving the redacted view can't lock you
+    out) and preserves the file's mode/owner; `packetwyrm-proxyd` sets
+    send/recv timeouts on client sockets so a slow client can't tie up the
+    thread pool.
   - **Web GUI + remote access via `packetwyrm-proxyd`.** A new separate gateway
     process terminates HTTPS, serves an embedded single-page Web GUI (`GET /`),
     and relays `POST /api/rpc` verbatim onto the daemon's Unix control socket.

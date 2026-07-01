@@ -114,6 +114,25 @@ PY
 check "config.save ok" '"ok":true' "$saved"
 check "config.save no restart (unchanged)" '"restart_required":false' "$saved"
 
+# HIGH regression: saving the *redacted* get_raw view (secret == "***") must
+# NOT overwrite the real secret on disk (would lock the operator out).
+redacted=$(python3 -c 'import sys,json;print(json.load(sys.stdin)["yaml"])' <<<"$graw")
+python3 - "$PLAIN_PORT" <<PY >/dev/null
+import json, sys, urllib.request
+body = json.dumps({"rpc":"config.save","secret":"e2e-secret",
+                   "yaml":$(python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' <<<"$redacted")}).encode()
+urllib.request.urlopen("http://127.0.0.1:%s/api/rpc" % sys.argv[1], data=body).read()
+PY
+if grep -q 'secret: "e2e-secret"' "$CFG"; then
+    echo "[ ok ] config.save preserves secret on redacted save"; pass=$((pass+1))
+else
+    echo "[FAIL] config.save clobbered the secret (redacted '***' written to disk)"; fail=$((fail+1))
+fi
+
+# /proxyd/version (gateway's own version endpoint)
+check "proxyd version endpoint" '"version"' \
+    "$(curl -s http://127.0.0.1:$PLAIN_PORT/proxyd/version)"
+
 # config.load with a GUI-shaped test config (mirrors the Flows-editor YAML
 # emitter: v4/udp + v6/tcp, vlan, measurements). Guards emitter/parser drift.
 gui_yaml=$(cat <<'YML'
@@ -226,6 +245,9 @@ check "config.get_test structured flows"  '"flows":\[' "$gettest"
 check "config.get_test mods key (not modifiers)" '"mods":' "$gettest"
 check "config.get_test modifier increment"  '"increment"' "$gettest"
 check "config.get_test encap type"  '"type":"ipip"' "$gettest"
+# per-flow enable state (for the GUI Started/Stopped indicator + toggle)
+check "flows enabled field" '"enabled"' \
+    "$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"flows","secret":"e2e-secret"}')"
 kill "$PXP" 2>/dev/null || true; PXP=""
 
 # --- TLS gateway (loopback, self-signed) ---

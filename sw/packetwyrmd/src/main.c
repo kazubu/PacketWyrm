@@ -440,6 +440,14 @@ static pw_status set_flow_enable(struct pw_program *prog,
     return s;
 }
 
+/* Current TX-enable state of a flow (the daemon's authoritative view, from the
+ * staged flow row that flow.start/stop/test.* toggle). */
+static bool flow_enabled(const struct pw_program *prog, uint32_t global_flow_id) {
+    int ci = -1; uint32_t row = 0;
+    if (find_tx_row(prog, global_flow_id, &ci, &row) < 0) return false;
+    return prog->per_card[ci].flow_rows[row].tx_enable != 0;
+}
+
 /* ---- end backend programming ---------------------------------------- */
 
 static struct json_object *build_error(const char *msg);
@@ -604,31 +612,29 @@ fail:
     return resp;
 }
 
-/* Replace every occurrence of `needle` in the malloc'd string `*ps` with
- * `rep`, reallocating as needed. No-op if needle is empty. */
-static void str_replace_all(char **ps, const char *needle, const char *rep) {
-    if (!*ps || !needle || !needle[0]) return;
-    size_t nl = strlen(needle), rl = strlen(rep);
-    char *hit;
-    while ((hit = strstr(*ps, needle)) != NULL) {
-        size_t off = (size_t)(hit - *ps), tail = strlen(hit + nl);
-        char *nb = malloc(off + rl + tail + 1);
-        if (!nb) return;
-        memcpy(nb, *ps, off);
-        memcpy(nb + off, rep, rl);
-        memcpy(nb + off + rl, hit + nl, tail + 1);
-        free(*ps);
-        *ps = nb;
-    }
+/* The redaction sentinel config.get_raw substitutes for the secret value, and
+ * that config.save recognizes as "keep the existing secret" (see do_config_save
+ * -- prevents a Save of the redacted view from overwriting the real secret). */
+#define PW_SECRET_REDACTED "***"
+
+/* If `line` is a `secret:` key line (leading ws, "secret", optional ws, ':')
+ * return the indentation width, else -1. Structural, YAML-block form only
+ * (inline `system: { secret: ... }` is not matched -- documented). */
+static int secret_line_indent(const char *line) {
+    const char *p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    if (strncmp(p, "secret", 6) != 0) return -1;
+    const char *q = p + 6;
+    while (*q == ' ' || *q == '\t') q++;
+    return (*q == ':') ? (int)(p - line) : -1;
 }
 
-/* config.get_raw: return the raw text of the environment config file so a
- * GUI can edit it. The secret is redacted two ways so it can't be read back
- * over the wire regardless of YAML form: (1) every occurrence of the running
- * secret VALUE is replaced with "***" (covers `secret:`, `secret :`, and
- * inline `system: { secret: ... }`); (2) a defensive line scan redacts the
- * value after any `secret` key (covers an on-disk secret that differs from
- * the loaded one, e.g. edited but not yet restarted). */
+/* config.get_raw: return the raw text of the environment config file so a GUI
+ * can edit it, with the `secret:` value structurally redacted to the sentinel.
+ * We redact ONLY the secret key line (not a blanket value replacement) so a
+ * secret that happens to equal a card/interface name isn't clobbered, and so
+ * config.save can round-trip it safely. `secret_set` is authoritative from the
+ * loaded config. */
 static struct json_object *build_config_get_raw(const struct pw_config *cfg) {
     FILE *f = fopen(g_env_path, "r");
     struct json_object *resp = json_object_new_object();
@@ -645,18 +651,11 @@ static struct json_object *build_config_get_raw(const struct pw_config *cfg) {
     char *buf = malloc(cap);
     if (buf) buf[0] = '\0';
     while (buf && fgets(line, sizeof(line), f)) {
-        /* (2) line scan: leading ws, `secret`, optional ws, `:` -> redact value. */
-        const char *p = line;
-        while (*p == ' ' || *p == '\t') p++;
-        if (strncmp(p, "secret", 6) == 0) {
-            const char *q = p + 6;
-            while (*q == ' ' || *q == '\t') q++;
-            if (*q == ':') {
-                size_t indent = (size_t)(p - line);
-                snprintf(line, sizeof(line), "%.*ssecret: \"***\"\n",
-                         (int)(indent < 32 ? indent : 32),
-                         "                                ");
-            }
+        int indent = secret_line_indent(line);
+        if (indent >= 0) {
+            snprintf(line, sizeof(line), "%.*s" "secret: \"" PW_SECRET_REDACTED "\"\n",
+                     indent < 32 ? indent : 32,
+                     "                                ");
         }
         size_t ll = strlen(line);
         if (len + ll + 1 > cap) {
@@ -670,14 +669,9 @@ static struct json_object *build_config_get_raw(const struct pw_config *cfg) {
     }
     fclose(f);
 
-    bool secret_set = cfg && cfg->system.secret[0] != '\0';
-    /* (1) value-based redaction using the authoritative loaded secret. */
-    if (secret_set) str_replace_all(&buf, cfg->system.secret, "***");
-
-    json_object_object_add(resp, "yaml",
-                           json_object_new_string(buf ? buf : ""));
+    json_object_object_add(resp, "yaml", json_object_new_string(buf ? buf : ""));
     json_object_object_add(resp, "secret_set",
-                           json_object_new_boolean(secret_set));
+                           json_object_new_boolean(cfg && cfg->system.secret[0] != '\0'));
     free(buf);
     return resp;
 }
@@ -686,6 +680,50 @@ static struct json_object *build_config_get_raw(const struct pw_config *cfg) {
  * atomically to g_env_path (tmp + rename). Reports restart_required=true when
  * the new topology (cards / logical_ifs) differs from the running one, since
  * config.load cannot swap topology live. Writes ONLY g_env_path. */
+/* Return a malloc'd copy of `yaml` with the value of any `secret:` key line
+ * replaced by `sec` (YAML double-quoted, backslash/quote-escaped). Used to
+ * restore the real secret when the GUI saves the redacted placeholder back so
+ * a thoughtless Save can't overwrite system.secret with "***". Caller frees. */
+static char *yaml_rewrite_secret(const char *yaml, const char *sec) {
+    /* escape the secret for a double-quoted YAML scalar */
+    char esc[PW_SECRET_MAX * 2 + 1]; size_t e = 0;
+    for (const char *s = sec; *s && e + 2 < sizeof(esc); s++) {
+        if (*s == '\\' || *s == '"') esc[e++] = '\\';
+        esc[e++] = *s;
+    }
+    esc[e] = '\0';
+
+    size_t cap = strlen(yaml) + sizeof(esc) + 64, len = 0;
+    char *out = malloc(cap);
+    if (!out) return NULL;
+    out[0] = '\0';
+    for (const char *p = yaml; *p; ) {
+        const char *nl = strchr(p, '\n');
+        size_t linelen = nl ? (size_t)(nl - p) + 1 : strlen(p);
+        char rep[1400]; const char *emit = p; size_t emitlen = linelen;
+        if (linelen < 1024) {
+            char lb[1024]; memcpy(lb, p, linelen); lb[linelen] = '\0';
+            int indent = secret_line_indent(lb);
+            if (indent >= 0) {
+                int n = snprintf(rep, sizeof(rep), "%.*s" "secret: \"%s\"%s",
+                    indent < 64 ? indent : 64,
+                    "                                                                ",
+                    esc, nl ? "\n" : "");
+                if (n > 0) { emit = rep; emitlen = (size_t)n; }
+            }
+        }
+        if (len + emitlen + 1 > cap) {
+            cap = (len + emitlen + 1) * 2;
+            char *nb = realloc(out, cap);
+            if (!nb) { free(out); return NULL; }
+            out = nb;
+        }
+        memcpy(out + len, emit, emitlen); len += emitlen; out[len] = '\0';
+        p += linelen;
+    }
+    return out;
+}
+
 static struct json_object *do_config_save(struct pw_config **cfg_pp,
                                           struct json_object *req) {
     struct json_object *jy;
@@ -714,6 +752,35 @@ static struct json_object *do_config_save(struct pw_config **cfg_pp,
         return build_error(msg);
     }
     bool restart_required = !same_topology(*cfg_pp, newc);
+
+    /* Secret preservation: if the submitted config's secret is the redaction
+     * sentinel (the GUI round-tripped config.get_raw's "***"), rewrite it back
+     * to the running secret so a Save of the redacted view can't lock the
+     * operator out. Reject if the placeholder can't be resolved (e.g. inline
+     * mapping the line-scan doesn't reach). */
+    char *rewritten = NULL;
+    const char *out_yaml = yaml;
+    size_t out_len = yaml_len;
+    if (strcmp(newc->system.secret, PW_SECRET_REDACTED) == 0) {
+        rewritten = yaml_rewrite_secret(yaml, (*cfg_pp)->system.secret);
+        bool ok = rewritten != NULL;
+        if (ok) {
+            struct pw_config *chk = pw_config_new();
+            struct pw_diag d2 = {0};
+            ok = chk &&
+                 pw_config_parse_string_ex(rewritten, strlen(rewritten), 0, chk, &d2) == PW_OK &&
+                 strcmp(chk->system.secret, PW_SECRET_REDACTED) != 0;
+            if (chk) pw_config_free(chk);
+        }
+        if (!ok) {
+            free(rewritten);
+            pw_config_free(newc);
+            return build_error("refusing to save the redacted secret placeholder "
+                "\"" PW_SECRET_REDACTED "\"; set a real secret or restore it first");
+        }
+        out_yaml = rewritten;
+        out_len  = strlen(rewritten);
+    }
     pw_config_free(newc);
 
     /* Atomic write: <path>.tmp then rename. The env file holds system.secret,
@@ -728,10 +795,11 @@ static struct json_object *do_config_save(struct pw_config **cfg_pp,
         uid = st.st_uid; gid = st.st_gid;
     }
     char tmp[1024];
-    if ((size_t)snprintf(tmp, sizeof(tmp), "%s.tmp", g_env_path) >= sizeof(tmp))
-        return build_error("env path too long");
+    if ((size_t)snprintf(tmp, sizeof(tmp), "%s.tmp", g_env_path) >= sizeof(tmp)) {
+        free(rewritten); return build_error("env path too long");
+    }
     int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, mode);
-    if (fd < 0) return build_error("cannot open env config for writing");
+    if (fd < 0) { free(rewritten); return build_error("cannot open env config for writing"); }
     /* Enforce mode + owner explicitly (open() mode is masked by umask; a
      * preserved non-root owner needs an explicit fchown by the root daemon). */
     (void)fchmod(fd, mode);
@@ -740,13 +808,14 @@ static struct json_object *do_config_save(struct pw_config **cfg_pp,
          * critical part and already applied */
     }
     bool wok = true;
-    for (size_t off = 0; off < yaml_len; ) {
-        ssize_t w = write(fd, yaml + off, yaml_len - off);
+    for (size_t off = 0; off < out_len; ) {
+        ssize_t w = write(fd, out_yaml + off, out_len - off);
         if (w <= 0) { wok = false; break; }
         off += (size_t)w;
     }
     if (fsync(fd) != 0) wok = false;
     close(fd);
+    free(rewritten);
     if (!wok || rename(tmp, g_env_path) != 0) {
         unlink(tmp);
         return build_error("write failed");
@@ -1002,6 +1071,19 @@ static struct json_object *build_cards(const struct pw_config *cfg,
         json_object_object_add(c, "backend",  json_object_new_string(
             cards[i].open ? cards[i].which : "absent"));
         json_object_object_add(c, "open",     json_object_new_boolean(cards[i].open));
+        /* FPGA identity/version from the card (for the dashboard versions panel). */
+        struct pw_card_info info;
+        if (cards[i].open && cards[i].backend.ops->card_info &&
+            cards[i].backend.ops->card_info(cards[i].backend.ctx, &info) == PW_OK) {
+            char hx[16];
+            snprintf(hx, sizeof hx, "0x%08x", info.device_id);
+            json_object_object_add(c, "device_id", json_object_new_string(hx));
+            json_object_object_add(c, "fpga_version", json_object_new_int((int)info.version));
+            snprintf(hx, sizeof hx, "0x%08x", info.build_id);
+            json_object_object_add(c, "build_id", json_object_new_string(hx));
+            snprintf(hx, sizeof hx, "0x%08x", info.git_hash);
+            json_object_object_add(c, "git_hash", json_object_new_string(hx));
+        }
         json_object_array_add(arr, c);
     }
     json_object_object_add(r, "cards", arr);
@@ -1100,6 +1182,8 @@ static struct json_object *build_flows(const struct pw_config *cfg,
         json_object_object_add(fl, "latency_valid", json_object_new_boolean(true));
         json_object_object_add(fl, "latency_method",
             json_object_new_string(xcard ? "gpio-corrected" : "same-card"));
+        json_object_object_add(fl, "enabled",
+            json_object_new_boolean(flow_enabled(prog, (uint32_t)f->id)));
         json_object_array_add(arr, fl);
     }
     json_object_object_add(r, "flows", arr);
@@ -1248,6 +1332,8 @@ static struct json_object *build_flow_stats(const struct pw_config *cfg,
         json_object_object_add(f, "id", json_object_new_int64(m->global_flow_id));
         json_object_object_add(f, "tx_card_id", json_object_new_int(m->tx_card_id));
         json_object_object_add(f, "rx_card_id", json_object_new_int(m->rx_card_id));
+        json_object_object_add(f, "enabled",
+            json_object_new_boolean(flow_enabled(prog, m->global_flow_id)));
         /* read_ok=false => a snapshot/stats CSR read failed; the counters below
          * are stale/zero, NOT a genuine "0 traffic" result. */
         json_object_object_add(f, "read_ok", json_object_new_boolean(read_ok));

@@ -85,8 +85,17 @@ verification (`--ca`) is a future addition.
 A single self-contained `index.html` (inline CSS/JS, no external/CDN
 dependencies). Tabs:
 
-- **Dashboard** — polls `cards` / `ports` / `sfp.info` / `flow.stats`
-  every ~1.5 s; per-flow latency histogram via `flow.hist`.
+- **Dashboard** — polls every ~1.5 s: a **Versions** panel (packetwyrmd via
+  `version`, packetwyrm-proxyd via `GET /proxyd/version`, per-card FPGA
+  device/version/build/git from `cards`); a **Health / LED** panel per card
+  (derived from data-plane stats — red on sticky errors/drops, green on
+  clean/idle — mirroring the front-panel R/G LED, with the causing counters
+  listed); `cards` / `ports` / `sfp.info` (numbers capped to 3 decimals);
+  **Aggregate counters** (total / per rx-card / per rx-port, with frames/s
+  rates); **Flow statistics** with Started/Stopped state, tx/rx frames + rates,
+  and error counters (lost/dup/reorder) highlighted red when non-zero; and a
+  per-flow **latency histogram** (`flow.hist`) with time-unit bucket labels
+  (ns/µs/ms, from the 6.4 ns/tick clock).
 - **Flows** — point-and-click editor for the full flow schema:
   ports / L2 / L3 v4|v6 / L4 udp|tcp / traffic / measurements / classify /
   background, plus collapsible advanced sections for **match** (classifier
