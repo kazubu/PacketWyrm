@@ -17,7 +17,7 @@ module tb_field_classifier;
     logic rst_n = 0;
 
     pw_match_key_t            key;
-    logic [SLICE_WIN*8-1:0]   window;
+    logic [HDR_BYTES*8-1:0]   window;   // full captured header (UDF reads base+offset)
     logic [15:0]              base;
     logic                     key_valid;
 
@@ -141,6 +141,22 @@ module tb_field_classifier;
         pulse();
         chk("v6 dst /32 prefix: hit", result.hit, 1);
         chk("v6 dst /32 prefix: lfid", result.local_flow_id, 11);
+
+        // --- Deep-encap UDF: inner frame under encap (base = 74 > SLICE_WIN 48).
+        // Previously the UDF window was truncated to the low 48 absolute bytes,
+        // so base+offset >= 48 read 0 and could never match. With the full-window
+        // fix a UDF reaches inner bytes at any depth. Match an inner field at
+        // base(74)+4 = abs 78 == 0xBEEF. ---
+        prog_udf(1, 4, 32'hFFFF_0000, 32'hBEEF_0000);    // udf1: offset 4 == 0xBEEF
+        prog_rule(5, (14'h1 << (NCMP+1)), 1, 13, 0, 20); // care bit NCMP+1
+        key='0; window='0; base=74; setb(78,8'hBE); setb(79,8'hEF);
+        pulse();
+        chk("deep-encap udf (base 74): hit", result.hit, 1);
+        chk("deep-encap udf (base 74): lfid", result.local_flow_id, 13);
+        // negative control: without the inner bytes set it must NOT match
+        key='0; window='0; base=74;
+        pulse();
+        chk("deep-encap udf: no match when bytes clear", result.hit, 0);
 
         if (errors == 0) $display("ALL FIELD_CLASSIFIER SCENARIOS PASS");
         else begin $display("FAILED with %0d errors", errors); $fatal; end

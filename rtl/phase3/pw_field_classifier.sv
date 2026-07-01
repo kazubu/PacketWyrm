@@ -39,7 +39,10 @@ import pw_classifier_pkg::*;
 
 module pw_field_classifier #(
     parameter int HDR_BYTES = 160,
-    parameter int SLICE_WIN = 48,    // UDF match window depth (bounds the byte-mux)
+    parameter int SLICE_WIN = 48,    // legacy: UDF *offset* range hint (see below);
+                                     // the UDF window now spans the full HDR_BYTES
+                                     // capture so a UDF reaches the inner frame at
+                                     // any encap depth (base_i + offset < HDR_BYTES).
     parameter int NCMP      = 12,    // field comparators (canonical-field sourced)
     parameter int NUDF      = 2,     // UDF slice comparators (raw window)
     parameter int NRULE     = 32     // combine rules
@@ -49,7 +52,13 @@ module pw_field_classifier #(
 
     // Sources, aligned with key_valid_i (parser outputs).
     input  pw_match_key_t                key_i,
-    input  wire [SLICE_WIN*8-1:0]        window_i,   // raw inner-frame bytes
+    // Full captured header window. The UDF slice matchers read byte
+    // base_i + offset out of it, so the window MUST span deep enough to reach
+    // the inner frame under encapsulation -- hence the full HDR_BYTES capture,
+    // not just the low SLICE_WIN bytes (which only covered eff + offset < 48,
+    // i.e. shallow frames). Only the NUDF slice matchers consume it; the NCMP
+    // field comparators source canonical key fields, not this window.
+    input  wire [HDR_BYTES*8-1:0]        window_i,   // full captured header bytes
     input  wire [15:0]                   base_i,     // inner-frame (L3) base
     input  wire                          key_valid_i,
 
@@ -177,7 +186,7 @@ module pw_field_classifier #(
         // UDF slice comparators (raw window byte-extract)
         for (gi = 0; gi < NUDF; gi++) begin : g_udf
             logic m;
-            pw_slice_match #(.HDR_BYTES(SLICE_WIN)) u_sm (
+            pw_slice_match #(.HDR_BYTES(HDR_BYTES)) u_sm (
                 .window_i(window_i), .base_i(base_i), .offset_i(u_off[gi]),
                 .mask_i(u_mask[gi]), .value_i(u_value[gi]), .match_o(m)
             );

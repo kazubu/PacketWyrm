@@ -28,19 +28,20 @@ lowers `classify: header` test flows + punt + forward to comparators+rules. The
 checker counts non-test frames (rx only) so arbitrary-payload / external DUT
 traffic is countable; structured test frames still get full seq/latency stats.
 
-**UDF offset constraint (known limitation).** `pw_slice_match` extracts its
-4-byte lane at *absolute* window byte `base_i + offset_i`, where the parser
-passes `window_i` = the captured header's low `SLICE_WIN`(48) bytes and
-`base_i` = the inner-L3 base (`eff`). So a UDF only reaches the inner frame
-where **`eff + offset < SLICE_WIN` (48)**; beyond that the byte extractor reads
-0 (fails safe: no match, never a false match). In practice this covers the only
-UDF the compiler emits today — the IS-IS punt at `offset 0` on unencapsulated
-802.3/LLC (`eff` ≈ 14–22). It does NOT cover UDF matching *inner* fields under
-deep encapsulation (`eff > 47`, e.g. v6-in-v6), which no config path reaches.
-Lifting it needs the parser (or a data-plane stage) to emit an inner-*anchored*
-slice (`base_i = 0`); a parser-side attempt was abandoned — it gave no LUT win
-and broke dp_clk timing (see `parser-lut-reduction.md`, "SUPERSEDED"). Deferred
-as a latent limitation until a config actually needs deep-encap UDF.
+**UDF window depth (deep-encap fix).** `pw_slice_match` extracts its 4-byte lane
+at *absolute* window byte `base_i + offset_i`, with `base_i` = the inner-L3 base
+(`eff`). The UDF now gets the **full `HDR_BYTES` captured window** (not just the
+low `SLICE_WIN` bytes), so a UDF reaches the inner frame wherever
+`eff + offset < HDR_BYTES` (176) — i.e. at any single-encap depth (deepest inner
+L3 base ≈ 74). Earlier the window was truncated to the low 48 absolute bytes, so
+`eff + offset ≥ 48` (deep encap, e.g. v6-in-v6) read 0 and could never match the
+inner frame; only shallow UDFs like the IS-IS punt (`offset 0`, no encap) worked.
+The fix widens only the two `pw_slice_match` byte-muxes (48→`HDR_BYTES`) in the
+classifier's latency-2 path — it does NOT touch the parser's dp_clk-critical
+Stage-A2 (an earlier parser-side inner-anchored-slice attempt was abandoned for
+no LUT win + a timing regression; see `parser-lut-reduction.md`, "SUPERSEDED").
+Out-of-window bytes still read 0 (fails safe: no false match). Asserted in
+`tb_field_classifier` (deep-encap UDF at base 74).
 Capacity note: header-defined flows + punt + forward share the 12 comparators /
 32 rules per card (comparators dedup); high-count structured TEST_RX uses the
 256-entry flow-id map.

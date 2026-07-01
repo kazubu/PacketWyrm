@@ -355,11 +355,14 @@ module pw_data_plane_axis #(
             // pw_slice_classifier). Comparators source the parser's canonical
             // fields (mux-free) or the raw inner-frame window (UDF); rules combine
             // them. Latency 2 from key_valid. window/base are parser outputs
-            // already aligned with key_valid_o (UDF uses the low SLICE_WIN bytes).
+            // aligned with key_valid_o. The UDF gets the FULL captured window
+            // (not just the low SLICE_WIN bytes) so it reads inner-frame bytes at
+            // base_i + offset for any encap depth -- shallow truncation could not
+            // reach inner fields when base_i (eff) + offset >= 48.
             pw_field_classifier #(.HDR_BYTES(HDR_BYTES), .SLICE_WIN(SLICE_WIN),
                                   .NCMP(NCMP), .NUDF(NUDF), .NRULE(NRULE)) u_fclass (
                 .clk(clk), .rst_n(rst_n),
-                .key_i(rx_key[gp]), .window_i(rx_win[gp][SLICE_WIN-1:0]),
+                .key_i(rx_key[gp]), .window_i(rx_win[gp]),
                 .base_i(rx_base[gp]), .key_valid_i(rx_kv[gp]),
                 .cmp_wr_en(cmp_wr_en_i), .cmp_wr_idx(cmp_wr_idx_i), .cmp_wr_src(cmp_wr_src_i),
                 .cmp_wr_mask(cmp_wr_mask_i), .cmp_wr_value(cmp_wr_value_i),

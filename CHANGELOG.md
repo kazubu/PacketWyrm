@@ -8,6 +8,18 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ## Unreleased
 
+### Fixed
+  - **Deep-encap UDF classifier matching.** A UDF slice comparator reads inner
+    byte `base_i(eff) + offset` out of the captured window, but the window was
+    truncated to the low `SLICE_WIN`(48) bytes, so for `eff + offset ≥ 48` (deep
+    encap, e.g. v6-in-v6) it read 0 and could never match the inner frame (only
+    shallow UDFs like the IS-IS punt worked). The classifier now gets the full
+    `HDR_BYTES`(176) window, so a UDF reaches the inner frame at any single-encap
+    depth. Widens only the two `pw_slice_match` byte-muxes (classifier latency-2
+    path); the dp_clk-critical parser is untouched. (No config emits a deep-encap
+    UDF today, so this was a latent limitation, but it restores the documented
+    "offset relative to the inner frame, encap-agnostic" UDF contract.)
+
 ### Added
   - **Per-flow cross-card latency correction (Stage 2).** The single global
     `lat_correction` CSR (0x0144/0x0148) is replaced by a per-flow window
