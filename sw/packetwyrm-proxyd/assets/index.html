@@ -1,0 +1,71 @@
+<!-- PacketWyrm Web GUI (served embedded by packetwyrm-proxyd).
+     Part A placeholder: proves the HTTPS -> /api/rpc -> daemon relay.
+     The full dashboard / flow editor is built in Part B. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PacketWyrm</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; background: #0f1720; color: #e6edf3; }
+  header { padding: 12px 20px; background: #16202b; border-bottom: 1px solid #2a3746; }
+  h1 { font-size: 18px; margin: 0; }
+  main { padding: 20px; max-width: 900px; }
+  label { display: block; margin: 12px 0 4px; color: #9fb0c0; }
+  input, textarea, button { font: inherit; }
+  input, textarea { width: 100%; box-sizing: border-box; padding: 6px 8px;
+    background: #0b1118; color: #e6edf3; border: 1px solid #2a3746; border-radius: 4px; }
+  textarea { min-height: 90px; font-family: ui-monospace, monospace; }
+  button { margin-top: 10px; padding: 8px 16px; background: #2563eb; color: #fff;
+    border: 0; border-radius: 4px; cursor: pointer; }
+  pre { background: #0b1118; border: 1px solid #2a3746; border-radius: 4px;
+    padding: 12px; overflow: auto; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<header><h1>🐉 PacketWyrm</h1></header>
+<main>
+  <label for="secret">Secret (if the daemon requires one)</label>
+  <input id="secret" type="password" placeholder="leave empty if no secret">
+
+  <label for="req">RPC request (JSON)</label>
+  <textarea id="req">{"rpc":"version"}</textarea>
+  <button id="send">Send</button>
+
+  <label>Response</label>
+  <pre id="resp">—</pre>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  // Persist the secret locally so it survives reloads.
+  $("secret").value = localStorage.getItem("pw_secret") || "";
+  $("secret").addEventListener("change", (e) =>
+    localStorage.setItem("pw_secret", e.target.value));
+
+  async function rpc(obj) {
+    const secret = $("secret").value;
+    if (secret) obj = { ...obj, secret };
+    const r = await fetch("/api/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(obj),
+    });
+    return r.json();
+  }
+
+  $("send").addEventListener("click", async () => {
+    let obj;
+    try { obj = JSON.parse($("req").value); }
+    catch (e) { $("resp").textContent = "invalid JSON: " + e; return; }
+    $("resp").textContent = "…";
+    try {
+      const res = await rpc(obj);
+      $("resp").textContent = JSON.stringify(res, null, 2);
+    } catch (e) {
+      $("resp").textContent = "request failed: " + e;
+    }
+  });
+</script>
+</body>
+</html>

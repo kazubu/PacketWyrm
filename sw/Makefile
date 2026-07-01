@@ -24,6 +24,8 @@ YAML_CFLAGS := $(shell $(PKG_CONFIG) --cflags yaml-0.1)
 YAML_LIBS   := $(shell $(PKG_CONFIG) --libs yaml-0.1)
 JSON_CFLAGS := $(shell $(PKG_CONFIG) --cflags json-c)
 JSON_LIBS   := $(shell $(PKG_CONFIG) --libs json-c)
+SSL_CFLAGS  := $(shell $(PKG_CONFIG) --cflags openssl)
+SSL_LIBS    := $(shell $(PKG_CONFIG) --libs openssl)
 
 EXTRA_CFLAGS := $(YAML_CFLAGS) $(JSON_CFLAGS)
 EXTRA_LIBS   := $(YAML_LIBS) $(JSON_LIBS) -lpthread
@@ -45,13 +47,18 @@ DAEMON_BIN := $(BUILD_DIR)/packetwyrmd
 CLI_SRC := pktwyrm/src/main.c
 CLI_BIN := $(BUILD_DIR)/pktwyrm
 
+PROXYD_SRC   := packetwyrm-proxyd/src/main.c
+PROXYD_BIN   := $(BUILD_DIR)/packetwyrm-proxyd
+PROXYD_ASSET := packetwyrm-proxyd/assets/index.html
+PROXYD_ASSET_H := $(BUILD_DIR)/proxyd_assets.h
+
 TEST_SRC := tests/unit/test_main.c
 TEST_BIN := $(BUILD_DIR)/test_unit
 
 INCLUDES := -I$(LIB_INC) $(EXTRA_CFLAGS)
 
-.PHONY: all clean test daemon cli lib
-all: lib daemon cli
+.PHONY: all clean test daemon cli lib proxyd
+all: lib daemon cli proxyd
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -79,6 +86,17 @@ $(DAEMON_BIN): $(DAEMON_SRC) $(LIBA) | $(BUILD_DIR)
 cli: $(CLI_BIN)
 $(CLI_BIN): $(CLI_SRC) $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(CLI_SRC) $(LIBA) $(EXTRA_LIBS) $(LDFLAGS) -lm
+
+# packetwyrm-proxyd: HTTPS gateway for the Web GUI + remote CLI.
+# The GUI page is embedded via `xxd -i` (run inside the assets dir so the
+# generated symbols are the clean `index_html` / `index_html_len`).
+$(PROXYD_ASSET_H): $(PROXYD_ASSET) | $(BUILD_DIR)
+	cd $(dir $<) && xxd -i $(notdir $<) > $(CURDIR)/$@
+
+proxyd: $(PROXYD_BIN)
+$(PROXYD_BIN): $(PROXYD_SRC) $(PROXYD_ASSET_H) $(LIBA) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -I$(BUILD_DIR) -o $@ $(PROXYD_SRC) $(LIBA) \
+	    $(EXTRA_LIBS) $(SSL_LIBS) $(LDFLAGS)
 
 test: $(TEST_BIN)
 	$(TEST_BIN)
@@ -167,8 +185,9 @@ $(BUILD_DIR)/pw_port_latency: tests/pw_port_latency.c $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_port_latency.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 .PHONY: e2e gen_bar_vectors pw_card_probe pw_sfp_test pw_phase3_loopback pw_phase3_forward pw_phase3_punt pw_phase3_inject pw_phase3_modgen pw_phase3_ipv6gen pw_dp_reset_recover pw_soak pw_gpio_sync pw_gpio_offset pw_xcard_latency pw_port_latency pw_sfp
-e2e: $(DAEMON_BIN) $(CLI_BIN)
+e2e: $(DAEMON_BIN) $(CLI_BIN) $(PROXYD_BIN)
 	tests/integration/e2e_smoke.sh
+	tests/integration/e2e_proxyd.sh
 
 clean:
 	rm -f $(LIB_OBJ)
