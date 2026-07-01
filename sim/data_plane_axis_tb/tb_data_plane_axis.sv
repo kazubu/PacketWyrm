@@ -311,7 +311,9 @@ module tb_data_plane_axis;
         .rx_fcs_error_o   (fcs_d),
         .link_up_cnt_o    (luc_d),
         .link_down_cnt_o  (ldc_d),
-        .block_lock_loss_o(bllc_d)
+        .block_lock_loss_o(bllc_d),
+        .err_sticky_o     (),
+        .activity_o       ()
     );
 
     // --- egress / punt collectors (reassemble forwarded & punted frames)

@@ -168,7 +168,9 @@ module tb_phase3_top;
         .gpio_t       (),
         .sfp_i2c_i    (4'hF),
         .sfp_i2c_o    (),
-        .sfp_i2c_t    ()
+        .sfp_i2c_t    (),
+        .status_err_o      (),
+        .status_activity_o ()
     );
 
     int    errors = 0;

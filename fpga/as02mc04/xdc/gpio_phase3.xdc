@@ -61,3 +61,12 @@ set_property -dict {LOC D11 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 12 PULLTYPE PULL
 # Async, SW-timed bit-bang: pad inputs are 2FF-synced in the core; no setup/hold.
 set_false_path -from [get_ports {sfp_scl[*] sfp_sda[*]}]
 set_false_path -to   [get_ports {sfp_scl[*] sfp_sda[*]}]
+
+# --- Front-panel R/G health LED. PHASE 3 ONLY. -------------------------------
+# Bicolor status LED (active-low: 0 = lit). led_r=A13, led_g=A12 (LVCMOS33).
+# Driven from data-plane health synchronised into the 100 MHz LED domain; async
+# output, false-pathed. Kept out of the shared pinout.xdc (Phase 1/2 tops have
+# no led_r/led_g port -> empty get_ports there).
+set_property -dict {LOC A13 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 12} [get_ports led_r]
+set_property -dict {LOC A12 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 12} [get_ports led_g]
+set_false_path -to [get_ports {led_r led_g}]

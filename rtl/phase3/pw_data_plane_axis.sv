@@ -236,7 +236,18 @@ module pw_data_plane_axis #(
     input  wire                   block_lock_i     [PW_PORTS],
     output logic [31:0]           link_up_cnt_o    [PW_PORTS],
     output logic [31:0]           link_down_cnt_o  [PW_PORTS],
-    output logic [31:0]           block_lock_loss_o[PW_PORTS]
+    output logic [31:0]           block_lock_loss_o[PW_PORTS],
+
+    // Aggregate status for the front-panel R/G health LED (board top). Both are
+    // dp_clk-domain levels; the board top synchronises + drives the LED.
+    //   err_sticky_o : latched 1 if ANY error has been seen since the last
+    //                  stats_clear_i -- a per-flow sequence loss (checker),
+    //                  an RX FCS/runt error, or a port DROP/SAF-overflow.
+    //   activity_o   : 1 while traffic is recent (an RX or TX frame completed
+    //                  within a short retriggerable window) -- drives the green
+    //                  blink; solid green when clean+idle.
+    output logic                  err_sticky_o,
+    output logic                  activity_o
 );
 
     // Source-select index space for the TX arbiter: 0..PW_PORTS-1 select
@@ -522,6 +533,9 @@ module pw_data_plane_axis #(
     logic [63:0] psuml [PW_PORTS], psamp [PW_PORTS], pjsum [PW_PORTS];
     logic [63:0] pjmin [PW_PORTS], pjmax [PW_PORTS];
 
+    // Per-port loss-event pulse (from each checker) -> health LED sticky.
+    logic        lost_ev [PW_PORTS];
+
     // Per-port registered histogram events into the BRAM histogram.
     logic        hev_v  [PW_PORTS];
     logic [15:0] hev_fl [PW_PORTS];
@@ -591,6 +605,7 @@ module pw_data_plane_axis #(
                 .hist_ev_o       (hev_v[gp]),
                 .hist_flow_o     (hev_fl[gp]),
                 .hist_bucket_o   (hev_bk[gp]),
+                .lost_event_o    (lost_ev[gp]),
                 .rd_addr_i       (flow_rd_addr_i),
                 .rd_en_i         (1'b1),
                 .rd_valid_o      (),
@@ -733,6 +748,49 @@ module pw_data_plane_axis #(
         for (int p = 0; p < PW_PORTS; p++)
             port_drops_o[p] = port_drops[p];
     end
+
+    // ------------------------------------------------------------
+    // Front-panel health-LED aggregate status (dp_clk domain).
+    //   err_sticky : latched on ANY error since the last stats_clear_i -- a
+    //     checker loss-event pulse (missing test frames), or a nonzero RX
+    //     FCS/runt count, or a nonzero port DROP count (both already cleared by
+    //     stats_clear_i). Cleared with the counters so a run starts green.
+    //   activity   : retriggerable ~ (2^ACT_LOG2 dp_clk cycles) one-shot,
+    //     reloaded whenever an RX or TX frame completes -> a "traffic recent"
+    //     level the board top turns into the green blink.
+    // ------------------------------------------------------------
+    localparam int ACT_LOG2 = 23;   // ~54 ms @156.25MHz: comfortably visible
+    logic              err_sticky_q;
+    logic [ACT_LOG2:0] act_cnt;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            err_sticky_q <= 1'b0;
+            act_cnt      <= '0;
+        end else begin
+            // sticky error latch (re-armed by the stats clear)
+            automatic logic any_lost = 1'b0;
+            automatic logic any_derr = 1'b0;
+            for (int p = 0; p < PW_PORTS; p++) begin
+                if (lost_ev[p])            any_lost = 1'b1;
+                if (|rx_fcs_err[p] || |port_drops[p]) any_derr = 1'b1;
+            end
+            if (stats_clear_i) err_sticky_q <= 1'b0;
+            else if (any_lost || any_derr) err_sticky_q <= 1'b1;
+
+            // traffic-activity one-shot: reload on any RX/TX frame completion
+            begin
+                automatic logic act_pulse = 1'b0;
+                for (int p = 0; p < PW_PORTS; p++) begin
+                    if (s_axis_rx_tvalid[p] && s_axis_rx_tlast[p]) act_pulse = 1'b1;
+                    if (m_axis_tx_tvalid[p] && m_axis_tx_tready[p] && m_axis_tx_tlast[p]) act_pulse = 1'b1;
+                end
+                if (act_pulse)          act_cnt <= '1;
+                else if (act_cnt != 0)  act_cnt <= act_cnt - 1'b1;
+            end
+        end
+    end
+    assign err_sticky_o = err_sticky_q;
+    assign activity_o   = (act_cnt != 0);
 
     // ------------------------------------------------------------
     // Link health: synchronize the async MAC/PCS status levels into

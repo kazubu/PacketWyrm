@@ -58,6 +58,11 @@ module pw_test_rx_checker_bram #(
     output logic [15:0]          hist_flow_o,
     output logic [15:0]          hist_bucket_o,
 
+    // 1-cycle pulse when this event increments the per-flow lost count (a
+    // sequence gap = missing frames). Feeds the front-panel health LED's
+    // sticky-error latch in the data plane. Registered alongside the RMW.
+    output logic                 lost_event_o,
+
     // Snapshot read port (port B). Drive rd_addr_i; the record fields are
     // valid 1 cycle later (rd_valid_o pulses to mark it).
     input  wire [$clog2(NUM_FLOWS)-1:0] rd_addr_i,
@@ -190,12 +195,14 @@ module pw_test_rx_checker_bram #(
     logic [63:0]      exp;
     logic             seen;
     logic [31:0]      prev, lat32, curmin, curmax, jmin, jmax, jd;
+    logic             lost_inc;   // this event increments lost (missing frames)
 
     always_comb begin
         // defaults (assign every signal on every path -> no latches)
         rec = '0; nr = '0; exp = '0; seen = 1'b0;
         prev = '0; lat32 = '0; curmin = '0; curmax = '0; jmin = '0; jmax = '0; jd = '0;
         a_we = 1'b0; a_waddr = s1_idx; a_wdata = '0;
+        lost_inc = 1'b0;
 
         if (clearing) begin
             a_we    = (clear_idx < NUM_FLOWS[AW:0]);
@@ -245,6 +252,7 @@ module pw_test_rx_checker_bram #(
                 end else if (s1_seq > exp) begin
                     nr[OFF_LOST +: 64] = rec[OFF_LOST +: 64] + (s1_seq - exp);
                     nr[OFF_EXP  +: 64] = s1_seq + 64'd1;
+                    lost_inc = 1'b1;   // missing frames -> pulse the health LED
                 end else if (s1_seq == exp - 64'd1) begin
                     nr[OFF_DUP +: 64] = rec[OFF_DUP +: 64] + 64'd1;
                 end else begin
@@ -270,7 +278,7 @@ module pw_test_rx_checker_bram #(
         if (!rst_n) begin
             s2_we <= 1'b0; s2_idx <= '0; s2_rec <= '0;
             hist_ev_o <= 1'b0; hist_flow_o <= '0; hist_bucket_o <= '0;
-            rd_valid_o <= 1'b0;
+            rd_valid_o <= 1'b0; lost_event_o <= 1'b0;
         end else begin
             s2_we  <= (!clearing) && s1_valid;
             s2_idx <= s1_idx;
@@ -281,6 +289,7 @@ module pw_test_rx_checker_bram #(
             hist_flow_o   <= 16'(s1_idx);
             hist_bucket_o <= 16'(s1_bucket);
             rd_valid_o    <= rd_en_i;
+            lost_event_o  <= (!clearing) && s1_valid && s1_is_test && lost_inc;
         end
     end
 

@@ -117,7 +117,14 @@ module pwfpga_top_phase3 #(
     // (hi-Z -> external pull-up = 1) except when the CSR asserts drive-low.
     input  wire [3:0]        sfp_i2c_i,
     output wire [3:0]        sfp_i2c_o,
-    output wire [3:0]        sfp_i2c_t
+    output wire [3:0]        sfp_i2c_t,
+
+    // Aggregate data-plane health for the front-panel R/G LED (dp_clk domain;
+    // the board top synchronises + drives the LED). status_err = sticky error
+    // since the last stats-clear (loss / FCS / drop); status_activity = traffic
+    // recent (green blink).
+    output wire              status_err_o,
+    output wire              status_activity_o
 );
 
     // --- Data-plane <-> CSR_full wiring -------------------------
@@ -489,7 +496,9 @@ module pwfpga_top_phase3 #(
         .rx_fcs_error_o    (rx_fcs_err_w),
         .link_up_cnt_o     (link_up_cnt_w),
         .link_down_cnt_o   (link_down_cnt_w),
-        .block_lock_loss_o (block_lock_loss_w)
+        .block_lock_loss_o (block_lock_loss_w),
+        .err_sticky_o      (status_err_o),
+        .activity_o        (status_activity_o)
     );
 
     // --- J5 GPIO cross-card time-sync ---------------------------------------

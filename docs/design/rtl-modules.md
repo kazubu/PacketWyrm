@@ -313,6 +313,18 @@ pwfpga_top
   bias, TX/RX optical power at 0xA2). SW: `libpacketwyrm/sfp.{c,h}` + the
   `pw_sfp` tool. A passive DAC answers the ID page but has no optical DOM.
 
+### Front-panel status LEDs
+
+- `led_hb` = 1 Hz heartbeat (FPGA alive); `led[1]` = PCIe link up; per-cage
+  `sfp_led[0..1]` = SFP link status (`!rx_status`).
+- `led_r`/`led_g` (A13/A12, active-low bicolor) = **data-plane health**, NOT link
+  (the SFP LEDs cover link). The data plane aggregates two dp_clk-domain levels:
+  `err_sticky` (latched on any checker loss-event / RX FCS / port drop since the
+  last `stats_clear`) and `activity` (a retriggerable one-shot reloaded on each
+  RX/TX frame). The board top 2FF-synchronises them + `pcie_link_up` into the
+  100 MHz LED domain: red = up & error; green blink = up & clean & active; green
+  solid = up & clean & idle; off = not up (red overrides green).
+
 ### rx_pipeline / parser
 
 The parser must reach into at least:

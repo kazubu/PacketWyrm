@@ -34,6 +34,8 @@ module pwfpga_top_phase3_board (
     output wire        sfp_tx_n [2],
     output wire        led_hb,
     output wire [3:0]  led,
+    output wire        led_r,               // front-panel R/G health LED (active-low)
+    output wire        led_g,
     output wire        sfp_led [2],
     inout  wire [5:0]  gpio,                // J5 header: cross-card time-sync
     inout  wire        sfp_scl [2],         // per-SFP I2C clock (open-drain)
@@ -281,7 +283,8 @@ module pwfpga_top_phase3_board (
         .icap_csib_o(icap_csib), .icap_rdwrb_o(icap_rdwrb), .icap_i_o(icap_i),
         .dp_soft_rst_o(dp_soft_rst_pulse),
         .gpio_i(gpio_i), .gpio_o(gpio_o), .gpio_t(gpio_t),
-        .sfp_i2c_i(sfp_i2c_i), .sfp_i2c_o(sfp_i2c_o), .sfp_i2c_t(sfp_i2c_t)
+        .sfp_i2c_i(sfp_i2c_i), .sfp_i2c_o(sfp_i2c_o), .sfp_i2c_t(sfp_i2c_t),
+        .status_err_o(status_err_dp), .status_activity_o(status_act_dp)
     );
 
     // --- J5 GPIO bidirectional pads (cross-card time-sync) ----------------
@@ -368,6 +371,37 @@ module pwfpga_top_phase3_board (
     assign sfp_led[0] = !sfp_rx_status[0];
     assign sfp_led[1] = !sfp_rx_status[1];
     assign led = {1'b1, 1'b1, ~pcie_link_up, 1'b1};
+
+    // --- Front-panel R/G health LED (active-low: 0 = lit) -------------------
+    // Data-plane status (dp_clk domain) synchronised into the 100 MHz LED
+    // domain, plus pcie_link_up as the "configured/up" gate. Scheme:
+    //   RED solid     : sticky error since the last stats.clear (loss/FCS/drop)
+    //   GREEN blink   : up, clean, traffic flowing
+    //   GREEN solid   : up, clean, idle
+    //   OFF           : not up (PCIe down / not configured); red overrides green
+    wire status_err_dp, status_act_dp;    // from the core (dp_clk)
+    (* ASYNC_REG = "true" *) logic [1:0] err_sync, act_sync, pcie_sync;
+    always_ff @(posedge clk_100mhz or negedge rst_n_100) begin
+        if (!rst_n_100) begin err_sync <= '0; act_sync <= '0; pcie_sync <= '0; end
+        else begin
+            err_sync  <= {err_sync[0],  status_err_dp};
+            act_sync  <= {act_sync[0],  status_act_dp};
+            pcie_sync <= {pcie_sync[0], pcie_link_up};
+        end
+    end
+    // ~3 Hz blink from a free-running counter's top bit.
+    logic [24:0] blink_cnt;
+    always_ff @(posedge clk_100mhz or negedge rst_n_100) begin
+        if (!rst_n_100) blink_cnt <= '0; else blink_cnt <= blink_cnt + 1'b1;
+    end
+    wire blink = blink_cnt[24];
+    wire up    = pcie_sync[1];
+    wire err   = err_sync[1];
+    wire act   = act_sync[1];
+    wire red_on = up &&  err;
+    wire grn_on = up && !err && (act ? blink : 1'b1);
+    assign led_r = ~red_on;   // active-low
+    assign led_g = ~grn_on;
 
 endmodule
 

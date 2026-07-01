@@ -9,6 +9,16 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Front-panel R/G health LED.** The previously-unconnected bicolor status LED
+    (led_r=A13 / led_g=A12, active-low) now shows data-plane health: **red** =
+    sticky error since the last `stats.clear` (a checker sequence-loss event, or
+    a nonzero RX FCS/runt or port-drop count); **green blinking** = up + clean +
+    traffic flowing; **green solid** = up + clean + idle; **off** = PCIe down /
+    not configured (red overrides green). SFP link state is intentionally NOT
+    shown here (the per-cage SFP LEDs already do that). The data plane exports two
+    aggregate levels (err_sticky, activity — a retriggerable one-shot); the board
+    top 2FF-synchronises them into the 100 MHz LED domain and drives a ~3 Hz
+    blink. New checker `lost_event_o` pulse feeds the sticky-error latch.
   - **SFP+ module identifier + DOM read (`pw_sfp`).** New per-SFP I2C management
     bus (CSR `REG_SFP_I2C` 0x0150, open-drain SCL/SDA per cage via board-top
     IOBUFs on C13/C14 and D10/D11) lets software bit-bang the module EEPROM. New
