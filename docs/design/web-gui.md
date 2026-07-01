@@ -94,10 +94,11 @@ dependencies). Tabs:
   128-bit IPv6 literal masks), and **encap** (IPIP / GRE / EtherIP outer
   v4|v6 + EtherIP inner L2 + `rx_expect`). A live generated-YAML preview
   shows exactly what **Apply** ships via `config.load`. **Load current**
-  pulls the running test config (`config.get_test`) into the raw-YAML
-  editor for lossless round-trip / bulk edits (**Apply raw YAML**). The
-  YAML the form emits is exactly what `packetwyrmd` parses (see
-  `yaml-schema.md`).
+  pulls the running test config (`config.get_test`) into **both** the form
+  (from the structured `flows`/`forwards` JSON — match/modifiers/encap
+  included) **and** the raw-YAML editor (the exact text, for lossless bulk
+  edits via **Apply raw YAML**). The YAML the form emits is exactly what
+  `packetwyrmd` parses (see `yaml-schema.md`).
 - **Forwards** — form editor for store-and-forward rules → `config.load`.
 - **Control** — `test.arm` / `test.start` / `test.stop`, `stats.clear`,
   per-flow `flow.start` / `flow.stop`.

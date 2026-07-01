@@ -282,14 +282,24 @@ only the parsed `pw_config`, not the source).
 ```
 &rarr;
 ```json
-{ "yaml": "flows:\n  - id: 1\n  ...", "loaded": true }
+{ "yaml": "flows:\n  - id: 1\n  ...", "loaded": true,
+  "flows": [ { "id":1, "tx":0, "rx":1, "l3":"ipv4", "l4":"udp", ...,
+               "match": {...}, "mods": {...}, "encap": {...} } ],
+  "forwards": [ { "ingress":0, "egress":1, ... } ] }
 ```
 
-`loaded` is `false` (and `yaml` empty) when no test config has been loaded
-this session — e.g. flows came only from a combined `-e` file, or none yet.
-This is lossless (it is the exact submitted text, including
-encap/modifiers/match), so it is the reliable way to round-trip an existing
-test config through the GUI. Backs the Flows tab's **Load current** button.
+Returns two views of the running test config:
+- `yaml` — the exact submitted text (lossless; empty and `loaded:false` when
+  no test config was loaded via `-t` / `config.load` this session).
+- `flows` / `forwards` — the running config serialized as structured JSON in
+  the **GUI form-model shape** (including `match` / `mods` / `encap`), so the
+  Flows tab's **Load current** can populate the point-and-click form, not just
+  the raw editor. (`flows` may be non-empty even when `loaded:false` if flows
+  came from a combined `-e` file.) IPv4 addresses are emitted dotted, IPv6
+  compressed; IPv6 modifier masks as address literals; match IPv6 as prefix
+  lengths. Fixed-frame + rate_bps flows round-trip exactly; frame-range /
+  rate_pps flows are approximated in the form (the `yaml` view is authoritative
+  for those). Backs the Flows tab's **Load current** button.
 
 ### `config.save`
 

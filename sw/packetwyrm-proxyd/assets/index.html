@@ -323,6 +323,20 @@ const newFlow = () => ({
   encap:{ type:"none", l3:"ipv4", src:"", dst:"", ttl:"", dscp:"",
           inner_src_mac:"", inner_dst_mac:"" },
   rx_expect:"inner" });
+// Map a config.get_test flow object (daemon form-model JSON) onto a full flow
+// model, filling any missing field/section from the defaults.
+function flowFromJson(j) {
+  const f = newFlow();
+  Object.assign(f, j);
+  f.match = Object.assign({udp_dst:"",ipv4_dst:"",ipv6_dst_prefix:"",ipv6_src_prefix:""}, j.match||{});
+  f.mods = newMods();
+  if (j.mods) for (const k of MOD_FIELDS)
+    if (j.mods[k]) f.mods[k] = Object.assign({mode:"static",mask:""}, j.mods[k]);
+  f.encap = Object.assign({type:"none",l3:"ipv4",src:"",dst:"",ttl:"",dscp:"",
+                           inner_src_mac:"",inner_dst_mac:""}, j.encap||{});
+  return f;
+}
+const fwdFromJson = (j) => Object.assign(newFwd(), j);
 
 function renderFlowList() {
   const box = $("#flow-list");
@@ -439,17 +453,31 @@ function refreshFlows(reEdit=true) {
 $("#flow-add").addEventListener("click", () => { flows.push(newFlow()); selFlow=flows.length-1; refreshFlows(); });
 $("#flow-load").addEventListener("click", async () => {
   const r = await rpc({ rpc:"config.get_test" });
-  if (r.yaml == null) { showMsg("#flow-msg","err", r.error || JSON.stringify(r)); return; }
-  if (!r.loaded || !r.yaml.trim()) {
+  if (r.error) { showMsg("#flow-msg","err", r.error); return; }
+  const jf = Array.isArray(r.flows) ? r.flows : [];
+  const jw = Array.isArray(r.forwards) ? r.forwards : [];
+  const hasForm = jf.length || jw.length;
+  const hasYaml = r.yaml && r.yaml.trim();
+  if (!hasForm && !hasYaml) {
     showMsg("#flow-msg","warn","No test config loaded yet (load one via Apply, "
       + "`pktwyrm load`, or the daemon's -t). Nothing to edit.");
     return;
   }
-  $("#flow-yaml").value = r.yaml;
+  // Populate the form model from the structured flows/forwards…
+  if (hasForm) {
+    flows = jf.map(flowFromJson);
+    fwds  = jw.map(fwdFromJson);
+    selFlow = flows.length ? 0 : null;
+    selFwd  = fwds.length ? 0 : null;
+    refreshFlows();            // rebuilds list + editor + regenerates YAML preview
+    renderFwdList(); renderFwdEdit();
+  }
+  // …and the raw editor with the lossless original text when we have it.
+  if (hasYaml) $("#flow-yaml").value = r.yaml;
   $("#flow-yaml-details").open = true;
-  showMsg("#flow-msg","ok","Loaded the running test config into the YAML editor "
-    + "below. Edit it and use “Apply raw YAML”.");
-  $("#flow-yaml-details").scrollIntoView({ behavior:"smooth", block:"nearest" });
+  showMsg("#flow-msg","ok",
+    `Loaded ${flows.length} flow(s)${fwds.length?` + ${fwds.length} forward(s)`:""} `
+    + "into the form and the YAML editor. Edit above, then Apply.");
 });
 $("#flow-apply").addEventListener("click", async () => {
   const yaml = buildTestYaml();
