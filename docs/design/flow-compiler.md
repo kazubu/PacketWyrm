@@ -169,10 +169,10 @@ int pw_flow_compile(const pw_config *cfg, pw_program *out) {
         pw_port_resolved rx = pw_resolve_port(cfg, f->rx_global_port);
 
         bool same_card = (tx.card_id == rx.card_id);
-        bool latency_req = f->meas.latency || f->meas.jitter;
-        if (!same_card && latency_req) {
-            return PW_E_CROSS_CARD_LATENCY;
-        }
+        // Cross-card latency/jitter is NOT rejected: it is HW-corrected per flow
+        // (J5 GPIO sync + the per-flow lat_correction table). latency_valid below
+        // is the method flag (same-card exact vs cross-card gpio-corrected), not
+        // an availability gate.
 
         uint32_t tx_lfid = pw_alloc_local_flow_id(out, tx.card_id);
         uint32_t rx_lfid = same_card

@@ -99,7 +99,11 @@ Compilation rules:
    "no latency": cross-card latency IS measured, corrected per flow in
    hardware via the J5 GPIO sync + the per-flow `lat_correction` table
    (the daemon servo maintains each cross-card slot). `flow.stats` reports
-   it with `latency_method: "gpio-corrected"`.
+   it with `latency_method: "gpio-corrected"`. The servo re-writes each
+   cross-card slot's offset every `-S SERVO_MS` (default 10 ms; smaller =
+   less ~1.6 ppm-skew residual between updates — ~16 ns at 10 ms, ~1.6 ns
+   at 1 ms; the J5 edge refreshes every ~210 µs so below that is moot). It
+   reads an edge-coherent offset and skips the write on an incoherent read.
 4. Allocate `local_flow_id`s from a per-card free list.
 5. Build classifier match keys deterministically: ingress port, VLAN,
    UDP destination port, test magic, `global_flow_id`. Ties are

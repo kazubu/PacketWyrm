@@ -155,8 +155,9 @@ flows:
       loss: true
       latency: true
       jitter: true
-      # Cross-card flows must set latency:false and jitter:false.
-      # The daemon refuses the config otherwise.
+      # Cross-card latency/jitter is supported (HW-corrected per flow via the J5
+      # GPIO time-sync + the per-flow lat_correction table); flow.stats reports
+      # latency_method "gpio-corrected". No config restriction -- see below.
 
     background: false                # optional, default false. true = TX-only
                                      # load traffic: the flow generates but gets

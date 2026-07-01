@@ -20,8 +20,11 @@ the engine + the 32-flow data plane fit together (the interim slice classifier,
 
 Implemented: `pw_field_classifier` = `NCMP`(12) field comparators (each
 `{src,mask,value}` over a canonical-field lane; IPv6 addr = 4 comparators) +
-`NUDF`(2) UDF comparators (`pw_slice_match` over the raw inner-frame window,
-`SLICE_WIN`=48) → `NRULE`(32) care-mask rules → priority `{action,egress,lfid,
+`NUDF`(2) UDF comparators (`pw_slice_match` reading byte `base_i(eff)+offset`
+out of the full `HDR_BYTES`(176) captured window, so a UDF reaches the inner
+frame at any encap depth — see "UDF window depth" below; `SLICE_WIN` is now
+just a legacy offset-range hint) → `NRULE`(32) care-mask rules → priority
+`{action,egress,lfid,`
 lif}`. Parser `window_o`/`base_o` outputs; data-plane precedence **map > field
 classifier**; CSR windows `PWFPGA_WIN_FC_CMP`/`_UDF`/`_RULE` @ 0x2000; compiler
 lowers `classify: header` test flows + punt + forward to comparators+rules. The
@@ -174,8 +177,10 @@ and removed.
 
 Each phase is sim-gated. Capacity note: with each slice an exact match, header-
 defined flows are bounded by `NSLICE` distinct header values (4) / `NRULE` rules
-(8) per card, over a 48-byte match window (L3/L4 of a non-encapsulated frame) —
-sized so the byte-mux fits alongside the 32-flow data plane on the xcku3p; the
+(8) per card. (UDF match window: originally the low 48 bytes; now the full
+`HDR_BYTES` capture so a UDF reaches the inner frame under encap — see "UDF
+window depth" above.) Sized so the byte-mux fits alongside the 32-flow data
+plane on the xcku3p; the
 flow-id map (256) remains for high-count structured test.
 
 ## Risks / open questions
