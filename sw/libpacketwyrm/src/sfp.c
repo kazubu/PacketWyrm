@@ -156,6 +156,48 @@ pw_status pw_sfp_write(const struct pw_card_backend *be, int port,
     return PW_OK;
 }
 
+/* SFF-8472 write password entry: 4 bytes at A2 (0x51) offset 0x7B. Write-only
+ * (reads back as 0xFF), so pw_sfp_write's read-back verify is not used here. */
+#define SFP_PW_ADDR    0x51
+#define SFP_PW_OFFSET  0x7B
+/* Cosmetic base-ID test byte for the unlock probe: the 4th vendor-revision pad
+ * (A0 0x3B), normally a space -- flipped + restored, never left altered. */
+#define SFP_PW_TEST_ADDR 0x50
+#define SFP_PW_TEST_OFF  0x3B
+
+/* Write the 4-byte password to the SFF-8472 password-entry area (no verify --
+ * the area is write-only). Returns PW_OK if the bytes ACKed. */
+pw_status pw_sfp_unlock(const struct pw_card_backend *be, int port, uint32_t password) {
+    uint8_t pwb[4] = { (uint8_t)(password >> 24), (uint8_t)(password >> 16),
+                       (uint8_t)(password >> 8),  (uint8_t)password };
+    return pw_sfp_write(be, port, SFP_PW_ADDR, SFP_PW_OFFSET, pwb, sizeof(pwb));
+}
+
+pw_status pw_sfp_try_write_password(const struct pw_card_backend *be, int port,
+                                    uint32_t password, bool *unlocked) {
+    if (!unlocked) return PW_E_INVAL;
+    *unlocked = false;
+
+    pw_status s = pw_sfp_unlock(be, port, password);
+    if (s != PW_OK) return s;   /* backend fault / module absent (not "locked") */
+
+    uint8_t orig, test, rb;
+    if (pw_sfp_read(be, port, SFP_PW_TEST_ADDR, SFP_PW_TEST_OFF, &orig, 1) != PW_OK)
+        return PW_E_IO;
+    test = (uint8_t)(orig ^ 0xFF);
+    /* A locked write ACKs but commits nothing (NAK on some modules); either way
+     * the read-back stays == orig and we treat it as "still locked". */
+    if (pw_sfp_write(be, port, SFP_PW_TEST_ADDR, SFP_PW_TEST_OFF, &test, 1) != PW_OK)
+        return PW_OK;
+    if (pw_sfp_read(be, port, SFP_PW_TEST_ADDR, SFP_PW_TEST_OFF, &rb, 1) != PW_OK)
+        return PW_E_IO;
+    if (rb == test) {
+        *unlocked = true;
+        (void)pw_sfp_write(be, port, SFP_PW_TEST_ADDR, SFP_PW_TEST_OFF, &orig, 1); /* restore */
+    }
+    return PW_OK;
+}
+
 /* Copy an EEPROM ASCII field, trimming trailing spaces, into a NUL-terminated
  * buffer of size dst_sz (>= n+1). */
 static void copy_ascii(char *dst, size_t dst_sz, const uint8_t *src, size_t n) {

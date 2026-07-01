@@ -13,6 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <signal.h>
+#include <time.h>
 
 #include "packetwyrm/backend.h"
 #include "packetwyrm/vfio.h"
@@ -147,18 +149,103 @@ static int do_write(struct pw_card_backend *be, int port, int argc, char **argv)
     return 0;
 }
 
+static volatile sig_atomic_t g_stop;
+static void on_int(int s) { (void)s; g_stop = 1; }
+
+static double now_s(void) {
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec + (double)t.tv_nsec * 1e-9;
+}
+
+/* Enter a write password: pw_sfp <bdf> <port> unlock <password_hex> */
+static int do_unlock(struct pw_card_backend *be, int port, int argc, char **argv) {
+    if (argc < 5) {
+        fprintf(stderr, "usage: pw_sfp <bdf> <port> unlock <password_hex>\n"
+                        "  writes the 4-byte SFF-8472 password to A2 0x7B (write-only area;\n"
+                        "  not verifiable by read-back). Unlock persists until power-cycle.\n");
+        return 2;
+    }
+    uint32_t pw = (uint32_t)strtoul(argv[4], NULL, 0);
+    bool ok;
+    pw_status s = pw_sfp_try_write_password(be, port, pw, &ok);
+    if (s != PW_OK) { fprintf(stderr, "port %d: I2C error / module absent\n", port); return 1; }
+    printf("port %d: password 0x%08x entered -- base-ID writes %s\n",
+           port, pw, ok ? "UNLOCKED (verified)" : "still LOCKED (wrong password?)");
+    return ok ? 0 : 1;
+}
+
+/* Search for a write password: pw_sfp <bdf> <port> findpw [start] [end] [stride] */
+static int do_findpw(struct pw_card_backend *be, int port, int argc, char **argv) {
+    uint32_t start  = (argc > 4) ? (uint32_t)strtoul(argv[4], NULL, 0) : 0u;
+    uint32_t end    = (argc > 5) ? (uint32_t)strtoul(argv[5], NULL, 0) : 0xFFFFFFFFu;
+    uint32_t stride = (argc > 6) ? (uint32_t)strtoul(argv[6], NULL, 0) : 1u;
+    if (stride == 0) stride = 1;
+
+    /* Confirm a module is present (a probe read must ACK). */
+    uint8_t tmp;
+    if (pw_sfp_read(be, port, 0x50, 0, &tmp, 1) != PW_OK) {
+        fprintf(stderr, "port %d: no module / no I2C ACK -- nothing to search\n", port);
+        return 1;
+    }
+
+    uint64_t total = ((uint64_t)end - start) / stride + 1;
+    printf("port %d: searching write password 0x%08x..0x%08x stride %u (%llu candidates)\n",
+           port, start, end, stride, (unsigned long long)total);
+    printf("  Ctrl-C to stop (prints a resume point). NOTE: bit-bang I2C is ~1-2 ms/candidate,\n"
+           "  so a full 2^32 sweep is impractical (~weeks); bound the range or resume.\n");
+
+    signal(SIGINT, on_int);
+    double t0 = now_s(), tlast = t0;
+    uint64_t done = 0;
+    uint32_t last = start;
+    for (uint64_t pv = start; pv <= end; pv += stride) {
+        last = (uint32_t)pv;
+        bool ok;
+        pw_status s = pw_sfp_try_write_password(be, port, (uint32_t)pv, &ok);
+        if (s != PW_OK) { fprintf(stderr, "\ni2c error at 0x%08x -- aborting\n", (unsigned)pv); return 1; }
+        done++;
+        if (ok) {
+            printf("\nFOUND: password 0x%08x unlocks base-ID writes (after %llu tries)\n",
+                   (unsigned)pv, (unsigned long long)done);
+            return 0;
+        }
+        if (g_stop) {
+            printf("\nstopped at 0x%08x -- resume with: findpw 0x%08x 0x%08x %u\n",
+                   (unsigned)pv, (unsigned)(pv + stride), end, stride);
+            return 2;
+        }
+        double tn = now_s();
+        if (tn - tlast >= 2.0) {
+            double rate = done / (tn - t0);
+            double eta  = rate > 0 ? (double)(total - done) / rate : 0;
+            printf("\r  at 0x%08x  %.0f/s  ETA %.0f s  (%.2f%%)      ",
+                   (unsigned)pv, rate, eta, 100.0 * done / total);
+            fflush(stdout);
+            tlast = tn;
+        }
+        if ((uint64_t)pv + stride > end) break;   /* avoid uint32 wrap past end */
+    }
+    printf("\nno password in the range unlocked writes (last tried 0x%08x)\n", (unsigned)last);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: %s <bdf> [port|both] [raw]\n"
-                        "       %s <bdf> <port> write <0x50|0x51> <offset> <hexbytes> [commit]\n",
-                argv[0], argv[0]);
+                        "       %s <bdf> <port> write <0x50|0x51> <offset> <hexbytes> [commit]\n"
+                        "       %s <bdf> <port> unlock <password_hex>\n"
+                        "       %s <bdf> <port> findpw [start_hex] [end_hex] [stride]\n",
+                argv[0], argv[0], argv[0], argv[0]);
         return 2;
     }
     const char *bdf = argv[1];
-    int  is_write = (argc > 3 && !strcmp(argv[3], "write"));
+    const char *sub = (argc > 3) ? argv[3] : "";
+    int  is_write  = !strcmp(sub, "write");
+    int  is_unlock = !strcmp(sub, "unlock");
+    int  is_findpw = !strcmp(sub, "findpw");
     int  do_both = (argc > 2 && !strcmp(argv[2], "both"));
     int  port    = (argc > 2 && !do_both) ? atoi(argv[2]) : 0;
-    int  raw     = (argc > 3 && !strcmp(argv[3], "raw"));
+    int  raw     = !strcmp(sub, "raw");
 
     pw_vfio_bind(bdf);
     struct pw_card_backend be;
@@ -168,8 +255,10 @@ int main(int argc, char **argv) {
     }
 
     int rc = 0;
-    if (is_write) {
-        rc = do_write(&be, port, argc, argv);
+    if (is_write || is_unlock || is_findpw) {
+        rc = is_write  ? do_write(&be, port, argc, argv)
+           : is_unlock ? do_unlock(&be, port, argc, argv)
+           :             do_findpw(&be, port, argc, argv);
         pw_card_backend_close(&be);
         return rc;
     }

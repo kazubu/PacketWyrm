@@ -73,4 +73,20 @@ pw_status pw_sfp_write(const struct pw_card_backend *be, int port,
                        uint8_t i2c_addr, uint8_t offset,
                        const uint8_t *buf, size_t len);
 
+/* Enter the 4-byte SFF-8472 write password (big-endian) at A2 0x7B to unlock
+ * writes to protected regions. The entry area is write-only (reads back 0xFF),
+ * so this does not verify -- returns PW_OK if the bytes ACKed. The unlock
+ * persists on the module until it is power-cycled / re-locked. */
+pw_status pw_sfp_unlock(const struct pw_card_backend *be, int port, uint32_t password);
+
+/* Try one SFF-8472 write password (4 bytes, big-endian) at A2 0x7B, then probe
+ * whether base-ID writes are now unlocked by momentarily flipping a cosmetic
+ * base-ID byte and reading it back (restored immediately on success -- no
+ * lasting change, and a locked write commits nothing so there's no EEPROM wear).
+ * Sets *unlocked. Returns PW_OK on a clean probe (whether or not it unlocked),
+ * or PW_E_* on a backend/module-absent fault. Useful for recovering a lost
+ * write password on a module you own; see pw_sfp for the search loop. */
+pw_status pw_sfp_try_write_password(const struct pw_card_backend *be, int port,
+                                    uint32_t password, bool *unlocked);
+
 #endif /* PACKETWYRM_SFP_H */

@@ -33,7 +33,14 @@ For where work is going next, see `NEXT-STEPS.md`.
     the write cycle; no RTL change -- same bit-bang CSR). Guarded: a dry run
     (current vs new) unless `commit` is given, then it writes + reads back to
     verify. WARNING: writing the base ID page can re-code / brick a module;
-    intended for deliberate lab use on modules you own.
+    intended for deliberate lab use on modules you own. `pw_sfp <bdf> <port>
+    unlock <password_hex>` enters the SFF-8472 write password (A2 0x7B) to unlock
+    protected-region writes (`pw_sfp_unlock` / `pw_sfp_try_write_password` in the
+    lib), and `pw_sfp <bdf> <port> findpw [start] [end] [stride]` searches for a
+    working write password (range-bounded + resumable, with rate/ETA -- a full
+    2^32 sweep is impractical over bit-bang I2C, ~weeks). HW-validated: password
+    0x0 unlocks the dev-card Finisar modules; a base-ID write then verifies and
+    is restored.
 
 ### Fixed
   - **Deep-encap UDF classifier matching.** A UDF slice comparator reads inner
