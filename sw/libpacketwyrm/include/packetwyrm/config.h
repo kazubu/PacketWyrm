@@ -5,12 +5,19 @@
 #include "packetwyrm/ids.h"
 #include "packetwyrm/types.h"
 
+#define PW_SECRET_MAX 128
+
 struct pw_system {
     char     name[PW_NAME_MAX];
     char     mode[PW_NAME_MAX];          /* "multi-card" */
     char     default_speed[8];           /* "10g" */
     uint32_t stats_poll_interval_ms;     /* default 100 */
     char     control_socket[128];
+    /* Shared secret (environment config only). When non-empty, the daemon
+     * requires every control-socket request to carry it; a client obtains it by
+     * reading the environment config (default /etc/packetwyrm/packetwyrm.yaml),
+     * so read permission on that file is the access gate. Empty = auth off. */
+    char     secret[PW_SECRET_MAX];
 };
 
 struct pw_card_port {
@@ -280,6 +287,23 @@ void              pw_config_free(struct pw_config *cfg);
  * pw_status and fills *diag if non-NULL. */
 pw_status pw_config_parse_file(const char *path, struct pw_config *cfg, struct pw_diag *diag);
 pw_status pw_config_parse_string(const char *yaml, size_t len, struct pw_config *cfg, struct pw_diag *diag);
+
+/* Parse flags. PW_CFG_TEST_ONLY makes `system` and `cards` OPTIONAL, so a
+ * test-only config (flows/forwards, no environment) parses -- used for the
+ * environment/test config split (daemon -t / `pktwyrm load` / config.load). The
+ * plain parse_file/string above imply flags=0 (environment: system+cards
+ * required, back-compat with a single combined file). */
+#define PW_CFG_TEST_ONLY 0x1u
+pw_status pw_config_parse_file_ex(const char *path, unsigned flags,
+                                  struct pw_config *cfg, struct pw_diag *diag);
+pw_status pw_config_parse_string_ex(const char *yaml, size_t len, unsigned flags,
+                                    struct pw_config *cfg, struct pw_diag *diag);
+
+/* Build a new config holding a deep copy of the ENVIRONMENT portion (system +
+ * cards + logical_interfaces + secret) of src, with empty flows/forwards. Used
+ * to merge a test config onto the running environment (config.load). Returns
+ * NULL on OOM; free with pw_config_free. */
+struct pw_config *pw_config_clone_env(const struct pw_config *src);
 
 /* Static validation: duplicate IDs, missing references, cross-card
  * latency, etc. Does not require any FPGA. */

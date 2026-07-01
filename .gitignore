@@ -1,5 +1,6 @@
 sw/build/
 sw/**/*.o
+sw/**/*.d
 sw/**/*.a
 sw/**/*.so
 *.swp

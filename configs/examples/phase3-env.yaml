@@ -1,0 +1,25 @@
+# Environment config (daemon-side, rarely changed): system + cards +
+# logical_interfaces + optional secret. Pair with a test config (flows/forwards)
+# via `packetwyrmd -e phase3-env.yaml -t <test>.yaml`, or load a test config at
+# runtime with `pktwyrm load <test>.yaml`. Deploy as /etc/packetwyrm/packetwyrm.yaml.
+system:
+  name: "pw-env"
+  mode: "multi-card"
+  default_speed: "10g"
+  control_socket: "/var/run/packetwyrm/packetwyrmd.sock"
+  # secret: "change-me"   # uncomment to require it on the control socket;
+                          # clients read it from this file (read perm = access).
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+logical_interfaces:
+  - id: 1000
+    global_port: 0
+    vlan: 100
+    mac: "02:a5:02:00:00:64"
+    mtu: 9000
+    punt: { arp: false, ipv6_nd: false, lldp: false, icmp: false, bgp: false, ospf: false }

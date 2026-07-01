@@ -51,7 +51,16 @@ swap is fine at today's reload cadence.
 Non-root operation: install `scripts/99-packetwyrm.rules` and add the
 operator user to the `packetwyrm` group. Otherwise the daemon needs
 root for BAR0 mmap.
-- YAML config load + validation via `libpacketwyrm`.
+- YAML config load + validation via `libpacketwyrm`. The config splits into an
+  **environment** part (`-e ENV`, default `/etc/packetwyrm/packetwyrm.yaml`:
+  system / cards / logical_interfaces / `secret` — rarely changed) and a **test**
+  part (`-t TEST` and `pktwyrm load`: flows / forwards — changed often). A
+  combined single file still works via `-e`. `config.load` merges a test-only
+  body onto the running environment.
+- **Access control:** if the environment config sets `system.secret`, the daemon
+  requires it on every control-socket request (constant-time compare; see
+  `rpc-protocol.md`). Read permission on the environment config file is thus the
+  access gate. No secret configured &rarr; auth off.
 - Builds:
   - logical interface map (`logical_if_id` &harr; TAP fd &harr;
     `(card_id, local_port_id, vlan)`),

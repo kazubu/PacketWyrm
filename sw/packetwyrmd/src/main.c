@@ -76,8 +76,11 @@ static void *card_worker_main(void *arg) {
 
 static void usage(const char *prog) {
     fprintf(stderr,
-        "usage: %s [-c CONFIG] [-n] [-v] [-s INTERVAL_MS] [-S SERVO_MS] [-p PROMETHEUS_PORT] [-F]\n"
-        "  -c CONFIG         path to packetwyrm.yaml\n"
+        "usage: %s [-e ENV] [-t TEST] [-n] [-v] [-s INTERVAL_MS] [-S SERVO_MS] [-p PROMETHEUS_PORT] [-F]\n"
+        "  -e ENV            environment config: system/cards/logical_interfaces/secret\n"
+        "                    (default /etc/packetwyrm/packetwyrm.yaml; may also carry\n"
+        "                    flows for a combined single-file setup). -c is an alias.\n"
+        "  -t TEST           test config: flows/forwards, attached onto the env\n"
         "  -n                dry run: parse + validate + compile, exit\n"
         "  -v                verbose\n"
         "  -s INTERVAL_MS    stats print interval (default 5000, 0 = off)\n"
@@ -474,19 +477,38 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
     const char *yaml = json_object_get_string(jy);
     size_t yaml_len  = strlen(yaml);
 
-    struct pw_config  *new_cfg  = pw_config_new();
+    struct pw_config  *new_cfg  = NULL;
     struct pw_program *new_prog = pw_program_new();
     struct pw_diag     diag = {0};
     struct json_object *resp = NULL;
 
-    pw_status r = pw_config_parse_string(yaml, yaml_len, new_cfg, &diag);
+    /* Parse the payload as a TEST config (system/cards optional). If it carries
+     * no cards it's flows/forwards only -> merge onto the RUNNING environment
+     * (the split model). If it does carry cards it's a full combined config
+     * (back-compat) -> use as-is, still gated by same_topology. */
+    struct pw_config *payload = pw_config_new();
+    pw_status r = pw_config_parse_string_ex(yaml, yaml_len, PW_CFG_TEST_ONLY, payload, &diag);
     if (r != PW_OK) {
         char msg[600];
         snprintf(msg, sizeof(msg), "parse: %s at %s: %s",
                  pw_strerror(r), diag.path, diag.message);
         resp = build_error(msg);
+        pw_config_free(payload);
         goto fail;
     }
+    if (payload->n_cards == 0) {
+        /* test-only: clone the live environment + attach the payload's flows */
+        new_cfg = pw_config_clone_env(*cfg_pp);
+        if (!new_cfg) { resp = build_error("out of memory"); pw_config_free(payload); goto fail; }
+        new_cfg->flows = payload->flows; new_cfg->n_flows = payload->n_flows;
+        payload->flows = NULL; payload->n_flows = 0;
+        new_cfg->forwards = payload->forwards; new_cfg->n_forwards = payload->n_forwards;
+        payload->forwards = NULL; payload->n_forwards = 0;
+        pw_config_free(payload);
+    } else {
+        new_cfg = payload;   /* full combined config */
+    }
+
     if ((r = pw_config_validate(new_cfg, &diag)) != PW_OK) {
         char msg[600];
         snprintf(msg, sizeof(msg), "validate: %s at %s: %s",
@@ -912,7 +934,24 @@ static void handle_client(int cfd,
         if (json_object_object_get_ex(req, "rpc", &rpc)) {
             name = json_object_get_string(rpc);
         }
-        if      (!name)                     resp = build_error("missing rpc");
+        /* Access control: when the environment config sets a secret, every
+         * request must carry a matching "secret" (constant-time compare). A
+         * client obtains it by reading the env config, so read permission on
+         * that file is the gate. Empty secret -> auth disabled (dev/CI). */
+        const char *want = cfg->system.secret;
+        bool authed = (want[0] == '\0');
+        if (!authed) {
+            struct json_object *js;
+            const char *got_s = (json_object_object_get_ex(req, "secret", &js))
+                              ? json_object_get_string(js) : "";
+            /* constant-time compare over the fixed secret buffer */
+            size_t wl = strnlen(want, PW_SECRET_MAX), gl = strlen(got_s);
+            unsigned diff = (unsigned)(wl ^ gl);
+            for (size_t i = 0; i < wl; i++) diff |= (unsigned)(want[i] ^ (i < gl ? got_s[i] : 0));
+            authed = (diff == 0);
+        }
+        if      (!authed)                   resp = build_error("unauthorized");
+        else if (!name)                     resp = build_error("missing rpc");
         else if (!strcmp(name, "version"))  resp = build_version();
         else if (!strcmp(name, "cards"))    resp = build_cards(cfg, cards);
         else if (!strcmp(name, "ports"))    resp = build_ports(cfg);
@@ -1206,7 +1245,11 @@ static void print_stats(const struct pw_config *cfg,
 }
 
 int main(int argc, char **argv) {
-    const char *cfg_path = "/etc/packetwyrm/packetwyrm.yaml";
+    /* -e ENV (environment: system/cards/logical_interfaces/secret, rarely
+     * changed) + optional -t TEST (flows/forwards, changed often). -c is a
+     * back-compat alias for -e; a combined single file still works via -e. */
+    const char *env_path  = "/etc/packetwyrm/packetwyrm.yaml";
+    const char *test_path = NULL;
     bool dry_run        = false;
     bool verbose        = false;
     bool allow_fake     = false;
@@ -1215,9 +1258,10 @@ int main(int argc, char **argv) {
     int  prom_port      = 0;
 
     int opt;
-    while ((opt = getopt(argc, argv, "c:nvs:S:p:Fh")) != -1) {
+    while ((opt = getopt(argc, argv, "c:e:t:nvs:S:p:Fh")) != -1) {
         switch (opt) {
-        case 'c': cfg_path = optarg; break;
+        case 'c': case 'e': env_path = optarg; break;
+        case 't': test_path = optarg; break;
         case 'n': dry_run = true; break;
         case 'v': verbose = true; break;
         case 's': stats_interval = atoi(optarg); break;
@@ -1233,9 +1277,23 @@ int main(int argc, char **argv) {
     struct pw_diag     diag = {0};
     pw_status r;
 
-    if ((r = pw_config_parse_file(cfg_path, cfg, &diag)) != PW_OK) {
-        fprintf(stderr, "parse: %s at %s: %s\n", pw_strerror(r), diag.path, diag.message);
+    /* Environment config (system + cards + logical_interfaces + secret). A
+     * combined file with flows here also works (back-compat). */
+    if ((r = pw_config_parse_file(env_path, cfg, &diag)) != PW_OK) {
+        fprintf(stderr, "parse env: %s at %s: %s\n", pw_strerror(r), diag.path, diag.message);
         return 1;
+    }
+    /* Optional test config: parse flows/forwards and attach onto the env. */
+    if (test_path) {
+        struct pw_config *t = pw_config_new();
+        if ((r = pw_config_parse_file_ex(test_path, PW_CFG_TEST_ONLY, t, &diag)) != PW_OK) {
+            fprintf(stderr, "parse test: %s at %s: %s\n", pw_strerror(r), diag.path, diag.message);
+            return 1;
+        }
+        /* move flows/forwards from the test config onto the environment config */
+        cfg->flows = t->flows; cfg->n_flows = t->n_flows; t->flows = NULL; t->n_flows = 0;
+        cfg->forwards = t->forwards; cfg->n_forwards = t->n_forwards; t->forwards = NULL; t->n_forwards = 0;
+        pw_config_free(t);
     }
     if ((r = pw_config_validate(cfg, &diag)) != PW_OK) {
         fprintf(stderr, "validate: %s at %s: %s\n", pw_strerror(r), diag.path, diag.message);

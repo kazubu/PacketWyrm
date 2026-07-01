@@ -1,0 +1,38 @@
+# Test config (changed often): flows/forwards only. Merged onto the running
+# environment via 'pktwyrm load' or 'packetwyrmd -t'. References ports /
+# logical_if_ids defined in the environment config.
+
+flows:
+  - id: 1
+    name: "loopback-test"
+    tx_global_port: 0
+    rx_global_port: 1
+    logical_if_id: 1000
+
+    l2:
+      src_mac: "02:a5:02:00:00:01"
+      dst_mac: "02:a5:02:00:00:02"
+      vlan: 100
+
+    ipv4:
+      src: "192.0.2.1"
+      dst: "192.0.2.2"
+      ttl: 64
+      dscp: 0
+
+    udp:
+      src_port: 49152
+      dst_port: 50001
+
+    traffic:
+      frame_len: 512
+      rate_bps: 1000000000
+      burst_size: 1
+      payload: "increment"
+      insert_sequence: true
+      insert_timestamp: true
+
+    measurements:
+      loss: true
+      latency: true
+      jitter: true
