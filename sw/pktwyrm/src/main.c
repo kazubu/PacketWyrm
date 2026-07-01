@@ -201,6 +201,8 @@ static int cmd_load(int argc, char **argv) {
     const char *sock = NULL;
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
+        else if ((!strcmp(argv[i], "--env") || !strcmp(argv[i], "--secret")) && i + 1 < argc)
+            i++;                                  /* global flags, consumed in main */
         else if (!path) path = argv[i];
     }
     if (!path) {
@@ -209,23 +211,53 @@ static int cmd_load(int argc, char **argv) {
         return 2;
     }
 
-    /* Always compile offline first: catches malformed YAML before we
-     * even open the socket, and lets the user see the program
-     * summary regardless of socket mode. */
-    struct pw_config *cfg; struct pw_program *prog;
-    if (load_config(path, &cfg, &prog) < 0) return 1;
-    printf("Configuration OK: %zu cards, %zu logical interfaces, %zu flows.\n",
-           cfg->n_cards, cfg->n_logical_if, cfg->n_flows);
-    for (size_t i = 0; i < prog->n_cards; i++)
-        printf("  card%u program: %zu flow rows, %zu map entries, "
-               "%zu cmp/%zu udf/%zu rules\n",
-               prog->per_card[i].card_id,
-               prog->per_card[i].n_flow_rows,
-               prog->per_card[i].n_map_entries,
-               prog->per_card[i].n_fc_cmps,
-               prog->per_card[i].n_fc_udfs,
-               prog->per_card[i].n_fc_rules);
-    pw_program_free(prog); pw_config_free(cfg);
+    /* Offline syntax check before opening the socket. The file may be a full
+     * combined config (system+cards+flows) OR a test-only config (flows/forwards
+     * only -- the normal `load` payload). Try full first (compile + summary);
+     * if that fails only because system/cards are absent, fall back to a
+     * test-only parse (syntax only -- there are no cards here to compile
+     * against; the daemon validates + compiles against its environment). */
+    struct pw_diag d = {0};
+    struct pw_config *cfg = pw_config_new();
+    if (pw_config_parse_file(path, cfg, &d) == PW_OK) {
+        /* Full combined config: validate + compile + summary. */
+        struct pw_program *prog = pw_program_new();
+        if (pw_config_validate(cfg, &d) != PW_OK) {
+            fprintf(stderr, "invalid config at %s: %s\n", d.path, d.message);
+            pw_program_free(prog); pw_config_free(cfg); return 1;
+        }
+        if (pw_flow_compile(cfg, prog, &d) != PW_OK) {
+            fprintf(stderr, "compile error at %s: %s\n", d.path, d.message);
+            pw_program_free(prog); pw_config_free(cfg); return 1;
+        }
+        printf("Configuration OK: %zu cards, %zu logical interfaces, %zu flows.\n",
+               cfg->n_cards, cfg->n_logical_if, cfg->n_flows);
+        for (size_t i = 0; i < prog->n_cards; i++)
+            printf("  card%u program: %zu flow rows, %zu map entries, "
+                   "%zu cmp/%zu udf/%zu rules\n",
+                   prog->per_card[i].card_id,
+                   prog->per_card[i].n_flow_rows,
+                   prog->per_card[i].n_map_entries,
+                   prog->per_card[i].n_fc_cmps,
+                   prog->per_card[i].n_fc_udfs,
+                   prog->per_card[i].n_fc_rules);
+        pw_program_free(prog); pw_config_free(cfg);
+    } else {
+        /* Not a full config -> try test-only (flows/forwards, no cards to
+         * compile against; the daemon validates against its environment). */
+        pw_config_free(cfg);
+        struct pw_config *t = pw_config_new();
+        struct pw_diag dt = {0};
+        if (pw_config_parse_file_ex(path, PW_CFG_TEST_ONLY, t, &dt) != PW_OK) {
+            fprintf(stderr, "parse error at %s: %s\n", dt.path, dt.message);
+            pw_config_free(t);
+            return 1;
+        }
+        printf("Test config OK: %zu flows, %zu forwards "
+               "(validated against the daemon's environment on load).\n",
+               t->n_flows, t->n_forwards);
+        pw_config_free(t);
+    }
 
     if (!sock) return 0;
 
@@ -629,13 +661,19 @@ static int cmd_help(void) {
 
 int main(int argc, char **argv) {
     if (argc < 2) return cmd_help();
-    /* Global flags (may appear anywhere): --secret S / --env PATH set where the
-     * control-socket secret comes from (see resolve_secret). Scanned here so
-     * every subcommand's rpc_call picks them up. */
+    /* Consume the global flags (may appear anywhere): --secret S / --env PATH
+     * set where the control-socket secret comes from (see resolve_secret).
+     * Filter them out of argv so subcommand parsing never sees them (and a
+     * leading `--secret S subcmd` still resolves the subcommand). */
+    char *fargv[argc]; int fargc = 0;
+    fargv[fargc++] = argv[0];
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--secret") && i + 1 < argc) g_secret_arg = argv[i + 1];
-        else if (!strcmp(argv[i], "--env") && i + 1 < argc) g_env_arg = argv[i + 1];
+        if (!strcmp(argv[i], "--secret") && i + 1 < argc)      g_secret_arg = argv[++i];
+        else if (!strcmp(argv[i], "--env") && i + 1 < argc)    g_env_arg    = argv[++i];
+        else fargv[fargc++] = argv[i];
     }
+    argv = fargv; argc = fargc;
+    if (argc < 2) return cmd_help();
     const char *sub = argv[1];
     if (!strcmp(sub, "help") || !strcmp(sub, "-h") || !strcmp(sub, "--help")) return cmd_help();
     if (!strcmp(sub, "version") || !strcmp(sub, "--version")) {
