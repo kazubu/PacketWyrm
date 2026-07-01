@@ -27,6 +27,20 @@ classifier**; CSR windows `PWFPGA_WIN_FC_CMP`/`_UDF`/`_RULE` @ 0x2000; compiler
 lowers `classify: header` test flows + punt + forward to comparators+rules. The
 checker counts non-test frames (rx only) so arbitrary-payload / external DUT
 traffic is countable; structured test frames still get full seq/latency stats.
+
+**UDF offset constraint (known limitation).** `pw_slice_match` extracts its
+4-byte lane at *absolute* window byte `base_i + offset_i`, where the parser
+passes `window_i` = the captured header's low `SLICE_WIN`(48) bytes and
+`base_i` = the inner-L3 base (`eff`). So a UDF only reaches the inner frame
+where **`eff + offset < SLICE_WIN` (48)**; beyond that the byte extractor reads
+0 (fails safe: no match, never a false match). In practice this covers the only
+UDF the compiler emits today — the IS-IS punt at `offset 0` on unencapsulated
+802.3/LLC (`eff` ≈ 14–22). It does NOT cover UDF matching *inner* fields under
+deep encapsulation (`eff > 47`, e.g. v6-in-v6), which no config path reaches.
+Lifting it needs the parser (or a data-plane stage) to emit an inner-*anchored*
+slice (`base_i = 0`); a parser-side attempt was abandoned — it gave no LUT win
+and broke dp_clk timing (see `parser-lut-reduction.md`, "SUPERSEDED"). Deferred
+as a latent limitation until a config actually needs deep-encap UDF.
 Capacity note: header-defined flows + punt + forward share the 12 comparators /
 32 rules per card (comparators dedup); high-count structured TEST_RX uses the
 256-entry flow-id map.
