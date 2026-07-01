@@ -1,0 +1,498 @@
+<!-- PacketWyrm Web GUI. Served embedded by packetwyrm-proxyd; all daemon
+     access is via POST /api/rpc (relayed to the control socket). No external
+     dependencies (strict single-file). See docs/design/web-gui.md. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PacketWyrm</title>
+<style>
+  :root { --bg:#0f1720; --panel:#16202b; --line:#2a3746; --ink:#e6edf3;
+          --dim:#9fb0c0; --accent:#2563eb; --ok:#22c55e; --err:#ef4444; --input:#0b1118; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--ink); }
+  header { display:flex; align-items:center; gap:16px; padding: 10px 18px;
+           background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 17px; margin: 0; }
+  header .grow { flex: 1; }
+  header input { width: 220px; }
+  #conn { font-size: 12px; padding: 2px 8px; border-radius: 10px; background:#333; }
+  #conn.ok { background: rgba(34,197,94,.2); color: var(--ok); }
+  #conn.err { background: rgba(239,68,68,.2); color: var(--err); }
+  nav { display:flex; gap:2px; padding: 0 18px; background: var(--panel);
+        border-bottom: 1px solid var(--line); }
+  nav button { background: none; border: 0; color: var(--dim); padding: 10px 16px;
+               cursor: pointer; border-bottom: 2px solid transparent; font: inherit; }
+  nav button.active { color: var(--ink); border-bottom-color: var(--accent); }
+  main { padding: 18px; max-width: 1200px; }
+  .tab { display: none; }
+  .tab.active { display: block; }
+  h2 { font-size: 15px; margin: 0 0 10px; color: var(--dim); font-weight: 600; }
+  section.card { background: var(--panel); border:1px solid var(--line); border-radius:8px;
+                 padding: 14px; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  label { display:block; margin: 8px 0 3px; color: var(--dim); font-size: 12px; }
+  input, select, textarea, button { font: inherit; }
+  input, select, textarea { width: 100%; padding: 6px 8px; background: var(--input);
+    color: var(--ink); border: 1px solid var(--line); border-radius: 4px; }
+  textarea { min-height: 220px; font-family: ui-monospace, monospace; font-size: 12px; white-space: pre; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fill,minmax(180px,1fr)); gap: 6px 14px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap: wrap; }
+  .chk { display:flex; align-items:center; gap:6px; }
+  .chk input { width:auto; }
+  button.act { margin-top: 10px; padding: 8px 16px; background: var(--accent); color:#fff;
+    border:0; border-radius:4px; cursor:pointer; width:auto; }
+  button.ghost { background: transparent; border:1px solid var(--line); color: var(--ink); }
+  button.danger { background: transparent; border:1px solid var(--err); color: var(--err); }
+  .msg { margin-top:10px; padding:8px 10px; border-radius:4px; font-size:13px; white-space:pre-wrap; }
+  .msg.ok { background: rgba(34,197,94,.12); color: var(--ok); }
+  .msg.err { background: rgba(239,68,68,.12); color: var(--err); }
+  .msg.warn { background: rgba(234,179,8,.14); color: #eab308; }
+  pre.out { background: var(--input); border:1px solid var(--line); border-radius:4px;
+    padding:10px; overflow:auto; white-space:pre-wrap; font-size:12px; }
+  .bar { height: 14px; background: var(--accent); border-radius: 2px; }
+  .barrow { display:flex; align-items:center; gap:8px; margin:2px 0; font-size:12px; }
+  .barrow .lbl { width:120px; color: var(--dim); text-align:right; }
+  .barrow .cnt { width:70px; text-align:right; font-variant-numeric: tabular-nums; }
+  .muted { color: var(--dim); font-size: 12px; }
+  .adv summary { cursor:pointer; color: var(--dim); margin: 8px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🐉 PacketWyrm</h1>
+  <div class="grow"></div>
+  <input id="secret" type="password" placeholder="secret (if required)">
+  <span id="conn">—</span>
+</header>
+<nav>
+  <button data-tab="dash" class="active">Dashboard</button>
+  <button data-tab="flows">Flows</button>
+  <button data-tab="forwards">Forwards</button>
+  <button data-tab="control">Control</button>
+  <button data-tab="env">Environment</button>
+</nav>
+<main>
+  <!-- Dashboard -->
+  <div class="tab active" id="tab-dash">
+    <section class="card"><h2>Cards</h2><div id="d-cards">…</div></section>
+    <section class="card"><h2>Ports</h2><div id="d-ports">…</div></section>
+    <section class="card"><h2>SFP modules</h2><div id="d-sfp">…</div></section>
+    <section class="card"><h2>Flow statistics</h2><div id="d-flowstats">…</div></section>
+    <section class="card">
+      <h2>Latency histogram</h2>
+      <div class="row"><label style="margin:0">flow id</label>
+        <select id="hist-flow" style="width:120px"></select></div>
+      <div id="d-hist" style="margin-top:10px">select a flow</div>
+    </section>
+  </div>
+
+  <!-- Flows -->
+  <div class="tab" id="tab-flows">
+    <section class="card">
+      <h2>Test flows</h2>
+      <div id="flow-list"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="act" id="flow-add">+ Add flow</button>
+        <button class="act ghost" id="flow-apply">Apply (config.load)</button>
+      </div>
+      <div id="flow-msg"></div>
+    </section>
+    <section class="card">
+      <h2>Editor</h2>
+      <div id="flow-edit" class="muted">Add or select a flow to edit.</div>
+    </section>
+    <details class="adv card"><summary>Generated test-config YAML (preview / advanced raw edit)</summary>
+      <p class="muted">This is what <b>Apply</b> sends. Edit here directly for features the
+        form doesn't cover (encap, modifiers, match masks); raw edits win on Apply-raw.</p>
+      <textarea id="flow-yaml"></textarea>
+      <button class="act ghost" id="flow-apply-raw">Apply raw YAML</button>
+    </details>
+  </div>
+
+  <!-- Forwards -->
+  <div class="tab" id="tab-forwards">
+    <section class="card">
+      <h2>Forward (store-and-forward) rules</h2>
+      <div id="fwd-list"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="act" id="fwd-add">+ Add rule</button>
+        <button class="act ghost" id="fwd-apply">Apply (config.load)</button>
+      </div>
+      <div id="fwd-msg"></div>
+    </section>
+    <section class="card"><h2>Editor</h2><div id="fwd-edit" class="muted">Add a rule to edit.</div></section>
+  </div>
+
+  <!-- Control -->
+  <div class="tab" id="tab-control">
+    <section class="card">
+      <h2>Test orchestration</h2>
+      <div class="row">
+        <button class="act" data-rpc="test.arm">Arm</button>
+        <button class="act" data-rpc="test.start">Start all</button>
+        <button class="act danger" data-rpc="test.stop">Stop all</button>
+        <button class="act ghost" data-rpc="stats.clear">Clear stats</button>
+      </div>
+      <div id="ctl-msg"></div>
+    </section>
+    <section class="card">
+      <h2>Per-flow start / stop</h2>
+      <div id="ctl-flows">…</div>
+    </section>
+  </div>
+
+  <!-- Environment -->
+  <div class="tab" id="tab-env">
+    <section class="card">
+      <h2>Environment config (rarely changed)</h2>
+      <p class="muted">The daemon's <code>-e</code> file (system / cards / logical_interfaces /
+        secret). Topology changes (cards / logical interfaces) need a daemon restart.
+        The <code>secret</code> value is shown redacted.</p>
+      <div class="row"><button class="act ghost" id="env-load">Load current</button>
+        <button class="act" id="env-save">Save</button></div>
+      <div id="env-msg"></div>
+      <textarea id="env-yaml" style="min-height:360px;margin-top:10px"></textarea>
+    </section>
+  </div>
+</main>
+<script>
+"use strict";
+const $ = (s, r=document) => r.querySelector(s);
+const $$ = (s, r=document) => [...r.querySelectorAll(s)];
+const el = (t, props={}, kids=[]) => {
+  const e = document.createElement(t);
+  for (const [k,v] of Object.entries(props)) {
+    if (k === "class") e.className = v;
+    else if (k === "text") e.textContent = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  for (const k of [].concat(kids)) e.append(k);
+  return e;
+};
+
+/* ---- transport ---- */
+$("#secret").value = localStorage.getItem("pw_secret") || "";
+$("#secret").addEventListener("change", e => localStorage.setItem("pw_secret", e.target.value));
+function setConn(ok, txt) {
+  const c = $("#conn"); c.className = ok ? "ok" : "err"; c.textContent = txt;
+}
+async function rpc(obj) {
+  const s = $("#secret").value;
+  const body = s ? { ...obj, secret: s } : obj;
+  const r = await fetch("/api/rpc", { method:"POST",
+    headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body) });
+  const j = await r.json();
+  if (j && j.error === "unauthorized") { setConn(false, "unauthorized"); }
+  else setConn(true, "connected");
+  return j;
+}
+function showMsg(id, kind, text) {
+  const m = $(id); m.className = "msg " + kind; m.textContent = text;
+}
+
+/* ---- tabs ---- */
+$$("nav button").forEach(b => b.addEventListener("click", () => {
+  $$("nav button").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  $$(".tab").forEach(t => t.classList.remove("active"));
+  $("#tab-" + b.dataset.tab).classList.add("active");
+  if (b.dataset.tab === "control") renderCtlFlows();
+}));
+
+/* ---- YAML helpers (emit only; the daemon validates) ---- */
+const yq = v => (typeof v === "string") ? JSON.stringify(v) : String(v);
+function flowYaml(f) {
+  const L = [];
+  L.push(`  - id: ${f.id}`);
+  if (f.name) L.push(`    name: ${yq(f.name)}`);
+  L.push(`    tx_global_port: ${f.tx}`);
+  L.push(`    rx_global_port: ${f.rx}`);
+  L.push(`    l2:`);
+  L.push(`      src_mac: ${yq(f.src_mac)}`);
+  L.push(`      dst_mac: ${yq(f.dst_mac)}`);
+  if (f.vlan !== "" && f.vlan != null) L.push(`      vlan: ${f.vlan}`);
+  if (f.l3 === "ipv6") {
+    L.push(`    ipv6:`);
+    L.push(`      src: ${yq(f.ip_src)}`); L.push(`      dst: ${yq(f.ip_dst)}`);
+    if (f.ttl) L.push(`      hop_limit: ${f.ttl}`);
+  } else {
+    L.push(`    ipv4:`);
+    L.push(`      src: ${yq(f.ip_src)}`); L.push(`      dst: ${yq(f.ip_dst)}`);
+    if (f.ttl) L.push(`      ttl: ${f.ttl}`);
+  }
+  L.push(`    ${f.l4}:`);
+  L.push(`      src_port: ${f.sport}`); L.push(`      dst_port: ${f.dport}`);
+  if (f.l4 === "tcp" && f.tcp_flags) L.push(`      flags: ${f.tcp_flags}`);
+  L.push(`    traffic:`);
+  L.push(`      frame_len: ${f.frame_len}`);
+  L.push(`      rate_bps: ${f.rate_bps}`);
+  L.push(`      payload: ${yq(f.payload)}`);
+  L.push(`      insert_sequence: ${!!f.seq}`);
+  L.push(`      insert_timestamp: ${!!f.ts}`);
+  L.push(`    measurements:`);
+  L.push(`      loss: ${!!f.m_loss}`);
+  L.push(`      latency: ${!!f.m_lat}`);
+  L.push(`      jitter: ${!!f.m_jit}`);
+  if (f.classify && f.classify !== "map") L.push(`    classify: ${yq(f.classify)}`);
+  if (f.background) L.push(`    background: true`);
+  return L.join("\n");
+}
+function fwdYaml(r) {
+  const L = [`  - ingress_port: ${r.ingress}`, `    egress_port: ${r.egress}`];
+  if (r.name) L.push(`    name: ${yq(r.name)}`);
+  if (r.priority !== "" && r.priority != null) L.push(`    priority: ${r.priority}`);
+  for (const [k,key] of [["ethertype","ethertype"],["ip_proto","ip_proto"],
+                          ["udp_dst","udp_dst"],["vlan","vlan"]])
+    if (r[k] !== "" && r[k] != null) L.push(`    ${key}: ${r[k]}`);
+  for (const k of ["ipv6_dst","ipv6_src"]) if (r[k]) L.push(`    ${k}: ${yq(r[k])}`);
+  return L.join("\n");
+}
+function buildTestYaml() {
+  let out = "";
+  if (flows.length) out += "flows:\n" + flows.map(flowYaml).join("\n") + "\n";
+  if (fwds.length)  out += "forwards:\n" + fwds.map(fwdYaml).join("\n") + "\n";
+  return out || "flows: []\n";
+}
+
+/* ---- Flows model + editor ---- */
+let flows = [];
+let fwds = [];
+let selFlow = null;
+const newFlow = () => ({
+  id: (flows.reduce((m,f)=>Math.max(m,f.id),0) || 0) + 1, name:"",
+  tx:0, rx:1, src_mac:"02:a5:02:00:00:01", dst_mac:"02:a5:02:00:00:02", vlan:"",
+  l3:"ipv4", ip_src:"192.0.2.1", ip_dst:"192.0.2.2", ttl:64,
+  l4:"udp", sport:49152, dport:50001, tcp_flags:"",
+  frame_len:512, rate_bps:1000000000, payload:"increment", seq:true, ts:true,
+  m_loss:true, m_lat:true, m_jit:true, classify:"map", background:false });
+
+function renderFlowList() {
+  const box = $("#flow-list");
+  box.innerHTML = "";
+  if (!flows.length) { box.append(el("div",{class:"muted",text:"No flows. Add one."})); return; }
+  const t = el("table"); t.append(el("tr",{},[
+    el("th",{text:"id"}),el("th",{text:"name"}),el("th",{text:"tx→rx"}),
+    el("th",{text:"L3/L4"}),el("th",{text:"rate"}),el("th",{text:""})]));
+  flows.forEach((f,i) => {
+    t.append(el("tr",{},[
+      el("td",{text:f.id}), el("td",{text:f.name||"—"}),
+      el("td",{text:`${f.tx}→${f.rx}`}), el("td",{text:`${f.l3}/${f.l4}`}),
+      el("td",{text:f.rate_bps}),
+      el("td",{},[
+        el("button",{class:"ghost",text:"edit",onclick:()=>{selFlow=i;renderFlowEdit();}}),
+        " ",
+        el("button",{class:"danger",text:"del",onclick:()=>{flows.splice(i,1);selFlow=null;refreshFlows();}})
+      ])]));
+  });
+  box.append(t);
+}
+function field(label, obj, key, type="text", opts=null) {
+  const id = "fe_"+key;
+  let input;
+  if (type === "select") {
+    input = el("select",{id});
+    opts.forEach(o => input.append(el("option",{value:o,text:o,...(obj[key]==o?{selected:"1"}:{})})));
+  } else if (type === "checkbox") {
+    input = el("input",{type:"checkbox",id}); input.checked = !!obj[key];
+  } else {
+    input = el("input",{type,id,value:obj[key]});
+  }
+  input.addEventListener("change", e => {
+    let v = type==="checkbox" ? e.target.checked : e.target.value;
+    if (type==="number") v = v===""?"":Number(v);
+    obj[key] = v; refreshFlows(false);
+  });
+  if (type === "checkbox") return el("div",{class:"chk"},[input, el("span",{text:label})]);
+  return el("div",{},[el("label",{text:label}), input]);
+}
+function renderFlowEdit() {
+  const box = $("#flow-edit");
+  box.innerHTML = "";
+  if (selFlow == null || !flows[selFlow]) { box.className="muted"; box.textContent="Add or select a flow to edit."; return; }
+  box.className = "";
+  const f = flows[selFlow];
+  box.append(el("div",{class:"grid"},[
+    field("id (int)",f,"id","number"), field("name",f,"name"),
+    field("tx port",f,"tx","number"), field("rx port",f,"rx","number"),
+    field("src MAC",f,"src_mac"), field("dst MAC",f,"dst_mac"),
+    field("vlan (blank=none)",f,"vlan","number"),
+    field("L3",f,"l3","select",["ipv4","ipv6"]),
+    field("ip src",f,"ip_src"), field("ip dst",f,"ip_dst"),
+    field("ttl / hop_limit",f,"ttl","number"),
+    field("L4",f,"l4","select",["udp","tcp"]),
+    field("src port",f,"sport","number"), field("dst port",f,"dport","number"),
+    field("tcp flags (hex, tcp only)",f,"tcp_flags"),
+    field("frame_len",f,"frame_len","number"), field("rate_bps",f,"rate_bps","number"),
+    field("payload",f,"payload","select",["zero","increment","prbs","random"]),
+    field("classify",f,"classify","select",["map","header"]),
+  ]));
+  box.append(el("div",{class:"row",style:"margin-top:8px"},[
+    field("insert_sequence",f,"seq","checkbox"), field("insert_timestamp",f,"ts","checkbox"),
+    field("meas loss",f,"m_loss","checkbox"), field("meas latency",f,"m_lat","checkbox"),
+    field("meas jitter",f,"m_jit","checkbox"), field("background (TX-only)",f,"background","checkbox"),
+  ]));
+}
+function refreshFlows(reEdit=true) {
+  renderFlowList();
+  if (reEdit) renderFlowEdit();
+  $("#flow-yaml").value = buildTestYaml();
+}
+$("#flow-add").addEventListener("click", () => { flows.push(newFlow()); selFlow=flows.length-1; refreshFlows(); });
+$("#flow-apply").addEventListener("click", async () => {
+  const yaml = buildTestYaml();
+  $("#flow-yaml").value = yaml;
+  const r = await rpc({ rpc:"config.load", yaml });
+  if (r.ok) showMsg("#flow-msg","ok",`Loaded: ${r.n_flows} flows, ${r.n_classifier_rows} classifier rows`);
+  else showMsg("#flow-msg","err", r.error || JSON.stringify(r));
+});
+$("#flow-apply-raw").addEventListener("click", async () => {
+  const r = await rpc({ rpc:"config.load", yaml: $("#flow-yaml").value });
+  if (r.ok) showMsg("#flow-msg","ok",`Loaded (raw): ${r.n_flows} flows, ${r.n_classifier_rows} classifier rows`);
+  else showMsg("#flow-msg","err", r.error || JSON.stringify(r));
+});
+
+/* ---- Forwards editor ---- */
+let selFwd = null;
+const newFwd = () => ({ name:"", ingress:0, egress:1, priority:40,
+  ethertype:"", ip_proto:"", udp_dst:"", vlan:"", ipv6_dst:"", ipv6_src:"" });
+function renderFwdList() {
+  const box = $("#fwd-list"); box.innerHTML="";
+  if (!fwds.length) { box.append(el("div",{class:"muted",text:"No rules."})); return; }
+  const t = el("table"); t.append(el("tr",{},[el("th",{text:"name"}),el("th",{text:"in→out"}),
+    el("th",{text:"prio"}),el("th",{text:""})]));
+  fwds.forEach((r,i)=>t.append(el("tr",{},[el("td",{text:r.name||"—"}),
+    el("td",{text:`${r.ingress}→${r.egress}`}),el("td",{text:r.priority}),
+    el("td",{},[el("button",{class:"ghost",text:"edit",onclick:()=>{selFwd=i;renderFwdEdit();}})," ",
+      el("button",{class:"danger",text:"del",onclick:()=>{fwds.splice(i,1);selFwd=null;renderFwdList();renderFwdEdit();$("#flow-yaml").value=buildTestYaml();}})])])));
+  box.append(t);
+}
+function renderFwdEdit() {
+  const box = $("#fwd-edit"); box.innerHTML="";
+  if (selFwd==null || !fwds[selFwd]) { box.className="muted"; box.textContent="Add a rule to edit."; return; }
+  box.className="";
+  const r = fwds[selFwd];
+  const fld = (label,key,type="text") => {
+    const inp = el("input",{type,value:r[key]});
+    inp.addEventListener("change",e=>{ let v=e.target.value; if(type==="number")v=v===""?"":Number(v); r[key]=v; renderFwdList(); $("#flow-yaml").value=buildTestYaml(); });
+    return el("div",{},[el("label",{text:label}),inp]);
+  };
+  box.append(el("div",{class:"grid"},[
+    fld("name","name"), fld("ingress_port","ingress","number"), fld("egress_port","egress","number"),
+    fld("priority","priority","number"), fld("ethertype (hex/dec)","ethertype"),
+    fld("ip_proto","ip_proto","number"), fld("udp_dst","udp_dst","number"),
+    fld("vlan","vlan","number"), fld("ipv6_dst (addr[/prefix])","ipv6_dst"),
+    fld("ipv6_src (addr[/prefix])","ipv6_src") ]));
+}
+$("#fwd-add").addEventListener("click",()=>{ fwds.push(newFwd()); selFwd=fwds.length-1; renderFwdList(); renderFwdEdit(); $("#flow-yaml").value=buildTestYaml(); });
+$("#fwd-apply").addEventListener("click", async () => {
+  const r = await rpc({ rpc:"config.load", yaml: buildTestYaml() });
+  if (r.ok) showMsg("#fwd-msg","ok",`Loaded: ${r.n_flows} flows, ${r.n_classifier_rows} classifier rows`);
+  else showMsg("#fwd-msg","err", r.error || JSON.stringify(r));
+});
+
+/* ---- Control ---- */
+$$("[data-rpc]").forEach(b => b.addEventListener("click", async () => {
+  const r = await rpc({ rpc: b.dataset.rpc });
+  showMsg("#ctl-msg", r.error ? "err":"ok", JSON.stringify(r));
+}));
+async function renderCtlFlows() {
+  const box = $("#ctl-flows"); box.textContent="…";
+  const r = await rpc({ rpc:"flows" });
+  box.innerHTML="";
+  const list = (r && r.flows) || [];
+  if (!list.length) { box.append(el("div",{class:"muted",text:"No flows programmed. Apply a config first."})); return; }
+  const t = el("table"); t.append(el("tr",{},[el("th",{text:"id"}),el("th",{text:"name"}),
+    el("th",{text:"tx→rx"}),el("th",{text:""})]));
+  list.forEach(f => t.append(el("tr",{},[el("td",{text:f.id}),el("td",{text:f.name||"—"}),
+    el("td",{text:`${f.tx_global_port}→${f.rx_global_port}`}),
+    el("td",{},[
+      el("button",{class:"ghost",text:"start",onclick:async()=>{await rpc({rpc:"flow.start",id:f.id});}})," ",
+      el("button",{class:"danger",text:"stop",onclick:async()=>{await rpc({rpc:"flow.stop",id:f.id});}})])])));
+  box.append(t);
+}
+
+/* ---- Environment ---- */
+$("#env-load").addEventListener("click", async () => {
+  const r = await rpc({ rpc:"config.get_raw" });
+  if (r.yaml != null) { $("#env-yaml").value = r.yaml;
+    showMsg("#env-msg","ok", `${r.path}${r.secret_set?" (secret set, redacted)":""}`); }
+  else showMsg("#env-msg","err", r.error || JSON.stringify(r));
+});
+$("#env-save").addEventListener("click", async () => {
+  const r = await rpc({ rpc:"config.save", yaml: $("#env-yaml").value });
+  if (r.ok) showMsg("#env-msg", r.restart_required?"warn":"ok",
+    r.restart_required ? "Saved. Topology changed → restart packetwyrmd to apply."
+                       : "Saved to " + r.path);
+  else showMsg("#env-msg","err", r.error || JSON.stringify(r));
+});
+
+/* ---- Dashboard polling ---- */
+function tableFrom(rows, cols) {
+  const t = el("table");
+  t.append(el("tr",{}, cols.map(c => el("th",{class:c.num?"num":"",text:c.h}))));
+  rows.forEach(row => t.append(el("tr",{}, cols.map(c => {
+    const v = c.get(row);
+    return el("td",{class:c.num?"num":"", text: v==null?"—":String(v)});
+  }))));
+  return t;
+}
+function setBox(id, node) { const b=$(id); b.innerHTML=""; b.append(node); }
+async function poll() {
+  try {
+    const [cards, ports, sfp, fstats] = await Promise.all([
+      rpc({rpc:"cards"}), rpc({rpc:"ports"}), rpc({rpc:"sfp.info"}), rpc({rpc:"flow.stats"})]);
+    if (cards.cards) setBox("#d-cards", tableFrom(cards.cards, [
+      {h:"id",get:r=>r.id,num:1},{h:"name",get:r=>r.name},{h:"pci",get:r=>r.pci},
+      {h:"backend",get:r=>r.backend},{h:"open",get:r=>r.open}]));
+    if (ports.ports) setBox("#d-ports", tableFrom(ports.ports, [
+      {h:"name",get:r=>r.name},{h:"card",get:r=>r.card_id,num:1},
+      {h:"local",get:r=>r.local_port,num:1},{h:"global",get:r=>r.global_port,num:1}]));
+    if (sfp.sfp) setBox("#d-sfp", tableFrom(sfp.sfp, [
+      {h:"card",get:r=>r.card_id,num:1},{h:"port",get:r=>r.port,num:1},
+      {h:"present",get:r=>r.present},{h:"vendor",get:r=>r.vendor},{h:"part",get:r=>r.part},
+      {h:"temp°C",get:r=>r.temp_c,num:1},{h:"tx mW",get:r=>r.tx_power_mw,num:1},
+      {h:"rx mW",get:r=>r.rx_power_mw,num:1}]));
+    if (fstats.flows) {
+      setBox("#d-flowstats", tableFrom(fstats.flows, [
+        {h:"id",get:r=>r.id,num:1},{h:"tx frm",get:r=>r.tx_frames,num:1},
+        {h:"rx frm",get:r=>r.rx_frames,num:1},{h:"lost",get:r=>r.lost,num:1},
+        {h:"dup",get:r=>r.duplicate,num:1},{h:"reord",get:r=>r.out_of_order,num:1},
+        {h:"min ns",get:r=>r.min_latency,num:1},{h:"avg ns",get:r=>r.avg_latency,num:1},
+        {h:"max ns",get:r=>r.max_latency,num:1}]));
+      const sel = $("#hist-flow"); const cur = sel.value;
+      sel.innerHTML=""; fstats.flows.forEach(f => sel.append(el("option",{value:f.id,text:f.id})));
+      if (cur) sel.value = cur;
+    }
+  } catch (e) { setConn(false, "no connection"); }
+}
+async function renderHist() {
+  const id = $("#hist-flow").value;
+  if (!id) return;
+  const r = await rpc({ rpc:"flow.hist", id: Number(id) });
+  const box = $("#d-hist"); box.innerHTML="";
+  if (!r.buckets) { box.append(el("div",{class:"muted",text:r.error||"no data"})); return; }
+  const max = Math.max(1, ...r.buckets);
+  r.buckets.forEach((c,i) => {
+    if (c === 0 && i > 0 && i < r.buckets.length-1) return; // skip empty middle bins
+    const lo = i===0 ? 0 : (1 << (i-1));
+    box.append(el("div",{class:"barrow"},[
+      el("span",{class:"lbl",text:`≥${lo} ticks`}),
+      el("div",{class:"bar",style:`width:${(c/max*100).toFixed(1)}%`}),
+      el("span",{class:"cnt",text:c})]));
+  });
+}
+$("#hist-flow").addEventListener("change", renderHist);
+
+/* ---- boot ---- */
+flows = [newFlow()]; refreshFlows();
+renderFwdList(); renderFwdEdit();
+poll(); setInterval(poll, 1500);
+</script>
+</body>
+</html>

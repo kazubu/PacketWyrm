@@ -61,6 +61,16 @@ root for BAR0 mmap.
   requires it on every control-socket request (constant-time compare; see
   `rpc-protocol.md`). Read permission on the environment config file is thus the
   access gate. No secret configured &rarr; auth off.
+- **Environment file editing:** `config.get_raw` returns the `-e` file text
+  (secret redacted) and `config.save` writes a validated full config back to
+  that path atomically. These back the Web GUI's Environment tab; see
+  `rpc-protocol.md`.
+- **Web GUI / remote access is a separate process.** `packetwyrmd` itself only
+  listens on the Unix control socket (plus the optional Prometheus port). The
+  Web GUI and `pktwyrm --host` are served by `packetwyrm-proxyd`, a stateless
+  TLS-terminating gateway that relays `POST /api/rpc` onto this socket. Keeping
+  it out-of-process means TLS/HTTP work never blocks the daemon's
+  control/servo loop. See `web-gui.md`.
 - Builds:
   - logical interface map (`logical_if_id` &harr; TAP fd &harr;
     `(card_id, local_port_id, vlan)`),
@@ -216,6 +226,8 @@ Initial RPCs:
 | `map.show`           | back `pktwyrm map`                            |
 | `link.show`          | per-port link / SFP / PCS state               |
 | `config.load`        | load + validate + activate a YAML config      |
+| `config.get_raw`     | read the env config file (secret redacted)    |
+| `config.save`        | validate + atomically write the env config    |
 | `flow.list`          | global flow table snapshot                    |
 | `flow.start`/`stop`  | per-flow lifecycle                            |
 | `test.arm/start/stop/snapshot` | tester-wide lifecycle               |

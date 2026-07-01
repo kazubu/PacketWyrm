@@ -9,6 +9,24 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Web GUI + remote access via `packetwyrm-proxyd`.** A new separate gateway
+    process terminates HTTPS, serves an embedded single-page Web GUI (`GET /`),
+    and relays `POST /api/rpc` verbatim onto the daemon's Unix control socket.
+    It is a stateless relay: it shares no state with `packetwyrmd` and holds no
+    secret (the client's `secret` is forwarded and the daemon stays the sole
+    auth authority), so TLS/HTTP work never blocks the daemon's control/servo
+    loop. TLS uses an auto-generated in-memory self-signed cert by default
+    (fingerprint printed) or `--tls-cert/--tls-key`; `--no-tls` for
+    localhost/tunnel. It refuses a non-loopback bind when the daemon has no
+    secret (unless `--insecure-no-auth`), and ships an unprivileged systemd
+    unit. The GUI covers a live dashboard (cards/ports/SFP/flow stats +
+    latency histogram), point-and-click flow/forward editors that emit config
+    YAML and apply it via `config.load`, test/flow control, and an environment
+    editor. New daemon RPCs `config.get_raw` (env file text, secret redacted)
+    and `config.save` (validate + atomic write of the env file, reports
+    `restart_required`). `pktwyrm --host HOST[:PORT]` sends every RPC through
+    the gateway over HTTPS (default port 8443); `pktwyrm rpc` now injects the
+    secret too. See `docs/design/web-gui.md`.
   - **Environment/test config split + control-socket secret.** The config now
     divides into an environment part (rarely changed: `system`, `cards`,
     `logical_interfaces`, and a new `secret`) and a test part (changed often:

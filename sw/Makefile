@@ -24,6 +24,8 @@ YAML_CFLAGS := $(shell $(PKG_CONFIG) --cflags yaml-0.1)
 YAML_LIBS   := $(shell $(PKG_CONFIG) --libs yaml-0.1)
 JSON_CFLAGS := $(shell $(PKG_CONFIG) --cflags json-c)
 JSON_LIBS   := $(shell $(PKG_CONFIG) --libs json-c)
+SSL_CFLAGS  := $(shell $(PKG_CONFIG) --cflags openssl)
+SSL_LIBS    := $(shell $(PKG_CONFIG) --libs openssl)
 
 EXTRA_CFLAGS := $(YAML_CFLAGS) $(JSON_CFLAGS)
 EXTRA_LIBS   := $(YAML_LIBS) $(JSON_LIBS) -lpthread
@@ -45,13 +47,18 @@ DAEMON_BIN := $(BUILD_DIR)/packetwyrmd
 CLI_SRC := pktwyrm/src/main.c
 CLI_BIN := $(BUILD_DIR)/pktwyrm
 
+PROXYD_SRC   := packetwyrm-proxyd/src/main.c
+PROXYD_BIN   := $(BUILD_DIR)/packetwyrm-proxyd
+PROXYD_ASSET := packetwyrm-proxyd/assets/index.html
+PROXYD_ASSET_H := $(BUILD_DIR)/proxyd_assets.h
+
 TEST_SRC := tests/unit/test_main.c
 TEST_BIN := $(BUILD_DIR)/test_unit
 
 INCLUDES := -I$(LIB_INC) $(EXTRA_CFLAGS)
 
-.PHONY: all clean test daemon cli lib
-all: lib daemon cli
+.PHONY: all clean test daemon cli lib proxyd
+all: lib daemon cli proxyd
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -78,7 +85,18 @@ $(DAEMON_BIN): $(DAEMON_SRC) $(LIBA) | $(BUILD_DIR)
 
 cli: $(CLI_BIN)
 $(CLI_BIN): $(CLI_SRC) $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(CLI_SRC) $(LIBA) $(EXTRA_LIBS) $(LDFLAGS) -lm
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(CLI_SRC) $(LIBA) $(EXTRA_LIBS) $(SSL_LIBS) $(LDFLAGS) -lm
+
+# packetwyrm-proxyd: HTTPS gateway for the Web GUI + remote CLI.
+# The GUI page is embedded via `xxd -i` (run inside the assets dir so the
+# generated symbols are the clean `index_html` / `index_html_len`).
+$(PROXYD_ASSET_H): $(PROXYD_ASSET) | $(BUILD_DIR)
+	cd $(dir $<) && xxd -i $(notdir $<) > $(CURDIR)/$@
+
+proxyd: $(PROXYD_BIN)
+$(PROXYD_BIN): $(PROXYD_SRC) $(PROXYD_ASSET_H) $(LIBA) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) -I$(BUILD_DIR) -o $@ $(PROXYD_SRC) $(LIBA) \
+	    $(EXTRA_LIBS) $(SSL_LIBS) $(LDFLAGS)
 
 test: $(TEST_BIN)
 	$(TEST_BIN)
@@ -167,8 +185,9 @@ $(BUILD_DIR)/pw_port_latency: tests/pw_port_latency.c $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_port_latency.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 .PHONY: e2e gen_bar_vectors pw_card_probe pw_sfp_test pw_phase3_loopback pw_phase3_forward pw_phase3_punt pw_phase3_inject pw_phase3_modgen pw_phase3_ipv6gen pw_dp_reset_recover pw_soak pw_gpio_sync pw_gpio_offset pw_xcard_latency pw_port_latency pw_sfp
-e2e: $(DAEMON_BIN) $(CLI_BIN)
+e2e: $(DAEMON_BIN) $(CLI_BIN) $(PROXYD_BIN)
 	tests/integration/e2e_smoke.sh
+	tests/integration/e2e_proxyd.sh
 
 clean:
 	rm -f $(LIB_OBJ)
@@ -197,6 +216,7 @@ INST    = $(INSTALL) -m
 install: all
 	$(INST_MK) $(DESTDIR)$(SBINDIR)
 	$(INST) 0755 $(BUILD_DIR)/packetwyrmd $(DESTDIR)$(SBINDIR)/packetwyrmd
+	$(INST) 0755 $(BUILD_DIR)/packetwyrm-proxyd $(DESTDIR)$(SBINDIR)/packetwyrm-proxyd
 	$(INST_MK) $(DESTDIR)$(BINDIR)
 	$(INST) 0755 $(BUILD_DIR)/pktwyrm     $(DESTDIR)$(BINDIR)/pktwyrm
 	$(INST_MK) $(DESTDIR)$(LIBDIR)
@@ -212,6 +232,8 @@ install: all
 	$(INST_MK) $(DESTDIR)$(UNITDIR)
 	$(INST) 0644 $(PKGROOT)/packaging/packetwyrmd.service \
 	    $(DESTDIR)$(UNITDIR)/packetwyrmd.service
+	$(INST) 0644 $(PKGROOT)/packaging/packetwyrm-proxyd.service \
+	    $(DESTDIR)$(UNITDIR)/packetwyrm-proxyd.service
 	$(INST_MK) $(DESTDIR)$(SYSUSERDIR)
 	$(INST) 0644 $(PKGROOT)/packaging/packetwyrm.sysusers \
 	    $(DESTDIR)$(SYSUSERDIR)/packetwyrm.conf
@@ -227,11 +249,13 @@ install: all
 
 uninstall:
 	rm -f $(DESTDIR)$(SBINDIR)/packetwyrmd
+	rm -f $(DESTDIR)$(SBINDIR)/packetwyrm-proxyd
 	rm -f $(DESTDIR)$(BINDIR)/pktwyrm
 	rm -f $(DESTDIR)$(LIBDIR)/libpacketwyrm.a
 	rm -f $(DESTDIR)$(LIBDIR)/libpacketwyrm.so
 	rm -rf $(DESTDIR)$(INCDIR)/packetwyrm
 	rm -f $(DESTDIR)$(UNITDIR)/packetwyrmd.service
+	rm -f $(DESTDIR)$(UNITDIR)/packetwyrm-proxyd.service
 	rm -f $(DESTDIR)$(SYSUSERDIR)/packetwyrm.conf
 	rm -f $(DESTDIR)$(TMPFILESDIR)/packetwyrm.conf
 	rm -f $(DESTDIR)$(UDEVDIR)/99-packetwyrm.rules

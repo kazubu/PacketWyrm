@@ -442,6 +442,11 @@ static pw_status set_flow_enable(struct pw_program *prog,
 
 static struct json_object *build_error(const char *msg);
 
+/* The environment config path (`-e`), captured in main(). The
+ * config.get_raw / config.save RPCs read and write this file. Writes
+ * target ONLY this path -- never an arbitrary client-supplied path. */
+static const char *g_env_path = "/etc/packetwyrm/packetwyrm.yaml";
+
 /* Attempt a live program swap from a YAML string. Returns a JSON
  * response describing success or the failure mode. On any failure
  * before the actual swap, the in-flight program stays live; the
@@ -581,6 +586,112 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
 fail:
     pw_program_free(new_prog);
     pw_config_free(new_cfg);
+    return resp;
+}
+
+/* config.get_raw: return the raw text of the environment config file so a
+ * GUI can edit it. The `secret:` value is redacted (a remote authed client
+ * shouldn't be able to read the secret back out over the wire). */
+static struct json_object *build_config_get_raw(void) {
+    FILE *f = fopen(g_env_path, "r");
+    struct json_object *resp = json_object_new_object();
+    json_object_object_add(resp, "path", json_object_new_string(g_env_path));
+    if (!f) {
+        json_object_object_add(resp, "yaml", json_object_new_string(""));
+        json_object_object_add(resp, "secret_set", json_object_new_boolean(false));
+        json_object_object_add(resp, "error",
+                               json_object_new_string("cannot open env config"));
+        return resp;
+    }
+    /* Read the whole file, redacting the value of any top-level `secret:`. */
+    char line[1024];
+    bool secret_set = false;
+    size_t cap = 4096, len = 0;
+    char *buf = malloc(cap);
+    if (buf) buf[0] = '\0';
+    while (buf && fgets(line, sizeof(line), f)) {
+        const char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (strncmp(p, "secret:", 7) == 0) {
+            secret_set = true;
+            /* keep indentation + key, redact the value */
+            size_t indent = (size_t)(p - line);
+            int n = snprintf(line, sizeof(line), "%.*ssecret: \"***\"\n",
+                             (int)indent, "                                ");
+            (void)n;
+        }
+        size_t ll = strlen(line);
+        if (len + ll + 1 > cap) {
+            cap = (len + ll + 1) * 2;
+            char *nb = realloc(buf, cap);
+            if (!nb) { free(buf); buf = NULL; break; }
+            buf = nb;
+        }
+        memcpy(buf + len, line, ll + 1);
+        len += ll;
+    }
+    fclose(f);
+    json_object_object_add(resp, "yaml",
+                           json_object_new_string(buf ? buf : ""));
+    json_object_object_add(resp, "secret_set",
+                           json_object_new_boolean(secret_set));
+    free(buf);
+    return resp;
+}
+
+/* config.save: validate a full environment YAML and, if it parses, write it
+ * atomically to g_env_path (tmp + rename). Reports restart_required=true when
+ * the new topology (cards / logical_ifs) differs from the running one, since
+ * config.load cannot swap topology live. Writes ONLY g_env_path. */
+static struct json_object *do_config_save(struct pw_config **cfg_pp,
+                                          struct json_object *req) {
+    struct json_object *jy;
+    if (!json_object_object_get_ex(req, "yaml", &jy) ||
+        json_object_get_type(jy) != json_type_string)
+        return build_error("missing yaml");
+    const char *yaml = json_object_get_string(jy);
+    size_t yaml_len  = strlen(yaml);
+
+    struct pw_config *newc = pw_config_new();
+    if (!newc) return build_error("out of memory");
+    struct pw_diag diag = {0};
+    pw_status r = pw_config_parse_string_ex(yaml, yaml_len, 0, newc, &diag);
+    if (r != PW_OK) {
+        char msg[600];
+        snprintf(msg, sizeof(msg), "parse: %s at %s: %s",
+                 pw_strerror(r), diag.path, diag.message);
+        pw_config_free(newc);
+        return build_error(msg);
+    }
+    if ((r = pw_config_validate(newc, &diag)) != PW_OK) {
+        char msg[600];
+        snprintf(msg, sizeof(msg), "validate: %s at %s: %s",
+                 pw_strerror(r), diag.path, diag.message);
+        pw_config_free(newc);
+        return build_error(msg);
+    }
+    bool restart_required = !same_topology(*cfg_pp, newc);
+    pw_config_free(newc);
+
+    /* Atomic write: <path>.tmp then rename. */
+    char tmp[1024];
+    if ((size_t)snprintf(tmp, sizeof(tmp), "%s.tmp", g_env_path) >= sizeof(tmp))
+        return build_error("env path too long");
+    FILE *f = fopen(tmp, "w");
+    if (!f) return build_error("cannot open env config for writing");
+    bool wok = fwrite(yaml, 1, yaml_len, f) == yaml_len;
+    if (fflush(f) != 0) wok = false;
+    fclose(f);
+    if (!wok || rename(tmp, g_env_path) != 0) {
+        unlink(tmp);
+        return build_error("write failed");
+    }
+
+    struct json_object *resp = json_object_new_object();
+    json_object_object_add(resp, "ok", json_object_new_boolean(true));
+    json_object_object_add(resp, "path", json_object_new_string(g_env_path));
+    json_object_object_add(resp, "restart_required",
+                           json_object_new_boolean(restart_required));
     return resp;
 }
 
@@ -1034,6 +1145,10 @@ static void handle_client(int cfd,
             json_object_object_add(resp, "failed",  json_object_new_int(failed));
         } else if (!strcmp(name, "config.load")) {
             resp = do_config_load(cfg_pp, prog_pp, cards, req);
+        } else if (!strcmp(name, "config.get_raw")) {
+            resp = build_config_get_raw();
+        } else if (!strcmp(name, "config.save")) {
+            resp = do_config_save(cfg_pp, req);
             /* refresh local snapshots after a successful swap */
             cfg  = *cfg_pp;
             prog = *prog_pp;
@@ -1261,7 +1376,7 @@ int main(int argc, char **argv) {
     int opt;
     while ((opt = getopt(argc, argv, "c:e:t:nvs:S:p:Fh")) != -1) {
         switch (opt) {
-        case 'c': case 'e': env_path = optarg; break;
+        case 'c': case 'e': env_path = optarg; g_env_path = optarg; break;
         case 't': test_path = optarg; break;
         case 'n': dry_run = true; break;
         case 'v': verbose = true; break;
