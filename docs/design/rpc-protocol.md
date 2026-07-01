@@ -105,12 +105,15 @@ Card-level counters from the host packet plane.
 Per-port wire counters from the MAC (`{ "rpc": "ports.stats" }`) &rarr;
 `{ "fpga_ts_lo", "fpga_ts_hi", "ports": [ { "card_id", "local_port",
 "global_port", "rx_frames", "rx_bytes", "tx_frames", "tx_bytes",
-"rx_fcs_error", "rx_bad_frame", "link_up_count", "block_lock_loss" } ] }`.
+"rx_fcs_error", "drops", "link_up_count", "block_lock_loss" } ] }`.
 This is authoritative per-port traffic (all frames, not just test flows). A
 client derives per-port **pps/bps** from the counter deltas divided by the
-`fpga_ts` delta (6.4 ns/tick — jitter-free vs. wall-clock); `rx_fcs_error` is
-one of the LED `err_sticky` inputs. Present only on backends with per-port
-counters.
+`fpga_ts` delta (6.4 ns/tick — jitter-free vs. wall-clock). `rx_fcs_error` and
+`drops` (the data-plane no-match/DROP counter) are the two **per-port inputs to
+the front-panel LED `err_sticky`** — together with per-flow `lost` (from
+`flow.stats`) they are the complete set of things that latch the LED, so a red
+LED can always be attributed to a counter. Present only on backends with
+per-port counters.
 
 ### `flow.stats`
 

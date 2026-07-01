@@ -691,12 +691,12 @@ function renderHealth(cards, stats, fstats, metaById, portstats) {
       if (s.tap_to_fpga_dropped>0) causes.push(`inject drops ${s.tap_to_fpga_dropped}`);
       if (s.punt_unknown_lif>0)    causes.push(`unknown-lif ${s.punt_unknown_lif}`);
     }
-    // per-port FCS / bad-frame errors on this card (an err_sticky input the
-    // per-flow counters don't show)
+    // per-port FCS / data-plane drops on this card — the two per-port inputs to
+    // err_sticky that the per-flow counters don't show.
     (portstats||[]).forEach(p => {
       if (p.card_id !== c.id) return;
       if (p.rx_fcs_error>0) causes.push(`port ${p.global_port} FCS ${p.rx_fcs_error}`);
-      if (p.rx_bad_frame>0) causes.push(`port ${p.global_port} bad ${p.rx_bad_frame}`);
+      if (p.drops>0)        causes.push(`port ${p.global_port} drops ${p.drops}`);
     });
     // per-flow errors on flows received by this card
     let active = false;
@@ -849,7 +849,7 @@ async function poll() {
         {h:"tx pps",get:r=>fmtRate(prates.get(`${r.card_id}:${r.local_port}`)?.txpps),num:1},
         {h:"tx bps",get:r=>fmtRate(prates.get(`${r.card_id}:${r.local_port}`)?.txbps),num:1},
         {h:"rx frm",get:r=>r.rx_frames,num:1},{h:"tx frm",get:r=>r.tx_frames,num:1},
-        {h:"FCS",get:r=>r.rx_fcs_error,num:1}]));
+        {h:"FCS",get:r=>r.rx_fcs_error,num:1},{h:"drops",get:r=>r.drops,num:1}]));
     } else if (ports.ports) setBox("#d-ports", tableFrom(ports.ports, [
       {h:"name",get:r=>r.name},{h:"card",get:r=>r.card_id,num:1},
       {h:"local",get:r=>r.local_port,num:1},{h:"global",get:r=>r.global_port,num:1}]));

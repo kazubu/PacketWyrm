@@ -1350,7 +1350,10 @@ static struct json_object *build_port_stats(const struct pw_config *cfg,
             json_object_object_add(o, "tx_frames", json_object_new_int64((int64_t)ps.tx_frames));
             json_object_object_add(o, "tx_bytes",  json_object_new_int64((int64_t)ps.tx_bytes));
             json_object_object_add(o, "rx_fcs_error", json_object_new_int64((int64_t)ps.rx_fcs_error));
-            json_object_object_add(o, "rx_bad_frame", json_object_new_int64((int64_t)ps.rx_bad_frame));
+            /* The snapshot's rx_bad_frame slot carries the data-plane DROP
+             * counter (no-match / explicit DROP action) -- expose it as `drops`.
+             * FCS + drops are the two per-port inputs to the LED err_sticky. */
+            json_object_object_add(o, "drops", json_object_new_int64((int64_t)ps.rx_bad_frame));
             json_object_object_add(o, "link_up_count", json_object_new_int64((int64_t)ps.link_up_count));
             json_object_object_add(o, "block_lock_loss", json_object_new_int64((int64_t)ps.block_lock_loss));
             json_object_array_add(arr, o);
