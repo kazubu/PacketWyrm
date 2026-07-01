@@ -248,6 +248,12 @@ check "config.get_test encap type"  '"type":"ipip"' "$gettest"
 # per-flow enable state (for the GUI Started/Stopped indicator + toggle)
 check "flows enabled field" '"enabled"' \
     "$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"flows","secret":"e2e-secret"}')"
+
+# rate_pps must round-trip as rate_mode/rate (not collapse to rate_bps:0, which
+# would make Load current -> Apply emit invalid YAML).
+curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"config.load","secret":"e2e-secret","yaml":"flows:\n  - id: 5\n    tx_global_port: 0\n    rx_global_port: 1\n    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n    ipv4: { src: \"192.0.2.1\", dst: \"192.0.2.2\" }\n    udp: { src_port: 1, dst_port: 2 }\n    traffic: { frame_len: 128, rate_pps: 148809 }\n    measurements: { loss: true }\n"}' >/dev/null
+check "config.get_test rate_pps round-trip" '"rate_mode":"pps"' \
+    "$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"config.get_test","secret":"e2e-secret"}')"
 kill "$PXP" 2>/dev/null || true; PXP=""
 
 # --- TLS gateway (loopback, self-signed) ---

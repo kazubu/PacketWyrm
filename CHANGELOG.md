@@ -9,6 +9,17 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Web GUI review round 3 (correctness).** `set_flow_enable` now writes a
+    copy to the backend and only updates the staged row (reported as `enabled`)
+    on write+commit success, so flows/flow.stats can't show a state the FPGA
+    doesn't have. `config.save` reports `restart_required` for *any* change (it
+    writes the file but never live-applies, so a secret/system change needs a
+    restart too — not just topology) plus a separate `topology_change` bool;
+    the GUI message reflects both. `config.get_test` preserves a flow's rate
+    mode (`rate_mode`+`rate`, bps or pps) so Load current → Apply round-trips a
+    rate_pps flow instead of emitting invalid `rate_bps: 0`. GUI: latency cells
+    show "—" for flows without valid latency (no NaN), and the histogram bucket
+    bounds use `2**i` (no 32-bit `<<` overflow past bucket 31).
   - **Web GUI dashboard depth + hardening (review round).** Dashboard gained a
     Versions panel (daemon / proxyd / per-card FPGA device/version/build/git via
     new `cards` fields + `GET /proxyd/version`), a derived Health/LED panel per

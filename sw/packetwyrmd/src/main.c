@@ -429,14 +429,19 @@ static pw_status set_flow_enable(struct pw_program *prog,
     if (find_tx_row(prog, global_flow_id, &ci, &row) < 0) return PW_E_INVAL;
     if (!cards[ci].open) return PW_E_NO_CARD;
     struct pwfpga_flow_config *fc = &prog->per_card[ci].flow_rows[row];
-    fc->enable    = enable ? 1 : 0;
-    fc->tx_enable = enable ? 1 : 0;
+    /* Write a COPY to the backend first; only update the staged row (which
+     * flows/flow.stats report as `enabled`) after the write+commit succeed, so
+     * the reported state can't diverge from the FPGA on a failed write. */
+    struct pwfpga_flow_config tmp = *fc;
+    tmp.enable    = enable ? 1 : 0;
+    tmp.tx_enable = enable ? 1 : 0;
     const struct pw_card_backend *b = &cards[ci].backend;
     pw_status s = b->ops->flow_write
-        ? b->ops->flow_write(b->ctx, row, fc)
+        ? b->ops->flow_write(b->ctx, row, &tmp)
         : PW_E_NOT_IMPLEMENTED;
     if (s == PW_OK && b->ops->flow_commit)
         s = b->ops->flow_commit(b->ctx);
+    if (s == PW_OK) *fc = tmp;
     return s;
 }
 
@@ -751,7 +756,7 @@ static struct json_object *do_config_save(struct pw_config **cfg_pp,
         pw_config_free(newc);
         return build_error(msg);
     }
-    bool restart_required = !same_topology(*cfg_pp, newc);
+    bool topology_change = !same_topology(*cfg_pp, newc);
 
     /* Secret preservation: if the submitted config's secret is the redaction
      * sentinel (the GUI round-tripped config.get_raw's "***"), rewrite it back
@@ -782,6 +787,28 @@ static struct json_object *do_config_save(struct pw_config **cfg_pp,
         out_len  = strlen(rewritten);
     }
     pw_config_free(newc);
+
+    /* config.save writes the file but does NOT live-apply it (unlike
+     * config.load's test merge): the running daemon keeps its loaded env until
+     * restart. So a restart is needed to apply ANY change -- secret, system,
+     * logical_ifs, cards -- not just topology. Decide by comparing the new text
+     * to the current file; a no-op save needs no restart. */
+    bool restart_required = true;
+    {
+        FILE *cf = fopen(g_env_path, "r");
+        if (cf) {
+            fseek(cf, 0, SEEK_END); long csz = ftell(cf); fseek(cf, 0, SEEK_SET);
+            if (csz >= 0 && (size_t)csz == out_len) {
+                char *cur = malloc(out_len + 1);
+                if (cur && fread(cur, 1, out_len, cf) == out_len) {
+                    cur[out_len] = '\0';
+                    if (memcmp(cur, out_yaml, out_len) == 0) restart_required = false;
+                }
+                free(cur);
+            }
+            fclose(cf);
+        }
+    }
 
     /* Atomic write: <path>.tmp then rename. The env file holds system.secret,
      * so its permissions matter: create the tmp file with the EXISTING file's
@@ -824,8 +851,14 @@ static struct json_object *do_config_save(struct pw_config **cfg_pp,
     struct json_object *resp = json_object_new_object();
     json_object_object_add(resp, "ok", json_object_new_boolean(true));
     json_object_object_add(resp, "path", json_object_new_string(g_env_path));
+    /* restart_required: the saved change won't take effect until packetwyrmd
+     * restarts (config.save is a file write, not a live reload).
+     * topology_change: additionally, cards/logical_ifs differ (a full restart,
+     * never a live swap, per config.load's constraint). */
     json_object_object_add(resp, "restart_required",
                            json_object_new_boolean(restart_required));
+    json_object_object_add(resp, "topology_change",
+                           json_object_new_boolean(topology_change));
     return resp;
 }
 
@@ -919,8 +952,15 @@ static struct json_object *flow_to_form_json(const struct pw_flow *f) {
     json_object_object_add(o, "frame_len", json_object_new_int(
         f->traffic.frame_len_fixed_set ? f->traffic.frame_len_fixed
                                        : f->traffic.frame_len_min));
-    json_object_object_add(o, "rate_bps",
-        json_object_new_int64((int64_t)f->traffic.rate_bps));
+    /* rate: preserve the flow's rate mode so Load current -> Apply round-trips
+     * (emitting rate_bps for a rate_pps flow would produce invalid YAML). */
+    if (f->traffic.rate_pps) {
+        json_object_object_add(o, "rate_mode", json_object_new_string("pps"));
+        json_object_object_add(o, "rate", json_object_new_int64((int64_t)f->traffic.rate_pps));
+    } else {
+        json_object_object_add(o, "rate_mode", json_object_new_string("bps"));
+        json_object_object_add(o, "rate", json_object_new_int64((int64_t)f->traffic.rate_bps));
+    }
     const char *pm = f->traffic.payload_mode == 0 ? "zero" :
                      f->traffic.payload_mode == 2 ? "prbs" :
                      f->traffic.payload_mode == 3 ? "random" : "increment";
