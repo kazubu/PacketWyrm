@@ -19,8 +19,10 @@
 #include <unistd.h>
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <json-c/json.h>
 
 #include "packetwyrm/packetwyrm.h"
@@ -589,10 +591,32 @@ fail:
     return resp;
 }
 
+/* Replace every occurrence of `needle` in the malloc'd string `*ps` with
+ * `rep`, reallocating as needed. No-op if needle is empty. */
+static void str_replace_all(char **ps, const char *needle, const char *rep) {
+    if (!*ps || !needle || !needle[0]) return;
+    size_t nl = strlen(needle), rl = strlen(rep);
+    char *hit;
+    while ((hit = strstr(*ps, needle)) != NULL) {
+        size_t off = (size_t)(hit - *ps), tail = strlen(hit + nl);
+        char *nb = malloc(off + rl + tail + 1);
+        if (!nb) return;
+        memcpy(nb, *ps, off);
+        memcpy(nb + off, rep, rl);
+        memcpy(nb + off + rl, hit + nl, tail + 1);
+        free(*ps);
+        *ps = nb;
+    }
+}
+
 /* config.get_raw: return the raw text of the environment config file so a
- * GUI can edit it. The `secret:` value is redacted (a remote authed client
- * shouldn't be able to read the secret back out over the wire). */
-static struct json_object *build_config_get_raw(void) {
+ * GUI can edit it. The secret is redacted two ways so it can't be read back
+ * over the wire regardless of YAML form: (1) every occurrence of the running
+ * secret VALUE is replaced with "***" (covers `secret:`, `secret :`, and
+ * inline `system: { secret: ... }`); (2) a defensive line scan redacts the
+ * value after any `secret` key (covers an on-disk secret that differs from
+ * the loaded one, e.g. edited but not yet restarted). */
+static struct json_object *build_config_get_raw(const struct pw_config *cfg) {
     FILE *f = fopen(g_env_path, "r");
     struct json_object *resp = json_object_new_object();
     json_object_object_add(resp, "path", json_object_new_string(g_env_path));
@@ -603,22 +627,23 @@ static struct json_object *build_config_get_raw(void) {
                                json_object_new_string("cannot open env config"));
         return resp;
     }
-    /* Read the whole file, redacting the value of any top-level `secret:`. */
     char line[1024];
-    bool secret_set = false;
     size_t cap = 4096, len = 0;
     char *buf = malloc(cap);
     if (buf) buf[0] = '\0';
     while (buf && fgets(line, sizeof(line), f)) {
+        /* (2) line scan: leading ws, `secret`, optional ws, `:` -> redact value. */
         const char *p = line;
         while (*p == ' ' || *p == '\t') p++;
-        if (strncmp(p, "secret:", 7) == 0) {
-            secret_set = true;
-            /* keep indentation + key, redact the value */
-            size_t indent = (size_t)(p - line);
-            int n = snprintf(line, sizeof(line), "%.*ssecret: \"***\"\n",
-                             (int)indent, "                                ");
-            (void)n;
+        if (strncmp(p, "secret", 6) == 0) {
+            const char *q = p + 6;
+            while (*q == ' ' || *q == '\t') q++;
+            if (*q == ':') {
+                size_t indent = (size_t)(p - line);
+                snprintf(line, sizeof(line), "%.*ssecret: \"***\"\n",
+                         (int)(indent < 32 ? indent : 32),
+                         "                                ");
+            }
         }
         size_t ll = strlen(line);
         if (len + ll + 1 > cap) {
@@ -631,6 +656,11 @@ static struct json_object *build_config_get_raw(void) {
         len += ll;
     }
     fclose(f);
+
+    bool secret_set = cfg && cfg->system.secret[0] != '\0';
+    /* (1) value-based redaction using the authoritative loaded secret. */
+    if (secret_set) str_replace_all(&buf, cfg->system.secret, "***");
+
     json_object_object_add(resp, "yaml",
                            json_object_new_string(buf ? buf : ""));
     json_object_object_add(resp, "secret_set",
@@ -673,15 +703,37 @@ static struct json_object *do_config_save(struct pw_config **cfg_pp,
     bool restart_required = !same_topology(*cfg_pp, newc);
     pw_config_free(newc);
 
-    /* Atomic write: <path>.tmp then rename. */
+    /* Atomic write: <path>.tmp then rename. The env file holds system.secret,
+     * so its permissions matter: create the tmp file with the EXISTING file's
+     * mode + owner (default 0600 for a brand-new file) rather than relying on
+     * fopen()+umask, which would leave a world-readable 0644 secret. */
+    mode_t mode = 0600;
+    uid_t uid = (uid_t)-1; gid_t gid = (gid_t)-1;
+    struct stat st;
+    if (stat(g_env_path, &st) == 0) {
+        mode = st.st_mode & 07777;
+        uid = st.st_uid; gid = st.st_gid;
+    }
     char tmp[1024];
     if ((size_t)snprintf(tmp, sizeof(tmp), "%s.tmp", g_env_path) >= sizeof(tmp))
         return build_error("env path too long");
-    FILE *f = fopen(tmp, "w");
-    if (!f) return build_error("cannot open env config for writing");
-    bool wok = fwrite(yaml, 1, yaml_len, f) == yaml_len;
-    if (fflush(f) != 0) wok = false;
-    fclose(f);
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, mode);
+    if (fd < 0) return build_error("cannot open env config for writing");
+    /* Enforce mode + owner explicitly (open() mode is masked by umask; a
+     * preserved non-root owner needs an explicit fchown by the root daemon). */
+    (void)fchmod(fd, mode);
+    if (uid != (uid_t)-1 && fchown(fd, uid, gid) != 0) {
+        /* best-effort owner preservation; mode (fchmod) is the security-
+         * critical part and already applied */
+    }
+    bool wok = true;
+    for (size_t off = 0; off < yaml_len; ) {
+        ssize_t w = write(fd, yaml + off, yaml_len - off);
+        if (w <= 0) { wok = false; break; }
+        off += (size_t)w;
+    }
+    if (fsync(fd) != 0) wok = false;
+    close(fd);
     if (!wok || rename(tmp, g_env_path) != 0) {
         unlink(tmp);
         return build_error("write failed");
@@ -1146,7 +1198,7 @@ static void handle_client(int cfd,
         } else if (!strcmp(name, "config.load")) {
             resp = do_config_load(cfg_pp, prog_pp, cards, req);
         } else if (!strcmp(name, "config.get_raw")) {
-            resp = build_config_get_raw();
+            resp = build_config_get_raw(cfg);
         } else if (!strcmp(name, "config.save")) {
             resp = do_config_save(cfg_pp, req);
             /* refresh local snapshots after a successful swap */
