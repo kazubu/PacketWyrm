@@ -76,6 +76,15 @@ headers (those are authoritative; this map is intent).
 0x013c  gpio_sync_seq          R     edge sequence (matches across cards -- SW
                                      pairs equal seq to get the inter-card offset)
 0x0140  gpio_sync_status       R     [5:0] raw synchronised pad inputs (debug)
+0x0150  sfp_i2c                RW    Per-SFP I2C management (SW bit-bang,
+                                     open-drain). Write [3:0] = drive-low per
+                                     line (1=pull low, 0=release -> pull-up=1):
+                                     [0]SFP0 SCL [1]SFP0 SDA [2]SFP1 SCL
+                                     [3]SFP1 SDA. Read [3:0]=drive reg,
+                                     [19:16]=synchronised pad-in (same order).
+                                     Bit-bang I2C to read the module EEPROM:
+                                     0xA0 base ID @ i2c 0x50, 0xA2 DOM @ 0x51.
+                                     (A passive DAC answers 0xA0 but has no DOM.)
 0x0180  lat_correction[slot]   RW    PER-FLOW cross-card latency correction
  +slot*8                              window: slot i (= RX checker
  (LO) /+4 (HI)                        local_flow_id) at 0x0180 + i*8, signed

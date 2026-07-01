@@ -41,3 +41,23 @@ set_property -dict {LOC D9  IOSTANDARD LVCMOS33 PULLTYPE PULLDOWN} [get_ports {g
 # free-running pulse to the far card -- no setup/hold relationship either way.
 set_false_path -from [get_ports {gpio[*]}]
 set_false_path -to   [get_ports {gpio[*]}]
+
+# --- Per-SFP I2C management bus (SW bit-bang, open-drain). PHASE 3 ONLY. ------
+# One 2-wire bus per SFP cage, to read the module EEPROM (0xA0 base ID @ i2c
+# 0x50, 0xA2 DOM @ 0x51). Bidirectional (IOBUF in the board top); the FPGA only
+# drives low, PULLUP gives the idle-high (the board also has external pull-ups).
+# Kept out of the shared sfp.xdc because that file is read by the Phase 2 project
+# too, whose top has no sfp_scl/sfp_sda port (empty get_ports -> error there).
+#   signal       FPGA LOC   bank     SFP cage
+#   sfp_scl[0]   C13        BANK87   SFP_1
+#   sfp_sda[0]   C14        BANK87   SFP_1
+#   sfp_scl[1]   D10        BANK86   SFP_2
+#   sfp_sda[1]   D11        BANK86   SFP_2
+set_property -dict {LOC C13 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 12 PULLTYPE PULLUP} [get_ports {sfp_scl[0]}]
+set_property -dict {LOC C14 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 12 PULLTYPE PULLUP} [get_ports {sfp_sda[0]}]
+set_property -dict {LOC D10 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 12 PULLTYPE PULLUP} [get_ports {sfp_scl[1]}]
+set_property -dict {LOC D11 IOSTANDARD LVCMOS33 SLEW SLOW DRIVE 12 PULLTYPE PULLUP} [get_ports {sfp_sda[1]}]
+
+# Async, SW-timed bit-bang: pad inputs are 2FF-synced in the core; no setup/hold.
+set_false_path -from [get_ports {sfp_scl[*] sfp_sda[*]}]
+set_false_path -to   [get_ports {sfp_scl[*] sfp_sda[*]}]

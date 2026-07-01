@@ -301,6 +301,18 @@ pwfpga_top
 - Expose link state, block-lock, RX fault to `port[N]_status`.
 - Phase 1 deliverable: stable link over a DAC.
 
+### SFP I2C management (`REG_SFP_I2C`)
+
+- Per-cage open-drain 2-wire bus (SCL/SDA on C13/C14 for SFP0, D10/D11 for SFP1)
+  brought out through board-top IOBUFs. No hardware I2C controller: the CSR
+  exposes a drive-low bit + a synchronised pad-in bit per line, and software
+  bit-bangs the protocol (reads are on-demand and low-rate). Pad inputs are
+  2FF-synced into the CSR clock; the lines idle high via PULLUP.
+- Used to read the SFP module EEPROM — identifier / vendor / part / bit-rate
+  (0xA0 base ID) and, for DDM-capable optics, live DOM (temperature, Vcc, TX
+  bias, TX/RX optical power at 0xA2). SW: `libpacketwyrm/sfp.{c,h}` + the
+  `pw_sfp` tool. A passive DAC answers the ID page but has no optical DOM.
+
 ### rx_pipeline / parser
 
 The parser must reach into at least:

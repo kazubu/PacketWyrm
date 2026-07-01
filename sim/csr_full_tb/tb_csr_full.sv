@@ -52,6 +52,7 @@ module tb_csr_full;
 
     logic [63:0] ts;
     logic [31:0] gpio_sync_ctrl_w;
+    logic [3:0]  sfp_i2c_drive_w;
     logic                              lat_corr_wr_en_w;
     logic [$clog2(NUM_FLOWS)-1:0]      lat_corr_wr_slot_w;
     logic [63:0]                       lat_corr_wr_data_w;
@@ -180,6 +181,8 @@ module tb_csr_full;
         .gpio_sync_ts_i      (64'hCAFE_1234_5678_9ABC),
         .gpio_sync_seq_i     (32'd42),
         .gpio_sync_gpio_in_i (6'b101010),
+        .sfp_i2c_drive_low_o (sfp_i2c_drive_w),
+        .sfp_i2c_in_i        (4'b1010),          // pad readback pattern
         .lat_corr_wr_en_o    (lat_corr_wr_en_w),
         .lat_corr_wr_slot_o  (lat_corr_wr_slot_w),
         .lat_corr_wr_data_o  (lat_corr_wr_data_w),
@@ -515,6 +518,16 @@ module tb_csr_full;
             check_eq("gpio_sync seq",     v, 32'd42);
             axi_read (16'h0140, v);
             check_eq("gpio_sync status (pad in)", v, 32'h0000_002A);  // 6'b101010
+
+            // SFP I2C (0x0150): [3:0] drive-low reaches the module output; read
+            // returns the drive reg in [3:0] and the pad-in (4'b1010) in [19:16].
+            axi_write(16'h0150, 32'h0000_0006);       // drive SFP0 SDA + SFP1 SCL low
+            check_eq("sfp_i2c drive -> module", sfp_i2c_drive_w, 4'h6);
+            axi_read (16'h0150, v);
+            check_eq("sfp_i2c drive readback",  v[3:0],   4'h6);
+            check_eq("sfp_i2c pad-in readback",  v[19:16], 4'hA);   // 4'b1010
+            axi_write(16'h0150, 32'h0000_0000);       // release both buses
+            check_eq("sfp_i2c release -> module", sfp_i2c_drive_w, 4'h0);
 
             // Per-flow lat correction window (0x0180 + slot*8). LO stages, HI
             // commits {hi,shadow} as a one-cycle write pulse {slot,data} to the

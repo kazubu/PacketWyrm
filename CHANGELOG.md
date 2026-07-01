@@ -8,6 +8,17 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ## Unreleased
 
+### Added
+  - **SFP+ module identifier + DOM read (`pw_sfp`).** New per-SFP I2C management
+    bus (CSR `REG_SFP_I2C` 0x0150, open-drain SCL/SDA per cage via board-top
+    IOBUFs on C13/C14 and D10/D11) lets software bit-bang the module EEPROM. New
+    `libpacketwyrm/sfp.{c,h}` reads + decodes SFF-8024/8472: identifier, vendor,
+    part, revision, serial, date code, nominal bit rate (0xA0 @ i2c 0x50), and —
+    for DDM-capable optical modules — live DOM (temperature, Vcc, TX bias, TX/RX
+    optical power, 0xA2 @ 0x51). New `pw_sfp <bdf> [port|both] [raw]` tool prints
+    it (with dBm). A passive DAC reports the identifier but no DOM. Pad inputs are
+    2FF-synchronised + false-pathed; the I2C lines idle high via PULLUP.
+
 ### Fixed
   - **Deep-encap UDF classifier matching.** A UDF slice comparator reads inner
     byte `base_i(eff) + offset` out of the captured window, but the window was

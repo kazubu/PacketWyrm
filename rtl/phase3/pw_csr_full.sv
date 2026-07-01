@@ -77,6 +77,14 @@ module pw_csr_full #(
     input  wire [31:0]       gpio_sync_seq_i,
     input  wire [5:0]        gpio_sync_gpio_in_i,
 
+    // Per-SFP I2C management bus (SW bit-bang, open-drain). drive_low[i]=1 pulls
+    // the line low; =0 releases it (external pull-up -> 1). Lines:
+    //   [0] SFP0 SCL  [1] SFP0 SDA  [2] SFP1 SCL  [3] SFP1 SDA.
+    // in_i is the (synchronised) pad readback, same bit order. Used to read the
+    // SFP module EEPROM (0xA0 base ID @ i2c 0x50, 0xA2 DOM @ 0x51).
+    output wire [3:0]        sfp_i2c_drive_low_o,
+    input  wire [3:0]        sfp_i2c_in_i,
+
     // Per-flow cross-card latency correction: a committed 64-bit value + its
     // flow slot, pulsed to the data plane's correction table on each HI write.
     output reg                            lat_corr_wr_en_o,
@@ -227,6 +235,7 @@ module pw_csr_full #(
     localparam logic [15:0] REG_GPIO_SYNC_TS_HIGH = 16'h0138; // R : high half (latched on TS_LOW read)
     localparam logic [15:0] REG_GPIO_SYNC_SEQ     = 16'h013C; // R : edge sequence (matches across cards)
     localparam logic [15:0] REG_GPIO_SYNC_STATUS  = 16'h0140; // R : raw synchronised pad inputs (debug)
+    localparam logic [15:0] REG_SFP_I2C           = 16'h0150; // RW: [3:0] drive-low per SFP I2C line; R [19:16] pad in
     // Per-flow cross-card latency correction window: slot i at BASE + i*8 (LO,
     // signed [31:0]) / +4 (HI, [63:32]). Write LO then HI: LO stages a shadow,
     // HI commits {HI,shadow} as a single 64-bit write pulse to the data plane's
@@ -294,6 +303,7 @@ module pw_csr_full #(
     reg  [31:0]       timestamp_high_latched;
     reg  [31:0]       gpio_sync_ctrl_q;
     reg  [31:0]       gpio_sync_ts_high_latched;
+    reg  [3:0]        sfp_i2c_drive_low_q;    // SW-driven open-drain low enables
     // Per-flow lat correction: a LO write stages into this shadow; the matching
     // HI write commits {wdata_hi, shadow} as a single 64-bit pulse to the data
     // plane (atomic: the checker never sees a torn {old_hi,new_lo} value, which
@@ -305,6 +315,7 @@ module pw_csr_full #(
 
     assign global_control_o = global_control_q;
     assign gpio_sync_ctrl_o = gpio_sync_ctrl_q;
+    assign sfp_i2c_drive_low_o = sfp_i2c_drive_low_q;
 
     // Strobe to the windows when an AXI-Lite write transaction completes.
     logic              wr_en;
@@ -353,6 +364,7 @@ module pw_csr_full #(
             awaddr_q         <= '0;
             global_control_q <= '0;
             gpio_sync_ctrl_q <= '0;
+            sfp_i2c_drive_low_q <= '0;   // release both SFP I2C buses at reset
             lat_corr_lo_shadow  <= '0;
             lat_corr_wr_en_o    <= 1'b0;
             lat_corr_wr_slot_o  <= '0;
@@ -402,6 +414,7 @@ module pw_csr_full #(
                 case (awaddr_q)
                     REG_GLOBAL_CONTROL: global_control_q <= s_axi_wdata;
                     REG_GPIO_SYNC_CTRL: gpio_sync_ctrl_q <= s_axi_wdata;
+                    REG_SFP_I2C:        sfp_i2c_drive_low_q <= s_axi_wdata[3:0];
                     REG_ERROR_STATUS:   error_status_q   <= error_status_q & ~s_axi_wdata;
                     default: /* defer to windows */ ;
                 endcase
@@ -742,6 +755,7 @@ module pw_csr_full #(
                             REG_GPIO_SYNC_TS_HIGH: s_axi_rdata <= gpio_sync_ts_high_latched;
                             REG_GPIO_SYNC_SEQ:     s_axi_rdata <= gpio_sync_seq_i;
                             REG_GPIO_SYNC_STATUS:  s_axi_rdata <= {26'h0, gpio_sync_gpio_in_i};
+                            REG_SFP_I2C:           s_axi_rdata <= {12'h0, sfp_i2c_in_i, 12'h0, sfp_i2c_drive_low_q};
                             REG_ERROR_STATUS:   s_axi_rdata <= error_status_q;
                             default: begin
                                 s_axi_rdata <= 32'h0;

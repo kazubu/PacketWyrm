@@ -35,7 +35,9 @@ module pwfpga_top_phase3_board (
     output wire        led_hb,
     output wire [3:0]  led,
     output wire        sfp_led [2],
-    inout  wire [5:0]  gpio                 // J5 header: cross-card time-sync
+    inout  wire [5:0]  gpio,                // J5 header: cross-card time-sync
+    inout  wire        sfp_scl [2],         // per-SFP I2C clock (open-drain)
+    inout  wire        sfp_sda [2]          // per-SFP I2C data  (open-drain)
 );
     import pw_pkg::*;
     localparam int ADDR_W = 16;
@@ -278,7 +280,8 @@ module pwfpga_top_phase3_board (
         .spi_sck_o(spi_sck), .spi_cs_n_o(spi_cs_n), .spi_mosi_o(spi_mosi), .spi_miso_i(spi_miso),
         .icap_csib_o(icap_csib), .icap_rdwrb_o(icap_rdwrb), .icap_i_o(icap_i),
         .dp_soft_rst_o(dp_soft_rst_pulse),
-        .gpio_i(gpio_i), .gpio_o(gpio_o), .gpio_t(gpio_t)
+        .gpio_i(gpio_i), .gpio_o(gpio_o), .gpio_t(gpio_t),
+        .sfp_i2c_i(sfp_i2c_i), .sfp_i2c_o(sfp_i2c_o), .sfp_i2c_t(sfp_i2c_t)
     );
 
     // --- J5 GPIO bidirectional pads (cross-card time-sync) ----------------
@@ -292,6 +295,17 @@ module pwfpga_top_phase3_board (
             IOBUF u_iobuf (.I(gpio_o[gg]), .O(gpio_i[gg]), .T(gpio_t[gg]), .IO(gpio[gg]));
         end
     endgenerate
+
+    // --- Per-SFP I2C management pads (open-drain, SW bit-bang) -------------
+    // One independent 2-wire bus per SFP cage (SCL/SDA). The core drives only
+    // low (sfp_i2c_o=0) and releases via sfp_i2c_t (external board pull-ups give
+    // the idle-high). Line order: [0]SFP0 SCL [1]SFP0 SDA [2]SFP1 SCL [3]SFP1 SDA.
+    // Async inputs synchronised in the core; false_path in timing.xdc.
+    wire [3:0] sfp_i2c_i, sfp_i2c_o, sfp_i2c_t;
+    IOBUF u_sfp0_scl (.I(sfp_i2c_o[0]), .O(sfp_i2c_i[0]), .T(sfp_i2c_t[0]), .IO(sfp_scl[0]));
+    IOBUF u_sfp0_sda (.I(sfp_i2c_o[1]), .O(sfp_i2c_i[1]), .T(sfp_i2c_t[1]), .IO(sfp_sda[0]));
+    IOBUF u_sfp1_scl (.I(sfp_i2c_o[2]), .O(sfp_i2c_i[2]), .T(sfp_i2c_t[2]), .IO(sfp_scl[1]));
+    IOBUF u_sfp1_sda (.I(sfp_i2c_o[3]), .O(sfp_i2c_i[3]), .T(sfp_i2c_t[3]), .IO(sfp_sda[1]));
 
     // --- in-band reconfiguration via ICAPE3 -------------------------------
     // pw_icap_reboot streams IPROG here on the host's REBOOT magic write;

@@ -108,6 +108,8 @@ module tb_wire_vectors;
         .gpio_sync_ts_i      (64'h0),
         .gpio_sync_seq_i     (32'h0),
         .gpio_sync_gpio_in_i (6'h0),
+        .sfp_i2c_drive_low_o (),
+        .sfp_i2c_in_i        (4'hF),
         .lat_corr_wr_en_o    (),
         .lat_corr_wr_slot_o  (),
         .lat_corr_wr_data_o  (),
