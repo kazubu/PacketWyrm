@@ -304,9 +304,10 @@ Returns two views of the running test config:
   the raw editor. (`flows` may be non-empty even when `loaded:false` if flows
   came from a combined `-e` file.) IPv4 addresses are emitted dotted, IPv6
   compressed; IPv6 modifier masks as address literals; match IPv6 as prefix
-  lengths. Fixed-frame + rate_bps flows round-trip exactly; frame-range /
-  rate_pps flows are approximated in the form (the `yaml` view is authoritative
-  for those). Backs the Flows tab's **Load current** button.
+  lengths. Rate round-trips exactly (bps or pps, via `rate_mode`+`rate`). The
+  one form approximation is a **frame-length range** (`frame_len_min/max/step`):
+  the form carries a single `frame_len`, so it shows the min and the `yaml` view
+  is authoritative for the range. Backs the Flows tab's **Load current** button.
 
 ### `config.save`
 

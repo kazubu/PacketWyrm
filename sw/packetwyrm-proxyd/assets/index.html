@@ -67,6 +67,7 @@
   .led { font-size: 12px; white-space: nowrap; }
   .led.red { color: var(--err); }
   .led.grn { color: var(--ok); }
+  .led.amber { color: #eab308; }
   .led.off { color: var(--dim); }
 </style>
 </head>
@@ -641,10 +642,15 @@ async function pollVersions(cards) {
     {h:"component",get:r=>r.comp},{h:"version",get:r=>r.ver}]));
 }
 
+// Cards where this dashboard session has observed an error at least once. The
+// physical LED's err_sticky latches on ANY error since the last stats.clear;
+// we approximate that stickiness within the session (the live counters below
+// can read clean again after a transient, but the hardware LED stays red).
+let healthSeenErr = new Set();
 function renderHealth(cards, stats, fstats, metaById) {
   const box = $("#d-health"); box.innerHTML="";
   const t = el("table");
-  t.append(el("tr",{},["card","LED","causes"].map(h=>el("th",{text:h}))));
+  t.append(el("tr",{},["card","health","causes"].map(h=>el("th",{text:h}))));
   (cards||[]).forEach(c => {
     const causes = [];
     // per-card host-plane drops
@@ -664,16 +670,25 @@ function renderHealth(cards, stats, fstats, metaById) {
       if (f.out_of_order>0) causes.push(`flow ${f.id} reorder ${f.out_of_order}`);
     });
     const err = causes.length>0;
-    const led = !c.open ? el("span",{class:"led off",text:"● off (card closed)"})
-      : err ? el("span",{class:"led red",text:"● red (error)"})
-      : active ? el("span",{class:"led grn",text:"● green (traffic ok)"})
-      : el("span",{class:"led grn",text:"● green (idle)"});
+    if (err) healthSeenErr.add(c.id);
+    const sticky = !err && healthSeenErr.has(c.id);
+    let led, note;
+    if (!c.open) { led = el("span",{class:"led off",text:"● card closed"}); note = "—"; }
+    else if (err) { led = el("span",{class:"led red",text:"● error"}); note = causes.join(", "); }
+    else if (sticky) { led = el("span",{class:"led amber",text:"● clean now (error seen earlier)"});
+      note = "an error occurred earlier this session — the physical LED likely stays red until stats.clear"; }
+    else { led = el("span",{class:"led grn",text: active ? "● ok (traffic)" : "● ok (idle)"}); note = "—"; }
     t.append(el("tr",{},[el("td",{text:c.id}), el("td",{},[led]),
-      el("td",{class:err?"":"muted",text: err ? causes.join(", ") : "—"})]));
+      el("td",{class:(err||sticky)?"":"muted",text: note})]));
   });
   box.append(t);
   box.append(el("div",{class:"muted",style:"margin-top:6px",
-    text:"Derived from data-plane stats (mirrors the front-panel R/G LED: sticky error → red, traffic-clean → green)."}));
+    text:"Derived from live flow/host counters — NOT a readback of the physical R/G LED. "
+       + "The LED is a hardware-latched sticky indicator (err_sticky): it goes red on ANY "
+       + "lost/decode/FCS error since the last stats.clear — including brief transients at "
+       + "arm and per-port FCS errors not shown per-flow — and is not software-readable in "
+       + "the current bitstream. So the LED can be red while these counters read clean; "
+       + "run stats.clear (Control tab) to reset both."}));
 }
 
 // latency cell: "—" unless the flow reports valid latency with the field present
