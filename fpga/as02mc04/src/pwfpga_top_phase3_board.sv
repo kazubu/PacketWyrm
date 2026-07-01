@@ -284,7 +284,43 @@ module pwfpga_top_phase3_board (
         .dp_soft_rst_o(dp_soft_rst_pulse),
         .gpio_i(gpio_i), .gpio_o(gpio_o), .gpio_t(gpio_t),
         .sfp_i2c_i(sfp_i2c_i), .sfp_i2c_o(sfp_i2c_o), .sfp_i2c_t(sfp_i2c_t),
-        .status_err_o(status_err_dp), .status_activity_o(status_act_dp)
+        .status_err_o(status_err_dp), .status_activity_o(status_act_dp),
+        .sysmon_temp_i(sysmon_temp_w), .sysmon_vccint_i(sysmon_vccint_w),
+        .sysmon_vccaux_i(sysmon_vccaux_w)
+    );
+
+    // ---- On-chip SYSMON (die temperature + VCCINT/VCCAUX) --------------------
+    // pw_sysmon is a pure-logic DRP reader (same dp_clk domain as the CSR, so no
+    // CDC on the codes); the SYSMONE4 primitive lives here in the board top, per
+    // the STARTUPE3 / ICAPE3 pattern. SYSMONE4 powers up in default mode and
+    // continuously samples the on-chip sensors, so we only issue DRP reads.
+    wire [15:0] sysmon_temp_w, sysmon_vccint_w, sysmon_vccaux_w;
+    wire [7:0]  sm_daddr;
+    wire        sm_den, sm_dwe, sm_drdy;
+    wire [15:0] sm_di, sm_do;
+
+    pw_sysmon u_sysmon (
+        .clk(dp_clk), .rst_n(dp_aresetn),
+        .drp_daddr(sm_daddr), .drp_den(sm_den), .drp_dwe(sm_dwe),
+        .drp_di(sm_di), .drp_do(sm_do), .drp_drdy(sm_drdy),
+        .temp_o(sysmon_temp_w), .vccint_o(sysmon_vccint_w), .vccaux_o(sysmon_vccaux_w)
+    );
+
+    SYSMONE4 #(
+        .SIM_MONITOR_FILE("design.txt")
+    ) u_sysmone4 (
+        .DCLK(dp_clk),
+        .DADDR(sm_daddr), .DEN(sm_den), .DWE(sm_dwe), .DI(sm_di),
+        .DO(sm_do), .DRDY(sm_drdy),
+        .RESET(~dp_aresetn),
+        .CONVST(1'b0), .CONVSTCLK(1'b0),
+        .VP(1'b0), .VN(1'b0),
+        .VAUXP(16'b0), .VAUXN(16'b0),
+        .I2C_SCLK(1'b0), .I2C_SDA(1'b0),
+        // unused status outputs
+        .ALM(), .OT(), .BUSY(), .CHANNEL(), .EOC(), .EOS(),
+        .JTAGBUSY(), .JTAGLOCKED(), .JTAGMODIFIED(), .MUXADDR(),
+        .I2C_SCLK_TS(), .I2C_SDA_TS(), .SMBALERT_TS()
     );
 
     // --- J5 GPIO bidirectional pads (cross-card time-sync) ----------------

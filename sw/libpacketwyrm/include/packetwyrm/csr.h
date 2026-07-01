@@ -31,6 +31,11 @@ enum {
      * its bitstream from flash (PCIe drops; host must re-enumerate). */
     PWFPGA_REG_REBOOT               = 0x0120,
 
+    /* On-chip SYSMON (SYSMONE4) telemetry: raw DRP ADC codes (measurement in
+     * bits [15:4]). Convert with PWFPGA_SYSMON_TEMP_C / _SUPPLY_V below. */
+    PWFPGA_REG_SYSMON_TEMP          = 0x0124, /* [15:0] die temperature code   */
+    PWFPGA_REG_SYSMON_SUPPLY        = 0x0128, /* [15:0] VCCINT, [31:16] VCCAUX */
+
     /* J5 cross-card time-sync (pw_gpio_sync). CTRL bits: [0] enable,
      * [1] master, [2] repeat, [6:4] sync-in pin, [10:8] sync-out pin,
      * [19:16] period_log2 (master pulse every 2^N dp_clk cycles; N<5 is clamped
@@ -200,14 +205,28 @@ enum {
     PWFPGA_GCTL_RESET_COUNTERS  = 1u << 2,
 };
 
-/* global_status bits */
+/* global_status bits. ERROR is the live err_sticky that drives the front-panel
+ * R/G LED (set on any lost/decode error since the last stats-clear); ACTIVITY
+ * is recent data-plane traffic. ARMED/RUNNING/DEGRADED are reserved (0). */
 enum {
     PWFPGA_GSTAT_READY    = 1u << 0,
     PWFPGA_GSTAT_ARMED    = 1u << 1,
     PWFPGA_GSTAT_RUNNING  = 1u << 2,
-    PWFPGA_GSTAT_ERROR    = 1u << 3,
+    PWFPGA_GSTAT_ERROR    = 1u << 3,   /* err_sticky (LED red) */
     PWFPGA_GSTAT_DEGRADED = 1u << 4,
+    PWFPGA_GSTAT_ACTIVITY = 1u << 5,   /* traffic seen recently */
 };
+
+/* SYSMON conversions (UltraScale+ SYSMONE4, on-chip measurements). The DRP
+ * returns a 16-bit word with the 10-bit result left-justified in [15:4] ->
+ * use the top 12 bits as a 12-bit code (0..4095). */
+#define PWFPGA_SYSMON_CODE(raw)   (((raw) >> 4) & 0xFFFu)
+/* Temperature (°C) from the on-chip temperature sensor. */
+#define PWFPGA_SYSMON_TEMP_C(raw) \
+    (((double)PWFPGA_SYSMON_CODE(raw) * 509.3140064 / 4096.0) - 280.23087870)
+/* Supply voltage (V): full-scale 3 V across the 12-bit code. */
+#define PWFPGA_SYSMON_SUPPLY_V(raw) \
+    ((double)PWFPGA_SYSMON_CODE(raw) * 3.0 / 4096.0)
 
 /* capability bits */
 enum {

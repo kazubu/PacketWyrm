@@ -548,8 +548,13 @@ $("#fwd-apply").addEventListener("click", async () => {
 $$("[data-rpc]").forEach(b => b.addEventListener("click", async () => {
   const r = await rpc({ rpc: b.dataset.rpc });
   showMsg("#ctl-msg", r.error ? "err":"ok", JSON.stringify(r));
-  // test.arm/start/stop change every flow's enable -> refresh the per-flow table.
+  // stats.clear resets the FPGA err_sticky (LED) + counters, so drop the
+  // session's "error seen earlier" memory too, else the health stays amber.
+  if (b.dataset.rpc === "stats.clear" && !r.error) healthSeenErr.clear();
+  // test.arm/start/stop change every flow's enable -> refresh the per-flow table;
+  // poll() refreshes the dashboard health/stats after any action.
   renderCtlFlows();
+  poll();
 }));
 function statePill(on) {
   return el("span",{class:on?"pill on":"pill off",text:on?"Started":"Stopped"});
@@ -626,8 +631,43 @@ function errTd(v) {
   return td;
 }
 
-// rate tracking: previous per-flow counters + timestamp
-let ratePrev = new Map(), rateT = 0;
+// rate tracking: previous per-flow / per-port counters. Rates are measured over
+// the FPGA free-running timestamp (6.4 ns/tick) so they don't depend on browser
+// poll jitter. Each snapshot source (flow.stats, ports.stats) carries its OWN
+// timestamp -- we must divide a source's counter delta by THAT source's ts
+// delta, never another's (they snapshot at different instants -> jitter).
+let ratePrev = new Map(), rateT = 0, portPrev = new Map();
+const tsPrev = {};                       // per-source previous 64-bit tick (BigInt)
+const rateEma = new Map();               // per-key smoothed rate (EMA)
+// Full 64-bit FPGA timestamp (ticks) from the lo/hi pair. Both halves avoid the
+// ~27.5 s wrap of the low 32 bits (156.25 MHz) over a long/backgrounded poll.
+function fpgaTicks(lo, hi) {
+  if (lo == null) return null;
+  return (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
+}
+// Seconds since this source's previous snapshot, from its own fpga_ts (falls
+// back to wall-clock only if the timestamp is missing/non-monotonic).
+function intervalSec(src, lo, hi, wallNow) {
+  const cur = fpgaTicks(lo, hi);
+  let dt = 0;
+  if (cur != null && tsPrev[src] != null) {
+    const d = cur - tsPrev[src];
+    if (d > 0n) dt = Number(d) * 6.4e-9;
+  }
+  if (cur != null) tsPrev[src] = cur;
+  if (dt === 0) dt = rateT ? (wallNow - rateT) / 1000 : 0;
+  return dt;
+}
+// Exponentially-smoothed rate: damps the residual poll-to-poll wobble. Returns
+// the smoothed value for `key`, seeded on first sample.
+function emaRate(key, inst) {
+  if (inst == null || !isFinite(inst)) return rateEma.get(key);
+  const prev = rateEma.get(key);
+  const a = 0.35;
+  const v = prev == null ? inst : prev + a * (inst - prev);
+  rateEma.set(key, v);
+  return v;
+}
 
 async function pollVersions(cards) {
   const rows = [];
@@ -639,6 +679,13 @@ async function pollVersions(cards) {
     if (c.fpga_version != null)
       rows.push({comp:`card ${c.id} FPGA`,
         ver:`v${c.fpga_version}  build ${c.build_id||"?"}  dev ${c.device_id||"?"}  git ${c.git_hash||"?"}`});
+    if (c.temp_c != null) {
+      // Each rail is reported by the daemon only once its SYSMON code is valid,
+      // so format per field ("—" when a rail hasn't been sampled yet).
+      const volt = (v) => v != null ? `${fmt3(v)} V` : "—";
+      rows.push({comp:`card ${c.id} SYSMON`,
+        ver:`${fmt3(c.temp_c)} °C   VCCINT ${volt(c.vccint_v)}   VCCAUX ${volt(c.vccaux_v)}`});
+    }
   });
   setBox("#d-versions", tableFrom(rows, [
     {h:"component",get:r=>r.comp},{h:"version",get:r=>r.ver}]));
@@ -649,10 +696,10 @@ async function pollVersions(cards) {
 // we approximate that stickiness within the session (the live counters below
 // can read clean again after a transient, but the hardware LED stays red).
 let healthSeenErr = new Set();
-function renderHealth(cards, stats, fstats, metaById) {
+function renderHealth(cards, stats, fstats, metaById, portstats) {
   const box = $("#d-health"); box.innerHTML="";
   const t = el("table");
-  t.append(el("tr",{},["card","health","causes"].map(h=>el("th",{text:h}))));
+  t.append(el("tr",{},["card","LED","causes"].map(h=>el("th",{text:h}))));
   (cards||[]).forEach(c => {
     const causes = [];
     // per-card host-plane drops
@@ -662,6 +709,13 @@ function renderHealth(cards, stats, fstats, metaById) {
       if (s.tap_to_fpga_dropped>0) causes.push(`inject drops ${s.tap_to_fpga_dropped}`);
       if (s.punt_unknown_lif>0)    causes.push(`unknown-lif ${s.punt_unknown_lif}`);
     }
+    // per-port FCS / data-plane drops on this card — the two per-port inputs to
+    // err_sticky that the per-flow counters don't show.
+    (portstats||[]).forEach(p => {
+      if (p.card_id !== c.id) return;
+      if (p.rx_fcs_error>0) causes.push(`port ${p.global_port} FCS ${p.rx_fcs_error}`);
+      if (p.drops>0)        causes.push(`port ${p.global_port} drops ${p.drops}`);
+    });
     // per-flow errors on flows received by this card
     let active = false;
     (fstats||[]).forEach(f => {
@@ -671,35 +725,43 @@ function renderHealth(cards, stats, fstats, metaById) {
       if (f.duplicate>0) causes.push(`flow ${f.id} dup ${f.duplicate}`);
       if (f.out_of_order>0) causes.push(`flow ${f.id} reorder ${f.out_of_order}`);
     });
-    const err = causes.length>0;
-    if (err) healthSeenErr.add(c.id);
-    const sticky = !err && healthSeenErr.has(c.id);
+    // Authoritative LED state = the FPGA's err_sticky bit (when the bitstream
+    // exposes it). It latches on ANY error since the last stats.clear, so it
+    // can be red even when the live counters above read clean.
+    const hwErr = c.err_sticky === true;
+    const derivedErr = causes.length>0;
+    if (derivedErr || hwErr) healthSeenErr.add(c.id);
+    const sticky = !derivedErr && !hwErr && healthSeenErr.has(c.id);
     let led, note;
     if (!c.open) { led = el("span",{class:"led off",text:"● card closed"}); note = "—"; }
-    else if (err) { led = el("span",{class:"led red",text:"● error"}); note = causes.join(", "); }
+    else if (hwErr) {
+      led = el("span",{class:"led red",text:"● red (err_sticky)"});
+      note = (causes.length ? causes.join(", ") + " — " : "")
+        + "LED latched; live counters may read clean (transient/FCS). stats.clear resets it.";
+    }
+    else if (derivedErr) { led = el("span",{class:"led red",text:"● error"}); note = causes.join(", "); }
     else if (sticky) { led = el("span",{class:"led amber",text:"● clean now (error seen earlier)"});
       note = "an error occurred earlier this session — the physical LED likely stays red until stats.clear"; }
     else { led = el("span",{class:"led grn",text: active ? "● ok (traffic)" : "● ok (idle)"}); note = "—"; }
     t.append(el("tr",{},[el("td",{text:c.id}), el("td",{},[led]),
-      el("td",{class:(err||sticky)?"":"muted",text: note})]));
+      el("td",{class:(hwErr||derivedErr||sticky)?"":"muted",text: note})]));
   });
   box.append(t);
   box.append(el("div",{class:"muted",style:"margin-top:6px",
-    text:"Derived from live flow/host counters — NOT a readback of the physical R/G LED. "
-       + "The LED is a hardware-latched sticky indicator (err_sticky): it goes red on ANY "
-       + "lost/decode/FCS error since the last stats.clear — including brief transients at "
-       + "arm and per-port FCS errors not shown per-flow — and is not software-readable in "
-       + "the current bitstream. So the LED can be red while these counters read clean; "
-       + "run stats.clear (Control tab) to reset both."}));
+    text:"“red (err_sticky)” is the FPGA's actual LED bit (GLOBAL_STATUS) when the "
+       + "bitstream exposes it — it latches on ANY lost/decode/FCS error since the last "
+       + "stats.clear, so it can be red while the live counters read clean (a transient at "
+       + "arm, or a per-port FCS error). Run stats.clear (Control tab) to reset it. On an "
+       + "older bitstream without the readback, health is inferred from the live counters."}));
 }
 
 // latency cell: "—" unless the flow reports valid latency with the field present
 const lat = (f, k) =>
   (f.latency_valid && f[k] != null) ? fmtTime(f[k] * TICK_NS) : "—";
 function renderFlowStatsTable(fstats, rates) {
-  const cols = ["id","state","tx frm","tx/s","rx frm","rx/s","lost","dup","reorder","min","avg","max"];
+  const cols = ["id","state","tx frm","tx pps","rx frm","rx pps","rx bps","lost","dup","reorder","min","avg","max"];
   const t = el("table");
-  t.append(el("tr",{}, cols.map(h => el("th",{class:/frm|\/s|lost|dup|reorder|min|avg|max/.test(h)?"num":"",text:h}))));
+  t.append(el("tr",{}, cols.map(h => el("th",{class:/frm|pps|bps|lost|dup|reorder|min|avg|max/.test(h)?"num":"",text:h}))));
   fstats.forEach(f => {
     const rt = rates.get(f.id) || {};
     t.append(el("tr",{},[
@@ -709,6 +771,7 @@ function renderFlowStatsTable(fstats, rates) {
       el("td",{class:"num",text:fmtRate(rt.tx)}),
       el("td",{class:"num",text:f.rx_frames}),
       el("td",{class:"num",text:fmtRate(rt.rx)}),
+      el("td",{class:"num",text:rt.rxb!=null?fmtRate(rt.rxb).replace("/s","bps"):"—"}),
       errTd(f.lost), errTd(f.duplicate), errTd(f.out_of_order),
       // latency fields are absent when read_ok/latency_valid is false -> show —
       el("td",{class:"num",text:lat(f,"min_latency")}),
@@ -752,20 +815,38 @@ function renderAggregate(fstats, rates, metaById) {
 
 async function poll() {
   try {
-    const [cards, ports, sfp, fstats, flowsMeta, stats] = await Promise.all([
+    const [cards, ports, sfp, fstats, flowsMeta, stats, pstats] = await Promise.all([
       rpc({rpc:"cards"}), rpc({rpc:"ports"}), rpc({rpc:"sfp.info"}),
-      rpc({rpc:"flow.stats"}), rpc({rpc:"flows"}), rpc({rpc:"stats"})]);
+      rpc({rpc:"flow.stats"}), rpc({rpc:"flows"}), rpc({rpc:"stats"}),
+      rpc({rpc:"ports.stats"})]);
     if (cards.error) { setConn(false, cards.error); return; }
 
-    // per-flow rate deltas
+    // Each source's rate uses ITS OWN fpga_ts delta (flow.stats and ports.stats
+    // snapshot at different instants), then an EMA damps residual wobble.
     const now = Date.now();
-    const dt = rateT ? (now - rateT)/1000 : 0;
+    const dtF = intervalSec("flow", fstats.fpga_ts_lo, fstats.fpga_ts_hi, now);
+    const dtP = intervalSec("port", pstats.fpga_ts_lo, pstats.fpga_ts_hi, now);
+    // per-flow rate deltas (frames + bytes -> pps + bps), EMA-smoothed
     const rates = new Map();
     (fstats.flows||[]).forEach(f => {
       const p = ratePrev.get(f.id);
-      if (p && dt > 0)
-        rates.set(f.id, { tx: Math.max(0,(f.tx_frames-p.tx)/dt), rx: Math.max(0,(f.rx_frames-p.rx)/dt) });
-      ratePrev.set(f.id, { tx:f.tx_frames, rx:f.rx_frames });
+      if (p && dtF > 0) rates.set(f.id, {
+        tx:  emaRate(`f${f.id}tx`,  Math.max(0,(f.tx_frames-p.tx)/dtF)),
+        rx:  emaRate(`f${f.id}rx`,  Math.max(0,(f.rx_frames-p.rx)/dtF)),
+        txb: emaRate(`f${f.id}txb`, Math.max(0,(f.tx_bytes-p.txb)*8/dtF)),
+        rxb: emaRate(`f${f.id}rxb`, Math.max(0,(f.rx_bytes-p.rxb)*8/dtF)) });
+      ratePrev.set(f.id, { tx:f.tx_frames, rx:f.rx_frames, txb:f.tx_bytes, rxb:f.rx_bytes });
+    });
+    // per-port rate deltas (frames + bytes), EMA-smoothed
+    const prates = new Map();
+    (pstats.ports||[]).forEach(p => {
+      const k = `${p.card_id}:${p.local_port}`, pv = portPrev.get(k);
+      if (pv && dtP > 0) prates.set(k, {
+        rxpps: emaRate(`${k}rp`, Math.max(0,(p.rx_frames-pv.rxf)/dtP)),
+        txpps: emaRate(`${k}tp`, Math.max(0,(p.tx_frames-pv.txf)/dtP)),
+        rxbps: emaRate(`${k}rb`, Math.max(0,(p.rx_bytes-pv.rxb)*8/dtP)),
+        txbps: emaRate(`${k}tb`, Math.max(0,(p.tx_bytes-pv.txb)*8/dtP)) });
+      portPrev.set(k, { rxf:p.rx_frames, txf:p.tx_frames, rxb:p.rx_bytes, txb:p.tx_bytes });
     });
     rateT = now;
 
@@ -777,9 +858,20 @@ async function poll() {
         {h:"id",get:r=>r.id,num:1},{h:"name",get:r=>r.name},{h:"pci",get:r=>r.pci},
         {h:"backend",get:r=>r.backend},{h:"open",get:r=>r.open}]));
       pollVersions(cards.cards);
-      renderHealth(cards.cards, stats.stats, fstats.flows, metaById);
+      renderHealth(cards.cards, stats.stats, fstats.flows, metaById, pstats.ports);
     }
-    if (ports.ports) setBox("#d-ports", tableFrom(ports.ports, [
+    // Ports table: prefer per-port MAC counters (ports.stats) with pps/bps;
+    // fall back to the plain port map when the backend lacks port counters.
+    if (pstats.ports && pstats.ports.length) {
+      setBox("#d-ports", tableFrom(pstats.ports, [
+        {h:"card",get:r=>r.card_id,num:1},{h:"port",get:r=>r.global_port,num:1},
+        {h:"rx pps",get:r=>fmtRate(prates.get(`${r.card_id}:${r.local_port}`)?.rxpps),num:1},
+        {h:"rx bps",get:r=>fmtRate(prates.get(`${r.card_id}:${r.local_port}`)?.rxbps),num:1},
+        {h:"tx pps",get:r=>fmtRate(prates.get(`${r.card_id}:${r.local_port}`)?.txpps),num:1},
+        {h:"tx bps",get:r=>fmtRate(prates.get(`${r.card_id}:${r.local_port}`)?.txbps),num:1},
+        {h:"rx frm",get:r=>r.rx_frames,num:1},{h:"tx frm",get:r=>r.tx_frames,num:1},
+        {h:"FCS",get:r=>r.rx_fcs_error,num:1},{h:"drops",get:r=>r.drops,num:1}]));
+    } else if (ports.ports) setBox("#d-ports", tableFrom(ports.ports, [
       {h:"name",get:r=>r.name},{h:"card",get:r=>r.card_id,num:1},
       {h:"local",get:r=>r.local_port,num:1},{h:"global",get:r=>r.global_port,num:1}]));
     if (sfp.sfp) setBox("#d-sfp", tableFrom(sfp.sfp, [

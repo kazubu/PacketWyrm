@@ -44,9 +44,19 @@ response frame then closes. Max frame size is `PW_IPC_FRAME_MAX`
 &rarr;
 ```json
 { "cards": [ { "id": 0, "name": "card0", "pci": "0000:03:00.0",
-              "backend": "fake" | "bar" | "absent",
-              "open": true } ] }
+              "backend": "fake" | "bar" | "absent", "open": true,
+              "device_id": "0xa502beef", "fpga_version": 196608,
+              "build_id": "0x6a4526ea", "git_hash": "0xadb9327a",
+              "err_sticky": false, "activity": true,
+              "temp_c": 54.3, "vccint_v": 0.85, "vccaux_v": 1.80 } ] }
 ```
+
+FPGA identity (`device_id`/`fpga_version`/`build_id`/`git_hash`) comes from the
+card. `err_sticky` is the live front-panel-LED bit (GLOBAL_STATUS[3] — latches on
+any lost/decode/FCS error since the last `stats.clear`); `activity` is recent
+traffic. `temp_c`/`vccint_v`/`vccaux_v` are the on-chip SYSMON readings. The
+SYSMON + err_sticky fields are present only when the bitstream exposes them
+(older images omit `temp_c` and report `err_sticky:false`).
 
 ### `ports`
 
@@ -90,10 +100,28 @@ Card-level counters from the host packet plane.
 }
 ```
 
+### `ports.stats`
+
+Per-port wire counters from the MAC (`{ "rpc": "ports.stats" }`) &rarr;
+`{ "fpga_ts_lo", "fpga_ts_hi", "ports": [ { "card_id", "local_port",
+"global_port", "rx_frames", "rx_bytes", "tx_frames", "tx_bytes",
+"rx_fcs_error", "drops", "link_up_count", "block_lock_loss" } ] }`.
+This is authoritative per-port traffic (all frames, not just test flows). A
+client derives per-port **pps/bps** from the counter deltas divided by the
+`fpga_ts` delta (6.4 ns/tick — jitter-free vs. wall-clock). `rx_fcs_error` and
+`drops` (the data-plane no-match/DROP counter) are the two **per-port inputs to
+the front-panel LED `err_sticky`** — together with per-flow `lost` (from
+`flow.stats`) they are the complete set of things that latch the LED, so a red
+LED can always be attributed to a counter. Present only on backends with
+per-port counters.
+
 ### `flow.stats`
 
 Per-flow counters from the FPGA test-RX checker. Triggers a
-fresh snapshot on each open card before reading.
+fresh snapshot on each open card before reading. The response also carries
+`fpga_ts_lo`/`fpga_ts_hi` (the FPGA free-running timestamp at snapshot, 6.4
+ns/tick) so a client can compute exact per-flow frame/byte rates as
+Δcounter / Δticks rather than relying on host poll timing.
 
 ```json
 { "rpc": "flow.stats" }                  // all flows

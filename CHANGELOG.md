@@ -9,7 +9,21 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
-  - **Web GUI review round 3 (correctness).** `set_flow_enable` now writes a
+  - **LED-state readback, on-chip SYSMON telemetry, per-port pps/bps (RTL).**
+    The front-panel LED's `err_sticky` is now software-readable: GLOBAL_STATUS
+    exposes it at bit 3 (+ activity at bit 5), wired from the data plane (same
+    clock domain, no CDC). New `pw_sysmon` DRP reader + a SYSMONE4 instance in
+    the board top expose die temperature + VCCINT/VCCAUX at REG_SYSMON_TEMP/
+    SUPPLY. The daemon's `cards` RPC now reports `err_sticky`/`activity` and
+    `temp_c`/`vccint_v`/`vccaux_v`; a new `ports.stats` RPC returns per-port MAC
+    counters (frames/bytes/FCS/link) and `flow.stats`/`ports.stats` include the
+    FPGA timestamp so clients derive exact pps/bps from counter deltas. The GUI
+    Health panel now shows the *real* LED state (not just an inference),
+    Versions shows temperature/voltages, the Ports table shows per-port pps/bps,
+    and flow stats add rx bps. (Requires a bitstream rebuild; older images omit
+    SYSMON/err_sticky and the GUI falls back to inferred health.) Also:
+    Control-tab Start/Stop-all now refreshes the per-flow state.
+  - **Web GUI review round 3 (correctness).** `set_flow_enable` now writes a `set_flow_enable` now writes a
     copy to the backend and only updates the staged row (reported as `enabled`)
     on write+commit success, so flows/flow.stats can't show a state the FPGA
     doesn't have. `config.save` reports `restart_required` for *any* change (it

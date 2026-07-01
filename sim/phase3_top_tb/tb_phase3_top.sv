@@ -170,7 +170,10 @@ module tb_phase3_top;
         .sfp_i2c_o    (),
         .sfp_i2c_t    (),
         .status_err_o      (),
-        .status_activity_o ()
+        .status_activity_o (),
+        .sysmon_temp_i     (16'h0),
+        .sysmon_vccint_i   (16'h0),
+        .sysmon_vccaux_i   (16'h0)
     );
 
     int    errors = 0;
