@@ -60,6 +60,14 @@
   .barrow .cnt { width:70px; text-align:right; font-variant-numeric: tabular-nums; }
   .muted { color: var(--dim); font-size: 12px; }
   .adv summary { cursor:pointer; color: var(--dim); margin: 8px 0; }
+  .pill { padding: 1px 8px; border-radius: 10px; font-size: 11px; white-space: nowrap; }
+  .pill.on { background: rgba(34,197,94,.2); color: var(--ok); }
+  .pill.off { background: rgba(148,163,184,.2); color: var(--dim); }
+  button.start { background: transparent; border: 1px solid var(--ok); color: var(--ok); }
+  .led { font-size: 12px; white-space: nowrap; }
+  .led.red { color: var(--err); }
+  .led.grn { color: var(--ok); }
+  .led.off { color: var(--dim); }
 </style>
 </head>
 <body>
@@ -79,9 +87,12 @@
 <main>
   <!-- Dashboard -->
   <div class="tab active" id="tab-dash">
+    <section class="card"><h2>Versions</h2><div id="d-versions">…</div></section>
+    <section class="card"><h2>Health / LED</h2><div id="d-health">…</div></section>
     <section class="card"><h2>Cards</h2><div id="d-cards">…</div></section>
     <section class="card"><h2>Ports</h2><div id="d-ports">…</div></section>
     <section class="card"><h2>SFP modules</h2><div id="d-sfp">…</div></section>
+    <section class="card"><h2>Aggregate counters</h2><div id="d-agg">…</div></section>
     <section class="card"><h2>Flow statistics</h2><div id="d-flowstats">…</div></section>
     <section class="card">
       <h2>Latency histogram</h2>
@@ -536,6 +547,9 @@ $$("[data-rpc]").forEach(b => b.addEventListener("click", async () => {
   const r = await rpc({ rpc: b.dataset.rpc });
   showMsg("#ctl-msg", r.error ? "err":"ok", JSON.stringify(r));
 }));
+function statePill(on) {
+  return el("span",{class:on?"pill on":"pill off",text:on?"Started":"Stopped"});
+}
 async function renderCtlFlows() {
   const box = $("#ctl-flows"); box.textContent="…";
   const r = await rpc({ rpc:"flows" });
@@ -543,12 +557,16 @@ async function renderCtlFlows() {
   const list = (r && r.flows) || [];
   if (!list.length) { box.append(el("div",{class:"muted",text:"No flows programmed. Apply a config first."})); return; }
   const t = el("table"); t.append(el("tr",{},[el("th",{text:"id"}),el("th",{text:"name"}),
-    el("th",{text:"tx→rx"}),el("th",{text:""})]));
-  list.forEach(f => t.append(el("tr",{},[el("td",{text:f.id}),el("td",{text:f.name||"—"}),
-    el("td",{text:`${f.tx_global_port}→${f.rx_global_port}`}),
-    el("td",{},[
-      el("button",{class:"ghost",text:"start",onclick:async()=>{await rpc({rpc:"flow.start",id:f.id});}})," ",
-      el("button",{class:"danger",text:"stop",onclick:async()=>{await rpc({rpc:"flow.stop",id:f.id});}})])])));
+    el("th",{text:"tx→rx"}),el("th",{text:"state"}),el("th",{text:""})]));
+  list.forEach(f => {
+    const on = !!f.enabled;
+    // Button reflects current state: shows the action that flips it.
+    const btn = el("button",{class:on?"danger":"start",text:on?"Stop":"Start",
+      onclick:async()=>{ await rpc({rpc:on?"flow.stop":"flow.start",id:f.id}); renderCtlFlows(); }});
+    t.append(el("tr",{},[el("td",{text:f.id}),el("td",{text:f.name||"—"}),
+      el("td",{text:`${f.tx_global_port}→${f.rx_global_port}`}),
+      el("td",{},[statePill(on)]), el("td",{},[btn])]));
+  });
   box.append(t);
 }
 
@@ -568,6 +586,21 @@ $("#env-save").addEventListener("click", async () => {
 });
 
 /* ---- Dashboard polling ---- */
+const TICK_NS = 6.4;   // data-plane clock 156.25 MHz -> 6.4 ns/tick
+const fmt3 = v => (typeof v === "number" && !Number.isInteger(v)) ? v.toFixed(3) : v;
+function fmtTime(ns) {
+  if (ns == null) return "—";
+  if (ns < 1e3) return (ns < 10 ? ns.toFixed(1) : ns.toFixed(0)) + " ns";
+  if (ns < 1e6) return (ns/1e3).toFixed(2) + " µs";
+  if (ns < 1e9) return (ns/1e6).toFixed(3) + " ms";
+  return (ns/1e9).toFixed(3) + " s";
+}
+function fmtRate(v) {
+  if (v == null) return "—";
+  if (v >= 1e6) return (v/1e6).toFixed(2) + "M/s";
+  if (v >= 1e3) return (v/1e3).toFixed(2) + "k/s";
+  return v.toFixed(0) + "/s";
+}
 function tableFrom(rows, cols) {
   const t = el("table");
   t.append(el("tr",{}, cols.map(c => el("th",{class:c.num?"num":"",text:c.h}))));
@@ -578,32 +611,164 @@ function tableFrom(rows, cols) {
   return t;
 }
 function setBox(id, node) { const b=$(id); b.innerHTML=""; b.append(node); }
+// numeric cell that goes red when non-zero (for error counters)
+function errTd(v) {
+  const td = el("td",{class:"num",text: v==null?"—":String(v)});
+  if (Number(v) > 0) td.style.color = "var(--err)";
+  return td;
+}
+
+// rate tracking: previous per-flow counters + timestamp
+let ratePrev = new Map(), rateT = 0;
+
+async function pollVersions(cards) {
+  const rows = [];
+  const ver = await rpc({rpc:"version"});
+  rows.push({comp:"packetwyrmd", ver: ver.version || "?"});
+  try { const pv = await (await fetch("/proxyd/version")).json(); rows.push({comp:"packetwyrm-proxyd", ver: pv.version || "?"}); }
+  catch (e) { rows.push({comp:"packetwyrm-proxyd", ver:"?"}); }
+  (cards||[]).forEach(c => {
+    if (c.fpga_version != null)
+      rows.push({comp:`card ${c.id} FPGA`,
+        ver:`v${c.fpga_version}  build ${c.build_id||"?"}  dev ${c.device_id||"?"}  git ${c.git_hash||"?"}`});
+  });
+  setBox("#d-versions", tableFrom(rows, [
+    {h:"component",get:r=>r.comp},{h:"version",get:r=>r.ver}]));
+}
+
+function renderHealth(cards, stats, fstats, metaById) {
+  const box = $("#d-health"); box.innerHTML="";
+  const t = el("table");
+  t.append(el("tr",{},["card","LED","causes"].map(h=>el("th",{text:h}))));
+  (cards||[]).forEach(c => {
+    const causes = [];
+    // per-card host-plane drops
+    const s = (stats||[]).find(x => x.card_id === c.id);
+    if (s) {
+      if (s.punt_to_tap_dropped>0) causes.push(`punt drops ${s.punt_to_tap_dropped}`);
+      if (s.tap_to_fpga_dropped>0) causes.push(`inject drops ${s.tap_to_fpga_dropped}`);
+      if (s.punt_unknown_lif>0)    causes.push(`unknown-lif ${s.punt_unknown_lif}`);
+    }
+    // per-flow errors on flows received by this card
+    let active = false;
+    (fstats||[]).forEach(f => {
+      if (f.rx_card_id !== c.id) return;
+      if (f.rx_frames>0) active = true;
+      if (f.lost>0) causes.push(`flow ${f.id} lost ${f.lost}`);
+      if (f.duplicate>0) causes.push(`flow ${f.id} dup ${f.duplicate}`);
+      if (f.out_of_order>0) causes.push(`flow ${f.id} reorder ${f.out_of_order}`);
+    });
+    const err = causes.length>0;
+    const led = !c.open ? el("span",{class:"led off",text:"● off (card closed)"})
+      : err ? el("span",{class:"led red",text:"● red (error)"})
+      : active ? el("span",{class:"led grn",text:"● green (traffic ok)"})
+      : el("span",{class:"led grn",text:"● green (idle)"});
+    t.append(el("tr",{},[el("td",{text:c.id}), el("td",{},[led]),
+      el("td",{class:err?"":"muted",text: err ? causes.join(", ") : "—"})]));
+  });
+  box.append(t);
+  box.append(el("div",{class:"muted",style:"margin-top:6px",
+    text:"Derived from data-plane stats (mirrors the front-panel R/G LED: sticky error → red, traffic-clean → green)."}));
+}
+
+function renderFlowStatsTable(fstats, rates) {
+  const cols = ["id","state","tx frm","tx/s","rx frm","rx/s","lost","dup","reorder","min","avg","max"];
+  const t = el("table");
+  t.append(el("tr",{}, cols.map(h => el("th",{class:/frm|\/s|lost|dup|reorder|min|avg|max/.test(h)?"num":"",text:h}))));
+  fstats.forEach(f => {
+    const rt = rates.get(f.id) || {};
+    t.append(el("tr",{},[
+      el("td",{class:"num",text:f.id}),
+      el("td",{},[statePill(!!f.enabled)]),
+      el("td",{class:"num",text:f.tx_frames}),
+      el("td",{class:"num",text:fmtRate(rt.tx)}),
+      el("td",{class:"num",text:f.rx_frames}),
+      el("td",{class:"num",text:fmtRate(rt.rx)}),
+      errTd(f.lost), errTd(f.duplicate), errTd(f.out_of_order),
+      el("td",{class:"num",text:fmtTime(f.min_latency*TICK_NS)}),
+      el("td",{class:"num",text:fmtTime(f.avg_latency*TICK_NS)}),
+      el("td",{class:"num",text:fmtTime(f.max_latency*TICK_NS)}),
+    ]));
+  });
+  return t;
+}
+
+function renderAggregate(fstats, rates, metaById) {
+  // group counters + rates by total / rx-card / rx-port
+  const groups = new Map();  // label -> {tx,rx,lost,dup,txr,rxr,order}
+  const bump = (label, f, order) => {
+    let g = groups.get(label);
+    if (!g) { g = {tx:0,rx:0,lost:0,dup:0,txr:0,rxr:0,order}; groups.set(label,g); }
+    const rt = rates.get(f.id) || {};
+    g.tx += f.tx_frames||0; g.rx += f.rx_frames||0;
+    g.lost += f.lost||0; g.dup += f.duplicate||0;
+    g.txr += rt.tx||0; g.rxr += rt.rx||0;
+  };
+  fstats.forEach(f => {
+    bump("Total", f, 0);
+    bump(`card ${f.rx_card_id}`, f, 1);
+    const m = metaById.get(f.id);
+    if (m) bump(`port ${m.rx}`, f, 2);
+  });
+  const rows = [...groups.entries()].map(([label,g]) => ({label, ...g}))
+    .sort((a,b)=> a.order-b.order || a.label.localeCompare(b.label));
+  const t = el("table");
+  t.append(el("tr",{}, ["scope","tx frm","tx/s","rx frm","rx/s","lost","dup"]
+    .map(h => el("th",{class:h==="scope"?"":"num",text:h}))));
+  rows.forEach(r => t.append(el("tr",{},[
+    el("td",{text:r.label}),
+    el("td",{class:"num",text:r.tx}), el("td",{class:"num",text:fmtRate(r.txr)}),
+    el("td",{class:"num",text:r.rx}), el("td",{class:"num",text:fmtRate(r.rxr)}),
+    errTd(r.lost), errTd(r.dup),
+  ])));
+  return t;
+}
+
 async function poll() {
   try {
-    const [cards, ports, sfp, fstats] = await Promise.all([
-      rpc({rpc:"cards"}), rpc({rpc:"ports"}), rpc({rpc:"sfp.info"}), rpc({rpc:"flow.stats"})]);
-    if (cards.cards) setBox("#d-cards", tableFrom(cards.cards, [
-      {h:"id",get:r=>r.id,num:1},{h:"name",get:r=>r.name},{h:"pci",get:r=>r.pci},
-      {h:"backend",get:r=>r.backend},{h:"open",get:r=>r.open}]));
+    const [cards, ports, sfp, fstats, flowsMeta, stats] = await Promise.all([
+      rpc({rpc:"cards"}), rpc({rpc:"ports"}), rpc({rpc:"sfp.info"}),
+      rpc({rpc:"flow.stats"}), rpc({rpc:"flows"}), rpc({rpc:"stats"})]);
+    if (cards.error) { setConn(false, cards.error); return; }
+
+    // per-flow rate deltas
+    const now = Date.now();
+    const dt = rateT ? (now - rateT)/1000 : 0;
+    const rates = new Map();
+    (fstats.flows||[]).forEach(f => {
+      const p = ratePrev.get(f.id);
+      if (p && dt > 0)
+        rates.set(f.id, { tx: Math.max(0,(f.tx_frames-p.tx)/dt), rx: Math.max(0,(f.rx_frames-p.rx)/dt) });
+      ratePrev.set(f.id, { tx:f.tx_frames, rx:f.rx_frames });
+    });
+    rateT = now;
+
+    const metaById = new Map((flowsMeta.flows||[]).map(f => [f.id,
+      {name:f.name, tx:f.tx_global_port, rx:f.rx_global_port, enabled:f.enabled}]));
+
+    if (cards.cards) {
+      setBox("#d-cards", tableFrom(cards.cards, [
+        {h:"id",get:r=>r.id,num:1},{h:"name",get:r=>r.name},{h:"pci",get:r=>r.pci},
+        {h:"backend",get:r=>r.backend},{h:"open",get:r=>r.open}]));
+      pollVersions(cards.cards);
+      renderHealth(cards.cards, stats.stats, fstats.flows, metaById);
+    }
     if (ports.ports) setBox("#d-ports", tableFrom(ports.ports, [
       {h:"name",get:r=>r.name},{h:"card",get:r=>r.card_id,num:1},
       {h:"local",get:r=>r.local_port,num:1},{h:"global",get:r=>r.global_port,num:1}]));
     if (sfp.sfp) setBox("#d-sfp", tableFrom(sfp.sfp, [
       {h:"card",get:r=>r.card_id,num:1},{h:"port",get:r=>r.port,num:1},
       {h:"present",get:r=>r.present},{h:"vendor",get:r=>r.vendor},{h:"part",get:r=>r.part},
-      {h:"temp°C",get:r=>r.temp_c,num:1},{h:"tx mW",get:r=>r.tx_power_mw,num:1},
-      {h:"rx mW",get:r=>r.rx_power_mw,num:1}]));
+      {h:"temp°C",get:r=>fmt3(r.temp_c),num:1},{h:"Vcc",get:r=>fmt3(r.vcc_v),num:1},
+      {h:"tx mW",get:r=>fmt3(r.tx_power_mw),num:1},{h:"rx mW",get:r=>fmt3(r.rx_power_mw),num:1}]));
     if (fstats.flows) {
-      setBox("#d-flowstats", tableFrom(fstats.flows, [
-        {h:"id",get:r=>r.id,num:1},{h:"tx frm",get:r=>r.tx_frames,num:1},
-        {h:"rx frm",get:r=>r.rx_frames,num:1},{h:"lost",get:r=>r.lost,num:1},
-        {h:"dup",get:r=>r.duplicate,num:1},{h:"reord",get:r=>r.out_of_order,num:1},
-        {h:"min ns",get:r=>r.min_latency,num:1},{h:"avg ns",get:r=>r.avg_latency,num:1},
-        {h:"max ns",get:r=>r.max_latency,num:1}]));
+      setBox("#d-agg", renderAggregate(fstats.flows, rates, metaById));
+      setBox("#d-flowstats", renderFlowStatsTable(fstats.flows, rates));
       const sel = $("#hist-flow"); const cur = sel.value;
       sel.innerHTML=""; fstats.flows.forEach(f => sel.append(el("option",{value:f.id,text:f.id})));
       if (cur) sel.value = cur;
     }
+    setConn(true, "connected");
   } catch (e) { setConn(false, "no connection"); }
 }
 async function renderHist() {
@@ -615,9 +780,11 @@ async function renderHist() {
   const max = Math.max(1, ...r.buckets);
   r.buckets.forEach((c,i) => {
     if (c === 0 && i > 0 && i < r.buckets.length-1) return; // skip empty middle bins
-    const lo = i===0 ? 0 : (1 << (i-1));
+    const loT = i===0 ? 0 : (1 << (i-1));      // bucket lower bound in ticks
+    const hiT = (1 << i);
+    const label = i===0 ? `< ${fmtTime(hiT*TICK_NS)}` : `≥ ${fmtTime(loT*TICK_NS)}`;
     box.append(el("div",{class:"barrow"},[
-      el("span",{class:"lbl",text:`≥${lo} ticks`}),
+      el("span",{class:"lbl",text:label}),
       el("div",{class:"bar",style:`width:${(c/max*100).toFixed(1)}%`}),
       el("span",{class:"cnt",text:c})]));
   });

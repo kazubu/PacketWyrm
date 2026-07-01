@@ -257,8 +257,13 @@ then ships the YAML body to the daemon.
 ### `config.get_raw`
 
 Return the raw text of the environment config file (the daemon's `-e`
-path) so a GUI can edit it. The `secret:` value is **redacted** (a
-remote authed client shouldn't be able to read the secret back out).
+path) so a GUI can edit it. The `secret:` value is **structurally redacted**
+to the sentinel `"***"` (only the `secret:` key line is rewritten — not a
+blanket value replacement, so a secret that happens to equal a card/interface
+name is never clobbered). `config.save` recognizes that sentinel and preserves
+the existing secret, so a client can safely round-trip get_raw → edit → save
+without needing to know the secret. (Inline `system: { secret: ... }` flow
+mappings are not matched by the line scan; use block form.)
 
 ```json
 { "rpc": "config.get_raw" }
@@ -319,10 +324,19 @@ write it **atomically** (tmp + rename) to the daemon's `-e` path —
 `restart_required` is `true` when the new topology (cards /
 logical_interfaces) differs from the running one — `config.load` cannot
 swap topology live, so a daemon restart is needed to apply it. A parse or
-validate failure returns `{"error": "..."}` and writes nothing. Security:
-a root daemon writes its own env file over an authenticated
-(secret + TLS via the gateway) RPC; the write target is fixed and the
-YAML is fully validated first. Used by the Web GUI's Environment tab.
+validate failure returns `{"error": "..."}` and writes nothing. If the
+submitted `secret:` is the redaction sentinel `"***"` (the get_raw view saved
+back unchanged), the daemon **rewrites it to the running secret** before
+writing — a thoughtless Save can't lock the operator out — and rejects if the
+placeholder can't be resolved. The file is written atomically (tmp+rename)
+preserving the existing mode/owner (a 0600 secret file stays 0600, not
+umask-widened). Security: a root daemon writes its own env file over an
+authenticated (secret + TLS via the gateway) RPC; the write target is fixed and
+the YAML is fully validated first. Used by the Web GUI's Environment tab.
+
+The gateway also serves `GET /proxyd/version` → `{ "version": "..." }` for its
+own build version (the daemon's is the `version` RPC; per-card FPGA versions are
+in `cards`).
 
 ## Web GUI gateway + remote transport
 
