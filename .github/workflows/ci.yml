@@ -48,6 +48,11 @@ jobs:
       VERILATOR_VERSION: v5.032
     steps:
       - uses: actions/checkout@v4
+        with:
+          # sim_all's MAC targets (mac_axis_cdc, mac_loopback) and the fpga lint
+          # pull the Taxi 10G MAC/AXIS sources from the vendored submodule, so it
+          # must be checked out here (default checkout skips submodules).
+          submodules: recursive
       - name: cache verilator
         id: cache-verilator
         uses: actions/cache@v4
