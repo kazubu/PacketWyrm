@@ -114,6 +114,11 @@ Acceptance:
   intentional drops).
 - `latency` is reported as `unsupported` / `invalid`, never a
   number.
+  > **UPDATE (implemented ahead of this plan):** cross-card latency IS now
+  > measured, corrected per flow in hardware via the J5 GPIO time-sync
+  > (`pw_gpio_sync` + the per-flow `lat_correction` table), rather than deferred
+  > to a clock-sync research phase. `flow.stats` reports it with
+  > `latency_method: "gpio-corrected"`. See `design/rtl-modules.md`.
 
 ## Phase 8 &mdash; container routing daemon integration
 

@@ -91,10 +91,15 @@ Compilation rules:
 1. Resolve `tx_global_port` and `rx_global_port` to `(card_id,
    local_port_id)`.
 2. Same-card flow: program one TX flow row and one RX classifier rule
-   on the same card. `latency_valid = true`.
+   on the same card. `latency_valid = true` (same-card method: exact,
+   single FPGA counter).
 3. Cross-card flow: program a TX flow row on the TX card, an RX
    classifier rule + RX-only flow row (no generator) on the RX card.
-   `latency_valid = false` regardless of YAML `latency: true`.
+   `latency_valid = false` here is the **method** flag (cross-card), not
+   "no latency": cross-card latency IS measured, corrected per flow in
+   hardware via the J5 GPIO sync + the per-flow `lat_correction` table
+   (the daemon servo maintains each cross-card slot). `flow.stats` reports
+   it with `latency_method: "gpio-corrected"`.
 4. Allocate `local_flow_id`s from a per-card free list.
 5. Build classifier match keys deterministically: ingress port, VLAN,
    UDP destination port, test magic, `global_flow_id`. Ties are

@@ -139,11 +139,17 @@ Same-card flows (`tx_global_port` and `rx_global_port` resolve to the
 same `card_id`) get full per-packet measurements because TX and RX
 timestamps come from a single FPGA timestamp counter.
 
-Cross-card flows get **throughput / loss / duplicate / reorder /
-sequence** only. `latency` and `jitter` are reported as `unsupported`
-or `invalid` until a future clock-sync phase. The system must never
-display latency / jitter values that combine timestamps from two
-independent FPGA clocks.
+Cross-card flows now also get **latency / jitter**, corrected per flow in
+hardware. The two cards share a time base over the J5 GPIO sync
+(`pw_gpio_sync`); the daemon servo tracks each card pair's counter offset and
+writes it into the RX checker's per-flow `lat_correction` table, so the checker
+accumulates `lat = (rx_wire_ts + corr[slot]) - tx_ts` per sample -- min / max /
+avg / histogram all in the true one-way timebase, no post-hoc smear. The
+free-running counter is never disciplined (that would break the Gray-CDC
+timestamp path); only the latency computation is corrected. Same-card flows
+stay exact (single FPGA counter, `corr = 0`). `flow.stats` distinguishes them
+via `latency_method` (`"same-card"` / `"gpio-corrected"`); it requires the
+cards' J5 headers wired.
 
 ## Phase progression
 

@@ -113,9 +113,10 @@ struct pwfpga_logical_if {
 - duplicate `logical_if_id`,
 - a flow whose `tx_global_port` or `rx_global_port` is unknown,
 - a flow whose `logical_if_id` is not declared,
-- a logical interface whose `global_port_id` is not declared,
-- a cross-card flow that requests `latency: true` or `jitter: true`
-  (until a clock-sync phase ships).
+- a logical interface whose `global_port_id` is not declared.
 
-The last rule is intentional: silently producing nonsensical numbers is
-worse than refusing the configuration.
+(Cross-card `latency: true` / `jitter: true` is **no longer rejected**: it is
+supported via the J5 GPIO sync + the per-flow `lat_correction` table, corrected
+in hardware. Earlier this was refused to avoid silently producing nonsensical
+numbers from two independent FPGA clocks; the shared sync edge now handles that
+hazard, so the config is accepted.)

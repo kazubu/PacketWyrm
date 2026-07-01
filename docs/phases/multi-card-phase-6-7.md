@@ -70,8 +70,8 @@ The flow compiler already supports cross-card flows by construction
 
 - emit a TX flow row on the TX card,
 - emit an RX flow row + classifier on the RX card,
-- annotate `latency_valid = false` and refuse YAML that requested
-  latency / jitter.
+- annotate `latency_valid = false` (now the cross-card **method** flag, not a
+  refusal) -- cross-card latency/jitter is accepted and HW-corrected (see §3).
 
 ### 2. Stats aggregation across cards
 
@@ -81,8 +81,16 @@ the result as a single global flow.
 
 ### 3. Honest cross-card timing reporting
 
-`pktwyrm stats` shows `latency: unsupported` for cross-card flows.
-Never a number. Same in JSON (`latency_valid: false`, optional
+> **UPDATE (superseded — implemented ahead of plan):** cross-card latency is now
+> measured and reported, corrected per flow in hardware via the J5 GPIO
+> time-sync (`pw_gpio_sync` + the per-flow `lat_correction` table). `flow.stats`
+> / `pktwyrm latency` show it with `latency_method: "gpio-corrected"` (vs
+> `"same-card"`); `latency_valid` is the method flag, not an availability gate.
+> The original plan below (refuse cross-card latency until a clock-sync phase)
+> no longer applies.
+
+(Original plan:) `pktwyrm stats` shows `latency: unsupported` for cross-card
+flows. Never a number. Same in JSON (`latency_valid: false`, optional
 `latency_reason`).
 
 ### 4. Hardware setup for testing
