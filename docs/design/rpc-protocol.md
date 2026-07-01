@@ -297,7 +297,9 @@ Returns two views of the running test config:
 - `yaml` — the exact submitted text (lossless; empty and `loaded:false` when
   no test config was loaded via `-t` / `config.load` this session).
 - `flows` / `forwards` — the running config serialized as structured JSON in
-  the **GUI form-model shape** (including `match` / `mods` / `encap`), so the
+  the **GUI form-model shape** (including `match` / `mods` / `encap`, and
+  `rate_mode`+`rate` preserving whether the flow used rate_bps or rate_pps so
+  Load current → Apply round-trips), so the
   Flows tab's **Load current** can populate the point-and-click form, not just
   the raw editor. (`flows` may be non-empty even when `loaded:false` if flows
   came from a combined `-e` file.) IPv4 addresses are emitted dotted, IPv6
@@ -321,9 +323,12 @@ write it **atomically** (tmp + rename) to the daemon's `-e` path —
   "restart_required": true }
 ```
 
-`restart_required` is `true` when the new topology (cards /
-logical_interfaces) differs from the running one — `config.load` cannot
-swap topology live, so a daemon restart is needed to apply it. A parse or
+`restart_required` is `true` whenever the saved file differs from what the
+daemon is currently running — config.save is a file write, not a live reload,
+so **any** change (secret, system, logical_ifs, cards) needs a restart to take
+effect (a no-op save returns `false`). `topology_change` is a separate bool:
+`true` when cards / logical_interfaces differ (that additionally can never be a
+live swap, per config.load's constraint). A parse or
 validate failure returns `{"error": "..."}` and writes nothing. If the
 submitted `secret:` is the redaction sentinel `"***"` (the get_raw view saved
 back unchanged), the daemon **rewrites it to the running secret** before

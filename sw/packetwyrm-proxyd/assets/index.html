@@ -246,7 +246,7 @@ function flowYaml(f) {
   if (f.l4 === "tcp" && f.tcp_flags) L.push(`      flags: ${f.tcp_flags}`);
   L.push(`    traffic:`);
   L.push(`      frame_len: ${f.frame_len}`);
-  L.push(`      rate_bps: ${f.rate_bps}`);
+  L.push(`      ${f.rate_mode==="pps"?"rate_pps":"rate_bps"}: ${f.rate}`);
   L.push(`      payload: ${yq(f.payload)}`);
   L.push(`      insert_sequence: ${!!f.seq}`);
   L.push(`      insert_timestamp: ${!!f.ts}`);
@@ -326,7 +326,7 @@ const newFlow = () => ({
   tx:0, rx:1, src_mac:"02:a5:02:00:00:01", dst_mac:"02:a5:02:00:00:02", vlan:"",
   l3:"ipv4", ip_src:"192.0.2.1", ip_dst:"192.0.2.2", ttl:64,
   l4:"udp", sport:49152, dport:50001, tcp_flags:"",
-  frame_len:512, rate_bps:1000000000, payload:"increment", seq:true, ts:true,
+  frame_len:512, rate_mode:"bps", rate:1000000000, payload:"increment", seq:true, ts:true,
   m_loss:true, m_lat:true, m_jit:true, classify:"map", background:false,
   // advanced (optional)
   match:{ udp_dst:"", ipv4_dst:"", ipv6_dst_prefix:"", ipv6_src_prefix:"" },
@@ -360,7 +360,7 @@ function renderFlowList() {
     t.append(el("tr",{},[
       el("td",{text:f.id}), el("td",{text:f.name||"—"}),
       el("td",{text:`${f.tx}→${f.rx}`}), el("td",{text:`${f.l3}/${f.l4}`}),
-      el("td",{text:f.rate_bps}),
+      el("td",{text:`${f.rate} ${f.rate_mode||"bps"}`}),
       el("td",{},[
         el("button",{class:"ghost",text:"edit",onclick:()=>{selFlow=i;renderFlowEdit();}}),
         " ",
@@ -405,7 +405,8 @@ function renderFlowEdit() {
     field("L4",f,"l4","select",["udp","tcp"]),
     field("src port",f,"sport","number"), field("dst port",f,"dport","number"),
     field("tcp flags (hex, tcp only)",f,"tcp_flags"),
-    field("frame_len",f,"frame_len","number"), field("rate_bps",f,"rate_bps","number"),
+    field("frame_len",f,"frame_len","number"),
+    field("rate mode",f,"rate_mode","select",["bps","pps"]), field("rate",f,"rate","number"),
     field("payload",f,"payload","select",["zero","increment","prbs","random"]),
     field("classify",f,"classify","select",["map","header"]),
   ]));
@@ -579,10 +580,14 @@ $("#env-load").addEventListener("click", async () => {
 });
 $("#env-save").addEventListener("click", async () => {
   const r = await rpc({ rpc:"config.save", yaml: $("#env-yaml").value });
-  if (r.ok) showMsg("#env-msg", r.restart_required?"warn":"ok",
-    r.restart_required ? "Saved. Topology changed → restart packetwyrmd to apply."
-                       : "Saved to " + r.path);
-  else showMsg("#env-msg","err", r.error || JSON.stringify(r));
+  if (!r.ok) { showMsg("#env-msg","err", r.error || JSON.stringify(r)); return; }
+  // config.save writes the env file but never live-applies it, so any change
+  // needs a daemon restart to take effect; topology_change is called out too.
+  if (r.restart_required)
+    showMsg("#env-msg","warn", "Saved to " + r.path + " — restart packetwyrmd to apply"
+      + (r.topology_change ? " (topology change: cards/logical interfaces)." : "."));
+  else
+    showMsg("#env-msg","ok", "Saved to " + r.path + " (no change).");
 });
 
 /* ---- Dashboard polling ---- */
@@ -671,6 +676,9 @@ function renderHealth(cards, stats, fstats, metaById) {
     text:"Derived from data-plane stats (mirrors the front-panel R/G LED: sticky error → red, traffic-clean → green)."}));
 }
 
+// latency cell: "—" unless the flow reports valid latency with the field present
+const lat = (f, k) =>
+  (f.latency_valid && f[k] != null) ? fmtTime(f[k] * TICK_NS) : "—";
 function renderFlowStatsTable(fstats, rates) {
   const cols = ["id","state","tx frm","tx/s","rx frm","rx/s","lost","dup","reorder","min","avg","max"];
   const t = el("table");
@@ -685,9 +693,10 @@ function renderFlowStatsTable(fstats, rates) {
       el("td",{class:"num",text:f.rx_frames}),
       el("td",{class:"num",text:fmtRate(rt.rx)}),
       errTd(f.lost), errTd(f.duplicate), errTd(f.out_of_order),
-      el("td",{class:"num",text:fmtTime(f.min_latency*TICK_NS)}),
-      el("td",{class:"num",text:fmtTime(f.avg_latency*TICK_NS)}),
-      el("td",{class:"num",text:fmtTime(f.max_latency*TICK_NS)}),
+      // latency fields are absent when read_ok/latency_valid is false -> show —
+      el("td",{class:"num",text:lat(f,"min_latency")}),
+      el("td",{class:"num",text:lat(f,"avg_latency")}),
+      el("td",{class:"num",text:lat(f,"max_latency")}),
     ]));
   });
   return t;
@@ -780,8 +789,8 @@ async function renderHist() {
   const max = Math.max(1, ...r.buckets);
   r.buckets.forEach((c,i) => {
     if (c === 0 && i > 0 && i < r.buckets.length-1) return; // skip empty middle bins
-    const loT = i===0 ? 0 : (1 << (i-1));      // bucket lower bound in ticks
-    const hiT = (1 << i);
+    const loT = i===0 ? 0 : Math.pow(2, i-1);  // bucket lower bound in ticks
+    const hiT = Math.pow(2, i);                 // (2**i, not 1<<i — avoids 32-bit overflow)
     const label = i===0 ? `< ${fmtTime(hiT*TICK_NS)}` : `≥ ${fmtTime(loT*TICK_NS)}`;
     box.append(el("div",{class:"barrow"},[
       el("span",{class:"lbl",text:label}),
