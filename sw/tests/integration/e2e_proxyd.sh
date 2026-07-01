@@ -73,6 +73,31 @@ check "rpc with secret -> version" '"version"' \
 check "rpc cards relayed" '"backend":"fake"' \
     "$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc \
         -d '{"rpc":"cards","secret":"e2e-secret"}')"
+
+# config.get_raw: returns the env file text with the secret value redacted.
+graw=$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc \
+        -d '{"rpc":"config.get_raw","secret":"e2e-secret"}')
+check "config.get_raw secret_set" '"secret_set":true' "$graw"
+check "config.get_raw redacts secret" '\*\*\*' "$graw"
+if echo "$graw" | grep -q 'e2e-secret'; then
+    echo "[FAIL] config.get_raw leaked the secret value"; fail=$((fail+1))
+else
+    echo "[ ok ] config.get_raw does not leak secret"; pass=$((pass+1))
+fi
+
+# config.save: re-save the current (unchanged) env file -> ok, no restart.
+# (Uses the real $CFG text, not the redacted get_raw output.)
+saved=$(python3 - "$PLAIN_PORT" "$CFG" <<'PY'
+import json, sys, urllib.request
+port, cfg = sys.argv[1], sys.argv[2]
+body = json.dumps({"rpc": "config.save", "secret": "e2e-secret",
+                   "yaml": open(cfg).read()}).encode()
+r = urllib.request.urlopen("http://127.0.0.1:%s/api/rpc" % port, data=body)
+print(r.read().decode())
+PY
+)
+check "config.save ok" '"ok":true' "$saved"
+check "config.save no restart (unchanged)" '"restart_required":false' "$saved"
 kill "$PXP" 2>/dev/null || true; PXP=""
 
 # --- TLS gateway (loopback, self-signed) ---
