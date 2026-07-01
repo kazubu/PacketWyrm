@@ -227,6 +227,7 @@ Initial RPCs:
 | `link.show`          | per-port link / SFP / PCS state               |
 | `config.load`        | load + validate + activate a YAML config      |
 | `config.get_raw`     | read the env config file (secret redacted)    |
+| `config.get_test`    | read the active test config (flows/forwards)  |
 | `config.save`        | validate + atomically write the env config    |
 | `flow.list`          | global flow table snapshot                    |
 | `flow.start`/`stop`  | per-flow lifecycle                            |

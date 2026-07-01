@@ -98,15 +98,19 @@
       <div id="flow-list"></div>
       <div class="row" style="margin-top:10px">
         <button class="act" id="flow-add">+ Add flow</button>
+        <button class="act ghost" id="flow-load">Load current</button>
         <button class="act ghost" id="flow-apply">Apply (config.load)</button>
       </div>
+      <p class="muted">The form authors new flows. <b>Load current</b> pulls the
+        running test config into the YAML editor below (lossless — includes
+        encap/modifiers/match); edit &amp; <b>Apply raw YAML</b> there.</p>
       <div id="flow-msg"></div>
     </section>
     <section class="card">
       <h2>Editor</h2>
       <div id="flow-edit" class="muted">Add or select a flow to edit.</div>
     </section>
-    <details class="adv card"><summary>Generated test-config YAML (preview / advanced raw edit)</summary>
+    <details class="adv card" id="flow-yaml-details"><summary>Test-config YAML (running / generated / advanced raw edit)</summary>
       <p class="muted">This is what <b>Apply</b> sends. Edit here directly for features the
         form doesn't cover (encap, modifiers, match masks); raw edits win on Apply-raw.</p>
       <textarea id="flow-yaml"></textarea>
@@ -344,6 +348,20 @@ function refreshFlows(reEdit=true) {
   $("#flow-yaml").value = buildTestYaml();
 }
 $("#flow-add").addEventListener("click", () => { flows.push(newFlow()); selFlow=flows.length-1; refreshFlows(); });
+$("#flow-load").addEventListener("click", async () => {
+  const r = await rpc({ rpc:"config.get_test" });
+  if (r.yaml == null) { showMsg("#flow-msg","err", r.error || JSON.stringify(r)); return; }
+  if (!r.loaded || !r.yaml.trim()) {
+    showMsg("#flow-msg","warn","No test config loaded yet (load one via Apply, "
+      + "`pktwyrm load`, or the daemon's -t). Nothing to edit.");
+    return;
+  }
+  $("#flow-yaml").value = r.yaml;
+  $("#flow-yaml-details").open = true;
+  showMsg("#flow-msg","ok","Loaded the running test config into the YAML editor "
+    + "below. Edit it and use “Apply raw YAML”.");
+  $("#flow-yaml-details").scrollIntoView({ behavior:"smooth", block:"nearest" });
+});
 $("#flow-apply").addEventListener("click", async () => {
   const yaml = buildTestYaml();
   $("#flow-yaml").value = yaml;

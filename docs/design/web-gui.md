@@ -90,8 +90,11 @@ dependencies). Tabs:
 - **Flows** — point-and-click editor for the common flow schema
   (ports / L2 / L3 v4|v6 / L4 udp|tcp / traffic / measurements /
   classify / background) with a live generated-YAML preview; **Apply**
-  ships it via `config.load`. A raw-YAML escape hatch covers features the
-  form omits (encap, modifiers, match masks). The YAML the form emits is
+  ships it via `config.load`. **Load current** pulls the running test
+  config (`config.get_test`) into the raw-YAML editor so existing flows —
+  including advanced features the form doesn't model (encap, modifiers,
+  match masks) — can be edited losslessly and re-applied via **Apply raw
+  YAML**. The form is for authoring/quick edits; the YAML it emits is
   exactly what `packetwyrmd` parses (see `yaml-schema.md`).
 - **Forwards** — form editor for store-and-forward rules → `config.load`.
 - **Control** — `test.arm` / `test.start` / `test.stop`, `stats.clear`,
