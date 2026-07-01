@@ -472,6 +472,32 @@ static void set_test_yaml(const char *s) {
     g_test_yaml = s ? strdup(s) : NULL;
 }
 
+/* The exact env-file text the daemon LOADED at startup. config.save compares
+ * against this (not the current on-disk file, which may have been edited
+ * externally since) to decide restart_required -- the running daemon only
+ * reflects what it parsed at startup. */
+static char *g_env_loaded_yaml = NULL;
+
+/* Read an entire file into a malloc'd NUL-terminated string (NULL on error). */
+static char *read_file_str(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return NULL;
+    char *buf = NULL; size_t cap = 0, len = 0; int ch;
+    while ((ch = fgetc(f)) != EOF) {
+        if (len + 2 > cap) {
+            cap = cap ? cap * 2 : 4096;
+            char *nb = realloc(buf, cap);
+            if (!nb) { free(buf); fclose(f); return NULL; }
+            buf = nb;
+        }
+        buf[len++] = (char)ch;
+    }
+    fclose(f);
+    if (!buf) { buf = malloc(1); if (!buf) return NULL; }
+    buf[len] = '\0';
+    return buf;
+}
+
 /* Attempt a live program swap from a YAML string. Returns a JSON
  * response describing success or the failure mode. On any failure
  * before the actual swap, the in-flight program stays live; the
@@ -791,24 +817,14 @@ static struct json_object *do_config_save(struct pw_config **cfg_pp,
     /* config.save writes the file but does NOT live-apply it (unlike
      * config.load's test merge): the running daemon keeps its loaded env until
      * restart. So a restart is needed to apply ANY change -- secret, system,
-     * logical_ifs, cards -- not just topology. Decide by comparing the new text
-     * to the current file; a no-op save needs no restart. */
-    bool restart_required = true;
-    {
-        FILE *cf = fopen(g_env_path, "r");
-        if (cf) {
-            fseek(cf, 0, SEEK_END); long csz = ftell(cf); fseek(cf, 0, SEEK_SET);
-            if (csz >= 0 && (size_t)csz == out_len) {
-                char *cur = malloc(out_len + 1);
-                if (cur && fread(cur, 1, out_len, cf) == out_len) {
-                    cur[out_len] = '\0';
-                    if (memcmp(cur, out_yaml, out_len) == 0) restart_required = false;
-                }
-                free(cur);
-            }
-            fclose(cf);
-        }
-    }
+     * logical_ifs, cards -- not just topology. Compare against the text the
+     * daemon LOADED at startup (g_env_loaded_yaml), NOT the current on-disk
+     * file (which may have been edited externally since) -- otherwise saving an
+     * external edit could wrongly report no restart while the running daemon is
+     * unaware of it. A save identical to the loaded text needs no restart. */
+    bool restart_required = !g_env_loaded_yaml ||
+        strlen(g_env_loaded_yaml) != out_len ||
+        memcmp(g_env_loaded_yaml, out_yaml, out_len) != 0;
 
     /* Atomic write: <path>.tmp then rename. The env file holds system.secret,
      * so its permissions matter: create the tmp file with the EXISTING file's
@@ -1814,6 +1830,9 @@ int main(int argc, char **argv) {
         fprintf(stderr, "parse env: %s at %s: %s\n", pw_strerror(r), diag.path, diag.message);
         return 1;
     }
+    /* Stash the env text as loaded, so config.save's restart_required compares
+     * against what the running daemon actually parsed (not the live file). */
+    g_env_loaded_yaml = read_file_str(env_path);
     /* Optional test config: parse flows/forwards and attach onto the env. */
     if (test_path) {
         struct pw_config *t = pw_config_new();
@@ -1826,17 +1845,8 @@ int main(int argc, char **argv) {
         cfg->forwards = t->forwards; cfg->n_forwards = t->n_forwards; t->forwards = NULL; t->n_forwards = 0;
         pw_config_free(t);
         /* Stash the raw text so config.get_test can serve the running flows. */
-        FILE *tf = fopen(test_path, "r");
-        if (tf) {
-            char *tb = NULL; size_t tcap = 0, tlen = 0; int ch;
-            while ((ch = fgetc(tf)) != EOF) {
-                if (tlen + 2 > tcap) { tcap = tcap ? tcap * 2 : 4096;
-                    char *nb = realloc(tb, tcap); if (!nb) { free(tb); tb = NULL; break; } tb = nb; }
-                tb[tlen++] = (char)ch;
-            }
-            fclose(tf);
-            if (tb) { tb[tlen] = '\0'; set_test_yaml(tb); free(tb); }
-        }
+        char *tb = read_file_str(test_path);
+        if (tb) { set_test_yaml(tb); free(tb); }
     }
     if ((r = pw_config_validate(cfg, &diag)) != PW_OK) {
         fprintf(stderr, "validate: %s at %s: %s\n", pw_strerror(r), diag.path, diag.message);
