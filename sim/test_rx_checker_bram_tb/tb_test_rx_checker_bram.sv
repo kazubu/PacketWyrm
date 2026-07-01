@@ -36,7 +36,7 @@ module tb_test_rx_checker_bram;
         .timestamp_i(timestamp_i), .lat_correction_i(lat_correction_i),
         .key_i(key_i), .result_i(result_i),
         .event_valid_i(event_valid_i),
-        .hist_ev_o(), .hist_flow_o(), .hist_bucket_o(),
+        .hist_ev_o(), .hist_flow_o(), .hist_bucket_o(), .lost_event_o(),
         .rd_addr_i(rd_addr_i), .rd_en_i(rd_en_i), .rd_valid_o(rd_valid_o),
         .rd_rx_frames_o(rd_rx), .rd_lost_o(rd_lost), .rd_duplicate_o(rd_dup),
         .rd_out_of_order_o(rd_ooo), .rd_last_seq_o(rd_lseq),

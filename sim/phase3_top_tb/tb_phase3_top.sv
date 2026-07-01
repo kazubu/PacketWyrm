@@ -165,7 +165,12 @@ module tb_phase3_top;
         .dp_soft_rst_o(),
         .gpio_i       (6'b0),
         .gpio_o       (),
-        .gpio_t       ()
+        .gpio_t       (),
+        .sfp_i2c_i    (4'hF),
+        .sfp_i2c_o    (),
+        .sfp_i2c_t    (),
+        .status_err_o      (),
+        .status_activity_o ()
     );
 
     int    errors = 0;

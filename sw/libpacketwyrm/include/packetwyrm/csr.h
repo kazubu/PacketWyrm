@@ -45,6 +45,17 @@ enum {
     PWFPGA_REG_GPIO_SYNC_SEQ        = 0x013c,
     PWFPGA_REG_GPIO_SYNC_STATUS     = 0x0140,
 
+    /* Per-SFP I2C management bus (SW bit-bang, open-drain). Write [3:0] =
+     * drive-low per line (1 = pull the line low, 0 = release -> external
+     * pull-up gives 1). Read [3:0] = the drive register; read [19:16] = the
+     * (synchronised) pad-in state, same bit order:
+     *   bit 0 SFP0 SCL, bit 1 SFP0 SDA, bit 2 SFP1 SCL, bit 3 SFP1 SDA.
+     * Bit-bang I2C over it to read the SFP EEPROM: 0xA0 base ID at i2c addr
+     * 0x50 (identifier / vendor / part / connector), 0xA2 DOM at 0x51
+     * (temp / Vcc / TX bias / TX power / RX power, if the module is DDM-capable;
+     * a passive DAC answers the ID page but has no optical DOM). */
+    PWFPGA_REG_SFP_I2C              = 0x0150,
+
     /* Per-flow cross-card latency correction window. Slot i (= the RX checker
      * local_flow_id) at BASE + i*8: +0 = LO [31:0] (signed), +4 = HI [63:32].
      * Write LO then HI -- LO stages a shadow, HI commits {HI,shadow} atomically

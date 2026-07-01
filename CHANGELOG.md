@@ -8,6 +8,33 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ## Unreleased
 
+### Added
+  - **Front-panel R/G health LED.** The previously-unconnected bicolor status LED
+    (led_r=A13 / led_g=A12, active-low) now shows data-plane health: **red** =
+    sticky error since the last `stats.clear` (a checker sequence-loss event, or
+    a nonzero RX FCS/runt or port-drop count); **green blinking** = up + clean +
+    traffic flowing; **green solid** = up + clean + idle; **off** = PCIe down /
+    not configured (red overrides green). SFP link state is intentionally NOT
+    shown here (the per-cage SFP LEDs already do that). The data plane exports two
+    aggregate levels (err_sticky, activity — a retriggerable one-shot); the board
+    top 2FF-synchronises them into the 100 MHz LED domain and drives a ~3 Hz
+    blink. New checker `lost_event_o` pulse feeds the sticky-error latch.
+  - **SFP+ module identifier + DOM read (`pw_sfp`).** New per-SFP I2C management
+    bus (CSR `REG_SFP_I2C` 0x0150, open-drain SCL/SDA per cage via board-top
+    IOBUFs on C13/C14 and D10/D11) lets software bit-bang the module EEPROM. New
+    `libpacketwyrm/sfp.{c,h}` reads + decodes SFF-8024/8472: identifier, vendor,
+    part, revision, serial, date code, nominal bit rate (0xA0 @ i2c 0x50), and —
+    for DDM-capable optical modules — live DOM (temperature, Vcc, TX bias, TX/RX
+    optical power, 0xA2 @ 0x51). New `pw_sfp <bdf> [port|both] [raw]` tool prints
+    it (with dBm). A passive DAC reports the identifier but no DOM. Pad inputs are
+    2FF-synchronised + false-pathed; the I2C lines idle high via PULLUP.
+    `pw_sfp_write()` + `pw_sfp <bdf> <port> write <0x50|0x51> <offset> <hexbytes>
+    [commit]` also write the module EEPROM (single-byte writes with ACK-poll for
+    the write cycle; no RTL change -- same bit-bang CSR). Guarded: a dry run
+    (current vs new) unless `commit` is given, then it writes + reads back to
+    verify. WARNING: writing the base ID page can re-code / brick a module;
+    intended for deliberate lab use on modules you own.
+
 ### Fixed
   - **Deep-encap UDF classifier matching.** A UDF slice comparator reads inner
     byte `base_i(eff) + offset` out of the captured window, but the window was

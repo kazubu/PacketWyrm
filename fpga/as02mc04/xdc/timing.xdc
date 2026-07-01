@@ -33,3 +33,12 @@ set_multicycle_path -hold  3 -from [get_cells -hier -filter {NAME =~ *u_win/shad
 # handles metastability; the levels change on millisecond link events).
 set_false_path -to [get_pins -hier -filter {NAME =~ *lu_sync0_reg*/D}] -quiet
 set_false_path -to [get_pins -hier -filter {NAME =~ *bl_sync0_reg*/D}] -quiet
+
+# --- Front-panel health-LED status CDC (board top) -------------------------
+# The R/G health LED (clk_100mhz) samples err_sticky/activity (dp_clk) and
+# pcie_link_up (PCIe user clock) through 2-FF synchronizers; the first-stage
+# capture is a false path exactly like lu/bl above (2FF handles MTBF; the levels
+# are quasi-static -- sticky error, ~54 ms activity one-shot, link state).
+set_false_path -to [get_pins -hier -filter {NAME =~ *err_sync0_reg/D}]  -quiet
+set_false_path -to [get_pins -hier -filter {NAME =~ *act_sync0_reg/D}]  -quiet
+set_false_path -to [get_pins -hier -filter {NAME =~ *pcie_sync0_reg/D}] -quiet

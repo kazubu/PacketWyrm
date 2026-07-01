@@ -301,6 +301,34 @@ pwfpga_top
 - Expose link state, block-lock, RX fault to `port[N]_status`.
 - Phase 1 deliverable: stable link over a DAC.
 
+### SFP I2C management (`REG_SFP_I2C`)
+
+- Per-cage open-drain 2-wire bus (SCL/SDA on C13/C14 for SFP0, D10/D11 for SFP1)
+  brought out through board-top IOBUFs. No hardware I2C controller: the CSR
+  exposes a drive-low bit + a synchronised pad-in bit per line, and software
+  bit-bangs the protocol (reads are on-demand and low-rate). Pad inputs are
+  2FF-synced into the CSR clock; the lines idle high via PULLUP.
+- Used to read the SFP module EEPROM — identifier / vendor / part / bit-rate
+  (0xA0 base ID) and, for DDM-capable optics, live DOM (temperature, Vcc, TX
+  bias, TX/RX optical power at 0xA2). SW: `libpacketwyrm/sfp.{c,h}` + the
+  `pw_sfp` tool. A passive DAC answers the ID page but has no optical DOM.
+- The same bit-bang bus also **writes** the EEPROM (`pw_sfp_write` / `pw_sfp ...
+  write`), single-byte with ACK-polling for the write cycle — no RTL change (the
+  CSR is symmetric). Guarded (dry-run + read-back verify); writing 0x50 can
+  re-code a module, so it's a deliberate lab operation.
+
+### Front-panel status LEDs
+
+- `led_hb` = 1 Hz heartbeat (FPGA alive); `led[1]` = PCIe link up; per-cage
+  `sfp_led[0..1]` = SFP link status (`!rx_status`).
+- `led_r`/`led_g` (A13/A12, active-low bicolor) = **data-plane health**, NOT link
+  (the SFP LEDs cover link). The data plane aggregates two dp_clk-domain levels:
+  `err_sticky` (latched on any checker loss-event / RX FCS / port drop since the
+  last `stats_clear`) and `activity` (a retriggerable one-shot reloaded on each
+  RX/TX frame). The board top 2FF-synchronises them + `pcie_link_up` into the
+  100 MHz LED domain: red = up & error; green blink = up & clean & active; green
+  solid = up & clean & idle; off = not up (red overrides green).
+
 ### rx_pipeline / parser
 
 The parser must reach into at least:

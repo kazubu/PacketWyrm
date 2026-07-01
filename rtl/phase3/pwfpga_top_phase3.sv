@@ -108,7 +108,23 @@ module pwfpga_top_phase3 #(
     // bidirectional pads (IOBUF) and presents the split in/out/tri here.
     input  wire [5:0]        gpio_i,
     output wire [5:0]        gpio_o,
-    output wire [5:0]        gpio_t
+    output wire [5:0]        gpio_t,
+
+    // Per-SFP I2C management (SW bit-bang, open-drain). The board top owns the
+    // IOBUFs; here we present the split in/out/tri, one bit per line:
+    //   [0] SFP0 SCL  [1] SFP0 SDA  [2] SFP1 SCL  [3] SFP1 SDA.
+    // Output is always 0 (open-drain drives only low); _t releases the line
+    // (hi-Z -> external pull-up = 1) except when the CSR asserts drive-low.
+    input  wire [3:0]        sfp_i2c_i,
+    output wire [3:0]        sfp_i2c_o,
+    output wire [3:0]        sfp_i2c_t,
+
+    // Aggregate data-plane health for the front-panel R/G LED (dp_clk domain;
+    // the board top synchronises + drives the LED). status_err = sticky error
+    // since the last stats-clear (loss / FCS / drop); status_activity = traffic
+    // recent (green blink).
+    output wire              status_err_o,
+    output wire              status_activity_o
 );
 
     // --- Data-plane <-> CSR_full wiring -------------------------
@@ -124,6 +140,19 @@ module pwfpga_top_phase3 #(
     logic                          lat_corr_wr_en_w;
     logic [$clog2(NUM_FLOWS)-1:0]  lat_corr_wr_slot_w;
     logic [63:0]                   lat_corr_wr_data_w;
+
+    // Per-SFP I2C bit-bang (CSR <-> board IOBUFs). The CSR drives "drive-low"
+    // enables; open-drain means the pad output is always 0 and _t releases the
+    // line unless a drive-low is asserted. The async pad inputs are 2FF-synced
+    // into this (CSR) clock before the CSR reads them back.
+    logic [3:0] sfp_i2c_drive_low_w;
+    (* ASYNC_REG = "true" *) logic [3:0] sfp_i2c_sync0, sfp_i2c_sync1;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin sfp_i2c_sync0 <= 4'hF; sfp_i2c_sync1 <= 4'hF; end
+        else        begin sfp_i2c_sync0 <= sfp_i2c_i; sfp_i2c_sync1 <= sfp_i2c_sync0; end
+    end
+    assign sfp_i2c_o = 4'b0000;                 // open-drain: only ever drive low
+    assign sfp_i2c_t = ~sfp_i2c_drive_low_w;    // release (hi-Z) unless driving low
 
     logic [31:0] port_drops_w  [NUM_PORTS];
     logic [47:0] rx_frames_w   [NUM_PORTS];
@@ -207,6 +236,8 @@ module pwfpga_top_phase3 #(
         .gpio_sync_ts_i      (gpio_sync_ts_w),
         .gpio_sync_seq_i     (gpio_sync_seq_w),
         .gpio_sync_gpio_in_i (gpio_sync_gpin_w),
+        .sfp_i2c_drive_low_o (sfp_i2c_drive_low_w),
+        .sfp_i2c_in_i        (sfp_i2c_sync1),
         .lat_corr_wr_en_o    (lat_corr_wr_en_w),
         .lat_corr_wr_slot_o  (lat_corr_wr_slot_w),
         .lat_corr_wr_data_o  (lat_corr_wr_data_w),
@@ -465,7 +496,9 @@ module pwfpga_top_phase3 #(
         .rx_fcs_error_o    (rx_fcs_err_w),
         .link_up_cnt_o     (link_up_cnt_w),
         .link_down_cnt_o   (link_down_cnt_w),
-        .block_lock_loss_o (block_lock_loss_w)
+        .block_lock_loss_o (block_lock_loss_w),
+        .err_sticky_o      (status_err_o),
+        .activity_o        (status_activity_o)
     );
 
     // --- J5 GPIO cross-card time-sync ---------------------------------------
