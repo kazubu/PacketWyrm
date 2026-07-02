@@ -162,13 +162,19 @@ Optional RTL features:
    clamp: `raw` = full Eth/IP/L4 + zero payload; `ip` = Eth[+VLAN]+IP+payload;
    `eth` = Eth[+VLAN]+ethertype+payload. Raw templates require `classify: header`,
    forbid measurements/encap, and are non-stampable (`m_tstampable=0`). Row wire
-   format is 244 B (drift-locked). REMAINING for this line-rate work:
-   **(a) per-frame overhead reduction** — the ~15-cycle/frame generator pipeline
-   caps small frames at ~10.42 Mpps (vs 14.88 Mpps line rate for 64 B); overlap
-   the next frame's pick/header-precompute with the current frame's emission
-   (timing-risky on the dp_clk-critical `pw_flow_gen_multi`, gate on post-route
-   WNS). **(b) GUI form field** for `frame_template`/`l2.ethertype` (raw-YAML
-   editor already works).
+   format is 244 B (drift-locked). **(a) small-frame line rate — DONE (SW only,
+   no RTL/bitstream change).** The single-flow small-frame ceiling was NOT a
+   hardwired pipeline limit — it was token-bucket drain. With a 1-frame bucket
+   (`burst_size: 1`, the default), each frame's token deduction empties the
+   bucket, drops the slot's eligibility, and drains the ~5-stage pick/precompute
+   pipeline: a ~5-cycle/frame bubble (HW: 64 B burst=1 → 12.0 Mpps). The compiler
+   now floors the bucket cap at **2 frames**, so ≥1 frame of tokens survives each
+   deduct, eligibility never drops, the pipeline stays primed, and a single 64 B
+   flow hits **14.2 Mpps / line rate** (HW-validated 0x6a45d838, loss=0) with the
+   default `burst_size`. Multi-flow already saturated (other eligible slots kept
+   the pipeline fed). No double-buffer/RTL overlap needed — the dp_clk-critical
+   module is untouched. **(b) GUI form field** for `frame_template`/`l2.ethertype`
+   — DONE.
 
 Classification is three coexisting paths (precedence map > hash > field): the
 flow-id map (structured test flows), the hash exact table (high-count,

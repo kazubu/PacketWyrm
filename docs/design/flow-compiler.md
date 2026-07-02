@@ -79,7 +79,15 @@ For the TX card, fill in `pwfpga_flow_config`:
   row's `frame_template`/`l2_ethertype` and zeroes the absent-layer hash-key
   words so RX header classification matches the zero-payload frame.
 - Rate (`rate_bps` / `rate_pps`) + burst (`burst_size`,
-  `burst_gap_ticks`).
+  `burst_gap_ticks`). The token-bucket cap (`burst_bytes`) is
+  `max(burst_size, 2) x frame` bytes: the **2-frame floor** is a hardware
+  pipelining requirement, not a burst-tolerance choice. The generator's
+  pick/precompute pipeline is ~5 stages deep; with a 1-frame bucket, each frame's
+  token deduction empties it, drops the slot's eligibility, and drains that
+  pipeline — a ~5-cycle/frame bubble that caps a single small-frame flow below
+  line rate (HW: 64 B burst=1 → 12.0 Mpps). A ≥2-frame cap leaves ≥1 frame of
+  tokens after each deduct, so eligibility never drops and the pipeline stays
+  primed → line rate (64 B single flow → 14.2 Mpps, HW-validated).
 - `insert_sequence` and `insert_timestamp` default true.
 - If the flow sets `encap`, the row also carries the tunnel descriptor
   (type + outer L3 + EtherIP inner MAC); the generator wraps the inner
