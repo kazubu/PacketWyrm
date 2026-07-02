@@ -569,7 +569,11 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
      * MAC<->dp_clk frame FIFO drops oversize frames, so cap at the validated
      * standard Ethernet maximum (1518 B on the wire => <=1514 B emitted; we
      * accept up to 1518 for the field and let the gen clamp). Below the test-
-     * frame floor the generator clamps up to the minimum legal frame. */
+     * frame floor the generator clamps up to the minimum legal frame.
+     * The minimum is 60: frame_len is the pre-FCS L2 length, and the smallest
+     * legal Ethernet frame is 64 B ON THE WIRE INCLUDING FCS = 60 B pre-FCS. So
+     * frame_len:60 emits a true 64-byte wire frame (the 64 B / 14.88 Mpps line-
+     * rate point); anything smaller the MAC pads to 60 anyway. */
     if (f->traffic.frame_len_fixed_set &&
         (pw_yaml_map_get(tr, "frame_len_min") || pw_yaml_map_get(tr, "frame_len_max") ||
          pw_yaml_map_get(tr, "frame_len_step"))) {
@@ -582,8 +586,8 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
                                                       : f->traffic.frame_len_min;
         uint16_t fhi = f->traffic.frame_len_fixed_set ? f->traffic.frame_len_fixed
                                                       : f->traffic.frame_len_max;
-        if (flo < 64 || fhi > 1518) {
-            diag_set(diag, PW_E_INVAL, tp, "frame length out of range [64,1518]");
+        if (flo < 60 || fhi > 1518) {
+            diag_set(diag, PW_E_INVAL, tp, "frame length out of range [60,1518]");
             return PW_E_INVAL;
         }
         if (flo > fhi) {
