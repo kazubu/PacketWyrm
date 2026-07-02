@@ -130,6 +130,10 @@ module tb_wire_vectors;
         .link_up_cnt_i       (pl_zero),
         .link_down_cnt_i     (pl_zero),
         .block_lock_loss_i   (pl_zero),
+        .drop_nomatch_i      (pl_zero),
+        .drop_saf_i          (pl_zero),
+        .last_drop_ctx_i     (pl_zero),
+        .last_drop_fid_i     (pl_zero),
         .flow_rd_addr_o      (),                // flow stats not exercised here
         .flow_rx_i           (64'd0),
         .flow_lost_i         (64'd0),

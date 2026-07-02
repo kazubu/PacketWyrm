@@ -714,7 +714,20 @@ function renderHealth(cards, stats, fstats, metaById, portstats) {
     (portstats||[]).forEach(p => {
       if (p.card_id !== c.id) return;
       if (p.rx_fcs_error>0) causes.push(`port ${p.global_port} FCS ${p.rx_fcs_error}`);
-      if (p.drops>0)        causes.push(`port ${p.global_port} drops ${p.drops}`);
+      if (p.drops>0) {
+        // Break the drop down by cause + show the last no-match frame's identity
+        // so a rare drop is diagnosable at a glance (real test-frame miss vs a
+        // stray/garbage frame).
+        let d = `port ${p.global_port} drops ${p.drops}`;
+        const parts = [];
+        if (p.drop_nomatch>0) parts.push(`no-match ${p.drop_nomatch}`);
+        if (p.drop_saf>0)     parts.push(`saf-overflow ${p.drop_saf}`);
+        if (parts.length) d += ` (${parts.join(", ")})`;
+        const ld = p.last_drop;
+        if (ld && p.drop_nomatch>0)
+          d += ` [last: ${ld.is_test?"test":"non-test"} eth 0x${(ld.ethertype||0).toString(16)} proto ${ld.l3_proto} flow ${ld.flow_id}]`;
+        causes.push(d);
+      }
     });
     // per-flow errors on flows received by this card
     let active = false;

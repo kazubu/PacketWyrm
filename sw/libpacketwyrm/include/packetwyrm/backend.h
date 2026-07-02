@@ -39,6 +39,17 @@ struct pw_port_stats {
     uint32_t link_up_count;
     uint32_t link_down_count;
     uint32_t block_lock_loss;
+    /* DROP classification (bytes 76..91 of the 128 B per-port snapshot block).
+     * rx_bad_frame above is the sum (back-compat). drop_nomatch = classifier
+     * no-match/DROP action; drop_saf = store-and-forward buffer-full drop.
+     * last_drop_ctx = a bit-packed context of the most recent no-match frame
+     * {l3_proto[31:24], ethertype[23:8], is_arp[7], action[6:4], hit[3],
+     *  is_ipv6[2], is_ipv4[1], is_test[0]}; last_drop_flowid = its test_flow_id.
+     * Lets software tell a real test-frame miss from a stray/garbage frame. */
+    uint32_t drop_nomatch;
+    uint32_t drop_saf;
+    uint32_t last_drop_ctx;
+    uint32_t last_drop_flowid;
 };
 
 struct pw_flow_stats {
