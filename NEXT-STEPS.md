@@ -156,7 +156,7 @@ Optional RTL features:
    parser is NOT a lever (build-confirmed twice — see `dp-clk-timing-lessons`
    UPDATE 11/12). Largest blocks now: parser ~39K LUT (2 ports, 176 B), generator
    ~28K, field classifier ~16K, flow-table down to ~4K.
-7. **Generator frame templates — DONE (RTL/SW/sim; HW pending).** A per-flow
+7. **Generator frame templates — DONE + HW-validated.** A per-flow
    `frame_template` (`test|raw|ip|eth`) lets the generator emit a raw (no test
    header) payload so a **true 64-byte frame** comes out instead of the 74 B
    clamp: `raw` = full Eth/IP/L4 + zero payload; `ip` = Eth[+VLAN]+IP+payload;

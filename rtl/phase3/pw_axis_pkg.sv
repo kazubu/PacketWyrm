@@ -144,7 +144,8 @@ package pw_axis_pkg;
         // (full headers, raw payload, no test hdr) / 2 L3RAW (Eth[+vlan]+IP+
         // payload) / 3 L2RAW (Eth[+vlan]+ethertype+payload). Raw templates
         // never carry encap. l2_ethertype overrides the L2RAW ethertype (0 =>
-        // 0x0800); ignored for other templates (they derive it from is_v6).
+        // IP-family default: 0x0800 v4 / 0x86DD v6, per is_v6); ignored for
+        // other templates.
         logic [1:0]   frame_template;
         logic [15:0]  l2_ethertype;
     } pw_flow_row_t;

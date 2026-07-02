@@ -441,7 +441,8 @@ struct pwfpga_flow_config {
      * header-classifier sees zeros for any L3/L4 it attempts to parse. */
     uint8_t  frame_template;       /* byte 240: enum pwfpga_frame_template */
     uint8_t  reserved_ft;          /* byte 241: reserved / word align */
-    uint16_t l2_ethertype;         /* bytes 242..243: L2RAW ethertype (0 => 0x0800) */
+    uint16_t l2_ethertype;         /* bytes 242..243: L2RAW ethertype (0 => IP-family
+                                    * default: 0x0800 v4 / 0x86DD v6, per ip_version) */
 } __attribute__((packed));
 
 _Static_assert(sizeof(struct pwfpga_flow_config) == 244,
