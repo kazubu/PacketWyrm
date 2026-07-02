@@ -549,11 +549,11 @@ module pw_flow_gen_multi #(
                          input logic [15:0] csum,    input logic [15:0] ocsum,
                          input logic [23:0] psa,     input logic [23:0] psb,
                          input logic [11:0] pay_len);
-        int off, tl, total_len, o_pl, o_tot, l4hl, l3_tot;
+        int off, tl, total_len, o_pl, o_tot, l4hl, ip_pl;
         logic [7:0]  tos, o_tos, o_proto, l4proto;
         logic        is_tcp;
         logic [1:0]  tmpl;
-        logic [15:0] ucsum, inner_et, et2;
+        logic [15:0] ucsum, inner_et, et2, et_out;
         tmpl    = r.frame_template;
         is_tcp  = (r.l4_proto == 8'd6);
         l4hl    = is_tcp ? 20 : 8;         // L4 header length
@@ -579,50 +579,16 @@ module pw_flow_gen_multi #(
             off += 4;
         end
 
-        // --- Raw L2 / L3 templates: no L4 header, no test header -------------
-        // The emitted payload is all zeros (fb only holds the header region; the
-        // emit FSM streams zeros beyond built_len), so an RX header-classifier
-        // sees zeros for any L3/L4 it attempts to parse -- coherent with the
-        // compiler's hash key (flow_compiler pw_fc_hash_words). No encap here
-        // (validator rejects encap on raw templates).
-        if (tmpl == 2'd3) begin            // L2RAW: Ethernet [+VLAN] + ethertype
-            fb[off]<=et2[15:8]; fb[off+1]<=et2[7:0]; off += 2;
-            frame_len <= 12'(off + int'(pay_len));
-            built_len <= 12'(off);
-            return;
-        end
-        if (tmpl == 2'd2) begin            // L3RAW: Ethernet [+VLAN] + IP + payload
-            if (r.is_v6) begin
-                fb[off]<=8'h86; fb[off+1]<=8'hDD; off += 2;    // ethertype IPv6
-                // 40-byte IPv6 header; payload length = raw payload; next-header
-                // = the configured L4 proto (informational -- no L4 follows).
-                l3_tot = int'(pay_len);
-                fb[off+0]<={4'h6, tos[7:4]}; fb[off+1]<={tos[3:0], 4'h0};
-                fb[off+2]<=8'h00; fb[off+3]<=8'h00;            // flow label = 0
-                fb[off+4]<=l3_tot[15:8]; fb[off+5]<=l3_tot[7:0];
-                fb[off+6]<=l4proto; fb[off+7]<=r.ttl;
-                for (int b = 0; b < 16; b++) fb[off+8+b]  <= eff_v6src[127 - b*8 -: 8];
-                for (int b = 0; b < 16; b++) fb[off+24+b] <= eff_v6dst[127 - b*8 -: 8];
-                off += 40;
-            end else begin
-                fb[off]<=8'h08; fb[off+1]<=8'h00; off += 2;    // ethertype IPv4
-                l3_tot = 20 + int'(pay_len);                   // IP total length
-                fb[off+0]<=8'h45; fb[off+1]<=tos;
-                fb[off+2]<=l3_tot[15:8]; fb[off+3]<=l3_tot[7:0];
-                fb[off+4]<=8'h00; fb[off+5]<=8'h00; fb[off+6]<=8'h40; fb[off+7]<=8'h00;
-                fb[off+8]<=r.ttl; fb[off+9]<=l4proto; fb[off+10]<=csum[15:8]; fb[off+11]<=csum[7:0];
-                fb[off+12]<=eff_sip[31:24]; fb[off+13]<=eff_sip[23:16];
-                fb[off+14]<=eff_sip[15:8];  fb[off+15]<=eff_sip[7:0];
-                fb[off+16]<=eff_dip[31:24]; fb[off+17]<=eff_dip[23:16];
-                fb[off+18]<=eff_dip[15:8];  fb[off+19]<=eff_dip[7:0];
-                off += 20;
-            end
-            frame_len <= 12'(off + int'(pay_len));
-            built_len <= 12'(off);
-            return;
-        end
-
-        tl = l4hl + int'(pay_len);         // inner L4 length (UDP len / TCP seg), v4/v6
+        // Length setup shared by all IP-bearing templates. tl = inner L4 length
+        // (UDP len / TCP seg); ip_pl = the IP-carried payload length, which for
+        // L3RAW (no L4 header) is just the raw payload. Raw templates carry a
+        // ZERO payload (fb holds only the header region; the emit FSM streams
+        // zeros beyond built_len), so an RX header-classifier reads zeros for any
+        // L3/L4 it parses -- coherent with the compiler hash key. No encap for
+        // raw templates (validator-enforced), so the encap prefix below is only
+        // reached by TEST/L4RAW.
+        tl    = l4hl + int'(pay_len);
+        ip_pl = (tmpl == 2'd2) ? int'(pay_len) : tl;   // L3RAW: no L4
 
         // --- Encapsulation prefix: outer IP + tunnel header ----------------
         if (r.encap_type != 2'd0) begin
@@ -671,8 +637,17 @@ module pw_flow_gen_multi #(
             end
             // IPIP (1): bare inner IP follows directly (no inner ethertype).
         end else begin
-            // No encap: the inner IP's ethertype goes on the outer Ethernet.
-            fb[off]<=inner_et[15:8]; fb[off+1]<=inner_et[7:0]; off += 2;
+            // No encap: the (inner IP or raw-L2) ethertype goes on the Ethernet.
+            // L2RAW may override it (et2); all other templates use the IP family.
+            et_out = (tmpl == 2'd3) ? et2 : inner_et;
+            fb[off]<=et_out[15:8]; fb[off+1]<=et_out[7:0]; off += 2;
+        end
+
+        // L2RAW: raw Ethernet frame -- no L3/L4/test header. Done.
+        if (tmpl == 2'd3) begin
+            frame_len <= 12'(off + int'(pay_len));
+            built_len <= 12'(off);
+            return;
         end
 
         // --- Inner IP header (no ethertype: emitted above where needed) ----
@@ -681,13 +656,13 @@ module pw_flow_gen_multi #(
             // flow label 0. tc = tos = dscp<<2.
             fb[off+0]<={4'h6, tos[7:4]}; fb[off+1]<={tos[3:0], 4'h0};
             fb[off+2]<=8'h00; fb[off+3]<=8'h00;                // flow label = 0
-            fb[off+4]<=tl[15:8]; fb[off+5]<=tl[7:0];           // payload length = L4+payload
+            fb[off+4]<=ip_pl[15:8]; fb[off+5]<=ip_pl[7:0];     // payload length (L3RAW: raw only)
             fb[off+6]<=l4proto; fb[off+7]<=r.ttl;              // next-header (UDP/TCP), hop limit
             for (int b = 0; b < 16; b++) fb[off+8+b]  <= eff_v6src[127 - b*8 -: 8];
             for (int b = 0; b < 16; b++) fb[off+24+b] <= eff_v6dst[127 - b*8 -: 8];
             off += 40;
         end else begin
-            total_len = 20 + l4hl + int'(pay_len);
+            total_len = 20 + ip_pl;                            // L3RAW: 20 + raw payload
             fb[off+0]<=8'h45; fb[off+1]<=tos;                  // ver/ihl | TOS (DSCP)
             fb[off+2]<=total_len[15:8]; fb[off+3]<=total_len[7:0];
             fb[off+4]<=8'h00; fb[off+5]<=8'h00; fb[off+6]<=8'h40; fb[off+7]<=8'h00;
@@ -698,6 +673,14 @@ module pw_flow_gen_multi #(
             fb[off+18]<=eff_dip[15:8];  fb[off+19]<=eff_dip[7:0];
             off += 20;
         end
+
+        // L3RAW: Ethernet + IP + raw payload -- no L4, no test header. Done.
+        if (tmpl == 2'd2) begin
+            frame_len <= 12'(off + int'(pay_len));
+            built_len <= 12'(off);
+            return;
+        end
+
         // L4 header. UDP (8 B): sport/dport/len/csum. TCP (20 B): sport/dport/
         // seq/ack/(data-offset|flags)/window/csum/urgent. The L4 csum field
         // carries the partial (ucsum) for {v6 UDP, v4 TCP, v6 TCP}; v4 UDP leaves
