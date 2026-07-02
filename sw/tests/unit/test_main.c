@@ -384,6 +384,10 @@ static void test_traffic_validation(void) {
     PW_ASSERT_EQ(parse_with_traffic("frame_len_min: 1000, frame_len_max: 128, rate_bps: 1"), PW_E_INVAL);
     PW_ASSERT_EQ(parse_with_traffic("frame_len: 9000, rate_bps: 1"), PW_E_INVAL);
     PW_ASSERT_EQ(parse_with_traffic("frame_len: 32, rate_bps: 1"), PW_E_INVAL);
+    /* 60 = smallest pre-FCS L2 frame (60 + 4 FCS = 64 B on the wire, the 64-byte
+     * line-rate point); 59 is below the Ethernet minimum. */
+    PW_ASSERT_EQ(parse_with_traffic("frame_len: 60, rate_bps: 1"), PW_OK);
+    PW_ASSERT_EQ(parse_with_traffic("frame_len: 59, rate_bps: 1"), PW_E_INVAL);
 }
 
 /* rate_pps must compile to a non-zero token rate (else the flow never TX). */

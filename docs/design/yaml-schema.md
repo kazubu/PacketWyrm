@@ -161,14 +161,18 @@ flows:
     #                              #   frame_len clamps up.
 
     traffic:
-      frame_len: 512               # total L2 frame bytes (excl FCS); or
-                                   #   frame_len_min/max/step for a size sweep.
-                                   # The generator emits this exact size (min==max)
-                                   # or sweeps min->max by step (IMIX). With the
-                                   # default (test) template, sizes below the 74 B
-                                   # test-frame floor clamp up to it; a raw
-                                   # frame_template lowers the floor (down to 64 B
-                                   # or the template's header size).
+      frame_len: 512               # total L2 frame bytes, PRE-FCS (the MAC appends
+                                   #   the 4-byte FCS). Range [60,1518]: 60 pre-FCS
+                                   #   = the 64-byte minimum Ethernet frame on the
+                                   #   wire (60 + 4 FCS), i.e. the 64 B / 14.88 Mpps
+                                   #   line-rate point. Or frame_len_min/max/step
+                                   #   for a size sweep. The generator emits this
+                                   #   exact size (min==max) or sweeps min->max by
+                                   #   step (IMIX). With the default (test) template,
+                                   #   sizes below the 74 B test-frame floor clamp up
+                                   #   to it; a raw frame_template lowers the floor
+                                   #   (to the template's header size, so 60 emits a
+                                   #   true 64-byte wire frame).
       rate_bps: 1000000000         # or rate_pps
       burst_size: 1                # optional, default 1. A burst_size:1 (1-frame
                                    #   bucket) small-frame flow still reaches line

@@ -9,6 +9,14 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **frame_len minimum lowered 64 → 60 (the true 64-byte wire frame).**
+    `frame_len` is the pre-FCS L2 length, so the smallest legal Ethernet frame
+    (64 B on the wire *including* FCS) is 60 B pre-FCS — the old floor of 64
+    forced a 68 B wire frame. With `frame_len: 60` + a raw `frame_template`, the
+    generator now emits a true 64-byte wire frame: HW-measured **14.88 Mpps
+    (10.0 Gbps, loss=0)** on build_id 0x6a46138b — the canonical 64 B line-rate
+    point (`frame_len: 64` remains valid and is also full line rate at 68 B/frame
+    = 14.20 Mpps). Validator range is now [60,1518]. SW-only, no bitstream change.
   - **Generator frame templates — raw payload + true 64-byte frames (RTL).**
     A new per-flow `frame_template` (`traffic.frame_template: test|raw|ip|eth`)
     selects which layers `pw_flow_gen_multi` emits. `test` (default) is the
