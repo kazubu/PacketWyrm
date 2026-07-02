@@ -170,11 +170,11 @@ flows:
                                    # frame_template lowers the floor (down to 64 B
                                    # or the template's header size).
       rate_bps: 1000000000         # or rate_pps
-      burst_size: 1                # optional, default 1. NB: the HW token-bucket
-                                   #   cap is floored at 2 frames regardless (a
-                                   #   generator-pipeline requirement so even a
-                                   #   burst_size:1 small-frame flow sustains line
-                                   #   rate); burst_size only sets the cap above 2.
+      burst_size: 1                # optional, default 1. A burst_size:1 (1-frame
+                                   #   bucket) small-frame flow still reaches line
+                                   #   rate -- the generator primes the active
+                                   #   slot's pipeline through its own emit, so
+                                   #   there is no per-frame stall.
       burst_gap_ticks: 0           # optional
       payload: "increment"         # one of: zero, increment, prbs, random
       payload_seed: 0              # for prbs / random

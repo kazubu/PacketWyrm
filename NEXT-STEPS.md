@@ -162,19 +162,23 @@ Optional RTL features:
    clamp: `raw` = full Eth/IP/L4 + zero payload; `ip` = Eth[+VLAN]+IP+payload;
    `eth` = Eth[+VLAN]+ethertype+payload. Raw templates require `classify: header`,
    forbid measurements/encap, and are non-stampable (`m_tstampable=0`). Row wire
-   format is 244 B (drift-locked). **(a) small-frame line rate — DONE (SW only,
-   no RTL/bitstream change).** The single-flow small-frame ceiling was NOT a
-   hardwired pipeline limit — it was token-bucket drain. With a 1-frame bucket
-   (`burst_size: 1`, the default), each frame's token deduction empties the
-   bucket, drops the slot's eligibility, and drains the ~5-stage pick/precompute
-   pipeline: a ~5-cycle/frame bubble (HW: 64 B burst=1 → 12.0 Mpps). The compiler
-   now floors the bucket cap at **2 frames**, so ≥1 frame of tokens survives each
-   deduct, eligibility never drops, the pipeline stays primed, and a single 64 B
-   flow hits **14.2 Mpps / line rate** (HW-validated 0x6a45d838, loss=0) with the
-   default `burst_size`. Multi-flow already saturated (other eligible slots kept
-   the pipeline fed). No double-buffer/RTL overlap needed — the dp_clk-critical
-   module is untouched. **(b) GUI form field** for `frame_template`/`l2.ethertype`
-   — DONE.
+   format is 244 B (drift-locked). **(a) small-frame line rate — DONE (RTL,
+   pipeline priming).** The single-flow small-frame ceiling was a per-frame
+   pipeline bubble: with a 1-frame bucket (`burst_size: 1`), each frame's token
+   deduction empties the bucket, drops the slot's eligibility, and drains the
+   ~5-stage pick/precompute pipeline (~5 idle cycles/frame; HW: 64 B burst=1 →
+   12.0 Mpps). Fix: keep the emitting slot speculatively eligible through its own
+   emit (`eligible[s] |= active && s==sel`) so the pick + precompute pipeline
+   stays primed (next frame launches ~1 cycle after the last, bubble 1 not ~5);
+   the real token check moved to the launch decision (gated on a registered
+   per-slot ready flag) preserves rate limiting + strict cap=1 pacing; fairness
+   holds (active slot is the round-robin last choice). A single 64 B flow now
+   hits **14.2 Mpps / line rate at cap=1** (HW-validated build_id 0x6a46138b,
+   loss=0), strict single-frame pacing intact. Post-route **WNS +0.148 ns** (all
+   clocks) — the registered-ready-flag restructure kept the token arithmetic off
+   the fb/`active` critical path (first two cuts, gating the wide fb write on a
+   fresh accrue+compare, blew WNS to −0.185 / −0.118). Multi-flow already
+   saturated. **(b) GUI form field** for `frame_template`/`l2.ethertype` — DONE.
 
 Classification is three coexisting paths (precedence map > hash > field): the
 flow-id map (structured test flows), the hash exact table (high-count,

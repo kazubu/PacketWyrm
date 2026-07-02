@@ -430,10 +430,10 @@ static void test_min_legal_frame_clamp(void) {
     struct pw_program *prog = pw_program_new();
     PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
     const struct pwfpga_flow_config *fr = &prog->per_card[0].flow_rows[0];
-    /* cap clamped up to the 74 B min legal (not the configured 64), then to the
-     * 2-frame pipeline-priming floor (2 x 74 = 148) so a burst=1 small-frame flow
-     * can still sustain line rate (the generator pipeline would otherwise stall). */
-    PW_ASSERT_EQ(fr->burst_bytes, 148);
+    /* cap clamped up to the 74 B min legal (not the configured 64); no 2-frame
+     * floor -- the generator primes the active slot's pipeline through its own
+     * emit, so a cap=1 (burst=1) small-frame flow still sustains line rate. */
+    PW_ASSERT_EQ(fr->burst_bytes, 74);
     PW_ASSERT(fr->tokens_per_tick_fp != 0);   /* pps metered against >= 74 B */
     pw_program_free(prog);
     pw_config_free(cfg);

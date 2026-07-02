@@ -242,6 +242,30 @@ module tb_flow_gen_multi;
         end
     end
 
+    // Back-to-back measurement (cap=1 line-rate scenario): min SOF-to-SOF gap for
+    // a single high-rate flow with a 1-frame bucket. With the active-slot pipeline
+    // priming, this is (emit beats + ~1) cycles -- NOT emit + ~5 (the old drain
+    // bubble). tready is always 1 here, so the gap is the generator's own limit.
+    logic br_phase = 1'b0, btv_prev = 1'b0, br_armed = 1'b0;
+    int   br_cyc = 0, br_last = -1, br_min = 9999, br_max = 0, br_sum = 0, br_n = 0;
+    always_ff @(posedge clk) begin
+        if (br_phase) begin
+            br_cyc <= br_cyc + 1;
+            if (!tv) br_armed <= 1'b1;   // align to a real frame boundary first
+            if (br_armed && tv && !btv_prev) begin
+                if (br_last >= 0) begin
+                    automatic int g = br_cyc - br_last;
+                    if (g < br_min) br_min <= g;
+                    if (g > br_max) br_max <= g;
+                    br_sum <= br_sum + g;
+                    br_n <= br_n + 1;
+                end
+                br_last <= br_cyc;
+            end
+            btv_prev <= tv;
+        end
+    end
+
     // --- raw frame-template capture (final scenario) --------------------------
     // During raw_phase, accumulate each frame and file the first of each template
     // by a discriminator: L2RAW by ethertype 0x88B5, L3RAW/L4RAW by src IP byte
@@ -466,6 +490,37 @@ module tb_flow_gen_multi;
                 gaps[1]==gaps[2] && gaps[2]==gaps[3] && gaps[3]==gaps[4]);
             $display("flow_gen_multi: low-rate expw=%0d gaps={%0d,%0d,%0d,%0d,%0d}",
                      expw, gaps[0], gaps[1], gaps[2], gaps[3], gaps[4]);
+        end
+
+        // ---- cap=1 line rate: pipeline stays primed, no per-frame drain bubble ----
+        // One 74 B flow (10 emit beats), bucket = 1 frame (burst=1), refill rate
+        // far above line so tokens are ready the instant a frame ends. The active
+        // slot is kept eligible through its emit, so pick_valid_qq stays high and
+        // the next frame launches ~1 cycle after the last -> min SOF-to-SOF gap
+        // ~= 11 (10 + 1), NOT ~15 (10 + ~5 drain). Guards the priming fix.
+        begin
+            for (int s = 0; s < SLOTS; s++) f_rows[s] = '0;
+            f_rows[0].valid=1; f_rows[0].egress=0; f_rows[0].flow_id=32'd9;
+            f_rows[0].src_mac=48'h02_00_00_00_00_01; f_rows[0].dst_mac=48'hFF_FF_FF_FF_FF_FF;
+            f_rows[0].src_ipv4=32'h0A000001; f_rows[0].dst_ipv4=32'h0A000002;
+            f_rows[0].udp_sp=16'd4000; f_rows[0].udp_dp=16'd4001; f_rows[0].ttl=8'd64;
+            f_rows[0].burst=16'd74;                   // cap = exactly 1 frame (74 B)
+            f_rows[0].tokens_fp=32'h0040_0000;        // 64 B/cyc -- far above line
+            f_rows[0].frame_len_min=16'd74; f_rows[0].frame_len_max=16'd74; f_rows[0].frame_len_step=16'd1;
+            rst_n=0; repeat (4) @(posedge clk); rst_n=1;
+            repeat (200) @(posedge clk);              // warm to steady state
+            br_phase = 1'b1;
+            repeat (400) @(posedge clk);
+            br_phase = 1'b0;
+            chk("cap=1: back-to-back gaps measured", br_n >= 5);
+            // 74 B = 10 emit beats, so a real SOF-to-SOF gap is >= 10 (sanity).
+            chk("cap=1 gap >= emit beats (sanity)", br_min >= 10);
+            // 10 emit beats + ~1-cycle turnaround. The old drain bubble was ~5,
+            // giving ~15. Average must sit near 11, not near 15.
+            chk("cap=1 single flow reaches ~line rate (avg gap <= 12)",
+                (br_sum / br_n) <= 12);
+            $display("flow_gen_multi: cap=1 SOF-to-SOF gap min=%0d max=%0d avg=%0d (n=%0d)",
+                     br_min, br_max, br_sum / br_n, br_n);
         end
 
         // ---- frame templates: raw payload + true 64-byte frames ----

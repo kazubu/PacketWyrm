@@ -26,16 +26,22 @@ For where work is going next, see `NEXT-STEPS.md`.
     them untouched. Wire row extended to 244 B (`frame_template` @240,
     `l2_ethertype` @242), drift-locked by the C `_Static_assert`s + the
     gen_bar_vectors/tb_wire_vectors golden image.
-  - **Small-frame line rate — 2-frame token-bucket floor (SW, no bitstream
-    change).** A single small-frame flow was capped below line rate (HW: 64 B
-    `burst_size: 1` → 12.0 Mpps) not by a hardwired pipeline limit but by
-    token-bucket drain: a 1-frame bucket empties on each frame's token deduction,
-    drops the slot's eligibility, and drains the generator's ~5-stage pick/
-    precompute pipeline (~5-cycle/frame bubble). The compiler now floors the
-    bucket cap at 2 frames, so ≥1 frame of tokens survives each deduct,
-    eligibility never drops, and a single 64 B flow reaches **14.2 Mpps / line
-    rate** (HW-validated on 0x6a45d838, loss=0) with the default `burst_size`.
-    Multi-flow already saturated. No RTL/bitstream change.
+  - **Small-frame line rate — generator pipeline priming (RTL).** A single
+    small-frame flow was capped below line rate (HW: 64 B `burst_size: 1` →
+    12.0 Mpps) by a per-frame pipeline bubble: with a 1-frame bucket, each
+    frame's token deduction empties the bucket, drops the slot's eligibility, and
+    drains the generator's ~5-stage pick/precompute pipeline (~5 idle cycles/
+    frame). Fix: keep the currently-emitting slot speculatively "eligible" through
+    its own emit (`eligible[s] |= active && s==sel`) so the round-robin pick and
+    precompute pipeline stay PRIMED — the next frame launches ~1 cycle after the
+    current ends (bubble 1, not ~5). Rate limiting + strict cap=1 pacing are
+    preserved by moving the real token check to the launch decision (gated on a
+    registered per-slot ready flag); fairness holds (the active slot is the
+    round-robin last choice). A single 64 B flow now reaches **14.2 Mpps / line
+    rate at `burst_size: 1`** (HW-validated on build_id 0x6a46138b, loss=0), with
+    no loss of single-frame pacing. Post-route WNS +0.148 ns (all clocks; the
+    launch-decision restructure to a registered ready flag also lifted the
+    critical path above the prior +0.068 baseline). Multi-flow already saturated.
   - **LED-state readback, on-chip SYSMON telemetry, per-port pps/bps (RTL).**
     The front-panel LED's `err_sticky` is now software-readable: GLOBAL_STATUS
     exposes it at bit 3 (+ activity at bit 5), wired from the data plane (same

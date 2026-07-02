@@ -138,15 +138,40 @@ module pw_flow_gen_multi #(
         end
     end
 
+    // Eligibility. A slot is eligible when its bucket holds a frame's cost, OR
+    // when it is the currently-emitting slot (`active && s==sel`): keeping the
+    // active slot "eligible" through its own emit keeps the round-robin pick and
+    // the pick->precompute pipeline PRIMED on it, so pick_valid_qq stays high
+    // for the whole frame and the next frame can start ~1 cycle after this one
+    // ends -- eliminating the per-frame ~5-cycle pipeline-drain bubble that
+    // otherwise caps a cap=1 (burst_size:1) small-frame flow below line rate.
+    // The speculative term does NOT bypass rate limiting: the real token check
+    // moves to the launch decision below (a rate-limited flow waits there). It
+    // also does not hurt fairness -- the active slot is the round-robin LAST
+    // choice (rr_ptr = sel+1), so any other eligible slot is picked first.
     logic [NUM_SLOTS-1:0] eligible;
     always_comb begin
         for (int s = 0; s < NUM_SLOTS; s++)
-            eligible[s] = mine_q[s] && (tokens_q[s] >= cost_q[s]);
+            eligible[s] = mine_q[s] && ((tokens_q[s] >= cost_q[s]) ||
+                                        (active && (SELW'(s) == sel)));
     end
     logic [NUM_SLOTS-1:0] eligible_q;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) eligible_q <= '0;
         else        eligible_q <= eligible;
+    end
+
+    // Registered per-slot "bucket holds a frame's cost" flag. The launch gate
+    // uses tok_ready_q[pick_qq] (a registered lookup) instead of recomputing the
+    // token accrue+clamp+compare combinationally -- that arithmetic on the
+    // `active`/`byte_off` set path was the dp_clk-critical path. Safe: between
+    // frames a slot's bucket only grows, so a 1-cycle-stale "ready" is still
+    // ready (and the deduct below re-derives the exact accrued value).
+    logic [NUM_SLOTS-1:0] tok_ready_q;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) tok_ready_q <= '0;
+        else for (int s = 0; s < NUM_SLOTS; s++)
+            tok_ready_q[s] <= (tokens_q[s] >= cost_q[s]);
     end
 
     // Round-robin pick: earliest eligible slot at/after rr_ptr (wrapping).
@@ -759,33 +784,48 @@ module pw_flow_gen_multi #(
 
             if (!active) begin
                 if (start) begin
-                    // Accrue + clamp + deduct for the (twice-registered) picked
-                    // slot; this write overrides the accrual loop above (last
-                    // write wins). cost/cap are pre-registered per slot; the row
-                    // + seq + checksums come from the precompute stage (pick_qq).
+                    // Accrue + clamp for the (twice-registered) picked slot.
+                    // cost/cap are pre-registered per slot; the row + seq +
+                    // checksums come from the precompute stage (pick_qq).
                     automatic logic [31:0] cost = cost_q[pick_qq];
                     automatic logic [31:0] cap  = cap_q[pick_qq];
                     automatic logic [32:0] acc  = {1'b0, tokens_q[pick_qq]} + {1'b0, row_qq.tokens_fp};
                     automatic logic [31:0] accv = (acc > {1'b0, cap}) ? cap : acc[31:0];
-                    // Compute the NEXT sweep length for this slot now (using the
-                    // length just consumed + the slot's step/max/min) and store
-                    // it; it is committed to cur_len[] when this frame finishes.
                     automatic logic [16:0] nl = {1'b0, eff_len_qq}
                                               + {1'b0, flow_sched_i[pick_qq].len_step};
-                    next_len_q <= (nl > {1'b0, flow_sched_i[pick_qq].len_max})
-                                  ? flow_sched_i[pick_qq].len_min : nl[15:0];
+                    // Stage the frame into fb every start cycle -- UNCONDITIONALLY,
+                    // so the wide fb-write path is NOT lengthened by the token
+                    // compare (fb setup is the dp_clk-critical path; gating it on
+                    // accv>=cost blew WNS by ~0.25 ns). If we don't launch this
+                    // cycle, the same slot re-stages next cycle (harmless).
                     build(row_qq, seq_qq, timestamp_i,
                           eff_sip_q, eff_dip_q, eff_v6src_q, eff_v6dst_q,
                           eff_smac_q, eff_dmac_q, eff_vlan_q,
                           eff_sp_q, eff_dp_q, csum_q, ocsum_q, psa_q, psb_q, paylen_q);
-                    sel      <= pick_qq;
-                    active   <= 1'b1;
-                    // TEST template (0) carries a stampable test header; raw
-                    // templates (1/2/3) must not be touched by pw_ts_insert.
-                    frame_stampable <= (row_qq.frame_template == 2'd0);
-                    byte_off <= '0;
-                    rr_ptr   <= (pick_qq == SELW'(NUM_SLOTS-1)) ? '0 : pick_qq + 1'b1;
-                    tokens_q[pick_qq] <= (accv >= cost) ? (accv - cost) : '0;
+                    // Launch (emit) ONLY when the slot's tokens have really accrued
+                    // to a frame's cost. pick_valid_qq no longer implies this (the
+                    // active slot is kept speculatively eligible to prime the
+                    // pipeline), so the token gate lives here -- this preserves rate
+                    // limiting + cap=1 pacing. A slot whose pipeline is primed but
+                    // whose bucket is not yet refilled simply waits (the accrual
+                    // loop above keeps filling it). Only these NARROW control
+                    // registers are gated -- not the wide fb -- so timing holds.
+                    // Gate on the REGISTERED ready flag (tok_ready_q), not a fresh
+                    // accrue+compare, to keep the arithmetic off the active path.
+                    if (tok_ready_q[pick_qq]) begin
+                        // NEXT sweep length (length just consumed + step/max/min),
+                        // committed to cur_len[] at frame end.
+                        next_len_q <= (nl > {1'b0, flow_sched_i[pick_qq].len_max})
+                                      ? flow_sched_i[pick_qq].len_min : nl[15:0];
+                        sel      <= pick_qq;
+                        active   <= 1'b1;
+                        // TEST template (0) carries a stampable test header; raw
+                        // templates (1/2/3) must not be touched by pw_ts_insert.
+                        frame_stampable <= (row_qq.frame_template == 2'd0);
+                        byte_off <= '0;
+                        rr_ptr   <= (pick_qq == SELW'(NUM_SLOTS-1)) ? '0 : pick_qq + 1'b1;
+                        tokens_q[pick_qq] <= accv - cost;
+                    end
                 end
             end else if (m_tready) begin
                 if (last) begin
