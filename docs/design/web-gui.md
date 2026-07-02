@@ -99,7 +99,8 @@ dependencies). Tabs:
   per-flow **latency histogram** (`flow.hist`) with time-unit bucket labels
   (ns/µs/ms, from the 6.4 ns/tick clock).
 - **Flows** — point-and-click editor for the full flow schema:
-  ports / L2 / L3 v4|v6 / L4 udp|tcp / traffic / measurements / classify /
+  ports / L2 (incl. `ethertype`) / L3 v4|v6 / L4 udp|tcp / traffic (incl.
+  `frame_template` test|raw|ip|eth) / measurements / classify /
   background, plus collapsible advanced sections for **match** (classifier
   masks), **modifiers** (per-field static/increment/random + mask, incl.
   128-bit IPv6 literal masks), and **encap** (IPIP / GRE / EtherIP outer

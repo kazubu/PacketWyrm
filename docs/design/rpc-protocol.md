@@ -325,9 +325,9 @@ Returns two views of the running test config:
 - `yaml` — the exact submitted text (lossless; empty and `loaded:false` when
   no test config was loaded via `-t` / `config.load` this session).
 - `flows` / `forwards` — the running config serialized as structured JSON in
-  the **GUI form-model shape** (including `match` / `mods` / `encap`, and
-  `rate_mode`+`rate` preserving whether the flow used rate_bps or rate_pps so
-  Load current → Apply round-trips), so the
+  the **GUI form-model shape** (including `match` / `mods` / `encap`,
+  `frame_template` + `ethertype`, and `rate_mode`+`rate` preserving whether the
+  flow used rate_bps or rate_pps so Load current → Apply round-trips), so the
   Flows tab's **Load current** can populate the point-and-click form, not just
   the raw editor. (`flows` may be non-empty even when `loaded:false` if flows
   came from a combined `-e` file.) IPv4 addresses are emitted dotted, IPv6

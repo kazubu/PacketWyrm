@@ -133,6 +133,24 @@ the `tuser` marker so `pw_ts_insert` leaves raw frames untouched (no tx_ts
 overwrite, no L4-csum fixup). The RX checker keys on the test-header magic
 (`is_test`), so raw frames count `rx_frames` only — no seq/loss/latency, no
 `lost_event` (the LED never trips on them); loss is the tx-vs-rx count.
+
+**Pipeline priming (small-frame line rate).** The pick→precompute path is
+~5 stages; with a 1-frame token bucket (`burst_size:1`), each frame's token
+deduction empties the bucket, drops the slot's eligibility, and drains that
+pipeline — a ~5-cycle/frame bubble that caps a single small-frame flow below line
+rate. To avoid it the generator keeps the **emitting slot** speculatively
+eligible through its own emit (`eligible[s] |= active && s==sel`), so the
+round-robin pick and precompute pipeline stay primed and the next frame launches
+~1 cycle after the current ends. Rate limiting and strict `burst_size:1` pacing
+are preserved by gating the actual launch on a **registered** per-slot
+tokens-ready flag (`tok_ready_q[pick_qq]`) — a slot whose pipeline is primed but
+whose bucket has not refilled simply waits. Fairness holds: the emitting slot is
+the round-robin *last* choice (`rr_ptr = sel+1`), so any other eligible slot is
+picked first. The token-ready flag is registered (not a fresh accrue+compare) so
+the arithmetic stays off the dp_clk-critical `fb`/`active` write path — a single
+64 B flow reaches line rate at `burst_size:1` (HW: 14.2 Mpps @ frame_len 64,
+14.88 Mpps @ frame_len 60). See `dp-clk-timing-lessons` (never gate the wide
+`fb` write on fresh arithmetic).
 `pw_flow_table_bram` holds the flow table in **block RAM** (in the data
 plane, next to the generators). The old approach — a 32-wide registered
 `pw_flow_row_t` array (`flow_rows_o`) fanning out to both generators, each

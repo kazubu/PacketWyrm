@@ -296,13 +296,17 @@ PWFPGA_WIN_FLOW_TABLE + row_index * PWFPGA_FLOW_STRIDE  (256 bytes)
 
 The row stride grew from 128 B to **256 B** so each row can carry two
 16-byte IPv6 addresses alongside the IPv4 fields (the packed struct occupies the
-first 240 B). The generator picks the L3 family from the row's `ip_version`
+first **244 B**). The generator picks the L3 family from the row's `ip_version`
 (4 → 20-byte IPv4 header, ethertype 0x0800; 6 → 40-byte IPv6 header, ethertype
 0x86DD with a mandatory, non-zero L4 checksum). The **L4 protocol** is selected by
 `l4_proto` (**byte 238**: 17 = UDP, 6 = TCP) with `tcp_flags` (**byte 239**: the
 fixed TCP flags byte, default 0x02 SYN) — for TCP the generator emits a stateless
 20-byte TCP header (the 32-byte test header rides in the TCP payload, so
-loss/latency/seq measurement is identical to UDP). The row also carries per-field
+loss/latency/seq measurement is identical to UDP). The **frame template**
+(`frame_template`, **byte 240**: 0 TEST / 1 L4RAW / 2 L3RAW / 3 L2RAW) selects
+which layers the generator emits — the raw templates drop the 32-byte test header
+so a true 64-byte frame is possible — with `l2_ethertype` (**bytes 242..243**) as
+the L2RAW ethertype override. The row also carries per-field
 **modifier** descriptors (mode + mask for `src/dst_ipv4` (or full 128-bit IPv6),
 `udp_src/dst`, `src/dst_mac` (48-bit) and `vlan`) and, optionally, an
 **encapsulation** block (bytes 157..213): `encap_type` (IPIP/GRE/EtherIP),
