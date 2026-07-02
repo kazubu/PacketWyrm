@@ -25,9 +25,17 @@ For where work is going next, see `NEXT-STEPS.md`.
     non-stampable (`m_tstampable=0` → `tuser=0`) so egress `pw_ts_insert` leaves
     them untouched. Wire row extended to 244 B (`frame_template` @240,
     `l2_ethertype` @242), drift-locked by the C `_Static_assert`s + the
-    gen_bar_vectors/tb_wire_vectors golden image. (Generator half of the
-    small-frame line-rate work; the per-frame overhead reduction to reach 64 B
-    line rate is tracked separately in NEXT-STEPS.)
+    gen_bar_vectors/tb_wire_vectors golden image.
+  - **Small-frame line rate — 2-frame token-bucket floor (SW, no bitstream
+    change).** A single small-frame flow was capped below line rate (HW: 64 B
+    `burst_size: 1` → 12.0 Mpps) not by a hardwired pipeline limit but by
+    token-bucket drain: a 1-frame bucket empties on each frame's token deduction,
+    drops the slot's eligibility, and drains the generator's ~5-stage pick/
+    precompute pipeline (~5-cycle/frame bubble). The compiler now floors the
+    bucket cap at 2 frames, so ≥1 frame of tokens survives each deduct,
+    eligibility never drops, and a single 64 B flow reaches **14.2 Mpps / line
+    rate** (HW-validated on 0x6a45d838, loss=0) with the default `burst_size`.
+    Multi-flow already saturated. No RTL/bitstream change.
   - **LED-state readback, on-chip SYSMON telemetry, per-port pps/bps (RTL).**
     The front-panel LED's `err_sticky` is now software-readable: GLOBAL_STATUS
     exposes it at bit 3 (+ activity at bit 5), wired from the data plane (same

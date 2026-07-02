@@ -419,7 +419,15 @@ static pw_status compile_one_flow(struct pw_program *out,
         if (flen < minf) flen = minf;
         uint32_t bsz  = f->traffic.burst_size ? f->traffic.burst_size : 1u;
         uint64_t cap  = (uint64_t)bsz * flen;
-        if (cap < flen) cap = flen;
+        /* The generator's pick/precompute pipeline is ~5 stages deep. With a
+         * 1-frame bucket, each frame's token deduction empties the bucket, drops
+         * the slot's eligibility, and drains that pipeline -- a ~5-cycle per-frame
+         * bubble that caps a single small-frame flow well below line rate (HW:
+         * 64 B burst=1 -> 12.0 Mpps vs 14.2 Mpps at burst>=2). A >=2-frame cap
+         * keeps >=1 frame of tokens after each deduct, so eligibility never drops
+         * and the pipeline stays primed -> line rate. This is a HW pipelining
+         * floor, independent of the user's intended burst_size. */
+        if (cap < 2u * (uint64_t)flen) cap = 2u * (uint64_t)flen;
         tx_row.burst_bytes = (cap > 0xFFFFu) ? 0xFFFFu : (uint16_t)cap;
     }
     tx_row.payload_mode = f->traffic.payload_mode;
