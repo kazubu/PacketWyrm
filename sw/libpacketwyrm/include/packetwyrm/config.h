@@ -61,6 +61,9 @@ struct pw_flow_l2 {
     bool     vlan_set;
     uint16_t vlan;
     uint8_t  pcp;
+    /* Ethertype override for the "eth" (L2RAW) frame template. 0 = derive from
+     * the IP family (0x0800 v4 / 0x86DD v6). Ignored for other templates. */
+    uint16_t ethertype;
 };
 
 struct pw_flow_ipv4 {
@@ -115,7 +118,23 @@ struct pw_flow_udp {
     uint8_t  tcp_flags;
 };
 
+/* Frame template: which layers the generator emits (mirrors enum
+ * pwfpga_frame_template). "test" = full Eth/IP/L4 + 32-byte test header
+ * (default). "raw" (L4RAW) = full headers but a raw zero payload, no test
+ * header -- enables a true 64-byte frame. "ip" (L3RAW) = Eth[+vlan]+IP+payload.
+ * "eth" (L2RAW) = Eth[+vlan]+ethertype+payload. Raw templates carry no test
+ * header, so they require classify:header and forbid measurements/encap. */
+enum pw_frame_template {
+    PW_FRAME_TEMPLATE_TEST  = 0,
+    PW_FRAME_TEMPLATE_L4RAW = 1,
+    PW_FRAME_TEMPLATE_L3RAW = 2,
+    PW_FRAME_TEMPLATE_L2RAW = 3,
+};
+
 struct pw_flow_traffic {
+    /* Frame template (enum pw_frame_template); default test. */
+    uint8_t  frame_template;
+
     /* Exactly one of frame_len_fixed or the (min,max,step) triple must be
      * set; the validator enforces this. */
     bool     frame_len_fixed_set;

@@ -80,6 +80,10 @@ int main(int argc, char **argv) {
         fc.src_ipv6_mask_hi[i] = (uint8_t)(0xA0 + i);
         fc.dst_ipv6_mask_hi[i] = (uint8_t)(0xB0 + i);
     }
+    /* Frame template (byte 240) + L2RAW ethertype (bytes 242..243): non-zero
+     * patterns so the RTL decode of the new fields is checked. */
+    fc.frame_template = 2;       /* L3RAW */
+    fc.l2_ethertype   = 0x88B5;
     if ((r = b.ops->flow_write(b.ctx, 0, &fc)) != PW_OK) {
         fprintf(stderr, "flow_write: %s\n", pw_strerror(r));
         goto fail;

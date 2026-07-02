@@ -428,16 +428,34 @@ struct pwfpga_flow_config {
      * byte (default 0x02 = SYN), applied by the generator; ignored for UDP. */
     uint8_t  l4_proto;             /* byte 238 */
     uint8_t  tcp_flags;            /* byte 239 */
+
+    /* Frame template selector: which layers the generator emits.
+     *   TEST  (0) = full Eth/IP/L4 + 32-byte PacketWyrm test header (default).
+     *   L4RAW (1) = full Eth/IP/L4 but a raw (zero) payload, no test header
+     *               (enables a true 64-byte frame with real L2/L3/L4 headers).
+     *   L3RAW (2) = Eth[+vlan] + IP + raw payload (no L4, no test header).
+     *   L2RAW (3) = Eth[+vlan] + ethertype + raw payload (no L3/L4/test header).
+     * Raw templates carry no test header, so RX loss/latency/seq measurement is
+     * meaningless for them (the compiler forces measurements off and requires
+     * classify: header). The generator always zero-pads the payload, so an RX
+     * header-classifier sees zeros for any L3/L4 it attempts to parse. */
+    uint8_t  frame_template;       /* byte 240: enum pwfpga_frame_template */
+    uint8_t  reserved_ft;          /* byte 241: reserved / word align */
+    uint16_t l2_ethertype;         /* bytes 242..243: L2RAW ethertype (0 => 0x0800) */
 } __attribute__((packed));
 
-_Static_assert(sizeof(struct pwfpga_flow_config) == 240,
-               "pwfpga_flow_config wire layout drifted (expected 240 bytes)");
+_Static_assert(sizeof(struct pwfpga_flow_config) == 244,
+               "pwfpga_flow_config wire layout drifted (expected 244 bytes)");
 _Static_assert(offsetof(struct pwfpga_flow_config, src_ipv6_mask_hi) == 214,
                "src_ipv6_mask_hi must be at wire byte 214");
 _Static_assert(offsetof(struct pwfpga_flow_config, dst_ipv6_mask_hi) == 226,
                "dst_ipv6_mask_hi must be at wire byte 226");
 _Static_assert(offsetof(struct pwfpga_flow_config, l4_proto) == 238,
                "l4_proto must be at wire byte 238");
+_Static_assert(offsetof(struct pwfpga_flow_config, frame_template) == 240,
+               "frame_template must be at wire byte 240");
+_Static_assert(offsetof(struct pwfpga_flow_config, l2_ethertype) == 242,
+               "l2_ethertype must be at wire byte 242");
 
 enum pwfpga_encap_type {
     PWFPGA_ENCAP_NONE    = 0,
@@ -446,6 +464,13 @@ enum pwfpga_encap_type {
     PWFPGA_ENCAP_ETHERIP = 3,
 };
 enum pwfpga_rx_expect { PWFPGA_RX_INNER = 0, PWFPGA_RX_TUNNELED = 1 };
+
+enum pwfpga_frame_template {
+    PWFPGA_FRAME_TEMPLATE_TEST  = 0,   /* full headers + 32B test header (default) */
+    PWFPGA_FRAME_TEMPLATE_L4RAW = 1,   /* full Eth/IP/L4, raw payload, no test hdr */
+    PWFPGA_FRAME_TEMPLATE_L3RAW = 2,   /* Eth[+vlan] + IP + raw payload */
+    PWFPGA_FRAME_TEMPLATE_L2RAW = 3,   /* Eth[+vlan] + ethertype + raw payload */
+};
 
 enum pwfpga_field_mod {
     PWFPGA_FIELD_STATIC    = 0,

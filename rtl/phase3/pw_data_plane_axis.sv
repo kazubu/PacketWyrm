@@ -872,6 +872,7 @@ module pw_data_plane_axis #(
     logic        gen_tv [PW_PORTS];
     logic        gen_tl [PW_PORTS];
     logic        gen_tr [PW_PORTS];   // tready into the generator (from arbiter)
+    logic        gen_tu [PW_PORTS];   // 1 = stampable TEST frame (raw templates = 0)
 
     generate
         for (gp = 0; gp < PW_PORTS; gp++) begin : g_gen
@@ -896,7 +897,8 @@ module pw_data_plane_axis #(
                 .m_tkeep     (gen_tk[gp]),
                 .m_tvalid    (gen_tv[gp]),
                 .m_tready    (gen_tr[gp]),
-                .m_tlast     (gen_tl[gp])
+                .m_tlast     (gen_tl[gp]),
+                .m_tstampable(gen_tu[gp])
             );
         end
     endgenerate
@@ -964,7 +966,9 @@ module pw_data_plane_axis #(
                                          : (sel_gen ? gen_tv[gp] : saf_tv[saf_idx]));
             // Mark generator (test) frames so the egress stamper can find them
             // before the magic streams (the IPv6 UDP csum field precedes it).
-            assign m_axis_tx_tuser[gp]  = sel_gen;
+            // Only TEST-template frames are stampable; raw templates carry no
+            // test header, so gen_tu[gp]=0 keeps pw_ts_insert off them.
+            assign m_axis_tx_tuser[gp]  = sel_gen && gen_tu[gp];
 
             wire hs   = m_axis_tx_tvalid[gp] && m_axis_tx_tready[gp];
             wire done = hs && m_axis_tx_tlast[gp];

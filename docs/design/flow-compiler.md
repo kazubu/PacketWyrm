@@ -66,11 +66,18 @@ For the TX card, fill in `pwfpga_flow_config`:
   (mutually exclusive). The compiler writes `l4_proto` (17 = UDP, 6 = TCP)
   and, for TCP, `tcp_flags` (default 0x02 SYN) into the row. TCP is a
   stateless segment generator (fixed 20-byte header, no handshake/ACK).
-- **Min-legal frame is per-protocol** (`pw_flow_min_legal_frame`): the
-  20-byte TCP header makes the smallest legal frame larger than UDP —
+- **Min-legal frame is per-protocol and per-template** (`pw_flow_min_legal_frame`):
+  the 20-byte TCP header makes the smallest legal frame larger than UDP —
   IPv4/TCP ≥ 86 B, IPv6/TCP ≥ 106 B (vs 74 / 94 for UDP). A requested
   `frame_len` below this is clamped up by the RTL; the compiler meters the
   token cost / `rate_pps` byte basis against this minimum so `cap ≥ cost`.
+  The *raw* frame templates drop the 32-byte test-header floor: `raw` (L4RAW)
+  ≥ 42 B (IPv4/UDP headers only), `ip` (L3RAW) ≥ 34 B (Eth+IPv4), `eth`
+  (L2RAW) ≥ 14 B (Ethernet only) — so a 64-byte request is honored exactly
+  rather than clamped to 74 B. Raw templates require `classify: header` and
+  forbid measurements/encap (validator-enforced); the compiler sets the flow
+  row's `frame_template`/`l2_ethertype` and zeroes the absent-layer hash-key
+  words so RX header classification matches the zero-payload frame.
 - Rate (`rate_bps` / `rate_pps`) + burst (`burst_size`,
   `burst_gap_ticks`).
 - `insert_sequence` and `insert_timestamp` default true.

@@ -53,6 +53,10 @@ package pw_axis_pkg;
         logic [15:0] len_step;
         logic [11:0] ovh;         // header overhead bytes (0-payload frame); the
                                   // generator derives L4 payload = frame_len - ovh
+        logic [1:0]  frame_template;  // 0 TEST / 1 L4RAW / 2 L3RAW / 3 L2RAW.
+                                  // Selects the per-frame payload floor (TEST
+                                  // reserves 32B for the test header; raw = 0)
+                                  // in the generator's stage-A length math.
     } pw_flow_sched_t;
 
     // One generator flow slot, decoded from a flow-window row. The
@@ -135,6 +139,14 @@ package pw_axis_pkg;
         // MAC). Not modified by the field modifiers.
         logic [47:0]  inner_src_mac;
         logic [47:0]  inner_dst_mac;
+        // Frame template: which layers the generator emits (see
+        // enum pwfpga_frame_template). 0 TEST (full + 32B test hdr) / 1 L4RAW
+        // (full headers, raw payload, no test hdr) / 2 L3RAW (Eth[+vlan]+IP+
+        // payload) / 3 L2RAW (Eth[+vlan]+ethertype+payload). Raw templates
+        // never carry encap. l2_ethertype overrides the L2RAW ethertype (0 =>
+        // 0x0800); ignored for other templates (they derive it from is_v6).
+        logic [1:0]   frame_template;
+        logic [15:0]  l2_ethertype;
     } pw_flow_row_t;
 
     parameter int PW_FLOW_ROW_BYTES = 256;   // wire stride (struct pwfpga_flow_config)
@@ -211,14 +223,30 @@ package pw_axis_pkg;
         // zero from an old/short row means UDP, never "protocol 0").
         f.l4_proto  = (row[238*8 +: 8] == 8'd6) ? 8'd6 : 8'd17;
         f.tcp_flags = row[239*8 +: 8];
+        // Frame template (byte 240, low 2 bits) + L2RAW ethertype (bytes
+        // 242..243, little-endian like the other 16-bit fields).
+        f.frame_template = row[240*8 +: 2];
+        f.l2_ethertype   = {row[243*8 +: 8], row[242*8 +: 8]};
         return f;
     endfunction
 
     // On-wire frame length (bytes) of a decoded row, accounting for VLAN, inner
-    // L3 family, and any encapsulation. FRAME_LEN_PAYLOAD is the L4 payload.
-    // Mirrors pw_flow_gen_multi's frame_bytes_row (the generator's token cost).
+    // L3 family, encapsulation and the frame template. `payload` is the raw
+    // bytes after the last emitted header (for TEST that region begins with the
+    // 32-byte test header). Mirrors pw_flow_gen_multi's build() layout (the
+    // generator's token cost / overhead). The Ethernet header (14 B) includes
+    // the 2-byte ethertype for all templates. Raw L2/L3 templates never carry
+    // encapsulation (validator-enforced).
     function automatic int pw_frame_bytes(input pw_flow_row_t r, input int payload);
-        int inner, enc_hdr;
+        int inner, enc_hdr, l2;
+        l2 = 14 + (r.vlan_en ? 4 : 0);
+        // L2RAW: Ethernet [+VLAN] + raw payload.
+        if (r.frame_template == 2'd3)
+            return l2 + payload;
+        // L3RAW: Ethernet [+VLAN] + inner IP + raw payload (no L4).
+        if (r.frame_template == 2'd2)
+            return l2 + (r.is_v6 ? 40 : 20) + payload;
+        // TEST (0) / L4RAW (1): full inner IP + L4 (+ optional encap).
         inner = (r.is_v6 ? 40 : 20) + (r.l4_proto == 8'd6 ? 20 : 8) + payload;
         case (r.encap_type)
             2'd2:    enc_hdr = 4;
@@ -226,9 +254,9 @@ package pw_axis_pkg;
             default: enc_hdr = 0;
         endcase
         if (r.encap_type == 2'd0)
-            return 14 + (r.vlan_en ? 4 : 0) + inner;
+            return l2 + inner;
         else
-            return 14 + (r.vlan_en ? 4 : 0) + (r.outer_v6 ? 40 : 20) + enc_hdr + inner;
+            return l2 + (r.outer_v6 ? 40 : 20) + enc_hdr + inner;
     endfunction
 
 endpackage : pw_axis_pkg

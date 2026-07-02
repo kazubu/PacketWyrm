@@ -1093,6 +1093,110 @@ static void test_encap_flow_compiles(void) {
     pw_config_free(cfg);
 }
 
+/* Frame templates: raw payload (true 64B) + IP-only / Eth-only frames. Verify
+ * the config model, the compiled wire row's frame_template/ethertype, the
+ * template-aware hash key (absent layers zeroed), and true 64-byte acceptance. */
+static void test_frame_templates(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n"
+        "  - id: 0\n"
+        "    pci: \"0000:07:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "flows:\n"
+        "  - id: 1\n"                       /* L4RAW: true 64B, full headers, no test hdr */
+        "    classify: header\n"
+        "    tx_global_port: 0\n    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv4: { src: \"192.0.2.1\", dst: \"192.0.2.2\" }\n"
+        "    udp:  { src_port: 49152, dst_port: 50001 }\n"
+        "    traffic: { frame_len: 64, rate_bps: 10000000000, frame_template: raw }\n"
+        "  - id: 2\n"                       /* L3RAW: Eth+IP+payload */
+        "    classify: header\n"
+        "    tx_global_port: 0\n    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:03\", dst_mac: \"02:a5:02:00:00:04\" }\n"
+        "    ipv4: { src: \"192.0.2.3\", dst: \"192.0.2.4\" }\n"
+        "    udp:  { src_port: 1000, dst_port: 2000 }\n"
+        "    traffic: { frame_len: 64, rate_bps: 10000000000, frame_template: ip }\n"
+        "  - id: 3\n"                       /* L2RAW: Eth+ethertype+payload */
+        "    classify: header\n"
+        "    tx_global_port: 0\n    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:05\", dst_mac: \"02:a5:02:00:00:06\", ethertype: 0x88b5, vlan: 100 }\n"
+        "    ipv4: { src: \"192.0.2.5\", dst: \"192.0.2.6\" }\n"
+        "    udp:  { src_port: 3000, dst_port: 4000 }\n"
+        "    traffic: { frame_len: 64, rate_bps: 10000000000, frame_template: eth }\n";
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    PW_ASSERT_EQ(cfg->flows[0].traffic.frame_template, PW_FRAME_TEMPLATE_L4RAW);
+    PW_ASSERT_EQ(cfg->flows[1].traffic.frame_template, PW_FRAME_TEMPLATE_L3RAW);
+    PW_ASSERT_EQ(cfg->flows[2].traffic.frame_template, PW_FRAME_TEMPLATE_L2RAW);
+    PW_ASSERT_EQ(cfg->flows[2].l2.ethertype, 0x88b5);
+    PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
+    /* Compiled wire rows carry the template + ethertype. */
+    PW_ASSERT_EQ(prog->per_card[0].flow_rows[0].frame_template, PWFPGA_FRAME_TEMPLATE_L4RAW);
+    PW_ASSERT_EQ(prog->per_card[0].flow_rows[1].frame_template, PWFPGA_FRAME_TEMPLATE_L3RAW);
+    PW_ASSERT_EQ(prog->per_card[0].flow_rows[2].frame_template, PWFPGA_FRAME_TEMPLATE_L2RAW);
+    PW_ASSERT_EQ(prog->per_card[0].flow_rows[2].l2_ethertype, 0x88b5);
+    /* Three header-classify flows -> three hash entries, collision-free. */
+    PW_ASSERT_EQ(prog->per_card[0].n_hash_entries, 3);
+    PW_ASSERT(prog->per_card[0].hash_seed != 0);
+    /* Hash keys: L4RAW keys on the full tuple (real L4 ports); L3RAW zeroes the
+     * L4 word (no L4 header); L2RAW zeroes L3+L4, keying on {vlan,ethertype}. */
+    const struct pw_fc_hash_entry *he = prog->per_card[0].hash_entries;
+    /* entries are appended in flow order: [0]=L4RAW [1]=L3RAW [2]=L2RAW */
+    PW_ASSERT_EQ(he[0].key_word[8], ((uint32_t)49152u << 16) | 50001u);  /* L4RAW ports */
+    PW_ASSERT_EQ(he[1].key_word[0], 0xC0000204u);                        /* L3RAW l3_dst */
+    PW_ASSERT_EQ(he[1].key_word[8], 0u);                                 /* L3RAW no L4 */
+    PW_ASSERT_EQ(he[1].key_word[10], 17u);                               /* L3RAW proto */
+    PW_ASSERT_EQ(he[2].key_word[0], 0u);                                 /* L2RAW no L3 */
+    PW_ASSERT_EQ(he[2].key_word[8], 0u);                                 /* L2RAW no L4 */
+    PW_ASSERT_EQ(he[2].key_word[9], (100u << 16) | 0x88b5u);             /* {vlan,ethertype} */
+    PW_ASSERT_EQ(he[2].key_word[10], 0u);
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
+/* Raw templates require classify:header and forbid measurements/encap. */
+static void test_frame_template_rejects(void) {
+    const char *base_hdr =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n"
+        "  - id: 0\n"
+        "    pci: \"0000:07:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "flows:\n"
+        "  - id: 1\n"
+        "    tx_global_port: 0\n    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv4: { src: \"192.0.2.1\", dst: \"192.0.2.2\" }\n"
+        "    udp:  { src_port: 49152, dst_port: 50001 }\n";
+    /* raw template + measurements -> reject */
+    {
+        char yaml[1400];
+        snprintf(yaml, sizeof yaml, "%s%s", base_hdr,
+            "    classify: header\n"
+            "    traffic: { frame_len: 64, rate_bps: 1000000000, frame_template: raw }\n"
+            "    measurements: { loss: true }\n");
+        struct pw_config *cfg = pw_config_new(); struct pw_diag d = {0};
+        PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+        PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_E_INVAL);
+        pw_config_free(cfg);
+    }
+    /* raw template WITHOUT classify:header -> reject */
+    {
+        char yaml[1400];
+        snprintf(yaml, sizeof yaml, "%s%s", base_hdr,
+            "    traffic: { frame_len: 64, rate_bps: 1000000000, frame_template: ip }\n");
+        struct pw_config *cfg = pw_config_new(); struct pw_diag d = {0};
+        PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+        PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_E_INVAL);
+        pw_config_free(cfg);
+    }
+}
+
 static void test_reject_cross_card_forward(void) {
     const char *yaml =
         "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
@@ -1706,6 +1810,8 @@ int main(void) {
         { "header_classify_compiles", test_header_classify_compiles },
         { "header_classify_mask_collision", test_header_classify_mask_collision },
         { "encap_flow_compiles", test_encap_flow_compiles },
+        { "frame_templates", test_frame_templates },
+        { "frame_template_rejects", test_frame_template_rejects },
         { "fake_backend", test_fake_backend },
         { "fake_csr_window_recording", test_fake_csr_window_recording },
         { "program_card_tables", test_program_card_tables },

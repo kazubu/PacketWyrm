@@ -129,6 +129,22 @@ static void pw_fc_l3_words(unsigned __int128 a, uint32_t w[4]) {
     w[3] = (uint32_t)((a >> 96) & 0xFFFFFFFFu);
 }
 static void pw_fc_hash_words(const struct pw_flow *f, uint32_t w[11]) {
+    uint8_t tmpl = f->traffic.frame_template;
+    /* Raw L2 template: the frame is Ethernet [+VLAN] + ethertype + a ZERO
+     * payload, so the RX parser reads zeros for any L3/L4 it attempts. Only
+     * vlan + ethertype distinguish it (the key has no MAC). Two L2RAW flows on
+     * one card must therefore differ in ethertype or VLAN (else the collision
+     * post-pass rejects them). */
+    if (tmpl == PW_FRAME_TEMPLATE_L2RAW) {
+        for (int i = 0; i < 8; i++) w[i] = 0;
+        w[8] = 0;
+        uint32_t et = f->l2.ethertype ? (uint32_t)f->l2.ethertype
+                                      : (f->ipv6.present ? 0x86DDu : 0x0800u);
+        uint32_t vlan16 = f->l2.vlan_set ? (f->l2.vlan & 0x0FFFu) : 0u;
+        w[9]  = (vlan16 << 16) | (et & 0xFFFFu);
+        w[10] = 0;
+        return;
+    }
     unsigned __int128 dst = 0, src = 0;
     if (f->ipv6.present) {
         for (int i = 0; i < 16; i++) dst = (dst << 8) | f->ipv6.dst[i];  /* dst[0] = MSB */
@@ -136,7 +152,10 @@ static void pw_fc_hash_words(const struct pw_flow *f, uint32_t w[11]) {
     } else { dst = f->ipv4.dst; src = f->ipv4.src; }
     pw_fc_l3_words(dst, &w[0]);
     pw_fc_l3_words(src, &w[4]);
-    w[8]  = ((uint32_t)f->udp.src_port << 16) | f->udp.dst_port;
+    /* L3RAW carries no L4 header; the RX parser reads zero L4 ports from the raw
+     * payload, so key on zero to match. L4RAW/TEST emit a real L4 header. */
+    w[8]  = (tmpl == PW_FRAME_TEMPLATE_L3RAW)
+            ? 0u : (((uint32_t)f->udp.src_port << 16) | f->udp.dst_port);
     uint32_t eth   = f->ipv6.present ? 0x86DDu : 0x0800u;
     uint32_t vlan16 = f->l2.vlan_set ? (f->l2.vlan & 0x0FFFu) : 0u;
     w[9]  = (vlan16 << 16) | eth;
@@ -228,8 +247,15 @@ static void pw_fc_relax_mask(uint32_t mask[11], const struct pw_flow *f) {
  * wrong size. Accounts for VLAN, encap (outer IP + tunnel), inner IP family,
  * and the L4 protocol (TCP 20 / UDP 8). */
 static uint32_t pw_flow_min_legal_frame(const struct pw_flow *f) {
-    uint32_t l = 14u;                                       /* Ethernet */
+    uint32_t l = 14u;                                       /* Ethernet (incl ethertype) */
     if (f->l2.vlan_set) l += 4u;                            /* VLAN tag */
+    /* Raw L2 template: Ethernet [+VLAN] only (payload floor 0). */
+    if (f->traffic.frame_template == PW_FRAME_TEMPLATE_L2RAW)
+        return l;
+    /* Raw L3 template: Ethernet [+VLAN] + inner IP (no L4, no test header). */
+    if (f->traffic.frame_template == PW_FRAME_TEMPLATE_L3RAW)
+        return l + (f->ipv6.present ? 40u : 20u);
+    /* TEST / L4RAW: full inner IP + L4 (+ optional encap). */
     if (f->encap.present) {
         l += f->encap.outer_ipv6.present ? 40u : 20u;       /* outer IP */
         if (f->encap.type == PWFPGA_ENCAP_GRE)          l += 4u;
@@ -237,7 +263,9 @@ static uint32_t pw_flow_min_legal_frame(const struct pw_flow *f) {
     }
     l += f->ipv6.present ? 40u : 20u;                       /* inner IP */
     l += (f->udp.l4_proto == 6) ? 20u : 8u;                 /* L4 (TCP / UDP) */
-    l += 32u;                                               /* test-header region */
+    /* Only TEST reserves the 32-byte test-header payload region; L4RAW does not. */
+    if (f->traffic.frame_template == PW_FRAME_TEMPLATE_TEST)
+        l += 32u;
     return l;
 }
 
@@ -315,6 +343,9 @@ static pw_status compile_one_flow(struct pw_program *out,
     tx_row.udp_dst_port = f->udp.dst_port;
     tx_row.l4_proto     = f->udp.l4_proto ? f->udp.l4_proto : 17;  /* 6 TCP / 17 UDP */
     tx_row.tcp_flags    = f->udp.tcp_flags;
+    /* Frame template + L2RAW ethertype (default 0 => IP-family default). */
+    tx_row.frame_template = f->traffic.frame_template;
+    tx_row.l2_ethertype   = f->l2.ethertype;
     /* Per-field modifiers (DUT-facing flow diversification). */
     tx_row.src_ipv4_mod  = f->mod.src_ipv4.mode; tx_row.src_ipv4_mask = (uint32_t)f->mod.src_ipv4.mask;
     tx_row.dst_ipv4_mod  = f->mod.dst_ipv4.mode; tx_row.dst_ipv4_mask = (uint32_t)f->mod.dst_ipv4.mask;

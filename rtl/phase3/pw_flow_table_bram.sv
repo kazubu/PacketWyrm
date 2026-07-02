@@ -203,7 +203,12 @@ module pw_flow_table_bram #(
             // minimum-payload frame, or the configured frame_len_min if larger.
             // Exact for a fixed size (RFC2544, min==max); a min<max sweep meters
             // by min (slight over-rate on the larger frames -- IMIX only).
-            automatic int min_legal = pw_frame_bytes(wrow, FRAME_LEN_PAYLOAD);
+            // TEST reserves a 32-byte test-header payload region; raw templates
+            // have no test header, so their minimum-payload frame is header-only
+            // (payload floor 0). pw_frame_bytes is template-aware.
+            automatic int test_pl    = (wrow.frame_template == 2'd0)
+                                       ? FRAME_LEN_PAYLOAD : 0;
+            automatic int min_legal  = pw_frame_bytes(wrow, test_pl);
             automatic int cfg_min    = int'(wrow.frame_len_min);
             automatic int cost_b     = (cfg_min > min_legal) ? cfg_min : min_legal;
             flow_sched_o[row_idx].valid     <= wrow.valid;
@@ -215,6 +220,7 @@ module pw_flow_table_bram #(
             flow_sched_o[row_idx].len_max   <= wrow.frame_len_max;
             flow_sched_o[row_idx].len_step  <= wrow.frame_len_step;
             flow_sched_o[row_idx].ovh       <= 12'(pw_frame_bytes(wrow, 0));
+            flow_sched_o[row_idx].frame_template <= wrow.frame_template;
         end
     end
 
