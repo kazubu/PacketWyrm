@@ -638,7 +638,6 @@ function errTd(v) {
 // delta, never another's (they snapshot at different instants -> jitter).
 let ratePrev = new Map(), rateT = 0, portPrev = new Map();
 const tsPrev = {};                       // per-source previous 64-bit tick (BigInt)
-const rateEma = new Map();               // per-key smoothed rate (EMA)
 // Full 64-bit FPGA timestamp (ticks) from the lo/hi pair. Both halves avoid the
 // ~27.5 s wrap of the low 32 bits (156.25 MHz) over a long/backgrounded poll.
 function fpgaTicks(lo, hi) {
@@ -657,16 +656,6 @@ function intervalSec(src, lo, hi, wallNow) {
   if (cur != null) tsPrev[src] = cur;
   if (dt === 0) dt = rateT ? (wallNow - rateT) / 1000 : 0;
   return dt;
-}
-// Exponentially-smoothed rate: damps the residual poll-to-poll wobble. Returns
-// the smoothed value for `key`, seeded on first sample.
-function emaRate(key, inst) {
-  if (inst == null || !isFinite(inst)) return rateEma.get(key);
-  const prev = rateEma.get(key);
-  const a = 0.35;
-  const v = prev == null ? inst : prev + a * (inst - prev);
-  rateEma.set(key, v);
-  return v;
 }
 
 async function pollVersions(cards) {
@@ -826,26 +815,25 @@ async function poll() {
     const now = Date.now();
     const dtF = intervalSec("flow", fstats.fpga_ts_lo, fstats.fpga_ts_hi, now);
     const dtP = intervalSec("port", pstats.fpga_ts_lo, pstats.fpga_ts_hi, now);
-    // per-flow rate deltas (frames + bytes -> pps + bps), EMA-smoothed
+    // per-flow instantaneous rate (frames + bytes -> pps + bps) over this poll's
+    // own fpga_ts interval. No smoothing -- the momentary value is what's wanted.
     const rates = new Map();
     (fstats.flows||[]).forEach(f => {
       const p = ratePrev.get(f.id);
       if (p && dtF > 0) rates.set(f.id, {
-        tx:  emaRate(`f${f.id}tx`,  Math.max(0,(f.tx_frames-p.tx)/dtF)),
-        rx:  emaRate(`f${f.id}rx`,  Math.max(0,(f.rx_frames-p.rx)/dtF)),
-        txb: emaRate(`f${f.id}txb`, Math.max(0,(f.tx_bytes-p.txb)*8/dtF)),
-        rxb: emaRate(`f${f.id}rxb`, Math.max(0,(f.rx_bytes-p.rxb)*8/dtF)) });
+        tx:  Math.max(0,(f.tx_frames-p.tx)/dtF),
+        rx:  Math.max(0,(f.rx_frames-p.rx)/dtF),
+        txb: Math.max(0,(f.tx_bytes-p.txb)*8/dtF),
+        rxb: Math.max(0,(f.rx_bytes-p.rxb)*8/dtF) });
       ratePrev.set(f.id, { tx:f.tx_frames, rx:f.rx_frames, txb:f.tx_bytes, rxb:f.rx_bytes });
     });
-    // per-port rate deltas (frames + bytes), EMA-smoothed
+    // per-port instantaneous rate over ports.stats' own fpga_ts interval
     const prates = new Map();
     (pstats.ports||[]).forEach(p => {
       const k = `${p.card_id}:${p.local_port}`, pv = portPrev.get(k);
       if (pv && dtP > 0) prates.set(k, {
-        rxpps: emaRate(`${k}rp`, Math.max(0,(p.rx_frames-pv.rxf)/dtP)),
-        txpps: emaRate(`${k}tp`, Math.max(0,(p.tx_frames-pv.txf)/dtP)),
-        rxbps: emaRate(`${k}rb`, Math.max(0,(p.rx_bytes-pv.rxb)*8/dtP)),
-        txbps: emaRate(`${k}tb`, Math.max(0,(p.tx_bytes-pv.txb)*8/dtP)) });
+        rxpps: Math.max(0,(p.rx_frames-pv.rxf)/dtP), txpps: Math.max(0,(p.tx_frames-pv.txf)/dtP),
+        rxbps: Math.max(0,(p.rx_bytes-pv.rxb)*8/dtP), txbps: Math.max(0,(p.tx_bytes-pv.txb)*8/dtP) });
       portPrev.set(k, { rxf:p.rx_frames, txf:p.tx_frames, rxb:p.rx_bytes, txb:p.tx_bytes });
     });
     rateT = now;

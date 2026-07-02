@@ -44,13 +44,27 @@ trap cleanup EXIT
 for _ in $(seq 1 30); do [ -S "$SOCK" ] && break; sleep 0.1; done
 [ -S "$SOCK" ] || { echo "daemon never bound $SOCK"; cat "$WORK/daemon.log"; exit 1; }
 
+# Wait until a just-started proxyd actually serves GET / (cert-gen + bind +
+# first accept can take a moment; a fixed sleep raced intermittently).
+wait_proxyd() {  # scheme port
+    for _ in $(seq 1 50); do
+        local body; body=$(curl -s${3:-} "$1://127.0.0.1:$2/" 2>/dev/null)
+        grep -q PacketWyrm <<<"$body" && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
 pass=0; fail=0
 check() {
     local name=$1 expected=$2 got=$3
-    if echo "$got" | grep -qE "$expected"; then
+    # here-string, not `echo | grep -q`: grep -q exits on first match, and under
+    # `set -o pipefail` echo then takes SIGPIPE (141) on a large body, failing
+    # the pipeline even though it matched (intermittent, size-dependent).
+    if grep -qE "$expected" <<<"$got"; then
         echo "[ ok ] $name"; pass=$((pass+1))
     else
-        echo "[FAIL] $name: expected /$expected/, got: $got"; fail=$((fail+1))
+        echo "[FAIL] $name: expected /$expected/, got: ${got:0:200}"; fail=$((fail+1))
     fi
 }
 check_exit() {  # name, expected_rc, actual_rc
@@ -73,7 +87,7 @@ check_exit "fail-closed non-loopback + unreachable daemon" 1 "$rc"
 "$PROXYD" --listen 127.0.0.1:$PLAIN_PORT --socket "$SOCK" --no-tls \
     > "$WORK/px_plain.log" 2>&1 &
 PXP=$!
-sleep 0.4
+wait_proxyd http $PLAIN_PORT || { echo "plaintext proxyd not ready"; cat "$WORK/px_plain.log"; exit 1; }
 
 check "GET / serves GUI" 'PacketWyrm' \
     "$(curl -s http://127.0.0.1:$PLAIN_PORT/)"
@@ -94,7 +108,7 @@ graw=$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc \
         -d '{"rpc":"config.get_raw","secret":"e2e-secret"}')
 check "config.get_raw secret_set" '"secret_set":true' "$graw"
 check "config.get_raw redacts secret" '\*\*\*' "$graw"
-if echo "$graw" | grep -q 'e2e-secret'; then
+if grep -q 'e2e-secret' <<<"$graw"; then
     echo "[FAIL] config.get_raw leaked the secret value"; fail=$((fail+1))
 else
     echo "[ ok ] config.get_raw does not leak secret"; pass=$((pass+1))
@@ -263,7 +277,7 @@ kill "$PXP" 2>/dev/null || true; PXP=""
 "$PROXYD" --listen 127.0.0.1:$TLS_PORT --socket "$SOCK" \
     > "$WORK/px_tls.log" 2>&1 &
 PXT=$!
-sleep 0.5
+wait_proxyd https $TLS_PORT k || { echo "TLS proxyd not ready"; cat "$WORK/px_tls.log"; exit 1; }
 
 check "TLS self-signed startup" 'self-signed certificate' "$(cat "$WORK/px_tls.log")"
 check "TLS GET /" 'PacketWyrm' "$(curl -sk https://127.0.0.1:$TLS_PORT/)"
