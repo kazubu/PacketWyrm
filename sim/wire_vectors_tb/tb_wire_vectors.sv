@@ -102,6 +102,14 @@ module tb_wire_vectors;
         .s_axi_rvalid   (rvalid),
         .s_axi_rready   (rready),
         .timestamp_i    (ts),
+        // Status / SYSMON telemetry inputs (added with the sysmon+LED merge);
+        // this vector test exercises only the flow-window byte format, so tie
+        // them off.
+        .status_err_i        (1'b0),
+        .status_activity_i   (1'b0),
+        .sysmon_temp_i       (16'h0),
+        .sysmon_vccint_i     (16'h0),
+        .sysmon_vccaux_i     (16'h0),
         .global_control_o    (),
         .error_status_set_i  (32'h0),
         .gpio_sync_ctrl_o    (),
@@ -294,6 +302,9 @@ module tb_wire_vectors;
                  96'hAB_AA_A9_A8_A7_A6_A5_A4_A3_A2_A1_A0);
         check_eq("dip_mask_hi",     ft_rd_row[0].dip_mask_hi,
                  96'hBB_BA_B9_B8_B7_B6_B5_B4_B3_B2_B1_B0);
+        // New byte 240 / 242..243 fields (frame template + L2RAW ethertype).
+        check_eq("frame_template",  ft_rd_row[0].frame_template, 2'd2);
+        check_eq("l2_ethertype",    ft_rd_row[0].l2_ethertype, 16'h88B5);
 
         if (errors == 0) begin
             $display("ALL WIRE VECTOR SCENARIOS PASS");

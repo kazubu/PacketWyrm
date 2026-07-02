@@ -156,6 +156,19 @@ Optional RTL features:
    parser is NOT a lever (build-confirmed twice — see `dp-clk-timing-lessons`
    UPDATE 11/12). Largest blocks now: parser ~39K LUT (2 ports, 176 B), generator
    ~28K, field classifier ~16K, flow-table down to ~4K.
+7. **Generator frame templates — DONE (RTL/SW/sim; HW pending).** A per-flow
+   `frame_template` (`test|raw|ip|eth`) lets the generator emit a raw (no test
+   header) payload so a **true 64-byte frame** comes out instead of the 74 B
+   clamp: `raw` = full Eth/IP/L4 + zero payload; `ip` = Eth[+VLAN]+IP+payload;
+   `eth` = Eth[+VLAN]+ethertype+payload. Raw templates require `classify: header`,
+   forbid measurements/encap, and are non-stampable (`m_tstampable=0`). Row wire
+   format is 244 B (drift-locked). REMAINING for this line-rate work:
+   **(a) per-frame overhead reduction** — the ~15-cycle/frame generator pipeline
+   caps small frames at ~10.42 Mpps (vs 14.88 Mpps line rate for 64 B); overlap
+   the next frame's pick/header-precompute with the current frame's emission
+   (timing-risky on the dp_clk-critical `pw_flow_gen_multi`, gate on post-route
+   WNS). **(b) GUI form field** for `frame_template`/`l2.ethertype` (raw-YAML
+   editor already works).
 
 Classification is three coexisting paths (precedence map > hash > field): the
 flow-id map (structured test flows), the hash exact table (high-count,

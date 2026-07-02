@@ -123,6 +123,9 @@ flows:
       src_mac: "02:a5:02:00:00:01"
       dst_mac: "02:a5:02:00:00:02"
       vlan: 100                    # optional
+      # ethertype: 0x88b5          # optional: only used by frame_template: eth
+      #                            #   (L2RAW). 0/absent = IP-family default
+      #                            #   (0x0800 v4 / 0x86DD v6).
 
     ipv4:                          # exactly one of ipv4 / ipv6 must be set
       src: "192.0.2.1"
@@ -161,8 +164,11 @@ flows:
       frame_len: 512               # total L2 frame bytes (excl FCS); or
                                    #   frame_len_min/max/step for a size sweep.
                                    # The generator emits this exact size (min==max)
-                                   # or sweeps min->max by step (IMIX). Sizes below
-                                   # the 74 B test-frame floor clamp up to it.
+                                   # or sweeps min->max by step (IMIX). With the
+                                   # default (test) template, sizes below the 74 B
+                                   # test-frame floor clamp up to it; a raw
+                                   # frame_template lowers the floor (down to 64 B
+                                   # or the template's header size).
       rate_bps: 1000000000         # or rate_pps
       burst_size: 1                # optional, default 1
       burst_gap_ticks: 0           # optional
@@ -170,6 +176,23 @@ flows:
       payload_seed: 0              # for prbs / random
       insert_sequence: true
       insert_timestamp: true
+      frame_template: test         # optional, default test. Which layers the
+                                   #   generator emits:
+                                   #   test = full Eth/IP/L4 + 32-byte PacketWyrm
+                                   #          test header (default; measurable).
+                                   #   raw  = full Eth/IP/L4 headers but a raw
+                                   #          (zero) payload, no test header ->
+                                   #          a TRUE 64-byte frame is possible.
+                                   #   ip   = Eth[+vlan] + IP + raw payload
+                                   #          (no L4, no test header).
+                                   #   eth  = Eth[+vlan] + ethertype + raw payload
+                                   #          (raw L2 frame; see l2.ethertype).
+                                   # Raw templates (raw/ip/eth) carry no test
+                                   # header: they REQUIRE classify: header and
+                                   # forbid measurements + encap (RX counts
+                                   # rx_frames only; loss = tx-vs-rx count). This
+                                   # lifts the 74 B floor so 64 B line-rate tests
+                                   # can emit real minimum-size frames.
 
     measurements:
       loss: true

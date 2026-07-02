@@ -1,0 +1,57 @@
+# Phase 3 HW: frame-template raw-payload test over the SFP+ DAC loopback.
+#
+# Three flows, one per raw template, all at a TRUE 64-byte frame (before FCS) --
+# impossible with the default "test" template (its 32-byte test header floors
+# the frame at 74 B). All use classify: header (raw frames carry no test-header
+# flow_id) with no measurements (the RX checker counts rx_frames only for
+# non-test frames; loss is the tx-vs-rx count). TX p0 -> DAC -> RX p1.
+#
+# Validate: port rx_frames == tx_frames (loss=0); per-flow rx count increments
+# (header classification of the zero-payload frame); ports.stats tx_bytes/
+# tx_frames == 64 (real 64-byte frames now emit); the three flows hash to
+# distinct slots. (Small-frame pps still ~10.42 Mpps until the generator
+# per-frame overhead is cut -- NEXT-STEPS item 7a -- but the FRAME SIZE is 64 B.)
+system: { name: "pw-frametmpl", mode: "multi-card", default_speed: "10g",
+          control_socket: "/tmp/pw-phase3.sock" }
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+flows:
+  # raw (L4RAW): full Eth/IPv4/UDP headers, raw zero payload, no test header.
+  - id: 1
+    name: "raw64"
+    classify: header
+    tx_global_port: 0
+    rx_global_port: 1
+    l2:   { src_mac: "02:a5:02:00:01:01", dst_mac: "02:a5:02:00:01:02" }
+    ipv4: { src: "192.0.2.1", dst: "198.51.100.1" }
+    udp:  { src_port: 49152, dst_port: 50001 }
+    traffic: { frame_len: 64, rate_bps: 3333000000, frame_template: raw }
+
+  # ip (L3RAW): Ethernet + IPv4 + raw payload (no L4, no test header).
+  - id: 2
+    name: "ip64"
+    classify: header
+    tx_global_port: 0
+    rx_global_port: 1
+    l2:   { src_mac: "02:a5:02:00:02:01", dst_mac: "02:a5:02:00:02:02" }
+    ipv4: { src: "192.0.2.2", dst: "198.51.100.2" }
+    udp:  { src_port: 1000, dst_port: 2000 }   # unused by the frame; ignored in the key
+    traffic: { frame_len: 64, rate_bps: 3333000000, frame_template: ip }
+
+  # eth (L2RAW): raw Ethernet frame with a chosen ethertype + raw payload.
+  - id: 3
+    name: "eth64"
+    classify: header
+    tx_global_port: 0
+    rx_global_port: 1
+    l2:   { src_mac: "02:a5:02:00:03:01", dst_mac: "02:a5:02:00:03:02", ethertype: 0x88b5 }
+    ipv4: { src: "192.0.2.3", dst: "198.51.100.3" }   # required block; addresses unused for eth
+    udp:  { src_port: 3000, dst_port: 4000 }
+    traffic: { frame_len: 64, rate_bps: 3333000000, frame_template: eth }

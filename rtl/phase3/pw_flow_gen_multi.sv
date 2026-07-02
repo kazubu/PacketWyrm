@@ -52,7 +52,13 @@ module pw_flow_gen_multi #(
     output logic [7:0]    m_tkeep,
     output logic          m_tvalid,
     input  wire           m_tready,
-    output logic          m_tlast
+    output logic          m_tlast,
+    // 1 = this frame is a stampable PacketWyrm test frame (TEST template, with
+    // the 32-byte test header the egress pw_ts_insert overwrites); 0 = a raw
+    // template (L4RAW/L3RAW/L2RAW) with no test header, which pw_ts_insert must
+    // leave untouched (no tx_ts overwrite, no L4-csum fixup). Held stable for
+    // the whole frame; sampled at SOF downstream.
+    output logic          m_tstampable
 );
     localparam logic [31:0] PW_TEST_HDR_MAGIC = 32'hA502_7E57;
     localparam int          SELW = $clog2(NUM_SLOTS);
@@ -101,6 +107,7 @@ module pw_flow_gen_multi #(
     logic [15:0]                   next_len_q;  // next sweep length for the active slot
     logic [SELW-1:0]               sel;
     logic                          active;
+    logic                          frame_stampable; // TEST-template frame in flight
     logic [11:0]                   byte_off;
 
     // Per-slot eligibility. Registered before the round-robin pick so the
@@ -199,6 +206,7 @@ module pw_flow_gen_multi #(
     end
     assign m_tvalid = active;
     assign m_tlast  = last;
+    assign m_tstampable = frame_stampable;
 
     // --- field modifiers + IP checksum -------------------------------------
     // xorshift32 scramble for the "random" modifier mode (combinational).
@@ -333,7 +341,8 @@ module pw_flow_gen_multi #(
     function automatic logic [23:0] l4_psum_b(input logic is_tcp,
                                               input logic [15:0] sport, input logic [15:0] dport,
                                               input logic [15:0] l4_len, input logic [31:0] flow_id,
-                                              input logic [63:0] seq, input logic [7:0] tcp_flags);
+                                              input logic [63:0] seq, input logic [7:0] tcp_flags,
+                                              input logic add_test);
         logic [23:0] s;
         s = {8'b0, l4_len} + (is_tcp ? 24'd6 : 24'd17)     // pseudo-hdr: L4 len + proto
           + {8'b0, sport} + {8'b0, dport};                 // L4 src/dst port
@@ -345,11 +354,14 @@ module pw_flow_gen_multi #(
                + 24'h00_FFFF;
         else
             s += {8'b0, l4_len};                           // UDP length (csum=0)
-        // 24-byte non-timestamp test region (excl tx_ts):
-        s += {8'b0, PW_TEST_HDR_MAGIC[31:16]} + {8'b0, PW_TEST_HDR_MAGIC[15:0]}
-           + 24'h00_0001                                   // version 0x0001, reserved 0
-           + {8'b0, flow_id[31:16]} + {8'b0, flow_id[15:0]}
-           + {8'b0, seq[63:48]} + {8'b0, seq[47:32]} + {8'b0, seq[31:16]} + {8'b0, seq[15:0]};
+        // 24-byte non-timestamp test region (excl tx_ts). Omitted for L4RAW
+        // (add_test=0): a raw payload carries no test header, and the emitted
+        // payload is all zeros -- so nothing beyond the L4 header contributes.
+        if (add_test)
+            s += {8'b0, PW_TEST_HDR_MAGIC[31:16]} + {8'b0, PW_TEST_HDR_MAGIC[15:0]}
+               + 24'h00_0001                               // version 0x0001, reserved 0
+               + {8'b0, flow_id[31:16]} + {8'b0, flow_id[15:0]}
+               + {8'b0, seq[63:48]} + {8'b0, seq[47:32]} + {8'b0, seq[31:16]} + {8'b0, seq[15:0]};
         return s;
     endfunction
     // Combine the two registered half-sums -> raw one's-complement partial.
@@ -397,16 +409,20 @@ module pw_flow_gen_multi #(
     // precompute (stage B) so the dp_clk-critical csum adders see a *registered*
     // length input, not this subtract.
     logic [15:0] sl_min_pk, sl_max_pk, cur_pk, eff_len_a;
-    logic [11:0] ovh_pk, paylen_a;
+    logic [11:0] ovh_pk, paylen_a, floor_pk;
     always_comb begin
         sl_min_pk = flow_sched_i[pick_q].len_min;
         sl_max_pk = flow_sched_i[pick_q].len_max;
         ovh_pk    = flow_sched_i[pick_q].ovh;
         cur_pk    = cur_len[pick_q];
         eff_len_a = (cur_pk < sl_min_pk || cur_pk > sl_max_pk) ? sl_min_pk : cur_pk;
-        // L4 payload = total - header overhead, floored at the 32-byte test hdr.
-        paylen_a  = (eff_len_a > {4'b0, ovh_pk} + 16'd32)
-                    ? 12'(eff_len_a - {4'b0, ovh_pk}) : 12'd32;
+        // Payload = total - header overhead. TEST reserves a 32-byte test-header
+        // region as the payload floor; raw templates (L4RAW/L3RAW/L2RAW) carry no
+        // test header, so their floor is 0 (enabling a true 64-byte frame). ovh
+        // is already template-aware (pw_frame_bytes in the sched descriptor).
+        floor_pk  = (flow_sched_i[pick_q].frame_template == 2'd0) ? 12'd32 : 12'd0;
+        paylen_a  = (eff_len_a > {4'b0, ovh_pk} + {4'b0, floor_pk})
+                    ? 12'(eff_len_a - {4'b0, ovh_pk}) : floor_pk;
     end
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -432,6 +448,7 @@ module pw_flow_gen_multi #(
     always_comb begin
         logic [15:0] vlan16;
         logic [15:0] outer_tot;
+        logic [15:0] ip_tot_pk;
         row_l    = rd_row_i;       // picked row from the flow-table BRAM (Stage A)
         // L4 payload (paylen_l) is computed + registered in stage A. The pad
         // beyond the 32-byte test header is zero, so it adds nothing to the UDP
@@ -461,12 +478,21 @@ module pw_flow_gen_multi #(
         // emitted proto byte even if the row wasn't decode-normalized.
         l4proto_pk = (row_l.l4_proto == 8'd6) ? 8'd6 : 8'd17;
         l4hl_pk    = (l4proto_pk == 8'd6) ? 16'd20 : 16'd8;
-        pc_csum  = ip_csum16(16'(20 + int'(l4hl_pk) + int'(paylen_l)), pc_sip, pc_dip,
+        // Inner IPv4 total length: L3RAW (template 2) carries only the raw
+        // payload after the 20-byte IP header (no L4); TEST/L4RAW include the
+        // L4 header. (L2RAW has no IP header, so this csum is unused.)
+        ip_tot_pk = (row_l.frame_template == 2'd2)
+                    ? 16'(20 + int'(paylen_l))
+                    : 16'(20 + int'(l4hl_pk) + int'(paylen_l));
+        pc_csum  = ip_csum16(ip_tot_pk, pc_sip, pc_dip,
                              row_l.dscp, row_l.ttl, l4proto_pk);
         pc_psa   = l4_psum_a(row_l.is_v6, pc_sip, pc_dip, pc_v6src, pc_v6dst);
+        // The L4 partial checksum includes the test-header region only for TEST;
+        // raw templates carry a zero payload (adds nothing). L4 csum is only
+        // emitted for TEST/L4RAW anyway (build() decides).
         pc_psb   = l4_psum_b(l4proto_pk == 8'd6, pc_sp, pc_dp,
                              16'(int'(l4hl_pk) + int'(paylen_l)), row_l.flow_id,
-                             seq_l, row_l.tcp_flags);
+                             seq_l, row_l.tcp_flags, row_l.frame_template == 2'd0);
         // Outer IPv4 header checksum (encap with a v4 outer). tot_len = outer
         // header(20) + encap header + inner IP packet. Static outer addresses.
         outer_tot = 16'(20 + encap_hdr_len(row_l.encap_type)
@@ -523,10 +549,12 @@ module pw_flow_gen_multi #(
                          input logic [15:0] csum,    input logic [15:0] ocsum,
                          input logic [23:0] psa,     input logic [23:0] psb,
                          input logic [11:0] pay_len);
-        int off, tl, total_len, o_pl, o_tot, l4hl;
+        int off, tl, total_len, o_pl, o_tot, l4hl, ip_pl;
         logic [7:0]  tos, o_tos, o_proto, l4proto;
         logic        is_tcp;
-        logic [15:0] ucsum, inner_et;
+        logic [1:0]  tmpl;
+        logic [15:0] ucsum, inner_et, et2, et_out;
+        tmpl    = r.frame_template;
         is_tcp  = (r.l4_proto == 8'd6);
         l4hl    = is_tcp ? 20 : 8;         // L4 header length
         l4proto = is_tcp ? 8'd6 : 8'd17;
@@ -535,6 +563,8 @@ module pw_flow_gen_multi #(
         // upstream, split across the precompute stages).
         ucsum = l4_fold(psa, psb);
         inner_et = r.is_v6 ? 16'h86DD : 16'h0800;
+        // L2RAW ethertype: configured override, else the IP-family default.
+        et2      = (r.l2_ethertype != 16'd0) ? r.l2_ethertype : inner_et;
         for (int i = 0; i < HDR_MAX_BYTES; i++) fb[i] <= 8'h00;
         // Outer Ethernet (carries the flow's configured MAC/VLAN regardless of
         // encapsulation; for EtherIP the inner Ethernet reuses the same MACs).
@@ -548,7 +578,17 @@ module pw_flow_gen_multi #(
             fb[off+2]<={4'h0,eff_vlan[11:8]}; fb[off+3]<=eff_vlan[7:0];
             off += 4;
         end
-        tl = l4hl + int'(pay_len);         // inner L4 length (UDP len / TCP seg), v4/v6
+
+        // Length setup shared by all IP-bearing templates. tl = inner L4 length
+        // (UDP len / TCP seg); ip_pl = the IP-carried payload length, which for
+        // L3RAW (no L4 header) is just the raw payload. Raw templates carry a
+        // ZERO payload (fb holds only the header region; the emit FSM streams
+        // zeros beyond built_len), so an RX header-classifier reads zeros for any
+        // L3/L4 it parses -- coherent with the compiler hash key. No encap for
+        // raw templates (validator-enforced), so the encap prefix below is only
+        // reached by TEST/L4RAW.
+        tl    = l4hl + int'(pay_len);
+        ip_pl = (tmpl == 2'd2) ? int'(pay_len) : tl;   // L3RAW: no L4
 
         // --- Encapsulation prefix: outer IP + tunnel header ----------------
         if (r.encap_type != 2'd0) begin
@@ -597,8 +637,17 @@ module pw_flow_gen_multi #(
             end
             // IPIP (1): bare inner IP follows directly (no inner ethertype).
         end else begin
-            // No encap: the inner IP's ethertype goes on the outer Ethernet.
-            fb[off]<=inner_et[15:8]; fb[off+1]<=inner_et[7:0]; off += 2;
+            // No encap: the (inner IP or raw-L2) ethertype goes on the Ethernet.
+            // L2RAW may override it (et2); all other templates use the IP family.
+            et_out = (tmpl == 2'd3) ? et2 : inner_et;
+            fb[off]<=et_out[15:8]; fb[off+1]<=et_out[7:0]; off += 2;
+        end
+
+        // L2RAW: raw Ethernet frame -- no L3/L4/test header. Done.
+        if (tmpl == 2'd3) begin
+            frame_len <= 12'(off + int'(pay_len));
+            built_len <= 12'(off);
+            return;
         end
 
         // --- Inner IP header (no ethertype: emitted above where needed) ----
@@ -607,13 +656,13 @@ module pw_flow_gen_multi #(
             // flow label 0. tc = tos = dscp<<2.
             fb[off+0]<={4'h6, tos[7:4]}; fb[off+1]<={tos[3:0], 4'h0};
             fb[off+2]<=8'h00; fb[off+3]<=8'h00;                // flow label = 0
-            fb[off+4]<=tl[15:8]; fb[off+5]<=tl[7:0];           // payload length = L4+payload
+            fb[off+4]<=ip_pl[15:8]; fb[off+5]<=ip_pl[7:0];     // payload length (L3RAW: raw only)
             fb[off+6]<=l4proto; fb[off+7]<=r.ttl;              // next-header (UDP/TCP), hop limit
             for (int b = 0; b < 16; b++) fb[off+8+b]  <= eff_v6src[127 - b*8 -: 8];
             for (int b = 0; b < 16; b++) fb[off+24+b] <= eff_v6dst[127 - b*8 -: 8];
             off += 40;
         end else begin
-            total_len = 20 + l4hl + int'(pay_len);
+            total_len = 20 + ip_pl;                            // L3RAW: 20 + raw payload
             fb[off+0]<=8'h45; fb[off+1]<=tos;                  // ver/ihl | TOS (DSCP)
             fb[off+2]<=total_len[15:8]; fb[off+3]<=total_len[7:0];
             fb[off+4]<=8'h00; fb[off+5]<=8'h00; fb[off+6]<=8'h40; fb[off+7]<=8'h00;
@@ -624,6 +673,14 @@ module pw_flow_gen_multi #(
             fb[off+18]<=eff_dip[15:8];  fb[off+19]<=eff_dip[7:0];
             off += 20;
         end
+
+        // L3RAW: Ethernet + IP + raw payload -- no L4, no test header. Done.
+        if (tmpl == 2'd2) begin
+            frame_len <= 12'(off + int'(pay_len));
+            built_len <= 12'(off);
+            return;
+        end
+
         // L4 header. UDP (8 B): sport/dport/len/csum. TCP (20 B): sport/dport/
         // seq/ack/(data-offset|flags)/window/csum/urgent. The L4 csum field
         // carries the partial (ucsum) for {v6 UDP, v4 TCP, v6 TCP}; v4 UDP leaves
@@ -644,28 +701,35 @@ module pw_flow_gen_multi #(
             else          begin fb[off+6]<=8'h00;       fb[off+7]<=8'h00;       end
         end
         off += l4hl;
-        fb[off+0]<=PW_TEST_HDR_MAGIC[31:24]; fb[off+1]<=PW_TEST_HDR_MAGIC[23:16];
-        fb[off+2]<=PW_TEST_HDR_MAGIC[15:8];  fb[off+3]<=PW_TEST_HDR_MAGIC[7:0];
-        fb[off+4]<=8'h00; fb[off+5]<=8'h01; fb[off+6]<=8'h00; fb[off+7]<=8'h00;
-        fb[off+8]<=r.flow_id[31:24]; fb[off+9]<=r.flow_id[23:16];
-        fb[off+10]<=r.flow_id[15:8]; fb[off+11]<=r.flow_id[7:0];
-        fb[off+12]<=seq[63:56]; fb[off+13]<=seq[55:48]; fb[off+14]<=seq[47:40]; fb[off+15]<=seq[39:32];
-        fb[off+16]<=seq[31:24]; fb[off+17]<=seq[23:16]; fb[off+18]<=seq[15:8];  fb[off+19]<=seq[7:0];
-        fb[off+20]<=ts[63:56]; fb[off+21]<=ts[55:48]; fb[off+22]<=ts[47:40]; fb[off+23]<=ts[39:32];
-        fb[off+24]<=ts[31:24]; fb[off+25]<=ts[23:16]; fb[off+26]<=ts[15:8];  fb[off+27]<=ts[7:0];
+        // TEST template: write the 32-byte PacketWyrm test header (magic / ver /
+        // flow_id / seq / ts). L4RAW carries full L2/L3/L4 headers but a raw
+        // (zero) payload -- no test header -- so a true 64-byte frame is possible.
+        if (tmpl == 2'd0) begin
+            fb[off+0]<=PW_TEST_HDR_MAGIC[31:24]; fb[off+1]<=PW_TEST_HDR_MAGIC[23:16];
+            fb[off+2]<=PW_TEST_HDR_MAGIC[15:8];  fb[off+3]<=PW_TEST_HDR_MAGIC[7:0];
+            fb[off+4]<=8'h00; fb[off+5]<=8'h01; fb[off+6]<=8'h00; fb[off+7]<=8'h00;
+            fb[off+8]<=r.flow_id[31:24]; fb[off+9]<=r.flow_id[23:16];
+            fb[off+10]<=r.flow_id[15:8]; fb[off+11]<=r.flow_id[7:0];
+            fb[off+12]<=seq[63:56]; fb[off+13]<=seq[55:48]; fb[off+14]<=seq[47:40]; fb[off+15]<=seq[39:32];
+            fb[off+16]<=seq[31:24]; fb[off+17]<=seq[23:16]; fb[off+18]<=seq[15:8];  fb[off+19]<=seq[7:0];
+            fb[off+20]<=ts[63:56]; fb[off+21]<=ts[55:48]; fb[off+22]<=ts[47:40]; fb[off+23]<=ts[39:32];
+            fb[off+24]<=ts[31:24]; fb[off+25]<=ts[23:16]; fb[off+26]<=ts[15:8];  fb[off+27]<=ts[7:0];
+            built_len <= 12'(off + 32);    // header + 32-byte test-header region
+        end else begin
+            built_len <= 12'(off);         // L4RAW: headers only, raw zero payload
+        end
         // off now points at the inner test-header/payload (the UDP block above
         // already advanced it past the 8-byte UDP header); total = + payload.
         // This covers all encap layouts (outer IP + tunnel header already added).
-        // built_len = the bytes actually written into fb (header + the 32-byte
-        // test-header region); the emit FSM streams zero pad from built_len up
-        // to frame_len, so fb never needs to hold the (up to 1518 B) payload.
+        // The emit FSM streams zero pad from built_len up to frame_len, so fb
+        // never needs to hold the (up to 1518 B) payload.
         frame_len <= 12'(off + int'(pay_len));
-        built_len <= 12'(off + 32);
     endtask
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             active   <= 1'b0;
+            frame_stampable <= 1'b0;
             byte_off <= '0;
             rr_ptr   <= '0;
             sel      <= '0;
@@ -716,6 +780,9 @@ module pw_flow_gen_multi #(
                           eff_sp_q, eff_dp_q, csum_q, ocsum_q, psa_q, psb_q, paylen_q);
                     sel      <= pick_qq;
                     active   <= 1'b1;
+                    // TEST template (0) carries a stampable test header; raw
+                    // templates (1/2/3) must not be touched by pw_ts_insert.
+                    frame_stampable <= (row_qq.frame_template == 2'd0);
                     byte_off <= '0;
                     rr_ptr   <= (pick_qq == SELW'(NUM_SLOTS-1)) ? '0 : pick_qq + 1'b1;
                     tokens_q[pick_qq] <= (accv >= cost) ? (accv - cost) : '0;

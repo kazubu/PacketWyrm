@@ -115,6 +115,24 @@ emit FSM streams zero pad from `built_len` out to `frame_len`, so `fb` never has
 to grow to the 1518 B frame size. The token cost meters by the smallest legal
 frame (exact for a fixed size; a sweep meters by `min`). Before this, the
 generator ignored `frame_len_*` and always emitted a fixed 74 B frame.
+
+**Frame templates** (`frame_template` in the flow row, decoded into both the
+scheduling descriptor and the wide row): the generator emits one of four layer
+sets. `TEST` (0, default) is the full Eth/IP/L4 + 32-byte test header above.
+The three *raw* templates carry no test header, so the payload floor drops from
+32 to 0 and a **true 64-byte minimum frame** becomes possible: `L4RAW` (1) keeps
+the full Eth/IP/L4 headers with a raw (zero) payload; `L3RAW` (2) is
+Eth[+VLAN]+IP+payload (no L4, IPv4 total-length/checksum track the payload);
+`L2RAW` (3) is Eth[+VLAN]+ethertype+payload (`l2_ethertype`, default the IP-
+family value). The payload is always zero-padded, so an RX header-classifier
+reads zeros for any absent layer — the compiler builds the matching hash key
+(`pw_fc_hash_words` zeroes the L4 word for L3RAW, and L3+L4 for L2RAW). Raw
+frames must NOT be egress-timestamped (no test header / tx_ts field), so the
+generator drives `m_tstampable=0` for them; `pw_data_plane_axis` ANDs that into
+the `tuser` marker so `pw_ts_insert` leaves raw frames untouched (no tx_ts
+overwrite, no L4-csum fixup). The RX checker keys on the test-header magic
+(`is_test`), so raw frames count `rx_frames` only — no seq/loss/latency, no
+`lost_event` (the LED never trips on them); loss is the tx-vs-rx count.
 `pw_flow_table_bram` holds the flow table in **block RAM** (in the data
 plane, next to the generators). The old approach — a 32-wide registered
 `pw_flow_row_t` array (`flow_rows_o`) fanning out to both generators, each

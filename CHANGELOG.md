@@ -9,6 +9,25 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Generator frame templates — raw payload + true 64-byte frames (RTL).**
+    A new per-flow `frame_template` (`traffic.frame_template: test|raw|ip|eth`)
+    selects which layers `pw_flow_gen_multi` emits. `test` (default) is the
+    full Eth/IP/L4 + 32-byte PacketWyrm test header, unchanged. The three raw
+    templates carry no test header, dropping the 32-byte payload floor so a
+    **true 64-byte minimum frame** is emitted instead of clamping to 74 B:
+    `raw` (full Eth/IP/L4 headers, raw zero payload), `ip` (Eth[+VLAN]+IP+
+    payload), `eth` (Eth[+VLAN]+ethertype+payload, `l2.ethertype` override).
+    Raw templates require `classify: header` and forbid measurements/encap
+    (validator-enforced): the RX checker keys on the test-header magic, so raw
+    frames count `rx_frames` only (no seq/loss/latency, no LED trip; loss is the
+    tx-vs-rx count) and the compiler zeroes the absent-layer hash-key words so
+    header classification matches the zero-payload frame. Raw frames are marked
+    non-stampable (`m_tstampable=0` → `tuser=0`) so egress `pw_ts_insert` leaves
+    them untouched. Wire row extended to 244 B (`frame_template` @240,
+    `l2_ethertype` @242), drift-locked by the C `_Static_assert`s + the
+    gen_bar_vectors/tb_wire_vectors golden image. (Generator half of the
+    small-frame line-rate work; the per-frame overhead reduction to reach 64 B
+    line rate is tracked separately in NEXT-STEPS.)
   - **LED-state readback, on-chip SYSMON telemetry, per-port pps/bps (RTL).**
     The front-panel LED's `err_sticky` is now software-readable: GLOBAL_STATUS
     exposes it at bit 3 (+ activity at bit 5), wired from the data plane (same

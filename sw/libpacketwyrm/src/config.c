@@ -464,6 +464,12 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
         if (s && !pw_parse_u8(s, &f->l2.pcp)) {
             diag_set(diag, PW_E_PARSE, l2p, "pcp"); return PW_E_PARSE;
         }
+        /* Ethertype override for the "eth" frame template (0 => IP-family
+         * default). Ignored for other templates. */
+        if ((r = get_scalar(l2, "ethertype", l2p, false, &s, diag)) != PW_OK) return r;
+        if (s && !pw_parse_u16(s, &f->l2.ethertype)) {
+            diag_set(diag, PW_E_PARSE, l2p, "ethertype must be 16-bit"); return PW_E_PARSE;
+        }
     }
 
     /* inner address: exactly one of ipv4 / ipv6 (required) */
@@ -617,6 +623,16 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
     if (s && !pw_parse_bool(s, &f->traffic.insert_sequence)) { diag_set(diag, PW_E_PARSE, tp, "insert_sequence"); return PW_E_PARSE; }
     if ((r = get_scalar(tr, "insert_timestamp", tp, false, &s, diag)) != PW_OK) return r;
     if (s && !pw_parse_bool(s, &f->traffic.insert_timestamp)) { diag_set(diag, PW_E_PARSE, tp, "insert_timestamp"); return PW_E_PARSE; }
+    /* Frame template: test (default) | raw (L4RAW) | ip (L3RAW) | eth (L2RAW). */
+    if ((r = get_scalar(tr, "frame_template", tp, false, &s, diag)) != PW_OK) return r;
+    f->traffic.frame_template = PW_FRAME_TEMPLATE_TEST;
+    if (s) {
+        if (!strcmp(s, "test"))      f->traffic.frame_template = PW_FRAME_TEMPLATE_TEST;
+        else if (!strcmp(s, "raw"))  f->traffic.frame_template = PW_FRAME_TEMPLATE_L4RAW;
+        else if (!strcmp(s, "ip"))   f->traffic.frame_template = PW_FRAME_TEMPLATE_L3RAW;
+        else if (!strcmp(s, "eth"))  f->traffic.frame_template = PW_FRAME_TEMPLATE_L2RAW;
+        else { diag_set(diag, PW_E_INVAL, tp, "frame_template must be test|raw|ip|eth"); return PW_E_INVAL; }
+    }
 
     /* measurements */
     const pw_yaml_node *meas = pw_yaml_map_get(m, "measurements");

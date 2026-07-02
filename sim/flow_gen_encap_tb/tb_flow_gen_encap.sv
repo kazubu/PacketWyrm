@@ -38,7 +38,8 @@ module tb_flow_gen_encap;
         .clk(clk), .rst_n(rst_n), .timestamp_i(ts),
         .flow_sched_i(f_sched), .rd_addr_o(rd_addr), .rd_row_i(rd_row),
         .stats_clear_i(1'b0), .tx_count_o(gtxc),
-        .m_tdata(td), .m_tkeep(tk), .m_tvalid(tv), .m_tready(1'b1), .m_tlast(tl)
+        .m_tdata(td), .m_tkeep(tk), .m_tvalid(tv), .m_tready(1'b1), .m_tlast(tl),
+        .m_tstampable()
     );
 
     // End-to-end RX check: the parser must decapsulate each tunnel and recover

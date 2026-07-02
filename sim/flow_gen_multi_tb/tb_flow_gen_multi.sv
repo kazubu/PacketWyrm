@@ -16,22 +16,28 @@ module tb_flow_gen_multi;
 
     pw_flow_row_t f_rows [SLOTS];
 
-    logic [63:0] td; logic [7:0] tk; logic tv, tl;
+    logic [63:0] td; logic [7:0] tk; logic tv, tl, tstamp;
 
     // Model the BRAM-backed flow table: compact scheduling array (comb) + a
     // 1-cycle registered row read on the generator's rd_addr_o.
     pw_flow_sched_t f_sched [SLOTS];
     always_comb for (int s = 0; s < SLOTS; s++) begin
+        automatic int test_pl = (f_rows[s].frame_template == 2'd0) ? 32 : 0;
+        automatic int minl    = pw_frame_bytes(f_rows[s], test_pl);
+        automatic int cfgm    = int'(f_rows[s].frame_len_min);
         f_sched[s] = '0;
         f_sched[s].valid     = f_rows[s].valid;
         f_sched[s].egress    = f_rows[s].egress;
         f_sched[s].tokens_fp = f_rows[s].tokens_fp;
         f_sched[s].cap       = {f_rows[s].burst, 16'h0};
-        f_sched[s].cost      = {16'(pw_frame_bytes(f_rows[s], 32)), 16'h0};
+        // Mirror pw_flow_table_bram: cost meters by max(frame_len_min, min_legal),
+        // and min_legal is template-aware (raw templates have no 32B test region).
+        f_sched[s].cost      = {16'((cfgm > minl) ? cfgm : minl), 16'h0};
         f_sched[s].len_min   = f_rows[s].frame_len_min;
         f_sched[s].len_max   = f_rows[s].frame_len_max;
         f_sched[s].len_step  = f_rows[s].frame_len_step;
         f_sched[s].ovh       = 12'(pw_frame_bytes(f_rows[s], 0));
+        f_sched[s].frame_template = f_rows[s].frame_template;
     end
     logic [$clog2(SLOTS)-1:0] rd_addr;
     pw_flow_row_t             rd_row;
@@ -42,7 +48,8 @@ module tb_flow_gen_multi;
         .clk(clk), .rst_n(rst_n), .timestamp_i(ts),
         .flow_sched_i(f_sched), .rd_addr_o(rd_addr), .rd_row_i(rd_row),
         .stats_clear_i(1'b0), .tx_count_o(gtxc),
-        .m_tdata(td), .m_tkeep(tk), .m_tvalid(tv), .m_tready(1'b1), .m_tlast(tl)
+        .m_tdata(td), .m_tkeep(tk), .m_tvalid(tv), .m_tready(1'b1), .m_tlast(tl),
+        .m_tstampable(tstamp)
     );
 
     pw_match_key_t key; logic key_valid;
@@ -235,6 +242,60 @@ module tb_flow_gen_multi;
         end
     end
 
+    // --- raw frame-template capture (final scenario) --------------------------
+    // During raw_phase, accumulate each frame and file the first of each template
+    // by a discriminator: L2RAW by ethertype 0x88B5, L3RAW/L4RAW by src IP byte
+    // (0x11 vs 0x22), TEST by the magic. Also latch m_tstampable at each SOF.
+    logic raw_phase = 1'b0;
+    logic [7:0] rbuf [0:127]; int rb_n = 0; logic rb_ts;
+    logic [7:0] l2f [0:127]; int l2f_n = 0; logic l2f_done = 0; logic l2f_ts = 1;
+    logic [7:0] l3f [0:127]; int l3f_n = 0; logic l3f_done = 0; logic l3f_ts = 1;
+    logic [7:0] l4f [0:127]; int l4f_n = 0; logic l4f_done = 0; logic l4f_ts = 1;
+    logic [7:0] tsf [0:127]; int tsf_n = 0; logic tsf_done = 0; logic tsf_ts = 0;
+    always_ff @(posedge clk) begin
+        if (rst_n && raw_phase && tv) begin
+            if (rb_n == 0) rb_ts <= tstamp;              // SOF marker sample
+            for (int k = 0; k < 8; k++) if (tk[k]) begin
+                if (rb_n < 128) rbuf[rb_n] = td[k*8 +: 8];
+                rb_n++;
+            end
+            if (tl) begin
+                // L2RAW: ethertype 0x88B5
+                if (rbuf[12]==8'h88 && rbuf[13]==8'hB5 && !l2f_done) begin
+                    for (int i=0;i<128;i++) l2f[i]=rbuf[i];
+                    l2f_n=rb_n; l2f_done<=1'b1; l2f_ts<=rb_ts;
+                end
+                // IPv4 (0x0800) frames: L3RAW (src IP ..11) vs L4RAW (src IP ..22)
+                // vs TEST (magic @42). src IP byte @29.
+                if (rbuf[12]==8'h08 && rbuf[13]==8'h00) begin
+                    if (rbuf[29]==8'h11 && !l3f_done) begin
+                        for (int i=0;i<128;i++) l3f[i]=rbuf[i];
+                        l3f_n=rb_n; l3f_done<=1'b1; l3f_ts<=rb_ts;
+                    end
+                    if (rbuf[29]==8'h22 && !l4f_done) begin
+                        for (int i=0;i<128;i++) l4f[i]=rbuf[i];
+                        l4f_n=rb_n; l4f_done<=1'b1; l4f_ts<=rb_ts;
+                    end
+                    if (rbuf[42]==8'hA5 && rbuf[43]==8'h02 && rbuf[44]==8'h7E && rbuf[45]==8'h57
+                        && !tsf_done) begin
+                        for (int i=0;i<128;i++) tsf[i]=rbuf[i];
+                        tsf_n=rb_n; tsf_done<=1'b1; tsf_ts<=rb_ts;
+                    end
+                end
+                rb_n = 0;
+            end
+        end
+    end
+
+    // IPv4 header checksum over an arbitrary captured buffer [14..33].
+    function automatic logic ipcsum_ok(input logic [7:0] b [0:127]);
+        logic [31:0] s; s = 0;
+        for (int w = 0; w < 10; w++) s += {b[14 + w*2], b[14 + w*2 + 1]};
+        s = (s & 32'hFFFF) + (s >> 16);
+        s = (s & 32'hFFFF) + (s >> 16);
+        return (s[15:0] == 16'hFFFF);
+    endfunction
+
     // INDEPENDENT IPv4 TCP checksum reference (different arithmetic than the DUT's
     // l4_psum_*): pseudo-header (sip@26, dip@30, proto 6, tcp_len) + the 20-byte
     // TCP header @34 (incl the emitted csum field @50) + the test region @54,
@@ -405,6 +466,74 @@ module tb_flow_gen_multi;
                 gaps[1]==gaps[2] && gaps[2]==gaps[3] && gaps[3]==gaps[4]);
             $display("flow_gen_multi: low-rate expw=%0d gaps={%0d,%0d,%0d,%0d,%0d}",
                      expw, gaps[0], gaps[1], gaps[2], gaps[3], gaps[4]);
+        end
+
+        // ---- frame templates: raw payload + true 64-byte frames ----
+        // Four slots at 64-byte fixed length, one per template. Verify each
+        // emits a real 64-byte frame with the right layers, a zero payload (no
+        // test header for the raw ones), and that m_tstampable is 0 for raw / 1
+        // for TEST (so egress pw_ts_insert leaves the raw frames untouched).
+        begin
+            for (int s = 0; s < SLOTS; s++) begin
+                f_rows[s] = '0;
+                f_rows[s].src_mac=48'h02_00_00_00_00_01; f_rows[s].dst_mac=48'hFF_FF_FF_FF_FF_FF;
+                f_rows[s].udp_sp=16'd4000; f_rows[s].udp_dp=16'd4001; f_rows[s].ttl=8'd64;
+                f_rows[s].burst=16'd256; f_rows[s].tokens_fp=32'h0004_0000;  // 4 B/cyc
+                f_rows[s].frame_len_min=16'd64; f_rows[s].frame_len_max=16'd64;
+                f_rows[s].frame_len_step=16'd1; f_rows[s].egress=0;
+            end
+            // slot 0: L2RAW (ethertype 0x88B5)
+            f_rows[0].valid=1; f_rows[0].flow_id=32'h0100;
+            f_rows[0].frame_template=2'd3; f_rows[0].l2_ethertype=16'h88B5;
+            // slot 1: L3RAW v4 (src IP ..11), proto = UDP (17) in the IP header
+            f_rows[1].valid=1; f_rows[1].flow_id=32'h0101;
+            f_rows[1].frame_template=2'd2;
+            f_rows[1].src_ipv4=32'h0A000011; f_rows[1].dst_ipv4=32'h0A0000FF;
+            // slot 2: L4RAW v4 UDP (src IP ..22), full headers, raw payload
+            f_rows[2].valid=1; f_rows[2].flow_id=32'h0102;
+            f_rows[2].frame_template=2'd1;
+            f_rows[2].src_ipv4=32'h0A000022; f_rows[2].dst_ipv4=32'h0A0000FE;
+            // slot 3: TEST (positive control -- must be stampable)
+            f_rows[3].valid=1; f_rows[3].flow_id=32'h0055;
+            f_rows[3].frame_template=2'd0;
+            f_rows[3].src_ipv4=32'h0A000033; f_rows[3].dst_ipv4=32'h0A0000FD;
+
+            rst_n=0; repeat (4) @(posedge clk); rst_n=1;
+            raw_phase = 1'b1;
+            repeat (2000) @(posedge clk);
+            raw_phase = 1'b0;
+
+            // L2RAW: 64B, ethertype 0x88B5, 50B zero payload, not stampable.
+            chk("L2RAW captured 64B", l2f_done && l2f_n == 64);
+            chk("L2RAW ethertype 0x88B5", l2f[12]==8'h88 && l2f[13]==8'hB5);
+            begin automatic logic z=1; for (int i=14;i<64;i++) if (l2f[i]!=8'h00) z=0;
+                  chk("L2RAW payload all zero", z); end
+            chk("L2RAW not stampable (tuser=0)", l2f_ts == 1'b0);
+            // L3RAW: 64B, IPv4, total_len 50, proto 17, valid csum, no L4/test
+            // header (30B zero payload after the 20B IP header).
+            chk("L3RAW captured 64B", l3f_done && l3f_n == 64);
+            chk("L3RAW ethertype IPv4", l3f[12]==8'h08 && l3f[13]==8'h00);
+            chk("L3RAW IP total_len = 50", {l3f[16],l3f[17]} == 16'd50);
+            chk("L3RAW IP proto = 17", l3f[23] == 8'd17);
+            chk("L3RAW IP header checksum valid", ipcsum_ok(l3f));
+            begin automatic logic z=1; for (int i=34;i<64;i++) if (l3f[i]!=8'h00) z=0;
+                  chk("L3RAW payload (post-IP) all zero", z); end
+            chk("L3RAW not stampable (tuser=0)", l3f_ts == 1'b0);
+            // L4RAW: 64B, IPv4/UDP, UDP length 30, no magic, 22B zero payload.
+            chk("L4RAW captured 64B", l4f_done && l4f_n == 64);
+            chk("L4RAW IP total_len = 50", {l4f[16],l4f[17]} == 16'd50);
+            chk("L4RAW UDP length = 30", {l4f[38],l4f[39]} == 16'd30);
+            chk("L4RAW IP header checksum valid", ipcsum_ok(l4f));
+            chk("L4RAW has NO test-header magic",
+                !(l4f[42]==8'hA5 && l4f[43]==8'h02 && l4f[44]==8'h7E && l4f[45]==8'h57));
+            begin automatic logic z=1; for (int i=42;i<64;i++) if (l4f[i]!=8'h00) z=0;
+                  chk("L4RAW payload (post-UDP) all zero", z); end
+            chk("L4RAW not stampable (tuser=0)", l4f_ts == 1'b0);
+            // TEST positive control: stampable.
+            chk("TEST frame captured", tsf_done);
+            chk("TEST frame IS stampable (tuser=1)", tsf_ts == 1'b1);
+            $display("templates: l2=%0d l3=%0d l4=%0d test=%0d (ts l2=%0b l3=%0b l4=%0b test=%0b)",
+                     l2f_n, l3f_n, l4f_n, tsf_n, l2f_ts, l3f_ts, l4f_ts, tsf_ts);
         end
 
         $display("flow_gen_multi: fid1=%0d fid3=%0d len7={128:%0d,192:%0d,256:%0d} (%0d pass, %0d fail)",

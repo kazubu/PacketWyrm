@@ -133,6 +133,31 @@ pw_status pw_config_validate(const struct pw_config *cfg, struct pw_diag *d) {
             diag(d, PW_E_INVAL, p, "set either rate_bps or rate_pps, not both");
             return PW_E_INVAL;
         }
+        /* Raw frame templates (raw/ip/eth) carry no PacketWyrm test header, so
+         * per-flow loss/latency/jitter/sequence measurement is impossible and
+         * RX must classify on header fields (the flow-id map keys on the test
+         * header, which isn't there). Encapsulation also needs the inner test
+         * frame, so it is not combinable with a raw template. */
+        if (f->traffic.frame_template != PW_FRAME_TEMPLATE_TEST) {
+            char p[80];
+            if (f->meas.loss || f->meas.latency || f->meas.jitter) {
+                snprintf(p, sizeof(p), "flows[%zu].measurements", i);
+                diag(d, PW_E_INVAL, p, "raw frame templates (raw/ip/eth) carry no test "
+                     "header -- loss/latency/jitter cannot be measured; remove measurements");
+                return PW_E_INVAL;
+            }
+            if (!f->classify_header) {
+                snprintf(p, sizeof(p), "flows[%zu].classify", i);
+                diag(d, PW_E_INVAL, p, "raw frame templates (raw/ip/eth) have no test-header "
+                     "flow_id -- set classify: header");
+                return PW_E_INVAL;
+            }
+            if (f->encap.present) {
+                snprintf(p, sizeof(p), "flows[%zu].encap", i);
+                diag(d, PW_E_INVAL, p, "encapsulation is not supported with a raw frame template");
+                return PW_E_INVAL;
+            }
+        }
     }
 
     /* (Stage 2: per-flow lat_correction lifts the old stage-1 restriction --
