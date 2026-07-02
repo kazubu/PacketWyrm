@@ -229,10 +229,12 @@ function flowYaml(f) {
   if (f.name) L.push(`    name: ${yq(f.name)}`);
   L.push(`    tx_global_port: ${f.tx}`);
   L.push(`    rx_global_port: ${f.rx}`);
+  const raw = f.frame_template && f.frame_template !== "test";
   L.push(`    l2:`);
   L.push(`      src_mac: ${yq(f.src_mac)}`);
   L.push(`      dst_mac: ${yq(f.dst_mac)}`);
   if (f.vlan !== "" && f.vlan != null) L.push(`      vlan: ${f.vlan}`);
+  if (f.ethertype !== "" && f.ethertype != null) L.push(`      ethertype: ${f.ethertype}`);
   if (f.l3 === "ipv6") {
     L.push(`    ipv6:`);
     L.push(`      src: ${yq(f.ip_src)}`); L.push(`      dst: ${yq(f.ip_dst)}`);
@@ -251,11 +253,17 @@ function flowYaml(f) {
   L.push(`      payload: ${yq(f.payload)}`);
   L.push(`      insert_sequence: ${!!f.seq}`);
   L.push(`      insert_timestamp: ${!!f.ts}`);
-  L.push(`    measurements:`);
-  L.push(`      loss: ${!!f.m_loss}`);
-  L.push(`      latency: ${!!f.m_lat}`);
-  L.push(`      jitter: ${!!f.m_jit}`);
-  if (f.classify && f.classify !== "map") L.push(`    classify: ${yq(f.classify)}`);
+  if (raw) L.push(`      frame_template: ${yq(f.frame_template)}`);
+  // Raw templates carry no test header: no measurements, and RX must classify
+  // on header fields (the daemon validator enforces this -- emit valid YAML).
+  if (!raw) {
+    L.push(`    measurements:`);
+    L.push(`      loss: ${!!f.m_loss}`);
+    L.push(`      latency: ${!!f.m_lat}`);
+    L.push(`      jitter: ${!!f.m_jit}`);
+  }
+  if (raw) L.push(`    classify: header`);
+  else if (f.classify && f.classify !== "map") L.push(`    classify: ${yq(f.classify)}`);
   if (f.background) L.push(`    background: true`);
   // match: emit only the set fields (masks are hex; prefixes are ints)
   const m = f.match || {}, ml = [];
@@ -324,10 +332,11 @@ const MOD_FIELDS = ["src_ipv4","dst_ipv4","src_ipv6","dst_ipv6",
 const newMods = () => Object.fromEntries(MOD_FIELDS.map(k => [k,{mode:"static",mask:""}]));
 const newFlow = () => ({
   id: (flows.reduce((m,f)=>Math.max(m,f.id),0) || 0) + 1, name:"",
-  tx:0, rx:1, src_mac:"02:a5:02:00:00:01", dst_mac:"02:a5:02:00:00:02", vlan:"",
+  tx:0, rx:1, src_mac:"02:a5:02:00:00:01", dst_mac:"02:a5:02:00:00:02", vlan:"", ethertype:"",
   l3:"ipv4", ip_src:"192.0.2.1", ip_dst:"192.0.2.2", ttl:64,
   l4:"udp", sport:49152, dport:50001, tcp_flags:"",
-  frame_len:512, rate_mode:"bps", rate:1000000000, payload:"increment", seq:true, ts:true,
+  frame_len:512, rate_mode:"bps", rate:1000000000, payload:"increment",
+  frame_template:"test", seq:true, ts:true,
   m_loss:true, m_lat:true, m_jit:true, classify:"map", background:false,
   // advanced (optional)
   match:{ udp_dst:"", ipv4_dst:"", ipv6_dst_prefix:"", ipv6_src_prefix:"" },
@@ -400,6 +409,7 @@ function renderFlowEdit() {
     field("tx port",f,"tx","number"), field("rx port",f,"rx","number"),
     field("src MAC",f,"src_mac"), field("dst MAC",f,"dst_mac"),
     field("vlan (blank=none)",f,"vlan","number"),
+    field("ethertype (eth tmpl, blank=auto)",f,"ethertype"),
     field("L3",f,"l3","select",["ipv4","ipv6"]),
     field("ip src",f,"ip_src"), field("ip dst",f,"ip_dst"),
     field("ttl / hop_limit",f,"ttl","number"),
@@ -409,6 +419,7 @@ function renderFlowEdit() {
     field("frame_len",f,"frame_len","number"),
     field("rate mode",f,"rate_mode","select",["bps","pps"]), field("rate",f,"rate","number"),
     field("payload",f,"payload","select",["zero","increment","prbs","random"]),
+    field("frame_template",f,"frame_template","select",["test","raw","ip","eth"]),
     field("classify",f,"classify","select",["map","header"]),
   ]));
   box.append(el("div",{class:"row",style:"margin-top:8px"},[

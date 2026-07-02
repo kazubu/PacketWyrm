@@ -945,6 +945,9 @@ static struct json_object *flow_to_form_json(const struct pw_flow *f) {
     json_object_object_add(o, "dst_mac", js_mac(f->l2.dst_mac));
     if (f->l2.vlan_set) json_object_object_add(o, "vlan", json_object_new_int(f->l2.vlan));
     else json_object_object_add(o, "vlan", json_object_new_string(""));
+    if (f->l2.ethertype) { char eb[8]; snprintf(eb, sizeof eb, "0x%04x", f->l2.ethertype);
+                           json_object_object_add(o, "ethertype", json_object_new_string(eb)); }
+    else json_object_object_add(o, "ethertype", json_object_new_string(""));
     bool v6 = f->ipv6.present;
     json_object_object_add(o, "l3", json_object_new_string(v6 ? "ipv6" : "ipv4"));
     if (v6) {
@@ -981,6 +984,10 @@ static struct json_object *flow_to_form_json(const struct pw_flow *f) {
                      f->traffic.payload_mode == 2 ? "prbs" :
                      f->traffic.payload_mode == 3 ? "random" : "increment";
     json_object_object_add(o, "payload", json_object_new_string(pm));
+    const char *ft = f->traffic.frame_template == PW_FRAME_TEMPLATE_L4RAW ? "raw" :
+                     f->traffic.frame_template == PW_FRAME_TEMPLATE_L3RAW ? "ip" :
+                     f->traffic.frame_template == PW_FRAME_TEMPLATE_L2RAW ? "eth" : "test";
+    json_object_object_add(o, "frame_template", json_object_new_string(ft));
     json_object_object_add(o, "seq", json_object_new_boolean(f->traffic.insert_sequence));
     json_object_object_add(o, "ts", json_object_new_boolean(f->traffic.insert_timestamp));
     json_object_object_add(o, "m_loss", json_object_new_boolean(f->meas.loss));
