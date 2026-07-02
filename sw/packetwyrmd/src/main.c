@@ -1361,6 +1361,28 @@ static struct json_object *build_port_stats(const struct pw_config *cfg,
              * counter (no-match / explicit DROP action) -- expose it as `drops`.
              * FCS + drops are the two per-port inputs to the LED err_sticky. */
             json_object_object_add(o, "drops", json_object_new_int64((int64_t)ps.rx_bad_frame));
+            /* DROP classification breakdown: no-match (classifier) vs SAF
+             * forward-buffer overflow. `drops` above is their sum (back-compat). */
+            json_object_object_add(o, "drop_nomatch", json_object_new_int64((int64_t)ps.drop_nomatch));
+            json_object_object_add(o, "drop_saf", json_object_new_int64((int64_t)ps.drop_saf));
+            /* Most-recent no-match frame's context (decoded) so a rare drop can be
+             * attributed: was it a real test frame (is_test + its flow_id) or a
+             * stray/garbage frame? Raw ctx word + decoded fields + flow_id. */
+            {
+                uint32_t c = ps.last_drop_ctx;
+                struct json_object *ld = json_object_new_object();
+                json_object_object_add(ld, "ctx_raw", json_object_new_int64((int64_t)c));
+                json_object_object_add(ld, "is_test",  json_object_new_boolean(c & 0x1));
+                json_object_object_add(ld, "is_ipv4",  json_object_new_boolean((c>>1) & 0x1));
+                json_object_object_add(ld, "is_ipv6",  json_object_new_boolean((c>>2) & 0x1));
+                json_object_object_add(ld, "hit",      json_object_new_boolean((c>>3) & 0x1));
+                json_object_object_add(ld, "action",   json_object_new_int((int)((c>>4) & 0x7)));
+                json_object_object_add(ld, "is_arp",   json_object_new_boolean((c>>7) & 0x1));
+                json_object_object_add(ld, "ethertype",json_object_new_int((int)((c>>8) & 0xFFFF)));
+                json_object_object_add(ld, "l3_proto", json_object_new_int((int)((c>>24) & 0xFF)));
+                json_object_object_add(ld, "flow_id",  json_object_new_int64((int64_t)ps.last_drop_flowid));
+                json_object_object_add(o, "last_drop", ld);
+            }
             json_object_object_add(o, "link_up_count", json_object_new_int64((int64_t)ps.link_up_count));
             json_object_object_add(o, "block_lock_loss", json_object_new_int64((int64_t)ps.block_lock_loss));
             json_object_array_add(arr, o);

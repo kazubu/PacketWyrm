@@ -9,6 +9,20 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Per-port DROP classification + last-drop capture (RTL + SW).** The single
+    per-port `drops` counter is now split by cause: `drop_nomatch` (classifier
+    no-match / explicit DROP action) and `drop_saf` (store-and-forward
+    forward-buffer overflow) — `drops` stays as their sum (back-compat). Plus a
+    per-port capture of the most recent no-match frame's identity
+    (`last_drop_ctx` = `{l3_proto, ethertype, is_arp, action, hit, is_ipv6,
+    is_ipv4, is_test}` + `last_drop_flowid`), so a rare DROP is attributable at a
+    glance: a real test-frame miss carries `is_test` + a known `flow_id`; a
+    stray/garbage frame does not. Surfaced through `ports.stats`
+    (`drop_nomatch`/`drop_saf`/`last_drop`) and the GUI health panel (drop
+    breakdown + last-frame identity). Added to the 128-byte per-port snapshot
+    block at bytes 76..91; `struct pw_port_stats` extended to match. A proper
+    tester feature (drop reasons), which also instruments the rare phantom-drop
+    investigation. RTL diagnostic build — timing gated.
   - **frame_len minimum lowered 64 → 60 (the true 64-byte wire frame).**
     `frame_len` is the pre-FCS L2 length, so the smallest legal Ethernet frame
     (64 B on the wire *including* FCS) is 60 B pre-FCS — the old floor of 64

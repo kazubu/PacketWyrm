@@ -19,6 +19,16 @@ counters, their semantics, and how multi-card aggregation works.
 | `link_up_count`        | u32  | rising-edge count of MAC link_up       |
 | `link_down_count`      | u32  | falling-edge count of MAC link_up      |
 | `block_lock_loss`      | u32  | falling-edge count of PCS block_lock   |
+| `drop_nomatch`         | u32  | DROP action count: classifier no-match |
+| `drop_saf`             | u32  | SAF forward-buffer-full drop count     |
+| `last_drop_ctx`        | u32  | most recent no-match frame's context: `{l3_proto[31:24], ethertype[23:8], is_arp[7], action[6:4], hit[3], is_ipv6[2], is_ipv4[1], is_test[0]}` |
+| `last_drop_flowid`     | u32  | that frame's `test_flow_id` (0 if not a test frame) |
+
+`rx_bad_frame` is the **sum** `drop_nomatch + drop_saf` (kept for back-compat as
+`drops`); the two new counters split it by cause, and `last_drop_ctx`/
+`last_drop_flowid` capture the identity of the most recent no-match frame so a
+rare drop is diagnosable (a real test-frame miss carries `is_test` + a known
+`flow_id`; a stray/garbage frame does not).
 
 `rx_frames/bytes`, `tx_frames/bytes`, `rx_fcs_error` and `rx_bad_frame`
 are counted at the port edge in `pw_data_plane_axis` (48-bit, zero-extended

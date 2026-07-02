@@ -169,6 +169,10 @@ module pwfpga_top_phase3 #(
     logic [31:0] link_up_cnt_w     [NUM_PORTS];
     logic [31:0] link_down_cnt_w   [NUM_PORTS];
     logic [31:0] block_lock_loss_w [NUM_PORTS];
+    logic [31:0] drop_nomatch_w    [NUM_PORTS];
+    logic [31:0] drop_saf_w        [NUM_PORTS];
+    logic [31:0] last_drop_ctx_w   [NUM_PORTS];
+    logic [31:0] last_drop_fid_w   [NUM_PORTS];
     // Per-flow stats: BRAM-backed in the data plane, read one flow at a time.
     // The snapshot (in csr_full) drives flow_rd_addr_w; the merged record comes
     // back on these scalar nets 2 cycles later.
@@ -258,6 +262,10 @@ module pwfpga_top_phase3 #(
         .link_up_cnt_i       (link_up_cnt_w),
         .link_down_cnt_i     (link_down_cnt_w),
         .block_lock_loss_i   (block_lock_loss_w),
+        .drop_nomatch_i      (drop_nomatch_w),
+        .drop_saf_i          (drop_saf_w),
+        .last_drop_ctx_i     (last_drop_ctx_w),
+        .last_drop_fid_i     (last_drop_fid_w),
         .rx_frames_i         (rx_frames_w),
         .rx_bytes_i          (rx_bytes_w),
         .tx_frames_i         (tx_frames_w),
@@ -509,6 +517,10 @@ module pwfpga_top_phase3 #(
         .link_up_cnt_o     (link_up_cnt_w),
         .link_down_cnt_o   (link_down_cnt_w),
         .block_lock_loss_o (block_lock_loss_w),
+        .drop_nomatch_o    (drop_nomatch_w),
+        .drop_saf_o        (drop_saf_w),
+        .last_drop_ctx_o   (last_drop_ctx_w),
+        .last_drop_fid_o   (last_drop_fid_w),
         .err_sticky_o      (status_err_o),
         .activity_o        (status_activity_o)
     );

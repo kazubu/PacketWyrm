@@ -67,6 +67,11 @@ module pw_stats_snapshot #(
     input  wire [31:0]                link_up_cnt_i    [PORTS],
     input  wire [31:0]                link_down_cnt_i  [PORTS],
     input  wire [31:0]                block_lock_loss_i[PORTS],
+    // DROP classification + last-no-match capture (per-port block bytes 76..91).
+    input  wire [31:0]                drop_nomatch_i   [PORTS],
+    input  wire [31:0]                drop_saf_i       [PORTS],
+    input  wire [31:0]                last_drop_ctx_i  [PORTS],
+    input  wire [31:0]                last_drop_fid_i  [PORTS],
 
     // Per-flow stats are BRAM-backed in the data plane and read one flow at a
     // time. The snapshot drives flow_rd_addr_o and the merged record arrives
@@ -162,6 +167,10 @@ module pw_stats_snapshot #(
                 pr = put_u32_port(pr, 64, link_up_cnt_i[p]);     // link_up_count
                 pr = put_u32_port(pr, 68, link_down_cnt_i[p]);   // link_down_count
                 pr = put_u32_port(pr, 72, block_lock_loss_i[p]); // block_lock_loss
+                pr = put_u32_port(pr, 76, drop_nomatch_i[p]);    // drop_nomatch
+                pr = put_u32_port(pr, 80, drop_saf_i[p]);        // drop_saf
+                pr = put_u32_port(pr, 84, last_drop_ctx_i[p]);   // last_drop_ctx
+                pr = put_u32_port(pr, 88, last_drop_fid_i[p]);   // last_drop_flowid
                 shadow_port[p] <= pr;
             end
             walking <= 1'b1;

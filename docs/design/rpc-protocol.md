@@ -105,7 +105,13 @@ Card-level counters from the host packet plane.
 Per-port wire counters from the MAC (`{ "rpc": "ports.stats" }`) &rarr;
 `{ "fpga_ts_lo", "fpga_ts_hi", "ports": [ { "card_id", "local_port",
 "global_port", "rx_frames", "rx_bytes", "tx_frames", "tx_bytes",
-"rx_fcs_error", "drops", "link_up_count", "block_lock_loss" } ] }`.
+"rx_fcs_error", "drops", "drop_nomatch", "drop_saf", "last_drop": { "ctx_raw",
+"is_test", "is_ipv4", "is_ipv6", "hit", "action", "is_arp", "ethertype",
+"l3_proto", "flow_id" }, "link_up_count", "block_lock_loss" } ] }`.
+`drops` is the sum; `drop_nomatch` (classifier no-match) + `drop_saf` (forward
+buffer overflow) split it by cause, and `last_drop` decodes the most recent
+no-match frame's identity so a rare drop can be attributed (real test-frame miss
+= `is_test` + a known `flow_id`; stray/garbage frame = not).
 This is authoritative per-port traffic (all frames, not just test flows). A
 client derives per-port **pps/bps** from the counter deltas divided by the
 `fpga_ts` delta (6.4 ns/tick — jitter-free vs. wall-clock). `rx_fcs_error` and

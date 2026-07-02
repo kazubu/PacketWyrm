@@ -177,6 +177,10 @@ module tb_data_plane_axis;
     logic [15:0] hist_rd_addr = 16'h0;
     logic [63:0] hist_rd_data;
     logic [31:0] port_drops     [PORTS];
+    logic [31:0] drop_nomatch   [PORTS];
+    logic [31:0] drop_saf       [PORTS];
+    logic [31:0] last_drop_ctx  [PORTS];
+    logic [31:0] last_drop_fid  [PORTS];
     logic [47:0] rxf_d [PORTS], rxb_d [PORTS], txf_d [PORTS], txb_d [PORTS];
     logic        rx_tuser   [PORTS];
     logic        link_up_dp [PORTS];
@@ -304,6 +308,10 @@ module tb_data_plane_axis;
         .hist_rd_addr_i   (hist_rd_addr),
         .hist_rd_data_o   (hist_rd_data),
         .port_drops_o     (port_drops),
+        .drop_nomatch_o   (drop_nomatch),
+        .drop_saf_o       (drop_saf),
+        .last_drop_ctx_o  (last_drop_ctx),
+        .last_drop_fid_o  (last_drop_fid),
         .rx_frames_o      (rxf_d),
         .rx_bytes_o       (rxb_d),
         .tx_frames_o      (txf_d),
@@ -716,12 +724,24 @@ module tb_data_plane_axis;
         // ---------------- scenario 6: drop ----------------
         scenario = "drop";
         begin
-            logic [31:0] pre_drops;
-            pre_drops = port_drops[0];
+            logic [31:0] pre_drops, pre_nomatch, pre_saf;
+            pre_drops   = port_drops[0];
+            pre_nomatch = drop_nomatch[0];
+            pre_saf     = drop_saf[0];
             build_plain_udp(16'd80);   // matches no rule -> default DROP
             inject(0);
             repeat (12) @(posedge clk);   // classifier latency 4 (was 3): wider window
             check_eq("port0 drop ticked", port_drops[0], pre_drops + 1);
+            // DROP classification: this is a no-match (not a SAF overflow).
+            check_eq("port0 drop_nomatch ticked", drop_nomatch[0], pre_nomatch + 1);
+            check_eq("port0 drop_saf unchanged",  drop_saf[0], pre_saf);
+            // last-drop context captured the frame: plain IPv4/UDP, not a test
+            // frame -> is_test=0 (bit0), is_ipv4=1 (bit1), ethertype 0x0800
+            // (bits 23:8), l3_proto 17 (bits 31:24).
+            check_eq("last_drop is_test=0", last_drop_ctx[0][0], 1'b0);
+            check_eq("last_drop is_ipv4=1", last_drop_ctx[0][1], 1'b1);
+            check_eq("last_drop ethertype 0x0800", last_drop_ctx[0][23:8], 16'h0800);
+            check_eq("last_drop l3_proto 17 (UDP)", last_drop_ctx[0][31:24], 8'd17);
         end
 
         // ---------------- scenario 7: FORWARD_PORT (port0 -> egress1) ----

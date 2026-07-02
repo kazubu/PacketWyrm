@@ -226,8 +226,16 @@ Each block is `0xF8` bytes; counters are 64-bit pairs.
 +0x40 link_up_count        (u32)
 +0x44 link_down_count      (u32)
 +0x48 block_lock_loss      (u32)
-+0x4c reserved
++0x4c drop_nomatch         (u32)   ; classifier no-match DROP count
++0x50 drop_saf             (u32)   ; SAF forward-buffer-full drop count
++0x54 last_drop_ctx        (u32)   ; last no-match frame context (packed)
++0x58 last_drop_flowid     (u32)   ; last no-match frame's test_flow_id
++0x5c reserved
 ```
+`rx_bad_frame` (+0x18) is the sum of `drop_nomatch` + `drop_saf` (back-compat);
+the split counters + `last_drop_ctx` (`{l3_proto[31:24], ethertype[23:8],
+is_arp[7], action[6:4], hit[3], is_ipv6[2], is_ipv4[1], is_test[0]}`) let
+software attribute a rare DROP to its cause and the offending frame's identity.
 
 Reading the `_low` of a counter latches its `_high` into a shadow
 register so the next read of `_high` returns the matched value.

@@ -117,6 +117,10 @@ module pw_csr_full #(
     input  wire [31:0]       link_up_cnt_i     [NUM_PORTS],
     input  wire [31:0]       link_down_cnt_i   [NUM_PORTS],
     input  wire [31:0]       block_lock_loss_i [NUM_PORTS],
+    input  wire [31:0]       drop_nomatch_i    [NUM_PORTS],
+    input  wire [31:0]       drop_saf_i        [NUM_PORTS],
+    input  wire [31:0]       last_drop_ctx_i   [NUM_PORTS],
+    input  wire [31:0]       last_drop_fid_i   [NUM_PORTS],
     // Per-flow stats are BRAM-backed in the data plane; the snapshot walks
     // them via flow_rd_addr_o (out to the data plane) and these scalar inputs.
     output logic [$clog2(NUM_FLOWS)-1:0] flow_rd_addr_o,
@@ -675,6 +679,10 @@ module pw_csr_full #(
         .link_up_cnt_i     (link_up_cnt_i),
         .link_down_cnt_i   (link_down_cnt_i),
         .block_lock_loss_i (block_lock_loss_i),
+        .drop_nomatch_i    (drop_nomatch_i),
+        .drop_saf_i        (drop_saf_i),
+        .last_drop_ctx_i   (last_drop_ctx_i),
+        .last_drop_fid_i   (last_drop_fid_i),
         .flow_rx_i      (flow_rx_i),
         .flow_lost_i    (flow_lost_i),
         .flow_dup_i     (flow_dup_i),
