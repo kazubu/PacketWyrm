@@ -490,21 +490,110 @@ struct pwfpga_test_hdr {
     uint32_t payload_crc_or_prbs_state;
 } __attribute__((packed));
 
-/* Slow-path DMA descriptor (Phase 2+). */
-struct pwfpga_dma_desc {
-    uint64_t addr;
-    uint32_t len;
-    uint32_t logical_if_id;
-    uint16_t flags;
-    uint16_t reserved;
+/* ==================================================================
+ * XDMA AXI-Stream slow path (Phase 3 DMA build, CAP_HAS_DMA)
+ * ==================================================================
+ * The slow path is the Xilinx XDMA IP in AXI-Stream mode (pw_dma_slowpath
+ * bridges its H2C/C2H streams to the data-plane inject/punt AXIS). The host
+ * drives the XDMA descriptor engine directly over vfio (no xdma.ko). Layout,
+ * descriptor format and register offsets are from Xilinx PG195.
+ *
+ * BAR0 layout on the DMA build (verified via ip/probe_xdma_bars.tcl): BAR0 is
+ * 128 KB and split in half --
+ *   [0x00000, 0x10000)  XDMA DMA/SGDMA control registers (this block)
+ *   [0x10000, 0x20000)  AXI-Lite-master CSR window (the register map above)
+ * So on a DMA build every CSR access adds PWFPGA_CSR_DMA_OFFSET. The backend
+ * auto-detects which half is the CSR by probing PWFPGA_REG_DEVICE_ID (see
+ * backend), so a future layout flip does not need a code change.
+ *
+ * NB (HW bring-up): the exact XDMA control-register BIT positions + the
+ * poll-mode writeback semantics need confirmation against PG195 on silicon;
+ * they are centralised here so a fix is one edit. The register/target OFFSETS
+ * and the 32-byte descriptor FORMAT are stable across PG195 revisions. */
+
+/* CSR-window offset within BAR0 when the XDMA DMA engine is enabled (BAR0=128KB,
+ * upper half is the AXI-Lite CSR). Legacy 64 KB BAR0 (no DMA) uses offset 0. */
+#define PWFPGA_CSR_DMA_OFFSET   0x10000u
+
+/* XDMA register targets (each block is 0x1000; PG195 Table "PCIe DMA reg space").
+ * Single H2C + single C2H channel on this build (H2C/C2H_XDMA_CHNL=0x0F). */
+enum pwfpga_xdma_target {
+    PWFPGA_XDMA_H2C_CHANNEL   = 0x0000u,  /* host->card channel 0 (inject) */
+    PWFPGA_XDMA_C2H_CHANNEL   = 0x1000u,  /* card->host channel 0 (punt)   */
+    PWFPGA_XDMA_IRQ_BLOCK     = 0x2000u,
+    PWFPGA_XDMA_CONFIG_BLOCK  = 0x3000u,
+    PWFPGA_XDMA_H2C_SGDMA     = 0x4000u,  /* H2C descriptor engine */
+    PWFPGA_XDMA_C2H_SGDMA     = 0x5000u,  /* C2H descriptor engine */
+    PWFPGA_XDMA_SGDMA_COMMON  = 0x6000u,
+};
+
+/* Channel register offsets (relative to an H2C/C2H channel block). */
+enum pwfpga_xdma_channel_reg {
+    PWFPGA_XDMA_CH_IDENTIFIER      = 0x00u,  /* RO: 0x1fc0<target> subsystem id */
+    PWFPGA_XDMA_CH_CONTROL         = 0x04u,  /* RW  */
+    PWFPGA_XDMA_CH_CONTROL_W1S     = 0x08u,  /* write-1-to-set   */
+    PWFPGA_XDMA_CH_CONTROL_W1C     = 0x0Cu,  /* write-1-to-clear */
+    PWFPGA_XDMA_CH_STATUS          = 0x40u,  /* RW  */
+    PWFPGA_XDMA_CH_STATUS_RC       = 0x44u,  /* read-clear */
+    PWFPGA_XDMA_CH_COMPLETED_COUNT = 0x48u,  /* RO: completed descriptor count */
+    PWFPGA_XDMA_CH_ALIGNMENTS      = 0x4Cu,  /* RO: addr/len alignment reqs */
+    PWFPGA_XDMA_CH_POLL_WB_LO      = 0x88u,  /* poll-mode writeback addr lo */
+    PWFPGA_XDMA_CH_POLL_WB_HI      = 0x8Cu,
+};
+
+/* SGDMA register offsets (relative to an H2C/C2H SGDMA block). The engine
+ * fetches the descriptor at {DESC_ADDR_HI:DESC_ADDR_LO} when the channel runs. */
+enum pwfpga_xdma_sgdma_reg {
+    PWFPGA_XDMA_SG_DESC_ADDR_LO = 0x80u,
+    PWFPGA_XDMA_SG_DESC_ADDR_HI = 0x84u,
+    PWFPGA_XDMA_SG_DESC_ADJ     = 0x88u,  /* # of adjacent descriptors - 1 */
+    PWFPGA_XDMA_SG_DESC_CREDITS = 0x8Cu,
+};
+
+/* Channel Control register bits (VERIFY on HW against PG195). */
+enum {
+    PWFPGA_XDMA_CTRL_RUN            = 1u << 0,  /* start descriptor fetch/run */
+    PWFPGA_XDMA_CTRL_IE_DESC_STOP   = 1u << 1,  /* int-enable: desc stopped */
+    PWFPGA_XDMA_CTRL_IE_DESC_CMPL   = 1u << 2,  /* int-enable: desc completed */
+    PWFPGA_XDMA_CTRL_IE_ALIGN_ERR   = 1u << 3,
+    PWFPGA_XDMA_CTRL_IE_MAGIC_STOP  = 1u << 4,
+    PWFPGA_XDMA_CTRL_IE_READ_ERR    = 0x1fu << 9,
+    PWFPGA_XDMA_CTRL_IE_DESC_ERR    = 0x1fu << 19,
+};
+/* Channel Status register bits (VERIFY on HW). */
+enum {
+    PWFPGA_XDMA_STAT_BUSY          = 1u << 0,
+    PWFPGA_XDMA_STAT_DESC_STOPPED  = 1u << 1,
+    PWFPGA_XDMA_STAT_DESC_COMPLETED= 1u << 2,
+};
+
+/* XDMA hardware scatter-gather descriptor (PG195, 32 bytes, little-endian).
+ * In AXI-Stream mode: H2C uses src_addr (host IOVA of the frame) + len, dst is
+ * ignored (data goes to the AXIS); C2H uses dst_addr (host IOVA of the receive
+ * buffer) + len (buffer capacity), src is ignored (data comes from the AXIS)
+ * and the actual received length comes back via the completion/writeback. */
+struct pwfpga_xdma_desc {
+    uint32_t control;      /* [31:16]=magic 0xAD4B, [13:8]=nxt_adj, low bits below */
+    uint32_t bytes;        /* transfer length, max 0x0FFFFFFF (28-bit)  */
+    uint32_t src_addr_lo;
+    uint32_t src_addr_hi;
+    uint32_t dst_addr_lo;
+    uint32_t dst_addr_hi;
+    uint32_t next_lo;      /* next descriptor address (0 if single) */
+    uint32_t next_hi;
 } __attribute__((packed));
 
-/* Slow-path DMA completion. */
-struct pwfpga_dma_cpl {
-    uint32_t desc_index;
-    uint32_t actual_len;
-    uint64_t timestamp;
-    uint32_t status;
+#define PWFPGA_XDMA_DESC_MAGIC     0xAD4B0000u   /* control[31:16] */
+#define PWFPGA_XDMA_DESC_STOP      (1u << 0)     /* stop after this descriptor */
+#define PWFPGA_XDMA_DESC_COMPLETED (1u << 1)     /* report completion (writeback) */
+#define PWFPGA_XDMA_DESC_EOP       (1u << 4)     /* end-of-packet (H2C AXI-Stream) */
+
+/* Poll-mode writeback the engine stores after a descriptor completes (PG195).
+ * completed count in [30:0]; bit31 = "sts_err". We poll this in host memory
+ * instead of the completed-count register to avoid an MMIO read per poll. */
+struct pwfpga_xdma_poll_wb {
+    uint32_t completed_desc_count;   /* [30:0] count, [31] error */
+    uint32_t reserved;
 } __attribute__((packed));
 
 /* ------------- Window layout for the BAR backend --------------------

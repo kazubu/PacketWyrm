@@ -75,6 +75,38 @@ void pw_vfio_close(struct pw_vfio_handle *h) {
     h->device_fd = h->group_fd = h->container_fd = -1;
 }
 
+/* --- bus-master DMA buffer mapping (IOMMU) ----------------------------- */
+
+pw_status pw_vfio_map_dma(struct pw_vfio_handle *h, void *vaddr, size_t len,
+                          uint64_t *out_iova) {
+    if (!h || h->container_fd < 0 || !vaddr || len == 0) return PW_E_INVAL;
+    /* Identity IOVA: iova == the userspace VA. Simple and unambiguous; the x86
+     * IOMMU aperture covers the process VA range. TYPE1 requires page-aligned
+     * iova/size (the caller posix_memalign's + rounds len). */
+    uint64_t iova = (uint64_t)(uintptr_t)vaddr;
+    struct vfio_iommu_type1_dma_map dm = {
+        .argsz = sizeof(dm),
+        .flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE,
+        .vaddr = (uint64_t)(uintptr_t)vaddr,
+        .iova  = iova,
+        .size  = len,
+    };
+    if (ioctl(h->container_fd, VFIO_IOMMU_MAP_DMA, &dm) < 0) return PW_E_IO;
+    if (out_iova) *out_iova = iova;
+    return PW_OK;
+}
+
+pw_status pw_vfio_unmap_dma(struct pw_vfio_handle *h, uint64_t iova, size_t len) {
+    if (!h || h->container_fd < 0 || len == 0) return PW_E_INVAL;
+    struct vfio_iommu_type1_dma_unmap du = {
+        .argsz = sizeof(du),
+        .iova  = iova,
+        .size  = len,
+    };
+    if (ioctl(h->container_fd, VFIO_IOMMU_UNMAP_DMA, &du) < 0) return PW_E_IO;
+    return PW_OK;
+}
+
 pw_status pw_vfio_open_bar(const char *bdf, int bar_index,
                            struct pw_vfio_handle *h) {
     if (!bdf || !h || bar_index < 0 || bar_index > 5) return PW_E_INVAL;
