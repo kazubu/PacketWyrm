@@ -28,3 +28,6 @@ sim/work/
 # Regenerated each `make -C sim sim_vec` from the C-side
 # pw_bar_backend output. Not source.
 sim/vectors/
+
+# Claude Code local settings (machine-specific)
+.claude/
