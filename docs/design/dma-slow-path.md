@@ -329,20 +329,34 @@ Silicon corrected several design assumptions; the as-built code reflects these:
    `net0.0`; the `.0` unit form silently never attached. `packetwyrmd` also marks
    the TAP tun carrier UP (TUNSETCARRIER). See the lab README.
 
-**Remaining:** true 9000 B jumbo needs `pw_mac_axis_cdc DEPTH` (2048 ≈ 2 KB)
-widened (separate RTL change); the general-purpose punt length wants a byte_len
-in-band header field. Control-plane traffic (≤~2 KB) fully works today.
+### Jumbo (MTU 9000) — DONE + HW-validated (2026-07-04, build_id 0x6a481d26)
 
-Flash + cRPD re-validation are **DONE** (2026-07-04); see the bring-up section
-above. The only remaining item is true 9000 B jumbo (the MAC-CDC widen).
+Four data-path frame-size caps had to be raised together (the DMA descriptors +
+host DMA buffer 9216 were already jumbo-ready); each was found by a graduated
+ping (1600 B OK / 2000 B drop pinned each successive ~2 KB limiter):
+1. **MAC BASE-R PCS** `cfg_tx/rx_max_pkt_len` 1518 → 9600 (pw_sfp_10g).
+2. **MAC↔dp_clk CDC FIFO** DEPTH 2048 → 16384 B (board).
+3. **Data-plane forward/punt SAF** `SAF_DEPTH_BEATS` 512 → 2048 (16 KB; threaded
+   param, set at the board).
+4. **pw_dma_slowpath async-FIFO** FIFO_DEPTH 2048 → 16384 B (the taxi DEPTH is in
+   BYTES, not "words×8" — this was the last, subtlest cap).
+5. **Host** `PW_HOST_FRAME_MAX` 2048 → 9600 B (daemon punt/inject buffer).
 
-## 6. Phasing — **P1–P5 COMPLETE (2026-07-04)** except jumbo
+Validated on 07:00.0 at MTU 9000: v4 pings 2000/4000/6000/8000/8900 B and a v6
+8000 B ping all 0 % loss; the full dual-stack control plane (OSPFv2/OSPFv3 Full,
+IS-IS L1+L2 Up, BGP v4+v6 Established) stays up. Gated build WNS +0.084 (all
+clocks), LUT 94.79 %, BRAM 53 %.
+
+Follow-up (not blocking): a general-purpose punt length wants a byte_len in-band
+header field for VLAN/QinQ/unknown-ethertype punt (today the host recovers length
+from L2/L3 headers, which covers ARP/IPv4/IPv6/IS-IS).
+
+## 6. Phasing — **P1–P5 COMPLETE incl. jumbo (2026-07-04)**
 
 P1 (RTL+sim), P2 (host DMA driver), P3 (integrate under `pw_host_plane`),
 P4 (gated build + flash 07:00.0 + HW bring-up), and P5 (cRPD lab: dual-stack
-ARP/ND/ping/BGP/BGP-v6/OSPFv2/OSPFv3/IS-IS all Up across the DUT) are all done.
-Outstanding: true 9000 B jumbo needs `pw_mac_axis_cdc DEPTH` widened (§ above).
-The original phase descriptions follow for reference:
+ARP/ND/ping/BGP/BGP-v6/OSPFv2/OSPFv3/IS-IS all Up across the DUT, **incl. MTU
+9000 jumbo**) are all done. The original phase descriptions follow for reference:
 
 1. **P1 — RTL DMA engine + sim.** `pw_dma_slowpath` + bridge wiring; a Verilator
    tb that loops a TX-ring frame through AXIS into the RX ring. No HW yet.

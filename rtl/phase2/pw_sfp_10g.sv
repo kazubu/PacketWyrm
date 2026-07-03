@@ -210,6 +210,12 @@ module pw_sfp_10g #(
         // Statistics unused
         .stat_clk(ctrl_clk), .stat_rst(ctrl_rst), .m_axis_stat(axis_stat),
 
+        // Max frame length: raise from the 1518 default to 9600 so the BASE-R
+        // PCS accepts jumbo frames (MTU 9000 ~ 9018 B on the wire incl. FCS).
+        // Downstream FIFOs (MAC<->dp CDC, data-plane SAF) are sized to match.
+        .cfg_tx_max_pkt_len('{PORTS{16'd9600 - 1}}),
+        .cfg_rx_max_pkt_len('{PORTS{16'd9600 - 1}}),
+
         // Status
         .rx_error_count(),
         .rx_block_lock(rx_block_lock),

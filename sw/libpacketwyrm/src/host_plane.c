@@ -8,7 +8,11 @@
 #include <string.h>
 #include <unistd.h>
 
-#define PW_HOST_FRAME_MAX 2048
+/* Punt/inject frame buffer. Must hold a full jumbo frame (MTU 9000 ~ 9018 B on
+ * the wire); the DMA slow path + data-plane FIFOs are sized for jumbo, so this
+ * host-side buffer (was 2048, which silently truncated >~2 KB frames) is the
+ * matching cap. Kept just under the DMA buffer (PWFPGA... FRAME_CAP 9216). */
+#define PW_HOST_FRAME_MAX 9600
 
 pw_status pw_host_plane_init(struct pw_host_plane *hp,
                              struct pw_card_backend *backend) {

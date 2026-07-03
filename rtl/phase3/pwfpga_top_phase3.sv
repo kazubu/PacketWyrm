@@ -31,7 +31,8 @@ module pwfpga_top_phase3 #(
     parameter int          NUM_UDF         = 2,    // field-classifier UDF comparators
     parameter int          NUM_RULE        = 32,   // field-classifier combine rules
     parameter int          SLICE_WIN       = 48,   // UDF match window depth
-    parameter int          HASH_DEPTH      = 128    // hash exact-table buckets
+    parameter int          HASH_DEPTH      = 128,   // hash exact-table buckets
+    parameter int          SAF_DEPTH_BEATS = 512    // per-ingress forward/punt SAF (x8 B); 2048 = 16 KB for jumbo
 ) (
     input  wire              clk,
     input  wire              rst_n,
@@ -461,7 +462,8 @@ module pwfpga_top_phase3 #(
         .NUDF          (NUM_UDF),
         .NRULE         (NUM_RULE),
         .SLICE_WIN     (SLICE_WIN),
-        .HASH_DEPTH    (HASH_DEPTH)
+        .HASH_DEPTH    (HASH_DEPTH),
+        .SAF_DEPTH_BEATS(SAF_DEPTH_BEATS)
     ) u_dp (
         .clk               (clk),
         .rst_n             (rst_n),

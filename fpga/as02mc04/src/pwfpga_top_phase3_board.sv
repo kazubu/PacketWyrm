@@ -177,9 +177,9 @@ module pwfpga_top_phase3_board (
     end
 
     // DEPTH is the per-direction MAC<->dp_clk frame-FIFO byte capacity (taxi
-    // FRAME_FIFO + DROP_OVERSIZE). It must hold a whole frame, so 2048 covers a
-    // full 1518 B Ethernet frame + margin (1024 dropped frames > ~1024 B, which
-    // capped the test generator's variable frame length at ~1 KB).
+    // FRAME_FIFO + DROP_OVERSIZE). It must hold a whole frame, so 16384 covers a
+    // jumbo frame (MTU 9000 ~ 9018 B on the wire) + margin. (Was 2048 = ~1518 B;
+    // widened for jumbo alongside the MAC max_pkt_len and the data-plane SAF.)
     // --- soft-reset flush of the MAC-TX CDC + egress timestamper ------------
     // The CSR DP_RESET pulse (u_dp.dp_soft_rst_o) only resets the dp_clk-domain
     // data plane (gen/SAF/arbiters). A frame wedged in the MAC-TX FIFO or in
@@ -191,7 +191,7 @@ module pwfpga_top_phase3_board (
     wire dp_soft_rst_pulse;
     wire tx_soft_flush_w [2];
 
-    pw_mac_axis_cdc #(.PORTS(2), .DATA_W(64), .DEPTH(2048), .RX_USER_W(65)) u_cdc (
+    pw_mac_axis_cdc #(.PORTS(2), .DATA_W(64), .DEPTH(16384), .RX_USER_W(65)) u_cdc (
         .dp_clk(dp_clk), .dp_rst(dp_rst),
         .rx_clk(sfp_rx_clk), .rx_rst(sfp_rx_rst), .tx_clk(sfp_tx_clk), .tx_rst(sfp_tx_rst),
         .dp_soft_flush(dp_soft_rst_pulse), .tx_soft_flush_o(tx_soft_flush_w),
@@ -272,7 +272,8 @@ module pwfpga_top_phase3_board (
     pwfpga_top_phase3 #(
         .ADDR_W(ADDR_W), .CAPABILITIES(PW_PHASE3_CAPABILITIES),
         .NUM_PORTS(2), .NUM_FLOWS(32), .NUM_CLASSIFIER(16), .NUM_HIST_BINS(16),
-        .NUM_CMP(12), .NUM_UDF(2), .NUM_RULE(32), .SLICE_WIN(48), .HASH_DEPTH(128)
+        .NUM_CMP(12), .NUM_UDF(2), .NUM_RULE(32), .SLICE_WIN(48), .HASH_DEPTH(128),
+        .SAF_DEPTH_BEATS(2048)   // 16 KB per-ingress forward/punt SAF for jumbo (MTU 9000)
     ) u_dp (
         .clk(dp_clk), .rst_n(dp_aresetn),
         .s_axi_awaddr(daw), .s_axi_awvalid(dawv), .s_axi_awready(dawr),
