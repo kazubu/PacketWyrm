@@ -307,12 +307,14 @@ Silicon corrected several design assumptions; the as-built code reflects these:
    → review #2's "+0x10000 breaks the daemon" concern was moot.
 2. **IOMMU `VFIO_IOMMU_MAP_DMA` works** (no Secure-Boot/lockdown block on
    bus-master DMA); H2C inject validated end-to-end (frames egress + loop).
-3. **Completed-count RESETS to 0 on RUN** (single-descriptor mode). Read the
-   baseline AFTER RUN for H2C; reading it before RUN latched a stale 1 and caused
-   dup/immediate-false-completion (dropped injects). The **C2H uses a
-   continuously-running CIRCULAR descriptor ring** (never stop/re-armed per frame
-   — a per-frame stop→run wedges the engine) with a consumer index; each frame is
-   delivered exactly once, no unarmed gap.
+3. **Completed-count RESETS to 0 on RUN** (single-descriptor mode). For H2C
+   inject, wait for the count `!= 0` — reading a baseline races either way (before
+   RUN latches the stale 1 from the previous inject → immediate false completion,
+   dropped inject; after RUN a descriptor completing before the read latches
+   base=1 → spins to timeout). The **C2H uses a continuously-running CIRCULAR
+   descriptor ring** (never stop/re-armed per frame — a per-frame stop→run wedges
+   the engine) with a consumer index; each frame is delivered exactly once, no
+   unarmed gap.
 4. **C2H received length is NOT in `desc.bytes`** (it stays = the programmed
    capacity). Recover the length from the punted frame's own L2/L3 headers
    (`punt_frame_len`: ARP=42, IPv4=eth+IP-total-len, IPv6=eth+40+payload,

@@ -510,7 +510,8 @@ struct pwfpga_test_hdr {
  *
  * NB (HW bring-up, done): the XDMA control-register bit positions + completion
  * semantics were confirmed on silicon -- the single-descriptor completed-count
- * RESETS to 0 on RUN (read the baseline AFTER RUN for H2C/single-desc), the C2H
+ * RESETS to 0 on RUN (so for H2C/single-desc just wait for count != 0 -- reading
+ * a baseline races either way), the C2H
  * received length is NOT written to desc.bytes (recover it from the frame's own
  * L2/L3 headers), and a per-frame stop/re-arm wedges the engine (C2H uses a
  * continuously-running circular ring). Register/target OFFSETS + the 32-byte

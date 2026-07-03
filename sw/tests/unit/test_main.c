@@ -478,6 +478,77 @@ static void test_punt_narrowing(void) {
     pw_config_free(cfg);
 }
 
+/* Find the field-comparator index for a {src,value} (mask ignored); -1 if none. */
+static int fc_cmp_bit(const struct pw_card_program *cp, uint8_t src, uint32_t value) {
+    for (size_t i = 0; i < cp->n_fc_cmps; i++)
+        if (cp->fc_cmps[i].src == src && cp->fc_cmps[i].value == value) return (int)i;
+    return -1;
+}
+/* True if some PUNT rule's care-mask includes ALL the given comparator bits. */
+static int fc_rule_has_bits(const struct pw_card_program *cp, uint16_t bits) {
+    for (size_t i = 0; i < cp->n_fc_rules; i++)
+        if ((cp->fc_rules[i].care & bits) == bits) return 1;
+    return 0;
+}
+
+/* ipv6_nd=true enables the IPv6 control plane: it must punt ICMPv6 ND AND the
+ * IPv6 variants of ospf/bgp (OSPFv3 = 0x86DD+proto89, BGP-v6 = 0x86DD+TCP/179),
+ * sharing the 0x86DD ethertype + proto/L4 comparators with the IPv4 rules. With
+ * ipv6_nd=false, none of the IPv6 rules (nor a 0x86DD/proto58 comparator) appear. */
+static void test_punt_ipv6(void) {
+    const char *yaml6 =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n  - id: 0\n    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 } ]\n"
+        "logical_interfaces:\n  - id: 1000\n    global_port: 0\n"
+        "    mac: \"02:a5:02:00:00:64\"\n"
+        "    punt: { ipv6_nd: true, ospf: true, bgp: true }\n";
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml6, strlen(yaml6), cfg, &d), PW_OK);
+    PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
+    const struct pw_card_program *cp = &prog->per_card[0];
+    /* rules: ND(1) + OSPFv2(1)+OSPFv3(1) + BGPv4(2)+BGPv6(2) = 7 */
+    PW_ASSERT_EQ(cp->n_fc_rules, 7);
+    int eth6 = fc_cmp_bit(cp, PWFPGA_FC_SRC_ETHERTYPE, 0x86DD);
+    int p89  = fc_cmp_bit(cp, PWFPGA_FC_SRC_L3_PROTO, 89);
+    int p6   = fc_cmp_bit(cp, PWFPGA_FC_SRC_L3_PROTO, 6);
+    int p58  = fc_cmp_bit(cp, PWFPGA_FC_SRC_L3_PROTO, 58);
+    int d179 = fc_cmp_bit(cp, PWFPGA_FC_SRC_L4_DST, 179);
+    PW_ASSERT(eth6 >= 0 && p89 >= 0 && p6 >= 0 && p58 >= 0 && d179 >= 0);
+    /* OSPFv3 rule (0x86DD & proto89), BGP-v6 rule (0x86DD & proto6 & dst179),
+     * ICMPv6 ND rule (0x86DD & proto58). */
+    PW_ASSERT(fc_rule_has_bits(cp, (uint16_t)((1u<<eth6)|(1u<<p89))));
+    PW_ASSERT(fc_rule_has_bits(cp, (uint16_t)((1u<<eth6)|(1u<<p6)|(1u<<d179))));
+    PW_ASSERT(fc_rule_has_bits(cp, (uint16_t)((1u<<eth6)|(1u<<p58))));
+    pw_program_free(prog);
+    pw_config_free(cfg);
+
+    /* Negative: ipv6_nd=false -> no IPv6 punt, only IPv4 ospf(1)+bgp(2) = 3 rules,
+     * and no 0x86DD ethertype / proto58 comparator. */
+    const char *yaml4 =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n  - id: 0\n    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 } ]\n"
+        "logical_interfaces:\n  - id: 1000\n    global_port: 0\n"
+        "    mac: \"02:a5:02:00:00:64\"\n"
+        "    punt: { ipv6_nd: false, ospf: true, bgp: true }\n";
+    cfg = pw_config_new();
+    struct pw_diag d2 = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml4, strlen(yaml4), cfg, &d2), PW_OK);
+    PW_ASSERT_EQ(pw_config_validate(cfg, &d2), PW_OK);
+    prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d2), PW_OK);
+    cp = &prog->per_card[0];
+    PW_ASSERT_EQ(cp->n_fc_rules, 3);
+    PW_ASSERT(fc_cmp_bit(cp, PWFPGA_FC_SRC_ETHERTYPE, 0x86DD) < 0);
+    PW_ASSERT(fc_cmp_bit(cp, PWFPGA_FC_SRC_L3_PROTO, 58) < 0);
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
 static void test_resolve_port_multi_card(void) {
     const char *yaml =
         "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
@@ -1806,6 +1877,7 @@ int main(void) {
         { "rate_pps_compiles_nonzero", test_rate_pps_compiles_nonzero },
         { "min_legal_frame_clamp", test_min_legal_frame_clamp },
         { "punt_narrowing", test_punt_narrowing },
+        { "punt_ipv6", test_punt_ipv6 },
         { "reject_dup_card", test_reject_dup_card },
         { "reject_dup_gport", test_reject_dup_gport },
         { "reject_unknown_gport_in_flow", test_reject_unknown_gport_in_flow },

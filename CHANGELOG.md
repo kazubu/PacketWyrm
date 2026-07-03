@@ -53,8 +53,8 @@ For where work is going next, see `NEXT-STEPS.md`.
     DMA backend, capability-gated so `pw_host_plane` is unchanged). HW bring-up
     corrected the design's assumptions (all reflected in the code): the IP exposes
     **two 64 KB BARs** (BAR0=CSR@0 unchanged, BAR1=XDMA regs — not a 128 KB split);
-    the single-descriptor completed-count **resets on RUN** (read the baseline
-    after RUN); the **C2H length is not in `desc.bytes`** (recovered from the
+    the single-descriptor completed-count **resets on RUN** (H2C inject waits for
+    count != 0); the **C2H length is not in `desc.bytes`** (recovered from the
     frame's L2/L3 headers); **C2H uses a continuously-running circular descriptor
     ring** (per-frame stop/re-arm wedges the engine); the daemon punt-reap poll cap
     was cut 100 ms→1 ms; and cRPD binds the TAP as `interface net0` (not `net0.0`,
