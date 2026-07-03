@@ -704,6 +704,7 @@ function renderHealth(cards, stats, fstats, metaById, portstats) {
   (cards||[]).forEach(c => {
     const causes = [];
     const infos  = [];   // informational (not an error, does not light the LED)
+    let cardUnmatched = 0;   // total no-match frames on this card (candidate latch cause)
     // per-card host-plane drops
     const s = (stats||[]).find(x => x.card_id === c.id);
     if (s) {
@@ -725,11 +726,16 @@ function renderHealth(cards, stats, fstats, metaById, portstats) {
       // breakdown agrees with the front-panel LED. last_unmatched carries the
       // most recent miss's identity; is_test => promote to a health cause.
       if (p.rx_unmatched>0) {
+        cardUnmatched += p.rx_unmatched;
         const ld = p.last_unmatched;
         const ident = ld
           ? ` [last: ${ld.is_test?"test":"non-test"} eth 0x${(ld.ethertype||0).toString(16)} proto ${ld.l3_proto} flow ${ld.flow_id}]`
           : "";
         const u = `port ${p.global_port} unmatched ${p.rx_unmatched}${ident}`;
+        // A no-match on a real TEST frame latches err_sticky (RTL). If the last
+        // captured miss is still a test frame, show it as a concrete cause. Note
+        // last_unmatched is overwritten by later stray misses, so once err_sticky
+        // is red we ALSO flag unmatched as a candidate cause below (cardUnmatched).
         if (ld && ld.is_test) causes.push(`port ${p.global_port} TEST-frame no-match ${p.rx_unmatched}${ident}`);
         else                  infos.push(u);
       }
@@ -754,8 +760,13 @@ function renderHealth(cards, stats, fstats, metaById, portstats) {
     if (!c.open) { led = el("span",{class:"led off",text:"● card closed"}); note = "—"; }
     else if (hwErr) {
       led = el("span",{class:"led red",text:"● red (err_sticky)"});
-      note = (causes.length ? causes.join(", ") + " — " : "")
-        + "LED latched; live counters may read clean (transient/FCS). stats.clear resets it.";
+      // If no concrete live cause remains but the card saw no-match frames, a
+      // past TEST-frame no-match is the likely latch cause (its last_unmatched
+      // context may have since been overwritten by a stray non-test miss).
+      const cand = (!causes.length && cardUnmatched>0)
+        ? `possible cause: a TEST-frame no-match earlier (unmatched ${cardUnmatched}) — ` : "";
+      note = (causes.length ? causes.join(", ") + " — " : cand)
+        + "LED latched; live counters may read clean (transient/FCS/TEST no-match). stats.clear resets it.";
     }
     else if (derivedErr) { led = el("span",{class:"led red",text:"● error"}); note = causes.join(", "); }
     else if (sticky) { led = el("span",{class:"led amber",text:"● clean now (error seen earlier)"});

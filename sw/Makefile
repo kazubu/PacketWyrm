@@ -33,9 +33,14 @@ EXTRA_LIBS   := $(YAML_LIBS) $(JSON_LIBS) -lpthread
 # Build-time git revision embedded into pw_version_string() (all SW binaries
 # funnel through it). Short SHA + "+dirty" when tracked files differ from HEAD;
 # "unknown" outside a git tree. Injected only into version.o (see rule below).
-GIT_REV    := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
-GIT_DIRTY  := $(shell git diff --quiet HEAD 2>/dev/null || echo +dirty)
-PW_GIT_REV := $(GIT_REV)$(GIT_DIRTY)
+# The dirty check runs ONLY inside a work tree -- otherwise `git diff` also fails
+# and would wrongly append "+dirty" to "unknown".
+PW_GIT_REV := $(shell \
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then \
+        rev=$$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown); \
+        git diff --quiet HEAD 2>/dev/null || rev=$$rev+dirty; \
+        echo $$rev; \
+    else echo unknown; fi)
 
 LIB_DIR     := libpacketwyrm
 LIB_INC     := $(LIB_DIR)/include

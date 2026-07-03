@@ -30,8 +30,11 @@ over PCIe using descriptor rings, and the BAR carries only doorbells/indices.
   routing control planes and moderate host data (orders of magnitude over today).
 - **Works under vfio-pci** (Secure Boot / kernel lockdown — the production path).
   Plain sysfs `resource0` mmap **cannot** DMA (no IOMMU IOVA); DMA is vfio-only.
-- **Keep the CSR BAR unchanged** (all existing register access, stats, flash,
-  classifier programming stay exactly as-is).
+- **Keep the CSR register map unchanged** (all existing register access, stats,
+  flash, classifier programming stay exactly as-is). NB: the register *map* is
+  unchanged, but enabling the DMA engine relocates the CSR window's *offset
+  within BAR0* to `0x10000` (BAR0 grows to 128 KB — see §5a-bis); the host adds
+  that offset when `HAS_DMA`.
 - **Preserve slow-path metadata**: punt carries `logical_if_id` + ingress port +
   RX wire timestamp; inject carries egress port (+ TX wire timestamp back).
 - **Fit the FPGA**: LUT is at **83.98 % (136 647 / 162 720)** — new RTL must be

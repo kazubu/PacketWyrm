@@ -24,7 +24,9 @@ For where work is going next, see `NEXT-STEPS.md`.
     PCIe-DMA engine so control-plane routing (cRPD IS-IS, MTU-padded hellos,
     1500 B data, jumbo) works across the DUT. Approach **A2**: the Xilinx XDMA IP
     is reconfigured for **AXI-Stream** H2C/C2H (`xdma_axi_intf_mm=AXI_Stream`),
-    keeping the AXI-Lite-master CSR BAR unchanged. `pw_dma_slowpath` bridges the
+    keeping the AXI-Lite-master CSR **register map** unchanged (its offset within
+    BAR0 moves to `0x10000` — BAR0 grows to 128 KB and the host adds that offset
+    when `HAS_DMA`; see the design doc §5a-bis). `pw_dma_slowpath` bridges the
     256 b @ `axi_clk` XDMA streams to the 64 b @ `dp_clk` data-plane inject/punt
     AXIS (async CDC + width conversion via the taxi async-FIFO adapter, plus an
     8-byte in-band metadata header: inject carries egress port, punt carries
