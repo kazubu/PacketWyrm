@@ -146,9 +146,16 @@ fi
 # /proxyd/version (gateway's own version endpoint)
 check "proxyd version endpoint" '"version"' \
     "$(curl -s http://127.0.0.1:$PLAIN_PORT/proxyd/version)"
-# ports.stats (per-port MAC counters for pps/bps + FCS)
-check "ports.stats per-port counters" '"rx_frames"' \
-    "$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"ports.stats","secret":"e2e-secret"}')"
+# ports.stats (per-port MAC counters for pps/bps + FCS + rx_unmatched)
+pstats=$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"ports.stats","secret":"e2e-secret"}')
+check "ports.stats per-port counters" '"rx_frames"' "$pstats"
+# rx_unmatched (classifier no-match, informational -- NOT a drop; distinct field)
+check "ports.stats has rx_unmatched" '"rx_unmatched"' "$pstats"
+
+# tap.stats relay (host-plane TAP status; fake backend has no TAPs -> empty array,
+# but the RPC must dispatch and return the taps envelope through the relay).
+check "tap.stats relayed" '"taps"' \
+    "$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"tap.stats","secret":"e2e-secret"}')"
 
 # config.load with a GUI-shaped test config (mirrors the Flows-editor YAML
 # emitter: v4/udp + v6/tcp, vlan, measurements). Guards emitter/parser drift.
