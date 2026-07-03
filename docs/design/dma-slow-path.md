@@ -86,25 +86,30 @@ bring-up risk; more new LUT (DMA engine + AXIL master) against a tight budget.
 ### Recommendation — **A2 (XDMA AXI-Stream), chosen 2026-07-03**
 
 Correction to an earlier draft that recommended A1 as "no IP regen": the
-generated IP has the **XDMA control BAR disabled** (`pcie_gen3_wrapper.xci`:
-`pciebar2axibar_xdma enabled=false`; only `pciebar2axibar_axil_master` = the CSR
-BAR is enabled). XDMA's DMA engine (SGDMA descriptor/channel registers) is
-reachable **only** through that control BAR, so the DMA engine cannot be driven
-today — enabling it is an **IP reconfiguration + regen regardless of A1 vs A2**.
+production IP runs the XDMA engine in **AXI-MM mode with the MM data mover tied
+off**, so switching the H2C/C2H data path to AXI-Stream is an **IP
+reconfiguration + regen regardless of A1 vs A2**. Since a regen is required
+either way, **A2 wins**: for the same regen cost it gives the leanest RTL (H2C
+AXIS drives inject, punt drives C2H AXIS directly — no card-side packet buffer,
+no MM↔AXIS bridge, best for the 84 % LUT budget). A1 would add a card-side buffer
++ MM↔AXIS shim + descriptor coordination for no benefit. B (replace the IP with
+taxi) stays in reserve if XDMA userspace descriptor control proves impractical.
 
-Since a regen is required either way, **A2 wins**: for the same regen cost it
-gives the leanest RTL (H2C AXIS drives inject, punt drives C2H AXIS directly — no
-card-side packet buffer, no MM↔AXIS bridge, best for the 84 % LUT budget). A1
-would add a card-side buffer + MM↔AXIS shim + descriptor coordination for no
-benefit. B (replace the IP with taxi) stays in reserve if XDMA userspace
-descriptor control proves impractical.
+> NOTE (superseded premise): an earlier draft claimed the DMA engine was
+> unreachable because "`pciebar2axibar_xdma enabled=false`". That was wrong —
+> `pciebar2axibar_xdma` is the AXI-MM-bypass address translation, not the
+> descriptor-engine enable. The DMA/SGDMA control registers live in **BAR0**,
+> which is present whenever `functional_mode=DMA`. See §5a-bis (verified): no
+> control-BAR enable key is required.
 
 **A2 IP changes** (`fpga/as02mc04/ip/pcie_gen3.tcl`, validate keys via
-`ip/probe_xdma.tcl` on Vivado 2025.2): enable the XDMA control BAR
-(`pciebar2axibar_xdma`), select AXI-Stream H2C/C2H interface, keep the AXI-Lite
-master CSR BAR unchanged. The host reaches the XDMA channel/SGDMA registers via
-the newly-enabled control BAR (mmap'd under vfio); descriptor rings live in
-`VFIO_IOMMU_MAP_DMA`-mapped host memory.
+`ip/probe_xdma_stream.tcl` / `ip/probe_xdma_bars.tcl` on Vivado 2025.2): select
+the AXI-Stream H2C/C2H interface (`xdma_axi_intf_mm=AXI_Stream`), drop the unused
+AXI-Lite slave (`xdma_axilite_slave=false`), keep `functional_mode=DMA` +
+`axilite_master` CSR. **No control-BAR enable key is needed** (§5a-bis). Enabling
+the DMA engine grows BAR0 to 128 KB and splits it — XDMA/SGDMA registers at
+BAR0[0,64 KB), AXI-Lite CSR at BAR0[64 KB,128 KB) (offset `0x10000`); descriptor
+rings live in `VFIO_IOMMU_MAP_DMA`-mapped host memory.
 
 ## 4. Ring / descriptor contract (host ⇄ FPGA)
 
@@ -274,9 +279,11 @@ revalidate.
 
 ## 8. Decisions (signed off 2026-07-03)
 
-1. **Approach: A2** (XDMA AXI-Stream + enable the XDMA control BAR). A1's
-   "no-regen" premise was false (control BAR disabled); a regen is needed either
-   way, so A2's leaner RTL wins. B held in reserve.
+1. **Approach: A2** (XDMA AXI-Stream). A1's "no-regen" premise was false (the MM
+   data mover was tied off, so an AXI-Stream regen is needed either way); A2's
+   leaner RTL wins. B held in reserve. No control-BAR enable key is required — the
+   DMA/SGDMA registers are in BAR0 (§5a-bis); enabling the DMA engine relocates
+   the AXI-Lite CSR to BAR0 offset `0x10000` (a P2 host-side gate).
 2. **Jumbo target: 9216 B** (MTU 9000) ring frame buffers.
 3. **Interrupts: poll first** (matches today's `pw_host_plane_step` poll loop);
    XDMA MSI-X later if latency/CPU warrants.
