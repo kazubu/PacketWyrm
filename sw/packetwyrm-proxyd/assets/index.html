@@ -93,6 +93,7 @@
     <section class="card"><h2>Cards</h2><div id="d-cards">…</div></section>
     <section class="card"><h2>Ports</h2><div id="d-ports">…</div></section>
     <section class="card"><h2>SFP modules</h2><div id="d-sfp">…</div></section>
+    <section class="card"><h2>Host-plane TAPs</h2><div id="d-taps">…</div></section>
     <section class="card"><h2>Aggregate counters</h2><div id="d-agg">…</div></section>
     <section class="card"><h2>Flow statistics</h2><div id="d-flowstats">…</div></section>
     <section class="card">
@@ -833,10 +834,10 @@ function renderAggregate(fstats, rates, metaById) {
 
 async function poll() {
   try {
-    const [cards, ports, sfp, fstats, flowsMeta, stats, pstats] = await Promise.all([
+    const [cards, ports, sfp, fstats, flowsMeta, stats, pstats, taps] = await Promise.all([
       rpc({rpc:"cards"}), rpc({rpc:"ports"}), rpc({rpc:"sfp.info"}),
       rpc({rpc:"flow.stats"}), rpc({rpc:"flows"}), rpc({rpc:"stats"}),
-      rpc({rpc:"ports.stats"})]);
+      rpc({rpc:"ports.stats"}), rpc({rpc:"tap.stats"})]);
     if (cards.error) { setConn(false, cards.error); return; }
 
     // Each source's rate uses ITS OWN fpga_ts delta (flow.stats and ports.stats
@@ -897,6 +898,23 @@ async function poll() {
       {h:"present",get:r=>r.present},{h:"vendor",get:r=>r.vendor},{h:"part",get:r=>r.part},
       {h:"temp°C",get:r=>fmt3(r.temp_c),num:1},{h:"Vcc",get:r=>fmt3(r.vcc_v),num:1},
       {h:"tx mW",get:r=>fmt3(r.tx_power_mw),num:1},{h:"rx mW",get:r=>fmt3(r.rx_power_mw),num:1}]));
+    // Host-plane TAPs: the virtual NICs the daemon created per logical interface.
+    // Shows link/addr state + the bridge (FPGA<->TAP) counters. Host traffic here
+    // (e.g. the TAP's own IPv6 ND/MLD) is what shows up on the loopback as the
+    // ports table's `unmatched` column — informational, never an error.
+    if (taps && taps.taps) {
+      if (taps.taps.length) setBox("#d-taps", tableFrom(taps.taps, [
+        {h:"name",get:r=>r.name},{h:"lif",get:r=>r.logical_if_id,num:1},
+        {h:"mac",get:r=>r.mac||"—"},{h:"port",get:r=>r.global_port,num:1},
+        {h:"vlan",get:r=>r.vlan,num:1},
+        {h:"state",get:r=>(r.admin_up?"up":"down")+(r.oper_up?",run":"")},
+        {h:"addrs",get:r=>(r.addrs&&r.addrs.length)?r.addrs.join(" "):"—"},
+        {h:"→tap",get:r=>r.bridge?r.bridge.to_tap_ok:"—",num:1},
+        {h:"→tap drop",get:r=>r.bridge?r.bridge.to_tap_dropped:"—",num:1},
+        {h:"tap→",get:r=>r.bridge?r.bridge.from_tap_ok:"—",num:1},
+        {h:"tap→ drop",get:r=>r.bridge?r.bridge.from_tap_dropped:"—",num:1}]));
+      else setBox("#d-taps", el("div",{class:"muted",text:"no TAP interfaces (none configured, or daemon lacks CAP_NET_ADMIN)"}));
+    }
     if (fstats.flows) {
       setBox("#d-agg", renderAggregate(fstats.flows, rates, metaById));
       setBox("#d-flowstats", renderFlowStatsTable(fstats.flows, rates));

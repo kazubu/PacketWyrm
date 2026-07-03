@@ -550,6 +550,87 @@ static int cmd_latency(int argc, char **argv) {
     return 0;
 }
 
+/* Pretty-print the "tap.stats" response: one block per host-plane TAP. */
+static void pretty_print_taps(const char *json, size_t len) {
+    struct json_tokener *tok = json_tokener_new();
+    struct json_object *root = json_tokener_parse_ex(tok, json, (int)len);
+    json_tokener_free(tok);
+    if (!root) { fprintf(stderr, "bad response\n"); return; }
+    struct json_object *err;
+    if (json_object_object_get_ex(root, "error", &err)) {
+        printf("error: %s\n", json_object_get_string(err)); json_object_put(root); return;
+    }
+    struct json_object *arr;
+    if (!json_object_object_get_ex(root, "taps", &arr)) { json_object_put(root); return; }
+    size_t n = json_object_array_length(arr);
+    if (n == 0) { printf("(no TAP interfaces)\n"); json_object_put(root); return; }
+    for (size_t i = 0; i < n; i++) {
+        struct json_object *o = json_object_array_get_idx(arr, i), *v;
+        const char *name = "?", *mac = "";
+        int lif = 0, gp = -1, vlan = 0, mtu = 0;
+        if (json_object_object_get_ex(o, "name", &v)) name = json_object_get_string(v);
+        if (json_object_object_get_ex(o, "logical_if_id", &v)) lif = json_object_get_int(v);
+        if (json_object_object_get_ex(o, "mac", &v)) mac = json_object_get_string(v);
+        if (json_object_object_get_ex(o, "global_port", &v)) gp = json_object_get_int(v);
+        if (json_object_object_get_ex(o, "vlan", &v)) vlan = json_object_get_int(v);
+        if (json_object_object_get_ex(o, "mtu", &v)) mtu = json_object_get_int(v);
+        bool au = false, ou = false;
+        if (json_object_object_get_ex(o, "admin_up", &v)) au = json_object_get_boolean(v);
+        if (json_object_object_get_ex(o, "oper_up", &v))  ou = json_object_get_boolean(v);
+        printf("%-16s lif=%d  %s  port=%d vlan=%d mtu=%d  [%s%s]\n",
+               name, lif, mac, gp, vlan, mtu,
+               au ? "UP" : "DOWN", ou ? ",RUNNING" : "");
+        struct json_object *ad;
+        if (json_object_object_get_ex(o, "addrs", &ad)) {
+            size_t na = json_object_array_length(ad);
+            if (na) {
+                printf("    addrs:");
+                for (size_t a = 0; a < na; a++)
+                    printf(" %s", json_object_get_string(json_object_array_get_idx(ad, a)));
+                printf("\n");
+            }
+        }
+        struct json_object *k;
+        if (json_object_object_get_ex(o, "kernel", &k)) {
+            long long rxp=0, rxd=0, txp=0, txd=0;
+            if (json_object_object_get_ex(k, "rx_packets", &v)) rxp = json_object_get_int64(v);
+            if (json_object_object_get_ex(k, "rx_dropped", &v)) rxd = json_object_get_int64(v);
+            if (json_object_object_get_ex(k, "tx_packets", &v)) txp = json_object_get_int64(v);
+            if (json_object_object_get_ex(k, "tx_dropped", &v)) txd = json_object_get_int64(v);
+            printf("    kernel: rx %lld pkt (%lld drop)  tx %lld pkt (%lld drop)\n",
+                   rxp, rxd, txp, txd);
+        }
+        struct json_object *b;
+        if (json_object_object_get_ex(o, "bridge", &b)) {
+            long long tto=0, ttd=0, fto=0, ftd=0;
+            if (json_object_object_get_ex(b, "to_tap_ok", &v))      tto = json_object_get_int64(v);
+            if (json_object_object_get_ex(b, "to_tap_dropped", &v)) ttd = json_object_get_int64(v);
+            if (json_object_object_get_ex(b, "from_tap_ok", &v))      fto = json_object_get_int64(v);
+            if (json_object_object_get_ex(b, "from_tap_dropped", &v)) ftd = json_object_get_int64(v);
+            printf("    bridge: FPGA->tap %lld (%lld drop)  tap->FPGA %lld (%lld drop)\n",
+                   tto, ttd, fto, ftd);
+        }
+    }
+    json_object_put(root);
+}
+
+static int cmd_tap(int argc, char **argv) {
+    /* pktwyrm tap [--socket PATH] [--json] */
+    const char *sock = PW_IPC_DEFAULT_PATH;
+    bool raw = false;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
+        else if (!strcmp(argv[i], "--json")) raw = true;
+    }
+    char resp[PW_IPC_FRAME_MAX]; size_t got = 0;
+    if (rpc_call(sock, "{\"rpc\":\"tap.stats\"}", resp, sizeof(resp), &got) < 0) {
+        fprintf(stderr, "rpc call failed (socket=%s)\n", sock); return 1;
+    }
+    if (raw) { fwrite(resp, 1, got, stdout); fputc('\n', stdout); }
+    else     pretty_print_taps(resp, got);
+    return 0;
+}
+
 /* Pretty-print the "sfp.info" response: one block per present module. */
 static void pretty_print_sfp(const char *json, size_t len) {
     struct json_tokener *tok = json_tokener_new();
@@ -730,6 +811,7 @@ static int cmd_help(void) {
     puts("  pktwyrm latency [--flow N] [--socket PATH] [--json]   per-flow one-way latency");
     puts("                  (same-card: exact; cross-card: J5 GPIO-corrected)");
     puts("  pktwyrm sfp [--card N] [--port P] [--socket PATH] [--json]  SFP id + DOM");
+    puts("  pktwyrm tap [--socket PATH] [--json]                 host-plane TAP status + stats");
     puts("  pktwyrm flow start|stop <id> [--socket PATH]");
     puts("  pktwyrm flow stats [--flow N] [--socket PATH] [--watch MS] [--json]");
     puts("  pktwyrm test arm|start|stop [--socket PATH]");
@@ -772,6 +854,7 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "rpc"))    return cmd_rpc(argc - 2, argv + 2);
     if (!strcmp(sub, "latency")) return cmd_latency(argc - 2, argv + 2);
     if (!strcmp(sub, "sfp"))    return cmd_sfp(argc - 2, argv + 2);
+    if (!strcmp(sub, "tap"))    return cmd_tap(argc - 2, argv + 2);
     if (!strcmp(sub, "stats")) {
         /* `pktwyrm stats clear` -> re-baseline all counters (RX checkers,
          * per-port frames/bytes, drops, histogram) via the daemon, independent

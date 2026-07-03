@@ -124,6 +124,24 @@ LED, so a red LED can always be attributed to a counter. `rx_unmatched` is
 deliberately excluded and never lights the LED. Present only on backends with
 per-port counters.
 
+### `tap.stats`
+
+Per-logical-interface **host-plane TAP** status + statistics (`{ "rpc":
+"tap.stats" }`) &rarr; `{ "taps": [ { "name", "logical_if_id", "mac",
+"global_port", "vlan", "mtu", "admin_up", "oper_up", "addrs": [ ... ],
+"kernel": { "rx_packets", "rx_bytes", "rx_dropped", "tx_packets", "tx_bytes",
+"tx_dropped" }, "bridge": { "to_tap_ok", "to_tap_dropped", "from_tap_ok",
+"from_tap_dropped" } } ] }`. One entry per TAP netdev the daemon created (one
+per logical interface). `name` is the actual kernel netdev name (e.g.
+`tap-pw-p0-v100`); `admin_up`/`oper_up` are `IFF_UP`/`IFF_RUNNING`; `addrs` are
+the host-assigned IP addresses (incl. the auto link-local IPv6 that generates
+the ND/MLD traffic seen as per-port `rx_unmatched`). `kernel.*` are the Linux
+netdev counters (host's point of view); `bridge.*` are the PacketWyrm host-plane
+mover counters — `to_tap` = FPGA punt written to the TAP, `from_tap` = read from
+the TAP and injected to the FPGA. SW-only (no FPGA access); present when the
+daemon has host-plane TAPs (requires `CAP_NET_ADMIN` to have created them).
+Surfaced by the GUI **Host-plane TAPs** dashboard panel and `pktwyrm tap`.
+
 ### `flow.stats`
 
 Per-flow counters from the FPGA test-RX checker. Triggers a

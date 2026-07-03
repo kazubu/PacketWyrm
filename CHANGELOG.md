@@ -32,6 +32,16 @@ For where work is going next, see `NEXT-STEPS.md`.
     unreleased). RTL change — timing gated. (Supersedes the interim per-port
     DROP-classification entry; the diagnostic pinned the phantom-drop cause to
     host-TAP ICMPv6, which this reclassifies as `rx_unmatched`, not a drop.)
+  - **Host-plane TAP status + statistics (`tap.stats` RPC + `pktwyrm tap` + GUI
+    panel).** SW-only. Reports, per logical-interface TAP netdev, its kernel name
+    (e.g. `tap-pw-p0-v100`), `logical_if_id`, MAC/VLAN/MTU, admin/oper up state,
+    the host-assigned IP addresses (incl. the auto link-local IPv6 whose ND/MLD
+    shows up on the loopback as `rx_unmatched`), the Linux netdev rx/tx/dropped
+    counters, and the PacketWyrm host-plane bridge counters (`to_tap`/`from_tap`
+    ok+dropped). New `pw_tap_query()` in libpacketwyrm (getifaddrs-based) feeds
+    the daemon's `build_tap_stats`; surfaced in the GUI **Host-plane TAPs**
+    dashboard panel and `pktwyrm tap [--json]`. Makes the punt/inject TAPs and
+    their traffic visible so unmatched-frame sources are attributable.
   - **frame_len minimum lowered 64 → 60 (the true 64-byte wire frame).**
     `frame_len` is the pre-FCS L2 length, so the smallest legal Ethernet frame
     (64 B on the wire *including* FCS) is 60 B pre-FCS — the old floor of 64

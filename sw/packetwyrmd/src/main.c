@@ -1393,6 +1393,76 @@ static struct json_object *build_port_stats(const struct pw_config *cfg,
     return r;
 }
 
+/* tap.stats: per-logical-interface TAP status + statistics. Reports the kernel
+ * netdev state (admin/oper up, IP addresses, netdev rx/tx/dropped counters) and
+ * the PacketWyrm host-plane bridge counters (FPGA<->TAP frame movement). Lets an
+ * operator see the punt/inject TAPs the daemon created and whether host traffic
+ * (e.g. the TAP's own IPv6 ND/MLD) is flowing -- the traffic that shows up on the
+ * loopback ports as rx_unmatched. SW-only (no FPGA access). */
+static struct json_object *build_tap_stats(const struct pw_config *cfg,
+                                           const struct tap_handle *taps,
+                                           int n_taps,
+                                           struct pw_host_plane *hps[MAX_CARDS]) {
+    struct json_object *r = json_object_new_object();
+    struct json_object *arr = json_object_new_array();
+    for (int i = 0; i < n_taps; i++) {
+        const struct tap_handle *th = &taps[i];
+        struct json_object *o = json_object_new_object();
+        json_object_object_add(o, "name", json_object_new_string(th->name));
+        json_object_object_add(o, "logical_if_id", json_object_new_int64((int64_t)th->lif_id));
+
+        const struct pw_logical_if *lif = pw_config_logical_if_by_id(cfg, th->lif_id);
+        if (lif) {
+            char mac[18];
+            snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x",
+                     lif->mac[0], lif->mac[1], lif->mac[2],
+                     lif->mac[3], lif->mac[4], lif->mac[5]);
+            json_object_object_add(o, "mac", json_object_new_string(mac));
+            json_object_object_add(o, "global_port", json_object_new_int(lif->global_port));
+            json_object_object_add(o, "vlan", json_object_new_int(lif->vlan));
+            json_object_object_add(o, "mtu",  json_object_new_int(lif->mtu));
+        }
+
+        /* Live kernel state: flags + IP addrs + netdev stats. */
+        struct pw_tap_state st;
+        if (pw_tap_query(th->name, &st) == PW_OK) {
+            json_object_object_add(o, "admin_up", json_object_new_boolean(st.admin_up));
+            json_object_object_add(o, "oper_up",  json_object_new_boolean(st.oper_up));
+            struct json_object *ad = json_object_new_array();
+            for (int a = 0; a < st.n_addrs; a++)
+                json_object_array_add(ad, json_object_new_string(st.addrs[a]));
+            json_object_object_add(o, "addrs", ad);
+            struct json_object *k = json_object_new_object();
+            json_object_object_add(k, "rx_packets", json_object_new_int64((int64_t)st.rx_packets));
+            json_object_object_add(k, "rx_bytes",   json_object_new_int64((int64_t)st.rx_bytes));
+            json_object_object_add(k, "rx_dropped", json_object_new_int64((int64_t)st.rx_dropped));
+            json_object_object_add(k, "tx_packets", json_object_new_int64((int64_t)st.tx_packets));
+            json_object_object_add(k, "tx_bytes",   json_object_new_int64((int64_t)st.tx_bytes));
+            json_object_object_add(k, "tx_dropped", json_object_new_int64((int64_t)st.tx_dropped));
+            json_object_object_add(o, "kernel", k);
+        }
+
+        /* PacketWyrm host-plane bridge counters for this lif. Search all cards'
+         * host planes for the binding matching this logical_if_id. to_tap =
+         * FPGA punt -> written to the TAP; from_tap = read from TAP -> injected. */
+        for (size_t c = 0; c < cfg->n_cards; c++) {
+            if (!hps[c]) continue;
+            for (size_t j = 0; j < hps[c]->n_bindings; j++) {
+                if (hps[c]->bindings[j].logical_if_id != th->lif_id) continue;
+                struct json_object *b = json_object_new_object();
+                json_object_object_add(b, "to_tap_ok",      json_object_new_int64((int64_t)hps[c]->punt_to_tap_ok[j]));
+                json_object_object_add(b, "to_tap_dropped", json_object_new_int64((int64_t)hps[c]->punt_to_tap_dropped[j]));
+                json_object_object_add(b, "from_tap_ok",      json_object_new_int64((int64_t)hps[c]->tap_to_fpga_ok[j]));
+                json_object_object_add(b, "from_tap_dropped", json_object_new_int64((int64_t)hps[c]->tap_to_fpga_dropped[j]));
+                json_object_object_add(o, "bridge", b);
+            }
+        }
+        json_object_array_add(arr, o);
+    }
+    json_object_object_add(r, "taps", arr);
+    return r;
+}
+
 /* Per-flow latency histogram. */
 static struct json_object *build_flow_hist(const struct pw_config *cfg,
                                            const struct pw_program *prog,
@@ -1583,7 +1653,9 @@ static void handle_client(int cfd,
                           struct pw_config  **cfg_pp,
                           struct pw_program **prog_pp,
                           struct card_runtime cards[],
-                          struct pw_host_plane *hps[MAX_CARDS]) {
+                          struct pw_host_plane *hps[MAX_CARDS],
+                          const struct tap_handle *taps,
+                          int n_taps) {
     const struct pw_config *cfg  = *cfg_pp;
     struct pw_program      *prog = *prog_pp;
     uint8_t buf[PW_IPC_FRAME_MAX];
@@ -1634,6 +1706,8 @@ static void handle_client(int cfd,
             resp = build_stats(cfg, cards, hps, card_filter);
         } else if (!strcmp(name, "ports.stats")) {
             resp = build_port_stats(cfg, cards);
+        } else if (!strcmp(name, "tap.stats")) {
+            resp = build_tap_stats(cfg, taps, n_taps, hps);
         } else if (!strcmp(name, "flow.hist")) {
             struct json_object *jid;
             if (!json_object_object_get_ex(req, "id", &jid)) {
@@ -2082,7 +2156,7 @@ int main(int argc, char **argv) {
         if (listen_idx != (size_t)-1 && (pfds[listen_idx].revents & POLLIN)) {
             int cfd = accept(ipc_listen_fd, NULL, NULL);
             if (cfd >= 0) {
-                handle_client(cfd, &cfg, &prog, cards, hps);
+                handle_client(cfd, &cfg, &prog, cards, hps, taps, n_taps);
                 close(cfd);
             }
         }
