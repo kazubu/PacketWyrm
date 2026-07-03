@@ -144,8 +144,8 @@ module pw_dma_slowpath #(
     logic        punt_state;   // S_HDR: emit header; S_PAY: pass frame
     wire  [31:0] punt_lif      = s_punt_tuser[31:0];
     wire  [3:0]  punt_ingress  = s_punt_tuser[35:32];
-    // header beat: {reserved[23:0], ingress[7:0], lif_id[31:0]}
-    wire  [DP_DATA_W-1:0] punt_hdr = { {(DP_DATA_W-40){1'b0}}, punt_ingress, 4'b0, punt_lif };
+    // header beat: byte0..3 = lif_id[31:0] (LE), byte4 = {4'b0, ingress[3:0]}
+    wire  [DP_DATA_W-1:0] punt_hdr = { {(DP_DATA_W-40){1'b0}}, 4'b0, punt_ingress, punt_lif };
 
     always_ff @(posedge dp_clk) begin
         if (dp_rst) begin
