@@ -51,6 +51,19 @@ module pcie_axi_lite_bridge #(
     input  wire                    m_axi_rvalid,
     output wire                    m_axi_rready,
 
+    // XDMA AXI-Stream DMA channels (axi_aclk domain) for the slow path.
+    // H2C = host->FPGA (inject source), C2H = FPGA->host (punt sink).
+    output wire [255:0]            h2c_tdata,
+    output wire [31:0]             h2c_tkeep,
+    output wire                    h2c_tvalid,
+    input  wire                    h2c_tready,
+    output wire                    h2c_tlast,
+    input  wire [255:0]            c2h_tdata,
+    input  wire [31:0]             c2h_tkeep,
+    input  wire                    c2h_tvalid,
+    output wire                    c2h_tready,
+    input  wire                    c2h_tlast,
+
     // Status to surface in CSR / LED
     output wire        link_up
 );
@@ -99,43 +112,18 @@ module pcie_axi_lite_bridge #(
         .usr_irq_req  (1'b0),
         .usr_irq_ack  (),
 
-        // DMA AXI-MM master -- unused in Phase 1: tie inputs off, leave
-        // outputs open.
-        .m_axi_awready (1'b0),
-        .m_axi_wready  (1'b0),
-        .m_axi_bid     (4'b0),
-        .m_axi_bresp   (2'b0),
-        .m_axi_bvalid  (1'b0),
-        .m_axi_arready (1'b0),
-        .m_axi_rid     (4'b0),
-        .m_axi_rdata   (256'b0),
-        .m_axi_rresp   (2'b0),
-        .m_axi_rlast   (1'b0),
-        .m_axi_rvalid  (1'b0),
-        .m_axi_awid    (),
-        .m_axi_awaddr  (),
-        .m_axi_awlen   (),
-        .m_axi_awsize  (),
-        .m_axi_awburst (),
-        .m_axi_awprot  (),
-        .m_axi_awvalid (),
-        .m_axi_awlock  (),
-        .m_axi_awcache (),
-        .m_axi_wdata   (),
-        .m_axi_wstrb   (),
-        .m_axi_wlast   (),
-        .m_axi_wvalid  (),
-        .m_axi_bready  (),
-        .m_axi_arid    (),
-        .m_axi_araddr  (),
-        .m_axi_arlen   (),
-        .m_axi_arsize  (),
-        .m_axi_arburst (),
-        .m_axi_arprot  (),
-        .m_axi_arvalid (),
-        .m_axi_arlock  (),
-        .m_axi_arcache (),
-        .m_axi_rready  (),
+        // XDMA AXI-Stream DMA channels (AXI_Stream mode). H2C -> inject,
+        // C2H <- punt. Single channel (0). Driven/consumed by pw_dma_slowpath.
+        .m_axis_h2c_tdata_0  (h2c_tdata),
+        .m_axis_h2c_tkeep_0  (h2c_tkeep),
+        .m_axis_h2c_tvalid_0 (h2c_tvalid),
+        .m_axis_h2c_tready_0 (h2c_tready),
+        .m_axis_h2c_tlast_0  (h2c_tlast),
+        .s_axis_c2h_tdata_0  (c2h_tdata),
+        .s_axis_c2h_tkeep_0  (c2h_tkeep),
+        .s_axis_c2h_tvalid_0 (c2h_tvalid),
+        .s_axis_c2h_tready_0 (c2h_tready),
+        .s_axis_c2h_tlast_0  (c2h_tlast),
 
         // AXI-Lite master -> CSR slave (the BAR CSR window)
         .m_axil_awaddr  (axil_awaddr),
