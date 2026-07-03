@@ -59,12 +59,14 @@ a BGP group with an IPv6 neighbor + `family inet6 unicast`, and
 - `packetwyrmd` marks the TAP tun carrier UP (TUNSETCARRIER) so cRPD accepts the
   interface, but the interface-reference form above is what actually gated the IGP.
 
-### Jumbo note
+### Jumbo (MTU 9000) — supported
 
-True 9000 B jumbo across the DUT additionally needs the data-plane MAC↔dp_clk CDC
-FIFO (`pw_mac_axis_cdc DEPTH`, currently 2048 ≈ 2 KB) widened — a separate RTL
-change. Control-plane frames (IS-IS padded hellos at MTU 1514, LSPs, ≤~2 KB data)
-already traverse.
+Set `net0` MTU to 9000 on both routers (`set interfaces net0 mtu 9000`); the
+daemon TAPs are already MTU 9000. Validated: v4 pings up to 8900 B and a v6
+8000 B ping at 0 % loss, dual-stack control plane still up. Jumbo required the
+build 0x6a481d26 data-path widening (MAC max-pkt-len, MAC↔dp CDC, data-plane SAF,
+pw_dma_slowpath FIFO) + host `PW_HOST_FRAME_MAX` — all in the tree; see
+`docs/design/dma-slow-path.md`.
 
 `packetwyrm.yaml` uses **untagged** lifs: the slow-path inject does not add an
 802.1Q tag, so a VLAN-tagged lif would fail to match the (ingress+vlan) punt

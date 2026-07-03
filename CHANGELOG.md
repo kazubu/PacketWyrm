@@ -58,9 +58,16 @@ For where work is going next, see `NEXT-STEPS.md`.
     frame's L2/L3 headers); **C2H uses a continuously-running circular descriptor
     ring** (per-frame stop/re-arm wedges the engine); the daemon punt-reap poll cap
     was cut 100 ms→1 ms; and cRPD binds the TAP as `interface net0` (not `net0.0`,
-    + TUNSETCARRIER to mark the tun carrier up). Remaining: true 9000 B jumbo needs
-    the MAC↔dp_clk CDC FIFO widened (separate RTL change). See
-    `docs/design/dma-slow-path.md` §5c and `configs/examples/lab-crpd-2node/`.
+    + TUNSETCARRIER to mark the tun carrier up). See `docs/design/dma-slow-path.md`
+    §5c and `configs/examples/lab-crpd-2node/`.
+  - **Jumbo (MTU 9000) across the DUT — HW-validated (build_id 0x6a481d26).** Raised
+    the data path's frame-size caps together — MAC BASE-R `cfg_*_max_pkt_len`
+    1518→9600, MAC↔dp CDC FIFO 2048→16384 B, data-plane forward/punt SAF
+    `SAF_DEPTH_BEATS` 512→2048, `pw_dma_slowpath` async-FIFO 2048→16384 B (the taxi
+    DEPTH is in bytes), and host `PW_HOST_FRAME_MAX` 2048→9600. Validated: v4 pings
+    to 8900 B + a v6 8000 B ping at 0 % loss with the full dual-stack control plane
+    (OSPFv2/v3 Full, IS-IS L1+L2 Up, BGP v4+v6 Established) still up. Gated build
+    WNS +0.084 all clocks, LUT 94.79 %, BRAM 53 %.
   - **Unmatched frames split out of `drops`; LED no longer red on no-match
     (RTL + SW).** A classifier **no-match** is no longer counted as a drop or
     treated as an error. Per-port `drops` (`rx_bad_frame`) now counts **real
