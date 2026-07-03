@@ -365,8 +365,10 @@ pwfpga_top
   `sfp_led[0..1]` = SFP link status (`!rx_status`).
 - `led_r`/`led_g` (A13/A12, active-low bicolor) = **data-plane health**, NOT link
   (the SFP LEDs cover link). The data plane aggregates two dp_clk-domain levels:
-  `err_sticky` (latched on any checker loss-event / RX FCS / port drop since the
-  last `stats_clear`) and `activity` (a retriggerable one-shot reloaded on each
+  `err_sticky` (latched on any checker loss-event / RX FCS / **real** port drop —
+  SAF overflow — since the last `stats_clear`; a classifier no-match counts as
+  `rx_unmatched`, not a drop, and does NOT latch the LED) and `activity` (a
+  retriggerable one-shot reloaded on each
   RX/TX frame). The board top 2FF-synchronises them + `pcie_link_up` into the
   100 MHz LED domain: red = up & error; green blink = up & clean & active; green
   solid = up & clean & idle; off = not up (red overrides green).

@@ -105,21 +105,42 @@ Card-level counters from the host packet plane.
 Per-port wire counters from the MAC (`{ "rpc": "ports.stats" }`) &rarr;
 `{ "fpga_ts_lo", "fpga_ts_hi", "ports": [ { "card_id", "local_port",
 "global_port", "rx_frames", "rx_bytes", "tx_frames", "tx_bytes",
-"rx_fcs_error", "drops", "drop_nomatch", "drop_saf", "last_drop": { "ctx_raw",
+"rx_fcs_error", "drops", "rx_unmatched", "last_unmatched": { "ctx_raw",
 "is_test", "is_ipv4", "is_ipv6", "hit", "action", "is_arp", "ethertype",
 "l3_proto", "flow_id" }, "link_up_count", "block_lock_loss" } ] }`.
-`drops` is the sum; `drop_nomatch` (classifier no-match) + `drop_saf` (forward
-buffer overflow) split it by cause, and `last_drop` decodes the most recent
-no-match frame's identity so a rare drop can be attributed (real test-frame miss
+`drops` = **real drops only** (store-and-forward forward-buffer overflow).
+`rx_unmatched` counts frames that were received (and counted in `rx_frames`) but
+matched no classifier rule — informational, NOT a drop and NOT an error (e.g. the
+host TAP's own IPv6 ND/MLD looped back). `last_unmatched` decodes the most recent
+unmatched frame's identity so a rare miss can be attributed (real test-frame miss
 = `is_test` + a known `flow_id`; stray/garbage frame = not).
-This is authoritative per-port traffic (all frames, not just test flows). A
-client derives per-port **pps/bps** from the counter deltas divided by the
-`fpga_ts` delta (6.4 ns/tick — jitter-free vs. wall-clock). `rx_fcs_error` and
-`drops` (the data-plane no-match/DROP counter) are the two **per-port inputs to
-the front-panel LED `err_sticky`** — together with per-flow `lost` (from
-`flow.stats`) they are the complete set of things that latch the LED, so a red
-LED can always be attributed to a counter. Present only on backends with
+This is authoritative per-port traffic (all frames, not just test flows, and
+`rx_frames` counts unmatched frames too). A client derives per-port **pps/bps**
+from the counter deltas divided by the `fpga_ts` delta (6.4 ns/tick — jitter-free
+vs. wall-clock). `rx_fcs_error` and `drops` (real SAF-overflow drops) are the two
+**per-port inputs to the front-panel LED `err_sticky`** — together with per-flow
+`lost` (from `flow.stats`) they are the complete set of things that latch the
+LED, so a red LED can always be attributed to a counter. `rx_unmatched` is
+deliberately excluded and never lights the LED. Present only on backends with
 per-port counters.
+
+### `tap.stats`
+
+Per-logical-interface **host-plane TAP** status + statistics (`{ "rpc":
+"tap.stats" }`) &rarr; `{ "taps": [ { "name", "logical_if_id", "mac",
+"global_port", "vlan", "mtu", "admin_up", "oper_up", "addrs": [ ... ],
+"kernel": { "rx_packets", "rx_bytes", "rx_dropped", "tx_packets", "tx_bytes",
+"tx_dropped" }, "bridge": { "to_tap_ok", "to_tap_dropped", "from_tap_ok",
+"from_tap_dropped" } } ] }`. One entry per TAP netdev the daemon created (one
+per logical interface). `name` is the actual kernel netdev name (e.g.
+`tap-pw-p0-v100`); `admin_up`/`oper_up` are `IFF_UP`/`IFF_RUNNING`; `addrs` are
+the host-assigned IP addresses (incl. the auto link-local IPv6 that generates
+the ND/MLD traffic seen as per-port `rx_unmatched`). `kernel.*` are the Linux
+netdev counters (host's point of view); `bridge.*` are the PacketWyrm host-plane
+mover counters — `to_tap` = FPGA punt written to the TAP, `from_tap` = read from
+the TAP and injected to the FPGA. SW-only (no FPGA access); present when the
+daemon has host-plane TAPs (requires `CAP_NET_ADMIN` to have created them).
+Surfaced by the GUI **Host-plane TAPs** dashboard panel and `pktwyrm tap`.
 
 ### `flow.stats`
 

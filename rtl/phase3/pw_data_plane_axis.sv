@@ -17,7 +17,8 @@
 //
 // Action handling:
 //   TEST_RX           checker counts; frame consumed (SAF rolls it back)
-//   DROP / no match   dropped; port_drops_o ticks; SAF rolls it back
+//   DROP / no match   dropped; rx_unmatched_o ticks (NOT a real-drop/error --
+//                     e.g. host ICMPv6 ND/MLD looped back); SAF rolls it back
 //   FORWARD_PORT      SAF buffers, drains to TX[egress_port] (forward
 //                     takes priority over the generator on that port)
 //   PUNT_TO_HOST      SAF buffers, drains to the punt AXIS master
@@ -217,7 +218,9 @@ module pw_data_plane_axis #(
     input  wire [15:0]            hist_rd_addr_i,
     output logic [63:0]           hist_rd_data_o,
 
-    // Per-port simple drop counters
+    // Per-port REAL drop counter: store-and-forward buffer overflow only (a
+    // genuine congestion drop). Classifier no-match is NOT a drop -- it is
+    // counted separately as rx_unmatched_o below and does NOT light the LED.
     output logic [31:0]           port_drops_o   [PW_PORTS],
 
     // Per-port total RX/TX frame + byte counters (48-bit internal, zero-extended
@@ -238,19 +241,19 @@ module pw_data_plane_axis #(
     output logic [31:0]           link_down_cnt_o  [PW_PORTS],
     output logic [31:0]           block_lock_loss_o[PW_PORTS],
 
-    // Per-port DROP classification (port_drops_o above is the sum, kept for
-    // back-compat). drop_nomatch = classifier no-match / explicit DROP action;
-    // drop_saf = store-and-forward buffer-full drop (forwarding only). And a
-    // capture of the MOST RECENT no-match frame's context for diagnosis:
-    //   last_drop_ctx = {l3_proto[7:0], ethertype[15:0], is_arp, action[2:0],
-    //                    hit, is_ipv6, is_ipv4, is_test}
-    //   last_drop_fid = that frame's test_flow_id (0 if not a test frame)
+    // Per-port UNMATCHED-frame counter (informational, NOT a drop/error): a
+    // classified frame whose action resolved to DROP because no flow/forward/
+    // punt rule matched. Typically benign stray traffic looped back to the port
+    // (e.g. the host TAP's own IPv6 ND/MLD). Kept out of port_drops_o and out of
+    // the LED. Plus a capture of the MOST RECENT unmatched frame's context:
+    //   last_unmatched_ctx = {l3_proto[7:0], ethertype[15:0], is_arp, action[2:0],
+    //                         hit, is_ipv6, is_ipv4, is_test}
+    //   last_unmatched_fid = that frame's test_flow_id (0 if not a test frame)
     // so software can tell a real classify miss (is_test + known flow_id) from a
     // stray/garbage frame. All cleared by stats_clear_i.
-    output logic [31:0]           drop_nomatch_o   [PW_PORTS],
-    output logic [31:0]           drop_saf_o       [PW_PORTS],
-    output logic [31:0]           last_drop_ctx_o  [PW_PORTS],
-    output logic [31:0]           last_drop_fid_o  [PW_PORTS],
+    output logic [31:0]           rx_unmatched_o        [PW_PORTS],
+    output logic [31:0]           last_unmatched_ctx_o  [PW_PORTS],
+    output logic [31:0]           last_unmatched_fid_o  [PW_PORTS],
 
     // Aggregate status for the front-panel R/G health LED (board top). Both are
     // dp_clk-domain levels; the board top synchronises + drives the LED.
@@ -698,7 +701,8 @@ module pw_data_plane_axis #(
     // ------------------------------------------------------------
     // Per-port counters: DROP + total RX/TX frames & bytes
     // ------------------------------------------------------------
-    // port_drops: a key_valid DROP event (incl. the no-match default) ticks.
+    // port_drops: a REAL drop -- store-and-forward buffer overflow only.
+    // Classifier no-match is tracked separately in rx_unmatched (not a drop).
     // rx_frames/bytes: every frame/byte arriving on the ingress AXIS (all
     // traffic, not just test). tx_frames/bytes: every frame/byte accepted on
     // the egress AXIS (gen + forwarded + injected). All are re-baselined by
@@ -710,11 +714,10 @@ module pw_data_plane_axis #(
     logic [47:0] tx_frames  [PW_PORTS];
     logic [47:0] tx_bytes   [PW_PORTS];
     logic [47:0] rx_fcs_err [PW_PORTS];
-    // DROP classification + last-no-match capture (diagnostic; see port list).
-    logic [31:0] drop_nomatch  [PW_PORTS];
-    logic [31:0] drop_saf      [PW_PORTS];
-    logic [31:0] last_drop_ctx [PW_PORTS];
-    logic [31:0] last_drop_fid [PW_PORTS];
+    // Unmatched-frame counter + last-unmatched capture (see port list).
+    logic [31:0] rx_unmatched       [PW_PORTS];
+    logic [31:0] last_unmatched_ctx [PW_PORTS];
+    logic [31:0] last_unmatched_fid [PW_PORTS];
 
     function automatic logic [3:0] popk8(input logic [7:0] k);
         logic [3:0] n; n = '0;
@@ -727,35 +730,31 @@ module pw_data_plane_axis #(
             for (int p = 0; p < PW_PORTS; p++) begin
                 port_drops[p] <= '0; rx_frames[p] <= '0; rx_bytes[p] <= '0;
                 tx_frames[p] <= '0; tx_bytes[p] <= '0; rx_fcs_err[p] <= '0;
-                drop_nomatch[p] <= '0; drop_saf[p] <= '0;
-                last_drop_ctx[p] <= '0; last_drop_fid[p] <= '0;
+                rx_unmatched[p] <= '0;
+                last_unmatched_ctx[p] <= '0; last_unmatched_fid[p] <= '0;
             end
         end else begin
             for (int p = 0; p < PW_PORTS; p++) begin
-                // DROP classification. no-match = a classified frame whose action
-                // resolved to DROP (no flow/forward/punt matched). saf = the
-                // store-and-forward buffer overflowed (forwarding only). Both feed
-                // the back-compat sum port_drops.
+                // no-match = a classified frame whose action resolved to DROP (no
+                // flow/forward/punt matched) -- informational, counted in
+                // rx_unmatched, NOT a real drop. port_drops counts ONLY a genuine
+                // store-and-forward buffer overflow (forwarding congestion).
                 automatic logic nomatch = rx_kv_d[p] && (rx_eff[p].action == PW_ACT_DROP);
-                if (nomatch || saf_overflow[p])
-                    port_drops[p] <= port_drops[p]
-                        + 32'(nomatch ? 1 : 0)
-                        + 32'(saf_overflow[p] ? 1 : 0);
-                if (nomatch)         drop_nomatch[p] <= drop_nomatch[p] + 32'd1;
-                if (saf_overflow[p]) drop_saf[p]     <= drop_saf[p]     + 32'd1;
-                // Capture the most recent no-match frame's identity so software
-                // can classify WHY it dropped (real test-frame miss vs a stray/
+                if (saf_overflow[p]) port_drops[p]   <= port_drops[p]   + 32'd1;
+                if (nomatch)         rx_unmatched[p] <= rx_unmatched[p] + 32'd1;
+                // Capture the most recent unmatched frame's identity so software
+                // can classify WHY it missed (real test-frame miss vs a stray/
                 // garbage frame). rx_key_d/rx_eff are aligned with rx_kv_d (+4).
                 if (nomatch) begin
-                    last_drop_ctx[p] <= { rx_key_d[p].l3_proto,           // [31:24]
-                                          rx_key_d[p].ethertype,          // [23:8]
-                                          rx_key_d[p].is_arp,             // [7]
-                                          3'(rx_eff[p].action),           // [6:4]
-                                          rx_eff[p].hit,                  // [3]
-                                          rx_key_d[p].is_ipv6,            // [2]
-                                          rx_key_d[p].is_ipv4,            // [1]
-                                          rx_key_d[p].is_test };          // [0]
-                    last_drop_fid[p] <= rx_key_d[p].test_flow_id;
+                    last_unmatched_ctx[p] <= { rx_key_d[p].l3_proto,        // [31:24]
+                                               rx_key_d[p].ethertype,       // [23:8]
+                                               rx_key_d[p].is_arp,          // [7]
+                                               3'(rx_eff[p].action),        // [6:4]
+                                               rx_eff[p].hit,               // [3]
+                                               rx_key_d[p].is_ipv6,         // [2]
+                                               rx_key_d[p].is_ipv4,         // [1]
+                                               rx_key_d[p].is_test };       // [0]
+                    last_unmatched_fid[p] <= rx_key_d[p].test_flow_id;
                 end
                 // RX edge: ingress AXIS is never backpressured (parser snoops,
                 // SAF drops on overflow), so a valid beat is always accepted.
@@ -786,20 +785,21 @@ module pw_data_plane_axis #(
 
     always_comb begin
         for (int p = 0; p < PW_PORTS; p++) begin
-            port_drops_o[p]    = port_drops[p];
-            drop_nomatch_o[p]  = drop_nomatch[p];
-            drop_saf_o[p]      = drop_saf[p];
-            last_drop_ctx_o[p] = last_drop_ctx[p];
-            last_drop_fid_o[p] = last_drop_fid[p];
+            port_drops_o[p]         = port_drops[p];
+            rx_unmatched_o[p]       = rx_unmatched[p];
+            last_unmatched_ctx_o[p] = last_unmatched_ctx[p];
+            last_unmatched_fid_o[p] = last_unmatched_fid[p];
         end
     end
 
     // ------------------------------------------------------------
     // Front-panel health-LED aggregate status (dp_clk domain).
-    //   err_sticky : latched on ANY error since the last stats_clear_i -- a
+    //   err_sticky : latched on ANY real error since the last stats_clear_i -- a
     //     checker loss-event pulse (missing test frames), or a nonzero RX
-    //     FCS/runt count, or a nonzero port DROP count (both already cleared by
-    //     stats_clear_i). Cleared with the counters so a run starts green.
+    //     FCS/runt count, or a nonzero REAL port drop (port_drops = SAF overflow;
+    //     all cleared by stats_clear_i). Classifier no-match (rx_unmatched) is
+    //     informational and deliberately does NOT latch the LED. Cleared with the
+    //     counters so a run starts green.
     //   activity   : retriggerable ~ (2^ACT_LOG2 dp_clk cycles) one-shot,
     //     reloaded whenever an RX or TX frame completes -> a "traffic recent"
     //     level the board top turns into the green blink.
@@ -817,6 +817,8 @@ module pw_data_plane_axis #(
             automatic logic any_derr = 1'b0;
             for (int p = 0; p < PW_PORTS; p++) begin
                 if (lost_ev[p])            any_lost = 1'b1;
+                // real errors only: FCS/runt + SAF-overflow drops. rx_unmatched
+                // (classifier no-match) is intentionally excluded here.
                 if (|rx_fcs_err[p] || |port_drops[p]) any_derr = 1'b1;
             end
             if (stats_clear_i) err_sticky_q <= 1'b0;

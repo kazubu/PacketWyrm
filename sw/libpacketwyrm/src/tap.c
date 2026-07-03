@@ -8,7 +8,10 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <arpa/inet.h>
+#include <ifaddrs.h>
 #include <net/if.h>
+#include <linux/if_link.h>
 #include <linux/if_tun.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -97,4 +100,47 @@ pw_status pw_tap_set_mtu(const char *name, uint16_t mtu) {
     pw_status r = (ioctl(s, SIOCSIFMTU, &ifr) < 0) ? PW_E_BACKEND : PW_OK;
     close(s);
     return r;
+}
+
+pw_status pw_tap_query(const char *name, struct pw_tap_state *out) {
+    if (!name || !out) return PW_E_INVAL;
+    memset(out, 0, sizeof(*out));
+
+    struct ifaddrs *ifa_head = NULL;
+    if (getifaddrs(&ifa_head) < 0) return PW_E_BACKEND;
+
+    bool found = false;
+    for (struct ifaddrs *ifa = ifa_head; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_name || strcmp(ifa->ifa_name, name) != 0) continue;
+        found = true;
+        /* Flags come on every entry for the interface; latch them. */
+        out->admin_up = (ifa->ifa_flags & IFF_UP)      != 0;
+        out->oper_up  = (ifa->ifa_flags & IFF_RUNNING) != 0;
+
+        if (!ifa->ifa_addr) continue;
+        int fam = ifa->ifa_addr->sa_family;
+        if (fam == AF_PACKET && ifa->ifa_data) {
+            /* Kernel netdev stats (host's point of view). */
+            const struct rtnl_link_stats *st = ifa->ifa_data;
+            out->rx_packets = st->rx_packets;
+            out->rx_bytes   = st->rx_bytes;
+            out->rx_dropped = st->rx_dropped;
+            out->tx_packets = st->tx_packets;
+            out->tx_bytes   = st->tx_bytes;
+            out->tx_dropped = st->tx_dropped;
+        } else if ((fam == AF_INET || fam == AF_INET6)
+                   && out->n_addrs < PW_TAP_ADDR_MAX) {
+            char buf[PW_TAP_ADDR_STR_MAX] = {0};
+            const void *src = (fam == AF_INET)
+                ? (const void *)&((struct sockaddr_in  *)ifa->ifa_addr)->sin_addr
+                : (const void *)&((struct sockaddr_in6 *)ifa->ifa_addr)->sin6_addr;
+            if (inet_ntop(fam, src, buf, sizeof(buf))) {
+                snprintf(out->addrs[out->n_addrs], PW_TAP_ADDR_STR_MAX, "%s", buf);
+                out->n_addrs++;
+            }
+        }
+    }
+
+    freeifaddrs(ifa_head);
+    return found ? PW_OK : PW_E_BACKEND;
 }

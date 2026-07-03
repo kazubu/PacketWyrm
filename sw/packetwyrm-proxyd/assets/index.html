@@ -93,6 +93,7 @@
     <section class="card"><h2>Cards</h2><div id="d-cards">…</div></section>
     <section class="card"><h2>Ports</h2><div id="d-ports">…</div></section>
     <section class="card"><h2>SFP modules</h2><div id="d-sfp">…</div></section>
+    <section class="card"><h2>Host-plane TAPs</h2><div id="d-taps">…</div></section>
     <section class="card"><h2>Aggregate counters</h2><div id="d-agg">…</div></section>
     <section class="card"><h2>Flow statistics</h2><div id="d-flowstats">…</div></section>
     <section class="card">
@@ -702,6 +703,7 @@ function renderHealth(cards, stats, fstats, metaById, portstats) {
   t.append(el("tr",{},["card","LED","causes"].map(h=>el("th",{text:h}))));
   (cards||[]).forEach(c => {
     const causes = [];
+    const infos  = [];   // informational (not an error, does not light the LED)
     // per-card host-plane drops
     const s = (stats||[]).find(x => x.card_id === c.id);
     if (s) {
@@ -714,19 +716,17 @@ function renderHealth(cards, stats, fstats, metaById, portstats) {
     (portstats||[]).forEach(p => {
       if (p.card_id !== c.id) return;
       if (p.rx_fcs_error>0) causes.push(`port ${p.global_port} FCS ${p.rx_fcs_error}`);
-      if (p.drops>0) {
-        // Break the drop down by cause + show the last no-match frame's identity
-        // so a rare drop is diagnosable at a glance (real test-frame miss vs a
-        // stray/garbage frame).
-        let d = `port ${p.global_port} drops ${p.drops}`;
-        const parts = [];
-        if (p.drop_nomatch>0) parts.push(`no-match ${p.drop_nomatch}`);
-        if (p.drop_saf>0)     parts.push(`saf-overflow ${p.drop_saf}`);
-        if (parts.length) d += ` (${parts.join(", ")})`;
-        const ld = p.last_drop;
-        if (ld && p.drop_nomatch>0)
-          d += ` [last: ${ld.is_test?"test":"non-test"} eth 0x${(ld.ethertype||0).toString(16)} proto ${ld.l3_proto} flow ${ld.flow_id}]`;
-        causes.push(d);
+      // Real drops = store-and-forward buffer overflow. These DO light the LED.
+      if (p.drops>0) causes.push(`port ${p.global_port} drops ${p.drops} (saf-overflow)`);
+      // Unmatched frames are informational (no classifier rule matched, e.g. host
+      // ICMPv6 ND/MLD). They do NOT light the LED -- surface as a note, not a
+      // cause. Show the last unmatched frame's identity so it's diagnosable.
+      if (p.rx_unmatched>0) {
+        let u = `port ${p.global_port} unmatched ${p.rx_unmatched}`;
+        const ld = p.last_unmatched;
+        if (ld)
+          u += ` [last: ${ld.is_test?"test":"non-test"} eth 0x${(ld.ethertype||0).toString(16)} proto ${ld.l3_proto} flow ${ld.flow_id}]`;
+        infos.push(u);
       }
     });
     // per-flow errors on flows received by this card
@@ -756,6 +756,12 @@ function renderHealth(cards, stats, fstats, metaById, portstats) {
     else if (sticky) { led = el("span",{class:"led amber",text:"● clean now (error seen earlier)"});
       note = "an error occurred earlier this session — the physical LED likely stays red until stats.clear"; }
     else { led = el("span",{class:"led grn",text: active ? "● ok (traffic)" : "● ok (idle)"}); note = "—"; }
+    // Informational notes (unmatched frames etc.) are shown regardless of LED
+    // state and never turn the LED red.
+    if (infos.length) {
+      const infoStr = "info: " + infos.join(", ");
+      note = (note && note !== "—") ? note + " · " + infoStr : infoStr;
+    }
     t.append(el("tr",{},[el("td",{text:c.id}), el("td",{},[led]),
       el("td",{class:(hwErr||derivedErr||sticky)?"":"muted",text: note})]));
   });
@@ -828,10 +834,10 @@ function renderAggregate(fstats, rates, metaById) {
 
 async function poll() {
   try {
-    const [cards, ports, sfp, fstats, flowsMeta, stats, pstats] = await Promise.all([
+    const [cards, ports, sfp, fstats, flowsMeta, stats, pstats, taps] = await Promise.all([
       rpc({rpc:"cards"}), rpc({rpc:"ports"}), rpc({rpc:"sfp.info"}),
       rpc({rpc:"flow.stats"}), rpc({rpc:"flows"}), rpc({rpc:"stats"}),
-      rpc({rpc:"ports.stats"})]);
+      rpc({rpc:"ports.stats"}), rpc({rpc:"tap.stats"})]);
     if (cards.error) { setConn(false, cards.error); return; }
 
     // Each source's rate uses ITS OWN fpga_ts delta (flow.stats and ports.stats
@@ -882,7 +888,8 @@ async function poll() {
         {h:"tx pps",get:r=>fmtRate(prates.get(`${r.card_id}:${r.local_port}`)?.txpps),num:1},
         {h:"tx bps",get:r=>fmtRate(prates.get(`${r.card_id}:${r.local_port}`)?.txbps),num:1},
         {h:"rx frm",get:r=>r.rx_frames,num:1},{h:"tx frm",get:r=>r.tx_frames,num:1},
-        {h:"FCS",get:r=>r.rx_fcs_error,num:1},{h:"drops",get:r=>r.drops,num:1}]));
+        {h:"FCS",get:r=>r.rx_fcs_error,num:1},{h:"drops",get:r=>r.drops,num:1},
+        {h:"unmatched",get:r=>r.rx_unmatched,num:1}]));
     } else if (ports.ports) setBox("#d-ports", tableFrom(ports.ports, [
       {h:"name",get:r=>r.name},{h:"card",get:r=>r.card_id,num:1},
       {h:"local",get:r=>r.local_port,num:1},{h:"global",get:r=>r.global_port,num:1}]));
@@ -891,6 +898,23 @@ async function poll() {
       {h:"present",get:r=>r.present},{h:"vendor",get:r=>r.vendor},{h:"part",get:r=>r.part},
       {h:"temp°C",get:r=>fmt3(r.temp_c),num:1},{h:"Vcc",get:r=>fmt3(r.vcc_v),num:1},
       {h:"tx mW",get:r=>fmt3(r.tx_power_mw),num:1},{h:"rx mW",get:r=>fmt3(r.rx_power_mw),num:1}]));
+    // Host-plane TAPs: the virtual NICs the daemon created per logical interface.
+    // Shows link/addr state + the bridge (FPGA<->TAP) counters. Host traffic here
+    // (e.g. the TAP's own IPv6 ND/MLD) is what shows up on the loopback as the
+    // ports table's `unmatched` column — informational, never an error.
+    if (taps && taps.taps) {
+      if (taps.taps.length) setBox("#d-taps", tableFrom(taps.taps, [
+        {h:"name",get:r=>r.name},{h:"lif",get:r=>r.logical_if_id,num:1},
+        {h:"mac",get:r=>r.mac||"—"},{h:"port",get:r=>r.global_port,num:1},
+        {h:"vlan",get:r=>r.vlan,num:1},
+        {h:"state",get:r=>(r.admin_up?"up":"down")+(r.oper_up?",run":"")},
+        {h:"addrs",get:r=>(r.addrs&&r.addrs.length)?r.addrs.join(" "):"—"},
+        {h:"→tap",get:r=>r.bridge?r.bridge.to_tap_ok:"—",num:1},
+        {h:"→tap drop",get:r=>r.bridge?r.bridge.to_tap_dropped:"—",num:1},
+        {h:"tap→",get:r=>r.bridge?r.bridge.from_tap_ok:"—",num:1},
+        {h:"tap→ drop",get:r=>r.bridge?r.bridge.from_tap_dropped:"—",num:1}]));
+      else setBox("#d-taps", el("div",{class:"muted",text:"no TAP interfaces (none configured, or daemon lacks CAP_NET_ADMIN)"}));
+    }
     if (fstats.flows) {
       setBox("#d-agg", renderAggregate(fstats.flows, rates, metaById));
       setBox("#d-flowstats", renderFlowStatsTable(fstats.flows, rates));

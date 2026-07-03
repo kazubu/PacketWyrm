@@ -1,0 +1,9 @@
+{
+  "statusLine": {
+    "type": "command",
+    "command": "bash /home/kazubu/.claude/statusline-command.sh"
+  },
+  "language": "Japanese",
+  "autoCompactEnabled": false,
+  "skipAutoPermissionPrompt": true
+}

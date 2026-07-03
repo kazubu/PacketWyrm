@@ -40,10 +40,9 @@ module tb_stats_snapshot;
     localparam int OFF_PORT_LU     = 64;
     localparam int OFF_PORT_LD     = 68;
     localparam int OFF_PORT_BLL    = 72;
-    localparam int OFF_PORT_NOMATCH = 76;
-    localparam int OFF_PORT_SAF     = 80;
-    localparam int OFF_PORT_LDCTX   = 84;
-    localparam int OFF_PORT_LDFID   = 88;
+    localparam int OFF_PORT_UNMATCHED = 76;
+    localparam int OFF_PORT_LUCTX     = 80;
+    localparam int OFF_PORT_LUFID     = 84;
 
     logic clk = 1'b0;
     always #5 clk = ~clk;
@@ -59,8 +58,7 @@ module tb_stats_snapshot;
     logic [31:0] link_up_p   [PORTS];
     logic [31:0] link_dn_p   [PORTS];
     logic [31:0] blk_loss_p  [PORTS];
-    logic [31:0] drop_nomatch_p [PORTS];
-    logic [31:0] drop_saf_p     [PORTS];
+    logic [31:0] rx_unmatched_p [PORTS];
     logic [31:0] last_ctx_p     [PORTS];
     logic [31:0] last_fid_p     [PORTS];
     logic [63:0] flow_rx        [NUM_FLOWS];
@@ -118,10 +116,9 @@ module tb_stats_snapshot;
         .link_up_cnt_i    (link_up_p),
         .link_down_cnt_i  (link_dn_p),
         .block_lock_loss_i(blk_loss_p),
-        .drop_nomatch_i   (drop_nomatch_p),
-        .drop_saf_i       (drop_saf_p),
-        .last_drop_ctx_i  (last_ctx_p),
-        .last_drop_fid_i  (last_fid_p),
+        .rx_unmatched_i       (rx_unmatched_p),
+        .last_unmatched_ctx_i (last_ctx_p),
+        .last_unmatched_fid_i (last_fid_p),
         .flow_rd_addr_o (flow_rd_addr),
         .flow_rx_i      (flow_rx_r),
         .flow_lost_i    (flow_lost_r),
@@ -180,7 +177,7 @@ module tb_stats_snapshot;
         trigger = 1'b0;
         rd_addr = 16'h0;
         for (int p = 0; p < PORTS; p++) begin
-            drop_nomatch_p[p]='0; drop_saf_p[p]='0; last_ctx_p[p]='0; last_fid_p[p]='0;
+            rx_unmatched_p[p]='0; last_ctx_p[p]='0; last_fid_p[p]='0;
             port_drops[p] = '0; rx_frames_p[p] = '0; rx_bytes_p[p] = '0;
             tx_frames_p[p] = '0; tx_bytes_p[p] = '0;
             rx_fcs_p[p] = '0; link_up_p[p] = '0; link_dn_p[p] = '0; blk_loss_p[p] = '0;
@@ -220,7 +217,7 @@ module tb_stats_snapshot;
         tx_frames_p[0]   = 48'd900;  tx_bytes_p[0] = 48'd57600;
         rx_fcs_p[0]      = 48'd7;
         link_up_p[0]     = 32'd2; link_dn_p[0] = 32'd1; blk_loss_p[0] = 32'd3;
-        drop_nomatch_p[0]= 32'd5; drop_saf_p[0] = 32'd2;
+        rx_unmatched_p[0]= 32'd5;
         last_ctx_p[0]    = 32'h1108_0002;  // l3_proto=0x11, ethertype=0x0800, is_ipv4
         last_fid_p[0]    = 32'd42;
 
@@ -263,10 +260,9 @@ module tb_stats_snapshot;
             read_u32(0, OFF_PORT_LU,  w); check_eq("port0 link_up",   w, 2);
             read_u32(0, OFF_PORT_LD,  w); check_eq("port0 link_down", w, 1);
             read_u32(0, OFF_PORT_BLL, w); check_eq("port0 blk_loss",  w, 3);
-            read_u32(0, OFF_PORT_NOMATCH, w); check_eq("port0 drop_nomatch", w, 5);
-            read_u32(0, OFF_PORT_SAF, w);     check_eq("port0 drop_saf",     w, 2);
-            read_u32(0, OFF_PORT_LDCTX, w);   check_eq("port0 last_drop_ctx", w, 32'h1108_0002);
-            read_u32(0, OFF_PORT_LDFID, w);   check_eq("port0 last_drop_fid", w, 42);
+            read_u32(0, OFF_PORT_UNMATCHED, w); check_eq("port0 rx_unmatched", w, 5);
+            read_u32(0, OFF_PORT_LUCTX, w);   check_eq("port0 last_unmatched_ctx", w, 32'h1108_0002);
+            read_u32(0, OFF_PORT_LUFID, w);   check_eq("port0 last_unmatched_fid", w, 42);
             read_u32(PORT_STRIDE, OFF_PORT_BAD, w);
             check_eq("port1 drops", w, 99);
 

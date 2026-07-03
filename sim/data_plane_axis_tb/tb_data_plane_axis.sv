@@ -10,7 +10,7 @@
 //   3. dup        re-inject the last seq -> dup==1
 //   4. ooo        seq 0,1,2,3,5,4 -> rx==6, lost==1, ooo==1
 //   5. rate       token-bucket frame count lands in a window, lost==0
-//   6. drop       non-matching frame -> port_drops ticks
+//   6. unmatched  non-matching frame -> rx_unmatched ticks (NOT port_drops)
 
 `default_nettype none
 
@@ -176,11 +176,10 @@ module tb_data_plane_axis;
     logic [47:0] dp_tx;
     logic [15:0] hist_rd_addr = 16'h0;
     logic [63:0] hist_rd_data;
-    logic [31:0] port_drops     [PORTS];
-    logic [31:0] drop_nomatch   [PORTS];
-    logic [31:0] drop_saf       [PORTS];
-    logic [31:0] last_drop_ctx  [PORTS];
-    logic [31:0] last_drop_fid  [PORTS];
+    logic [31:0] port_drops         [PORTS];
+    logic [31:0] rx_unmatched       [PORTS];
+    logic [31:0] last_unmatched_ctx [PORTS];
+    logic [31:0] last_unmatched_fid [PORTS];
     logic [47:0] rxf_d [PORTS], rxb_d [PORTS], txf_d [PORTS], txb_d [PORTS];
     logic        rx_tuser   [PORTS];
     logic        link_up_dp [PORTS];
@@ -307,11 +306,10 @@ module tb_data_plane_axis;
         .flow_tx          (dp_tx),
         .hist_rd_addr_i   (hist_rd_addr),
         .hist_rd_data_o   (hist_rd_data),
-        .port_drops_o     (port_drops),
-        .drop_nomatch_o   (drop_nomatch),
-        .drop_saf_o       (drop_saf),
-        .last_drop_ctx_o  (last_drop_ctx),
-        .last_drop_fid_o  (last_drop_fid),
+        .port_drops_o          (port_drops),
+        .rx_unmatched_o        (rx_unmatched),
+        .last_unmatched_ctx_o  (last_unmatched_ctx),
+        .last_unmatched_fid_o  (last_unmatched_fid),
         .rx_frames_o      (rxf_d),
         .rx_bytes_o       (rxb_d),
         .tx_frames_o      (txf_d),
@@ -721,27 +719,26 @@ module tb_data_plane_axis;
         snap_all();
         check_eq("rate lost==0",  flow_lost[4], 0);
 
-        // ---------------- scenario 6: drop ----------------
-        scenario = "drop";
+        // ---------------- scenario 6: unmatched (no-match, NOT a drop) -----
+        scenario = "unmatched";
         begin
-            logic [31:0] pre_drops, pre_nomatch, pre_saf;
-            pre_drops   = port_drops[0];
-            pre_nomatch = drop_nomatch[0];
-            pre_saf     = drop_saf[0];
-            build_plain_udp(16'd80);   // matches no rule -> default DROP
+            logic [31:0] pre_drops, pre_unmatched;
+            pre_drops     = port_drops[0];
+            pre_unmatched = rx_unmatched[0];
+            build_plain_udp(16'd80);   // matches no rule -> no-match / unmatched
             inject(0);
             repeat (12) @(posedge clk);   // classifier latency 4 (was 3): wider window
-            check_eq("port0 drop ticked", port_drops[0], pre_drops + 1);
-            // DROP classification: this is a no-match (not a SAF overflow).
-            check_eq("port0 drop_nomatch ticked", drop_nomatch[0], pre_nomatch + 1);
-            check_eq("port0 drop_saf unchanged",  drop_saf[0], pre_saf);
-            // last-drop context captured the frame: plain IPv4/UDP, not a test
-            // frame -> is_test=0 (bit0), is_ipv4=1 (bit1), ethertype 0x0800
+            // A classifier no-match is NOT a real drop: rx_unmatched ticks,
+            // port_drops (= SAF-overflow real drops) stays put, LED stays green.
+            check_eq("port0 rx_unmatched ticked", rx_unmatched[0], pre_unmatched + 1);
+            check_eq("port0 port_drops unchanged", port_drops[0], pre_drops);
+            // last-unmatched context captured the frame: plain IPv4/UDP, not a
+            // test frame -> is_test=0 (bit0), is_ipv4=1 (bit1), ethertype 0x0800
             // (bits 23:8), l3_proto 17 (bits 31:24).
-            check_eq("last_drop is_test=0", last_drop_ctx[0][0], 1'b0);
-            check_eq("last_drop is_ipv4=1", last_drop_ctx[0][1], 1'b1);
-            check_eq("last_drop ethertype 0x0800", last_drop_ctx[0][23:8], 16'h0800);
-            check_eq("last_drop l3_proto 17 (UDP)", last_drop_ctx[0][31:24], 8'd17);
+            check_eq("last_unmatched is_test=0", last_unmatched_ctx[0][0], 1'b0);
+            check_eq("last_unmatched is_ipv4=1", last_unmatched_ctx[0][1], 1'b1);
+            check_eq("last_unmatched ethertype 0x0800", last_unmatched_ctx[0][23:8], 16'h0800);
+            check_eq("last_unmatched l3_proto 17 (UDP)", last_unmatched_ctx[0][31:24], 8'd17);
         end
 
         // ---------------- scenario 7: FORWARD_PORT (port0 -> egress1) ----

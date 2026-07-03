@@ -1729,6 +1729,15 @@ static void test_tap_basic(void) {
     PW_ASSERT_EQ(pw_tap_set_mtu(actual_name, 1500), PW_OK);
     PW_ASSERT_EQ(pw_tap_set_up(actual_name, true), PW_OK);
 
+    /* Query live kernel state (used by the tap.stats RPC). The netdev exists
+     * and was just brought up, so it must be found and admin_up. */
+    struct pw_tap_state ts;
+    PW_ASSERT_EQ(pw_tap_query(actual_name, &ts), PW_OK);
+    PW_ASSERT(ts.admin_up);
+    PW_ASSERT(ts.n_addrs >= 0 && ts.n_addrs <= PW_TAP_ADDR_MAX);
+    /* A non-existent interface must not be reported as found. */
+    PW_ASSERT(pw_tap_query("pw-no-such-if-xyz", &ts) != PW_OK);
+
     pw_tap_close(fd);
     /* After fd close (no persist), the device should be gone. */
     if (stat(sys_path, &st) == 0) {

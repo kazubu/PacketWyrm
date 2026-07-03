@@ -176,6 +176,14 @@ Backpressure on TAP side: TAP fds are non-blocking. If a TAP would
 block, the daemon drops with a counter; control-plane protocols
 retransmit. Slow-path packet plane is intentionally not lossless.
 
+Observability: the `tap.stats` RPC (see `rpc-protocol.md`) reports each TAP's
+kernel state (name, admin/oper up, IP addresses, netdev rx/tx/dropped) via
+`pw_tap_query()` plus the host-plane bridge counters (`to_tap`/`from_tap`
+ok+dropped). This surfaces the punt/inject TAPs and their traffic — notably the
+auto link-local IPv6 whose ND/MLD loops back to the loopback ports and is counted
+there as `rx_unmatched` (informational, not a drop). Shown by the GUI Host-plane
+TAPs panel and `pktwyrm tap`.
+
 Both directions are live on the real card as of Phase 3: the BAR
 backend implements `slow_path_rx` (draining the punt window,
 `pw_punt_rx_window` @ 0x1000) and `slow_path_tx` (the inject window,
