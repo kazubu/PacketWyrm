@@ -1,0 +1,59 @@
+# Two-router cRPD lab: PacketWyrm side.
+#
+# One AS02MC04 card, two SFP+ ports cross-connected with a DAC
+# (SFP0<->SFP1). Each port carries one UNTAGGED logical interface; the
+# lab attaches a Juniper cRPD container to each TAP, and the two routers
+# peer BGP/OSPF/IS-IS across the DUT (the FPGA in the middle).
+#
+# The interfaces are UNTAGGED (vlan: 0): the slow-path inject does not add
+# an 802.1Q tag, so a VLAN-tagged lif would need the wire frames to already
+# carry the tag (which cRPD, configured untagged on net0, does not send).
+# Untagged also frees the VLAN field-comparator, keeping punt+forward under
+# the NCMP=12 pool.
+#
+# Data path per control-plane frame:
+#   cRPD R1 -> tap-pw-p0-v100 -> packetwyrmd inject (adds vlan 100)
+#     -> FPGA port0 TX -> DAC -> FPGA port1 RX -> classifier PUNT rule
+#     (ingress=port1, vlan=100, proto match) -> strip vlan -> tap-pw-p1-v100
+#     -> cRPD R2   (and symmetrically R2->R1)
+#
+# punt.* turns each control protocol into a PUNT_TO_HOST classifier rule
+# (per ingress port + vlan), so ARP / ICMP / BGP(TCP179) / OSPF(proto 89) /
+# IS-IS(LLC) reach the container instead of being dropped.
+#
+# NOTE: the field-comparator pool is limited (NCMP=12, shared across all
+# punt+forward rules). This lab targets the requested protocols (ARP, ICMPv4
+# ping, BGP, OSPF, IS-IS) = 11 distinct comparators. lldp + ipv6_nd are left
+# OFF here to stay under the limit; enable them only if you drop another (e.g.
+# make the lifs untagged (vlan: 0) to free the VLAN comparator).
+
+system:
+  name: "pw-lab-crpd-2node"
+  mode: "multi-card"
+  default_speed: "10g"
+  control_socket: "/tmp/pw-crpd.sock"
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+logical_interfaces:
+  - id: 1000
+    global_port: 0
+    vlan: 0
+    mac: "02:a5:02:00:00:64"
+    mtu: 9000
+    punt: { arp: true, ipv6_nd: false, lldp: false, icmp: true, bgp: true, ospf: true, is_is: true }
+
+  - id: 1001
+    global_port: 1
+    vlan: 0
+    mac: "02:a5:02:00:01:64"
+    mtu: 9000
+    punt: { arp: true, ipv6_nd: false, lldp: false, icmp: true, bgp: true, ospf: true, is_is: true }
+
+flows: []
