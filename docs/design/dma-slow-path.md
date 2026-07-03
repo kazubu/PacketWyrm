@@ -251,11 +251,53 @@ H2C/C2H streams DOWN into the core as new ports; DMA drives `inj_*_w`, sinks
    `TOP_RTL` gained `pw_dma_slowpath.sv` and the `phase3_top` Verilator rule gained
    the taxi `-y` dirs. `make -C sim sim_all` (40 TBs incl. sim_dma, sim_top) PASS.
 
-**P1 status: integration COMPLETE + sim-verified (2026-07-04).** Next: gated build
-(WNS ≥ 0 all clocks; **LUT fit is the risk** — two 256-b taxi async-FIFO adapters
-vs the 84 % baseline, minus one removed CSR window; the dead csr inject window is a
-LUT-recovery lever if it overflows). Reflash 07:00.0, then P2 host driver, then P5
-revalidate.
+**P1 status: integration COMPLETE + sim-verified (2026-07-04).**
+
+**Gated build PASSED (2026-07-04, build_id 0x6a47e2bc):** post-route all clocks
+positive — axi_aclk 250 MHz WNS +0.257 / WHS +0.012, dp_clk 156.25 +0.272 /
++0.011; "all timing constraints met". **LUT 154316/162720 = 94.84 %** (baseline
+83.98 % + ~17.7 k for the two 256-b taxi async-FIFO adapters) — FITS, no
+feature-cut. bit+bin under `build/pwfpga_as02mc04_phase3/`. **Not flashed yet**
+(see §5c: the CSR moved to BAR0+0x10000, so the host driver must land first).
+
+## 5c. P2 host DMA driver — as-built (SW) + HW bring-up checklist
+
+Implemented in `sw/libpacketwyrm/` (branch, unflashed):
+- **`csr.h`**: `PWFPGA_CSR_DMA_OFFSET` (0x10000), XDMA register map (H2C/C2H
+  channel + SGDMA blocks, config/irq targets), `struct pwfpga_xdma_desc` (32-B
+  SG descriptor + control magic/flags), poll-mode writeback struct.
+- **`vfio.[ch]`**: `pw_vfio_map_dma`/`unmap_dma` (VFIO_IOMMU_MAP_DMA, identity
+  IOVA) so the FPGA bus-masters host buffers.
+- **`backend_bar.c`**: the DMA backend is folded into the existing BAR backend —
+  - **CSR base auto-detect**: probes `DEVICE_ID` (top16 == 0xA502) at offset 0 and
+    0x10000, sets `csr_off`; every CSR access adds it. Robust to the legacy 64 KB
+    BAR and to a future layout flip.
+  - **`dma_setup`**: one page-aligned DMA-mapped pool → {H2C desc, C2H desc, TX
+    jumbo buf, RX jumbo buf}; brought up only when `csr_off==0x10000 && HAS_DMA &&
+    vfio` (bus-master DMA needs the IOMMU). Failure is non-fatal (CSR still works).
+  - **`dma_slow_path_tx`** (H2C, inject): prepend the 8-B header {egress}, DMA the
+    frame, poll the completed-descriptor count. **`dma_slow_path_rx`** (C2H, punt):
+    arm a C2H descriptor at the RX buffer, poll the completed count, parse the 8-B
+    header {lif_id, ingress}, copy payload, re-arm. Single-descriptor poll mode
+    (adequate for the cRPD control plane; a C2H ring can come later).
+  - `bar_slow_path_rx/tx` branch to the DMA path when `c->dma` is set — so
+    `pw_host_plane_step` and the backend-ops signatures are **unchanged**.
+
+**HW bring-up checklist (verify against PG195 on silicon, in priority order):**
+1. **C2H received length** (the #1 unknown): `dma_slow_path_rx` reads the
+   transferred byte count of an EOP-terminated AXI-Stream C2H transfer from the
+   descriptor's `bytes` writeback. If silicon reports it elsewhere (status DWORD /
+   separate writeback region / completion), fix that one read.
+2. XDMA **channel control/status bit positions** (RUN / completed / stopped) and
+   whether an explicit poll-mode writeback address must be programmed.
+3. Confirm the **BAR0 128 KB split direction** at bring-up (`lspci -v` size +
+   the DEVICE_ID probe already self-selects; log which half won).
+4. IOMMU: `VFIO_IOMMU_MAP_DMA` success + no lockdown block on bus-master DMA.
+5. Then flash 07:00.0 (overwrites the working CSR-window image 0x6a4726ae) and
+   re-run the cRPD lab at MTU 9000 (P5).
+
+Reflash 07:00.0 → P5 revalidate are the remaining steps (flash = user-chosen HW
+window; it drops the current working image until the DMA path is validated).
 
 ## 6. Phasing
 

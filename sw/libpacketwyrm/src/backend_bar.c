@@ -22,33 +22,70 @@
 #include <string.h>
 #include <unistd.h>
 
+/* --- DMA slow-path state (CAP_HAS_DMA build; XDMA AXI-Stream) -----------
+ * Single-descriptor poll mode per direction: adequate for the control-plane
+ * slow path (cRPD ARP/ping/BGP/OSPF/IS-IS) that pw_host_plane_step polls. A
+ * multi-descriptor C2H ring can be added later if throughput demands it. */
+#define PW_DMA_FRAME_CAP  9216u   /* jumbo frame buffer (matches RTL inject/punt) */
+#define PW_DMA_HDR_LEN    8u      /* pw_dma_slowpath in-band metadata header */
+
+struct dma_state {
+    void    *pool;            /* one page-aligned, DMA-mapped region */
+    size_t   pool_len;
+    uint64_t pool_iova;       /* identity IOVA of pool (== (uintptr_t)pool) */
+    /* sub-regions carved out of pool (host VA + device IOVA) */
+    struct pwfpga_xdma_desc *h2c_desc;  uint64_t h2c_desc_iova;
+    struct pwfpga_xdma_desc *c2h_desc;  uint64_t c2h_desc_iova;
+    uint8_t *tx_buf;   uint64_t tx_iova;   /* H2C (inject) frame buffer */
+    uint8_t *rx_buf;   uint64_t rx_iova;   /* C2H (punt) frame buffer   */
+    uint32_t h2c_cmpl_base;   /* completed-desc-count baseline (H2C)   */
+    uint32_t c2h_cmpl_base;   /* completed-desc-count baseline (C2H)   */
+    int      c2h_armed;       /* a C2H descriptor is currently posted   */
+};
+
 struct bar_ctx {
     void          *base;
     size_t         size;
     volatile uint32_t *reg;
+    /* CSR window offset within BAR0: 0 on the legacy 64 KB BAR, or
+     * PWFPGA_CSR_DMA_OFFSET (0x10000) on the DMA build where the XDMA control
+     * registers occupy the low half. Added to every CSR (reg_at) access. */
+    uint32_t              csr_off;
     /* When use_vfio is set, the mapping is owned by `vfio` and torn
      * down with pw_vfio_close(); otherwise it came from sysfs mmap. */
     int                   use_vfio;
     struct pw_vfio_handle vfio;
+    /* Non-NULL when the XDMA DMA slow path is active (DMA build + vfio). */
+    struct dma_state     *dma;
 };
 
+/* CSR-window accessor: the AXI-Lite CSR sits at base + csr_off + off. */
 static volatile uint32_t *reg_at(struct bar_ctx *c, uint32_t off) {
-    return (volatile uint32_t *)((volatile uint8_t *)c->base + off);
+    return (volatile uint32_t *)((volatile uint8_t *)c->base + c->csr_off + off);
 }
 
 static pw_status bar_read32(void *vctx, uint32_t off, uint32_t *out) {
     struct bar_ctx *c = vctx;
     if (!out) return PW_E_INVAL;
-    if (off + 4 > c->size) return PW_E_OUT_OF_RANGE;
+    if ((size_t)c->csr_off + off + 4 > c->size) return PW_E_OUT_OF_RANGE;
     *out = *reg_at(c, off);
     return PW_OK;
 }
 
 static pw_status bar_write32(void *vctx, uint32_t off, uint32_t v) {
     struct bar_ctx *c = vctx;
-    if (off + 4 > c->size) return PW_E_OUT_OF_RANGE;
+    if ((size_t)c->csr_off + off + 4 > c->size) return PW_E_OUT_OF_RANGE;
     *reg_at(c, off) = v;
     return PW_OK;
+}
+
+/* XDMA control-register accessors: absolute BAR offset (NO csr_off) -- the XDMA
+ * DMA/SGDMA registers live in BAR0[0, 0x10000). Only valid on a DMA build. */
+static void xdma_wr(struct bar_ctx *c, uint32_t off, uint32_t v) {
+    *(volatile uint32_t *)((volatile uint8_t *)c->base + off) = v;
+}
+static uint32_t xdma_rd(struct bar_ctx *c, uint32_t off) {
+    return *(volatile uint32_t *)((volatile uint8_t *)c->base + off);
 }
 
 static pw_status bar_card_info(void *vctx, struct pw_card_info *out) {
@@ -72,6 +109,8 @@ _Static_assert(sizeof(struct pwfpga_classifier_entry) <= PWFPGA_CLASSIFIER_STRID
                "classifier_entry exceeds PWFPGA_CLASSIFIER_STRIDE");
 _Static_assert(sizeof(struct pwfpga_flow_config) <= PWFPGA_FLOW_STRIDE,
                "flow_config exceeds PWFPGA_FLOW_STRIDE");
+_Static_assert(sizeof(struct pwfpga_xdma_desc) == 32,
+               "XDMA SG descriptor must be exactly 32 bytes (PG195)");
 
 /* Helper: word-by-word memcpy into the BAR. The BAR may be marked
  * uncached / require aligned accesses, so use volatile uint32_t
@@ -186,12 +225,138 @@ static pw_status bar_flow_hist_read(void *vctx, uint32_t lfid,
     return PW_OK;
 }
 
+/* ==================== XDMA AXI-Stream DMA slow path ====================
+ * Carve a single DMA-mapped pool into two descriptors + two jumbo frame
+ * buffers; drive the XDMA H2C (inject) / C2H (punt) channels in poll mode. */
+
+static void desc_fill(struct pwfpga_xdma_desc *dsc, uint32_t ctrl_flags,
+                      uint32_t bytes, uint64_t src, uint64_t dst) {
+    dsc->control     = PWFPGA_XDMA_DESC_MAGIC | ctrl_flags;
+    dsc->bytes       = bytes;
+    dsc->src_addr_lo = (uint32_t)src;         dsc->src_addr_hi = (uint32_t)(src >> 32);
+    dsc->dst_addr_lo = (uint32_t)dst;         dsc->dst_addr_hi = (uint32_t)(dst >> 32);
+    dsc->next_lo     = 0;                      dsc->next_hi     = 0;
+}
+
+static pw_status dma_setup(struct bar_ctx *c) {
+    long ps = sysconf(_SC_PAGESIZE);
+    if (ps <= 0) ps = 4096;
+    size_t need = 256 + 2u * PW_DMA_FRAME_CAP;              /* desc region + 2 buffers */
+    size_t len  = ((need + (size_t)ps - 1) / (size_t)ps) * (size_t)ps;
+    void *pool = NULL;
+    if (posix_memalign(&pool, (size_t)ps, len) != 0 || !pool) return PW_E_NO_RESOURCES;
+    memset(pool, 0, len);
+    uint64_t iova = 0;
+    pw_status r = pw_vfio_map_dma(&c->vfio, pool, len, &iova);
+    if (r != PW_OK) { free(pool); return r; }
+
+    struct dma_state *d = calloc(1, sizeof(*d));
+    if (!d) { pw_vfio_unmap_dma(&c->vfio, iova, len); free(pool); return PW_E_NO_RESOURCES; }
+    d->pool = pool; d->pool_len = len; d->pool_iova = iova;
+    uint8_t *p = pool;
+    d->h2c_desc = (void *)(p +   0);   d->h2c_desc_iova = iova +   0;   /* 32 B */
+    d->c2h_desc = (void *)(p +  64);   d->c2h_desc_iova = iova +  64;   /* 32 B */
+    d->tx_buf   = p + 256;             d->tx_iova       = iova + 256;
+    d->rx_buf   = p + 256 + PW_DMA_FRAME_CAP;
+    d->rx_iova  = iova + 256 + PW_DMA_FRAME_CAP;
+    c->dma = d;
+    return PW_OK;
+}
+
+static void dma_teardown(struct bar_ctx *c) {
+    if (!c->dma) return;
+    struct dma_state *d = c->dma;
+    xdma_wr(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_CONTROL, 0);
+    xdma_wr(c, PWFPGA_XDMA_C2H_CHANNEL + PWFPGA_XDMA_CH_CONTROL, 0);
+    if (d->pool) { pw_vfio_unmap_dma(&c->vfio, d->pool_iova, d->pool_len); free(d->pool); }
+    free(d);
+    c->dma = NULL;
+}
+
+/* Inject (host -> FPGA) via the H2C channel: prepend the 8-byte in-band header
+ * {egress in byte 0}, DMA the frame, poll the completed-descriptor count. */
+static pw_status dma_slow_path_tx(struct bar_ctx *c, const void *frame, size_t len,
+                                  uint8_t egress) {
+    struct dma_state *d = c->dma;
+    if (!frame || len == 0) return PW_E_INVAL;
+    if (len + PW_DMA_HDR_LEN > PW_DMA_FRAME_CAP) return PW_E_INVAL;
+
+    memset(d->tx_buf, 0, PW_DMA_HDR_LEN);
+    d->tx_buf[0] = egress;                                 /* in-band header */
+    memcpy(d->tx_buf + PW_DMA_HDR_LEN, frame, len);
+    uint32_t total = (uint32_t)(PW_DMA_HDR_LEN + len);
+
+    desc_fill(d->h2c_desc,
+              PWFPGA_XDMA_DESC_STOP | PWFPGA_XDMA_DESC_EOP | PWFPGA_XDMA_DESC_COMPLETED,
+              total, d->tx_iova, 0);
+
+    uint32_t base = xdma_rd(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_COMPLETED_COUNT);
+    xdma_wr(c, PWFPGA_XDMA_H2C_SGDMA + PWFPGA_XDMA_SG_DESC_ADDR_LO, (uint32_t)d->h2c_desc_iova);
+    xdma_wr(c, PWFPGA_XDMA_H2C_SGDMA + PWFPGA_XDMA_SG_DESC_ADDR_HI, (uint32_t)(d->h2c_desc_iova >> 32));
+    xdma_wr(c, PWFPGA_XDMA_H2C_SGDMA + PWFPGA_XDMA_SG_DESC_ADJ, 0);
+    xdma_wr(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_CONTROL, PWFPGA_XDMA_CTRL_RUN);
+
+    pw_status r = PW_E_IO;
+    for (int i = 0; i < 1000000; i++)
+        if (xdma_rd(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_COMPLETED_COUNT) != base) { r = PW_OK; break; }
+    xdma_wr(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_CONTROL, 0);   /* stop */
+    return r;
+}
+
+/* Post a C2H descriptor pointing at rx_buf (buffer capacity as the max len). */
+static void dma_arm_c2h(struct bar_ctx *c) {
+    struct dma_state *d = c->dma;
+    desc_fill(d->c2h_desc,
+              PWFPGA_XDMA_DESC_STOP | PWFPGA_XDMA_DESC_COMPLETED,
+              PW_DMA_FRAME_CAP, 0, d->rx_iova);
+    d->c2h_cmpl_base = xdma_rd(c, PWFPGA_XDMA_C2H_CHANNEL + PWFPGA_XDMA_CH_COMPLETED_COUNT);
+    xdma_wr(c, PWFPGA_XDMA_C2H_SGDMA + PWFPGA_XDMA_SG_DESC_ADDR_LO, (uint32_t)d->c2h_desc_iova);
+    xdma_wr(c, PWFPGA_XDMA_C2H_SGDMA + PWFPGA_XDMA_SG_DESC_ADDR_HI, (uint32_t)(d->c2h_desc_iova >> 32));
+    xdma_wr(c, PWFPGA_XDMA_C2H_SGDMA + PWFPGA_XDMA_SG_DESC_ADJ, 0);
+    xdma_wr(c, PWFPGA_XDMA_C2H_CHANNEL + PWFPGA_XDMA_CH_CONTROL, PWFPGA_XDMA_CTRL_RUN);
+    d->c2h_armed = 1;
+}
+
+/* Punt (FPGA -> host) via the C2H channel: poll for a completed descriptor,
+ * parse the 8-byte in-band header {lif_id[31:0], ingress in byte 4}, copy the
+ * payload, re-arm. Returns bytes copied, 0 if no frame, <0 on error. */
+static int dma_slow_path_rx(struct bar_ctx *c, void *buf, size_t buflen,
+                            uint32_t *out_lif, uint64_t *out_rx_ts) {
+    struct dma_state *d = c->dma;
+    if (!buf) return PW_E_INVAL;
+    if (!d->c2h_armed) dma_arm_c2h(c);
+
+    uint32_t cnt = xdma_rd(c, PWFPGA_XDMA_C2H_CHANNEL + PWFPGA_XDMA_CH_COMPLETED_COUNT);
+    if (cnt == d->c2h_cmpl_base) return 0;                 /* no punt frame yet */
+
+    xdma_wr(c, PWFPGA_XDMA_C2H_CHANNEL + PWFPGA_XDMA_CH_CONTROL, 0);   /* stop */
+    d->c2h_armed = 0;
+
+    uint32_t lif = (uint32_t)d->rx_buf[0]        | ((uint32_t)d->rx_buf[1] << 8)
+                 | ((uint32_t)d->rx_buf[2] << 16) | ((uint32_t)d->rx_buf[3] << 24);
+    /* [HW BRING-UP -- #1 PG195 item] received byte count of an AXI-Stream C2H
+     * transfer that ended on EOP (tlast). The XDMA engine writes the transferred
+     * length back into the descriptor's `bytes` on completion; read it here. If
+     * silicon reports it elsewhere (e.g. a status DWORD / writeback region),
+     * fix this single read. The in-band header (lif/ingress) is always valid. */
+    uint32_t total = d->c2h_desc->bytes;
+    if (total < PW_DMA_HDR_LEN || total > PW_DMA_FRAME_CAP) total = 0;
+    uint32_t payload = total ? total - PW_DMA_HDR_LEN : 0;
+    size_t copy = (payload > buflen) ? buflen : payload;
+    if (copy) memcpy(buf, d->rx_buf + PW_DMA_HDR_LEN, copy);
+
+    if (out_lif)   *out_lif   = lif;
+    if (out_rx_ts) *out_rx_ts = 0;         /* rx_ts not carried in the v1 8B header */
+    return (int)copy;
+}
+
 /* Slow-path RX (FPGA -> host): drain one punted frame from the punt RX
  * window. Polls PUNT_STATUS; if a frame is waiting, reads its metadata +
  * bytes, releases the slot (PUNT_POP) and returns the byte count. */
 static int bar_slow_path_rx(void *vctx, void *buf, size_t buflen,
                             uint32_t *out_lif_id, uint64_t *out_rx_ts) {
     struct bar_ctx *c = vctx;
+    if (c->dma) return dma_slow_path_rx(c, buf, buflen, out_lif_id, out_rx_ts);
     if (!buf) return PW_E_INVAL;
     if ((size_t)PWFPGA_PUNT_DATA > c->size) return PW_E_OUT_OF_RANGE;
 
@@ -228,6 +393,7 @@ static pw_status bar_slow_path_tx(void *vctx, const void *frame, size_t len,
                                   uint32_t logical_if_id, uint8_t egress_local_port) {
     struct bar_ctx *c = vctx;
     (void)logical_if_id;                              /* TX inject targets a port, not a lif */
+    if (c->dma) return dma_slow_path_tx(c, frame, len, egress_local_port);
     if (!frame || len == 0) return PW_E_INVAL;
     if (len > PWFPGA_INJECT_MAX_FRAME) return PW_E_INVAL;
     if ((size_t)PWFPGA_INJECT_DATA + ((len + 3) & ~3u) > c->size) return PW_E_OUT_OF_RANGE;
@@ -260,6 +426,7 @@ static pw_status bar_slow_path_tx(void *vctx, const void *frame, size_t len,
 static void bar_close(void *vctx) {
     struct bar_ctx *c = vctx;
     if (!c) return;
+    dma_teardown(c);                       /* stop channels + unmap DMA pool (if any) */
     if (c->use_vfio) pw_vfio_close(&c->vfio);
     else             pw_pci_close_bar0(c->base, c->size);
     free(c);
@@ -297,6 +464,31 @@ static pw_status bar_backend_attach(void *base, size_t sz,
     c->size = sz;
     c->reg  = (volatile uint32_t *)base;
     if (vfio) { c->use_vfio = 1; c->vfio = *vfio; }
+
+    /* Detect the CSR window offset. On the DMA build BAR0 is 128 KB with the
+     * XDMA control registers in the low half and the AXI-Lite CSR in the high
+     * half (offset 0x10000). Probe DEVICE_ID (top 16 bits == 0xA502) at offset 0
+     * and at 0x10000; whichever reads the CSR id is the base. Robust to a future
+     * layout flip and to the legacy 64 KB (offset-0) BAR. */
+    c->csr_off = 0;
+    if (sz >= (size_t)PWFPGA_CSR_DMA_OFFSET + 0x1000) {
+        volatile uint32_t *b = base;
+        uint32_t at0  = b[PWFPGA_REG_DEVICE_ID / 4];
+        uint32_t athi = b[(PWFPGA_CSR_DMA_OFFSET + PWFPGA_REG_DEVICE_ID) / 4];
+        if ((athi >> 16) == 0xA502u && (at0 >> 16) != 0xA502u)
+            c->csr_off = PWFPGA_CSR_DMA_OFFSET;
+    }
+
+    /* If the DMA layout is present and we own the mapping via vfio (bus-master
+     * DMA needs the IOMMU), bring up the XDMA slow-path rings. dma_setup failing
+     * is non-fatal: CSR access still works; the slow path is simply unavailable
+     * (honest -- the DMA build has no CSR-window punt/inject to fall back to). */
+    if (c->csr_off == PWFPGA_CSR_DMA_OFFSET && vfio) {
+        uint32_t caps = *reg_at(c, PWFPGA_REG_CAPABILITIES);
+        if (caps & PWFPGA_CAP_HAS_DMA)
+            (void)dma_setup(c);
+    }
+
     out->ops = &bar_ops;
     out->ctx = c;
     if (bdf) snprintf(out->pci_bdf, sizeof(out->pci_bdf), "%s", bdf);

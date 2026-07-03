@@ -38,8 +38,15 @@ For where work is going next, see `NEXT-STEPS.md`.
     (`0x0000_002D`). Verified in Verilator: the standalone `sim_dma` bridge tb and
     the integrated `sim_top` (ARP punt now observed on the C2H stream with the
     correct in-band `lif_id`/`ingress`) both pass; full `sim_all` (40 TBs) green.
-    Gated build + host DMA driver (vfio `MAP_DMA` + XDMA descriptor rings) + cRPD
-    jumbo re-validation are the remaining phases. See `docs/design/dma-slow-path.md`.
+    **Gated build passed** (build_id `0x6a47e2bc`): post-route all clocks positive
+    (axi_aclk 250 MHz WNS +0.257, dp_clk +0.272), **LUT 94.84 %** — fits. **P2 host
+    DMA driver implemented** (`csr.h` XDMA register map + 32-B SG descriptor;
+    `vfio` `MAP_DMA`/`UNMAP`; `backend_bar.c` DMA backend: CSR-base auto-detect at
+    BAR0+`0x10000`, DMA-mapped ring pool, poll-mode H2C-inject / C2H-punt
+    `slow_path_tx/rx`, capability-gated so `pw_host_plane` is unchanged). Not yet
+    flashed — HW bring-up must verify the C2H length read + XDMA control bits vs
+    PG195 (see `docs/design/dma-slow-path.md` §5c checklist), then flash + re-run
+    the cRPD lab at MTU 9000. Remaining: HW bring-up + jumbo re-validation.
   - **Unmatched frames split out of `drops`; LED no longer red on no-match
     (RTL + SW).** A classifier **no-match** is no longer counted as a drop or
     treated as an error. Per-port `drops` (`rx_bad_frame`) now counts **real
