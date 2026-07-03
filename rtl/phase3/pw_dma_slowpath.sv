@@ -32,9 +32,11 @@
 module pw_dma_slowpath #(
     parameter int DP_DATA_W  = 64,
     parameter int XD_DATA_W  = 256,
-    // Async-FIFO depth (in DP_DATA_W words). 2048 words * 8 B = 16 KB per
-    // direction -> a couple of jumbo (9 KB) frames in flight. BRAM is ample.
-    parameter int FIFO_DEPTH = 2048
+    // Async-FIFO depth in BYTES (taxi FRAME_FIFO + DROP_OVERSIZE_FRAME: a frame
+    // larger than DEPTH is dropped whole). 16384 holds a jumbo frame (MTU 9000 ~
+    // 9018 B) + margin. (Was 2048 = ~2 KB, which silently capped punt/inject at
+    // ~2 KB even though the MAC + data-plane SAF were widened for jumbo.) BRAM.
+    parameter int FIFO_DEPTH = 16384
 ) (
     // ---- XDMA domain (axi_aclk, ~250 MHz; axi_rst active-high) ----
     input  wire                        axi_clk,
