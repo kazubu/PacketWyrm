@@ -9,6 +9,26 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **PCIe-DMA slow path (`pw_dma_slowpath`) integrated into the Phase 3 core
+    — RTL + sim (host driver pending).** The CSR-window inject/punt slow path
+    (512 B inject / 2048 B punt, ~200 ms MMIO-per-word) is replaced by a
+    PCIe-DMA engine so control-plane routing (cRPD IS-IS, MTU-padded hellos,
+    1500 B data, jumbo) works across the DUT. Approach **A2**: the Xilinx XDMA IP
+    is reconfigured for **AXI-Stream** H2C/C2H (`xdma_axi_intf_mm=AXI_Stream`),
+    keeping the AXI-Lite-master CSR BAR unchanged. `pw_dma_slowpath` bridges the
+    256 b @ `axi_clk` XDMA streams to the 64 b @ `dp_clk` data-plane inject/punt
+    AXIS (async CDC + width conversion via the taxi async-FIFO adapter, plus an
+    8-byte in-band metadata header: inject carries egress port, punt carries
+    `logical_if_id` + ingress). It is wired inside `pwfpga_top_phase3` (new
+    `axi_clk`/`axi_rst`/H2C/C2H ports driven from `pcie_axi_lite_bridge`), driving
+    the inject AXIS and sinking the punt AXIS; the CSR-window `pw_punt_rx_window`
+    is removed and the `pw_inject_tx_window` decommissioned. `PW_PHASE3_CAPABILITIES`
+    now advertises `CAP_HAS_DMA` in place of the retired `CAP_HAS_PUNT`
+    (`0x0000_002D`). Verified in Verilator: the standalone `sim_dma` bridge tb and
+    the integrated `sim_top` (ARP punt now observed on the C2H stream with the
+    correct in-band `lif_id`/`ingress`) both pass; full `sim_all` (40 TBs) green.
+    Gated build + host DMA driver (vfio `MAP_DMA` + XDMA descriptor rings) + cRPD
+    jumbo re-validation are the remaining phases. See `docs/design/dma-slow-path.md`.
   - **Unmatched frames split out of `drops`; LED no longer red on no-match
     (RTL + SW).** A classifier **no-match** is no longer counted as a drop or
     treated as an error. Per-port `drops` (`rx_bad_frame`) now counts **real

@@ -192,28 +192,34 @@ H2C/C2H streams DOWN into the core as new ports; DMA drives `inj_*_w`, sinks
 
 1. `ip/pcie_gen3.tcl`: **DONE** — `xdma_axi_intf_mm=AXI_Stream`,
    `xdma_axilite_slave=false`.
-2. `src/pcie_axi_lite_bridge.sv`: remove the `m_axi_*` (MM) tie-offs; wire the
-   IP's `m_axis_h2c_*_0` / `s_axis_c2h_*_0` (256 b) to new bridge ports; keep
-   `m_axil_*` CSR + `usr_irq_req=0`. Expose H2C(out)/C2H(in) + axi_aclk/aresetn.
-3. `pwfpga_top_phase3.sv` (core): add ports {axi_clk, axi_rst, s_h2c_*, m_c2h_*};
-   instantiate `pw_dma_slowpath` (axi side ← new ports; dp side: `m_inj*`→`inj_*_w`
-   incl. `inj_eg_w`, `s_punt*`←`punt_*_w`; dp_clk=clk, dp_rst=~rst_n). Drive
-   `inj_*_w` from `pw_dma_slowpath.m_inj` instead of `pw_csr_full.inj_m_*` (leave
-   the csr inject-window output open, or remove it in a later cleanup). Remove
-   `u_punt`; tie `pw_csr_full.punt_rd_data_i=0`.
-4. `pwfpga_top_phase3_board.sv`: connect bridge H2C/C2H ↔ core's new XDMA ports;
-   pass `axi_aclk` + `~axi_aresetn`.
-5. Set **`PWFPGA_CAP_HAS_DMA`** in the capability register (find in pw_csr_full).
-6. `project_phase3.tcl`: add `rtl/phase3/pw_dma_slowpath.sv` + taxi
-   `axis/rtl`,`sync/rtl`,`lib/rtl` (async-fifo-adapter deps) to the synth sources.
-7. Sims: `tb_phase3_top` (core gained XDMA ports → tie off / drive; its punt-via-
-   CSR checks change since `u_punt` is gone), `FULL_RTL`/`TOP_RTL` lists. Keep the
-   pw_dma_slowpath unit tb (passing).
+2. `src/pcie_axi_lite_bridge.sv`: **DONE** — removed the `m_axi_*` (MM) tie-offs;
+   wired the IP's `m_axis_h2c_*_0` / `s_axis_c2h_*_0` (256 b) to new bridge ports;
+   kept `m_axil_*` CSR + `usr_irq_req=0`. Exposes H2C(out)/C2H(in) + axi_aclk.
+3. `pwfpga_top_phase3.sv` (core): **DONE** — added ports {axi_clk, axi_rst,
+   s_h2c_*, m_c2h_*}; instantiated `pw_dma_slowpath u_dma` (axi side ← new ports;
+   dp side: `m_inj*`→`inj_*_w` incl. `inj_eg_w`, `s_punt*`←`punt_*_w`; dp_clk=clk,
+   dp_rst=~rst_n). `inj_*_w` now driven by `u_dma.m_inj` — the `pw_csr_full`
+   inject window outputs are left open and its `inj_m_tready` held low (the window
+   stays instantiated inside csr_full; a later cleanup can delete it to recover
+   LUTs). Removed `u_punt`; `pw_csr_full.punt_rd_data_i` tied 0.
+4. `pwfpga_top_phase3_board.sv`: **DONE** — connected bridge H2C/C2H ↔ core's new
+   XDMA ports; passes `axi_aclk` + `~axi_aresetn`.
+5. **DONE** — `PW_PHASE3_CAPABILITIES` in `rtl/shared/pw_pkg.sv` now sets
+   `PW_CAP_HAS_DMA` (drops the retired `PW_CAP_HAS_PUNT`) → `0x0000_002D`.
+6. `project_phase3.tcl`: **DONE** — added `rtl/phase3/pw_dma_slowpath.sv`; the
+   taxi source closure now reads `taxi_axis_async_fifo_adapter.f` (superset of
+   `taxi_axis_async_fifo.f`, adds `taxi_axis_adapter.sv`).
+7. Sims: **DONE** — `tb_phase3_top` drives the new XDMA ports (H2C idle, C2H
+   drained) and its punt scenario now checks the punted frame on the C2H stream
+   (in-band header `lif_id`/`ingress`) instead of the retired CSR window;
+   `TOP_RTL` gained `pw_dma_slowpath.sv` and the `phase3_top` Verilator rule gained
+   the taxi `-y` dirs. `make -C sim sim_all` (40 TBs incl. sim_dma, sim_top) PASS.
 
-Then: gated build (WNS ≥ 0 all clocks; **LUT fit is the risk** — two 256-b taxi
-async-FIFO adapters vs the 84 % baseline, minus the removed CSR windows). If it
-overflows, feature-cut decision (defer a classifier/histogram block, or narrow
-the FIFOs). Reflash 07:00.0, then P2 host driver, then P5 revalidate.
+**P1 status: integration COMPLETE + sim-verified (2026-07-04).** Next: gated build
+(WNS ≥ 0 all clocks; **LUT fit is the risk** — two 256-b taxi async-FIFO adapters
+vs the 84 % baseline, minus one removed CSR window; the dead csr inject window is a
+LUT-recovery lever if it overflows). Reflash 07:00.0, then P2 host driver, then P5
+revalidate.
 
 ## 6. Phasing
 

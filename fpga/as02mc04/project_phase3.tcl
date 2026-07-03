@@ -83,6 +83,7 @@ set pw_srcs [list \
     "$repo_root/rtl/phase3/pw_spi_flash.sv" \
     "$repo_root/rtl/phase3/pw_punt_rx_window.sv" \
     "$repo_root/rtl/phase3/pw_inject_tx_window.sv" \
+    "$repo_root/rtl/phase3/pw_dma_slowpath.sv" \
     "$repo_root/rtl/phase3/pw_frame_saf.sv" \
     "$repo_root/rtl/phase3/pw_data_plane_axis.sv" \
     "$repo_root/rtl/phase3/pw_csr_full.sv" \
@@ -102,7 +103,10 @@ set pw_srcs [list \
 # --- Taxi sources (dependency closure of the AS02MC04 10G data path) --------
 array set seen {}
 set taxi_srcs [read_taxi_f "$taxi/src/eth/rtl/us/taxi_eth_mac_25g_us.f" seen]
-set taxi_srcs [concat $taxi_srcs [read_taxi_f "$taxi/src/axis/rtl/taxi_axis_async_fifo.f" seen]]
+# async_fifo (MAC<->dp CDC) + async_fifo_adapter (pw_dma_slowpath: 256<->64
+# width-conv + CDC). The adapter .f is a superset of async_fifo.f (it adds
+# taxi_axis_adapter.sv); read_taxi_f dedups the shared closure via `seen`.
+set taxi_srcs [concat $taxi_srcs [read_taxi_f "$taxi/src/axis/rtl/taxi_axis_async_fifo_adapter.f" seen]]
 lappend taxi_srcs "$taxi/src/sync/rtl/taxi_sync_reset.sv" "$taxi/src/sync/rtl/taxi_sync_signal.sv"
 set taxi_srcs [lsort -unique $taxi_srcs]
 puts "INFO: Taxi closure = [llength $taxi_srcs] .sv files"

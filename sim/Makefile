@@ -110,6 +110,7 @@ TOP_RTL := \
     $(REPO)/rtl/phase3/pw_flow_gen_multi.sv \
     $(REPO)/rtl/phase3/pw_frame_saf.sv \
     $(REPO)/rtl/phase3/pw_data_plane_axis.sv \
+    $(REPO)/rtl/phase3/pw_dma_slowpath.sv \
     $(REPO)/rtl/phase3/pw_icap_reboot.sv \
     $(REPO)/rtl/phase3/pw_gpio_sync.sv \
     $(REPO)/rtl/phase3/pwfpga_top_phase3.sv
@@ -433,8 +434,13 @@ sim_build/data_plane_axis: $(DPA_RTL) $(TB_DPA)
 	    -o data_plane_axis \
 	    $(DPA_RTL) $(TB_DPA)
 
+# The core now instantiates pw_dma_slowpath (taxi async-FIFO+adapter), resolved
+# from the taxi rtl dirs via -y. SYNCASYNCNET/MULTIDRIVEN/UNOPTFLAT are expected
+# for the CDC FIFO (same as the standalone sim_dma rule).
 sim_build/phase3_top: $(TOP_RTL) $(TB_TOP)
-	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET \
+	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Wno-MULTIDRIVEN -Wno-UNOPTFLAT \
+	    -Wno-PINMISSING -Wno-TIMESCALEMOD \
+	    -y $(TAXI_AXIS) -y $(TAXI_SYNC) -y $(TAXI_LIB) \
 	    -Mdir sim_build \
 	    --top-module tb_phase3_top \
 	    -o phase3_top \
