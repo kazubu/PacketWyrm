@@ -797,9 +797,11 @@ module pw_data_plane_axis #(
     //   err_sticky : latched on ANY real error since the last stats_clear_i -- a
     //     checker loss-event pulse (missing test frames), or a nonzero RX
     //     FCS/runt count, or a nonzero REAL port drop (port_drops = SAF overflow;
-    //     all cleared by stats_clear_i). Classifier no-match (rx_unmatched) is
-    //     informational and deliberately does NOT latch the LED. Cleared with the
-    //     counters so a run starts green.
+    //     all cleared by stats_clear_i). A *stray* classifier no-match
+    //     (rx_unmatched) is informational and deliberately does NOT latch the LED,
+    //     but a no-match on a real TEST frame DOES latch it (that frame never
+    //     reaches the checker, so no lost_ev would fire -- see below). Cleared
+    //     with the counters so a run starts green.
     //   activity   : retriggerable ~ (2^ACT_LOG2 dp_clk cycles) one-shot,
     //     reloaded whenever an RX or TX frame completes -> a "traffic recent"
     //     level the board top turns into the green blink.
@@ -817,9 +819,14 @@ module pw_data_plane_axis #(
             automatic logic any_derr = 1'b0;
             for (int p = 0; p < PW_PORTS; p++) begin
                 if (lost_ev[p])            any_lost = 1'b1;
-                // real errors only: FCS/runt + SAF-overflow drops. rx_unmatched
-                // (classifier no-match) is intentionally excluded here.
+                // real errors only: FCS/runt + SAF-overflow drops. A *stray*
+                // classifier no-match (rx_unmatched) is informational and stays
+                // excluded -- BUT a no-match on a real TEST frame is an error: it
+                // never reaches the checker, so no lost_ev fires and the miss
+                // would otherwise hide behind a green LED. Surface that one case.
                 if (|rx_fcs_err[p] || |port_drops[p]) any_derr = 1'b1;
+                if (rx_kv_d[p] && (rx_eff[p].action == PW_ACT_DROP)
+                              && rx_key_d[p].is_test)  any_derr = 1'b1;
             end
             if (stats_clear_i) err_sticky_q <= 1'b0;
             else if (any_lost || any_derr) err_sticky_q <= 1'b1;

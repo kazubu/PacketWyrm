@@ -138,6 +138,40 @@ module tb_dma_slowpath;
             check("punt: payload byte[15]=0x10", c2h_bytes[23] == 8'h10);
         end
 
+        // ---- Test 3: header-only H2C frame must be dropped, no FSM desync ----
+        // A malformed/empty inject: tlast on the single header beat, no payload.
+        // It must produce NO m_inj output, and the strip FSM must still parse the
+        // NEXT frame's header correctly (regression for the S_HDR-tlast bug where
+        // the FSM latched into S_PAY and mis-read the next header as payload).
+        inj_bytes = {}; inj_frames = 0;
+        begin
+            logic [XD-1:0] d;
+            // (a) header-only frame: egress=3, tlast on the lone header beat
+            @(posedge axi_clk);
+            d = '0; d[7:0] = 8'd3;
+            s_h2c_tdata = d; s_h2c_tkeep = {24'h0, 8'hFF};   // 8 header bytes only
+            s_h2c_tvalid = 1; s_h2c_tlast = 1;
+            do @(posedge axi_clk); while (!s_h2c_tready);
+            s_h2c_tvalid = 0; s_h2c_tlast = 0; s_h2c_tkeep='0;
+            // (b) a normal frame right after: egress=5, 16 payload bytes 0xA0..0xAF
+            @(posedge axi_clk);
+            d = '0; d[7:0] = 8'd5;
+            for (int i = 0; i < 16; i++) d[(8+i)*8 +: 8] = 8'(8'hA0 + i);
+            s_h2c_tdata = d; s_h2c_tkeep = {8'h0, 24'hFFFFFF};
+            s_h2c_tvalid = 1; s_h2c_tlast = 1;
+            do @(posedge axi_clk); while (!s_h2c_tready);
+            s_h2c_tvalid = 0; s_h2c_tlast = 0; s_h2c_tkeep='0;
+        end
+        repeat (400) @(posedge dp_clk);
+        check("inject hdr-only: exactly one payload frame (empty dropped)", inj_frames == 1);
+        check("inject hdr-only: next egress = 5 (no desync)", inj_egr_seen == 4'd5);
+        check("inject hdr-only: 16 payload bytes", inj_bytes.size() == 16);
+        if (inj_bytes.size() == 16) begin
+            logic ok = 1;
+            for (int i = 0; i < 16; i++) if (inj_bytes[i] != 8'(8'hA0 + i)) ok = 0;
+            check("inject hdr-only: next payload correct", ok);
+        end
+
         if (errors == 0) $display("ALL DMA SLOWPATH SCENARIOS PASS");
         else             $display("FAILED with %0d error(s)", errors);
         $finish;

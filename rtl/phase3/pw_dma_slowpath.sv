@@ -114,7 +114,11 @@ module pw_dma_slowpath #(
             if (inj_dp.tvalid && inj_dp.tready) begin
                 if (inj_state == S_HDR) begin
                     inj_egress_q <= inj_dp.tdata[3:0];   // header: egress in byte 0
-                    inj_state    <= S_PAY;
+                    // A header-only frame (tlast on the header beat) is a
+                    // malformed/empty inject with no payload -- stay in S_HDR so
+                    // the header is swallowed and dropped, and the NEXT frame's
+                    // header is still parsed as a header (not mis-read as payload).
+                    inj_state    <= inj_dp.tlast ? S_HDR : S_PAY;
                 end else if (inj_dp.tlast) begin
                     inj_state    <= S_HDR;               // next frame starts with a header
                 end

@@ -11,10 +11,10 @@
 # Untagged also frees the VLAN field-comparator, keeping punt+forward under
 # the NCMP=12 pool.
 #
-# Data path per control-plane frame:
-#   cRPD R1 -> tap-pw-p0-v100 -> packetwyrmd inject (adds vlan 100)
+# Data path per control-plane frame (UNTAGGED, no VLAN add/strip):
+#   cRPD R1 -> tap-pw-p0 -> packetwyrmd inject (untagged, no tag added)
 #     -> FPGA port0 TX -> DAC -> FPGA port1 RX -> classifier PUNT rule
-#     (ingress=port1, vlan=100, proto match) -> strip vlan -> tap-pw-p1-v100
+#     (ingress=port1, proto match) -> tap-pw-p1
 #     -> cRPD R2   (and symmetrically R2->R1)
 #
 # punt.* turns each control protocol into a PUNT_TO_HOST classifier rule

@@ -169,9 +169,34 @@ production). Accepted; resulting ports:
 
 `pcie_gen3.tcl` deltas vs today: add `CONFIG.xdma_axi_intf_mm {AXI_Stream}` and
 `CONFIG.xdma_axilite_slave {false}`; keep `functional_mode DMA` + `axilite_master`
-CSR. The XDMA channel/SGDMA control registers live on the XDMA control BAR (a
-distinct PCIe BAR from the AXI-Lite-master CSR BAR); the host maps it under vfio
-(confirm the vfio region index at bring-up).
+CSR. **No control-BAR enable key is needed** — see the BAR-layout note below.
+
+### 5a-bis. BAR layout — VERIFIED (2026-07-04, probe_xdma_bars.tcl) — **P2 gate**
+
+Enumerated the generated IP for the production AXI-Stream config:
+- **`pf0_bar0` = 128 KB, Memory, enabled** (the only enabled BAR). Decoding the
+  apertures: `PF0_BAR0_APERTURE_SIZE = 0x0A` (128 KB) = `XDMA_APERTURE_SIZE = 0x09`
+  (64 KB) **+** `AXILITE_MASTER_APERTURE_SIZE = 0x09` (64 KB). So enabling the DMA
+  engine grows BAR0 to 128 KB and **splits it**: the XDMA DMA/SGDMA control
+  register block occupies **[0, 64 KB)** and the AXI-Lite-master **CSR window moves
+  to [64 KB, 128 KB) (offset `0x10000`)**. (In the old MM-mode config the DMA
+  engine BAR was not enabled and the CSR sat at BAR0 offset 0.)
+- `pciebar2axibar_xdma` is a **disabled parameter** (setting it `true` is ignored,
+  Vivado WARNING 19-3374). It is the AXI-MM-bypass address translation, irrelevant
+  in AXI-Stream mode — it is **not** the descriptor-engine enable, and the DMA
+  register block is present regardless (it lives in BAR0[0,64 KB)). Hence no Tcl
+  change to expose it.
+
+**P2 host-side consequences (gate before/at P2 bring-up):**
+1. The host CSR base must be offset by **`+0x10000`** within BAR0 when `HAS_DMA`
+   (the AXI-Lite-master CSR is in the upper half now). The **current daemon, which
+   reads BAR0 at offset 0, will NOT work against this bitstream** — it would read
+   the XDMA DMA registers as if they were CSRs. **Do not flash this build until the
+   P2 host driver applies the CSR offset** (capability-gated). Confirm the live
+   split at bring-up via the vfio region dump / `lspci -v` BAR size (expect 128 KB).
+2. The XDMA descriptor/channel/SGDMA registers are at **BAR0[0, 64 KB)** — the P2
+   driver programs H2C/C2H descriptors there (PG195 layout). `usr_irq` = 1 wired
+   (poll first per §8).
 
 **Domain-crossing glue (the core of `pw_dma_slowpath`):** XDMA streams are
 **256-bit @ 250 MHz (`axi_aclk`)**; the data-plane inject/punt AXIS is **64-bit @

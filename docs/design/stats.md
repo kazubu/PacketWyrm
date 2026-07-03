@@ -27,10 +27,13 @@ counters, their semantics, and how multi-card aggregation works.
 store-and-forward forward-buffer overflow. A classifier **no-match** is NOT a
 drop: the frame was still received and counted in `rx_frames`, it simply matched
 no flow/forward/punt rule (e.g. the host TAP's own IPv6 ND/MLD looped back to the
-port). That case is counted separately in `rx_unmatched` and deliberately does
-**not** light the front-panel error LED. `last_unmatched_ctx`/`last_unmatched_flowid`
-capture the identity of the most recent unmatched frame so it is diagnosable (a
-real test-frame miss carries `is_test` + a known `flow_id`; stray/garbage traffic
+port). That case is counted separately in `rx_unmatched`. A **stray** no-match
+deliberately does **not** light the front-panel error LED — but a no-match on a
+real **test** frame (`is_test`) **does** latch the error LED: such a frame never
+reaches the RX checker, so no loss event fires and the miss would otherwise hide
+behind a green LED. `last_unmatched_ctx`/`last_unmatched_flowid` capture the
+identity of the most recent unmatched frame so it is diagnosable (a real
+test-frame miss carries `is_test` + a known `flow_id`; stray/garbage traffic
 does not).
 
 `rx_frames/bytes`, `tx_frames/bytes`, `rx_fcs_error`, `rx_bad_frame` and
