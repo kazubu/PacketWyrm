@@ -79,8 +79,30 @@ pw_status pw_ipc_connect(const char *path, int *out_fd) {
     return PW_OK;
 }
 
+/* Create the parent directory of `path` (mkdir -p style), best-effort. On a
+ * fresh boot /var/run/packetwyrm (the default socket dir) may not exist yet, so
+ * bind() would fail with ENOENT and the daemon would come up without a control
+ * socket. Creating the tree here lets it start with no manual setup. The socket
+ * FILE itself is chmod'd to `mode` below (that 0666 is the access ACL); the
+ * directories are 0755 (traversable, not the ACL). */
+static void ensure_parent_dir(const char *path) {
+    char buf[sizeof(((struct sockaddr_un *)0)->sun_path)];
+    size_t n = strnlen(path, sizeof(buf));
+    if (n == 0 || n >= sizeof(buf)) return;      /* empty or too long to bind */
+    memcpy(buf, path, n + 1);
+    char *slash = strrchr(buf, '/');
+    if (!slash || slash == buf) return;          /* no dir part, or dir is "/" */
+    *slash = '\0';                               /* strip the socket filename */
+    for (char *p = buf + 1; *p; p++) {
+        if (*p == '/') { *p = '\0'; (void)mkdir(buf, 0755); *p = '/'; }
+    }
+    (void)mkdir(buf, 0755);
+}
+
 pw_status pw_ipc_listen(const char *path, mode_t mode, int *out_fd) {
     if (!path || !out_fd) return PW_E_INVAL;
+    /* Make sure the socket's directory exists before we bind into it. */
+    ensure_parent_dir(path);
     /* Best-effort: remove stale leftover */
     unlink(path);
 
