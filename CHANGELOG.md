@@ -38,15 +38,25 @@ For where work is going next, see `NEXT-STEPS.md`.
     (`0x0000_002D`). Verified in Verilator: the standalone `sim_dma` bridge tb and
     the integrated `sim_top` (ARP punt now observed on the C2H stream with the
     correct in-band `lif_id`/`ingress`) both pass; full `sim_all` (40 TBs) green.
-    **Gated build passed** (build_id `0x6a47e2bc`): post-route all clocks positive
-    (axi_aclk 250 MHz WNS +0.257, dp_clk +0.272), **LUT 94.84 %** — fits. **P2 host
-    DMA driver implemented** (`csr.h` XDMA register map + 32-B SG descriptor;
-    `vfio` `MAP_DMA`/`UNMAP`; `backend_bar.c` DMA backend: CSR-base auto-detect at
-    BAR0+`0x10000`, DMA-mapped ring pool, poll-mode H2C-inject / C2H-punt
-    `slow_path_tx/rx`, capability-gated so `pw_host_plane` is unchanged). Not yet
-    flashed — HW bring-up must verify the C2H length read + XDMA control bits vs
-    PG195 (see `docs/design/dma-slow-path.md` §5c checklist), then flash + re-run
-    the cRPD lab at MTU 9000. Remaining: HW bring-up + jumbo re-validation.
+    **Gated build passed** (build_id `0x6a47e2bc`, LUT 94.84 %, all clocks WNS>0),
+    **flashed to 07:00.0 and HW-validated (2026-07-04):** the full cRPD 2-node
+    control plane now works across the DUT over the DMA slow path — **ARP, ICMP
+    ping (0 % loss, ~2.2 ms RTT), BGP Established, OSPF Full, IS-IS L1+L2 Up**,
+    with both routers learning each other's loopback via OSPF *and* IS-IS. IS-IS
+    and >512 B frames, blocked on the old CSR window, now traverse. The P2 host
+    DMA driver lives in `sw/libpacketwyrm` (`csr.h` XDMA reg map + 32-B SG
+    descriptor; `vfio` `MAP_DMA`/`UNMAP` + `map_region` for BAR1; `backend_bar.c`
+    DMA backend, capability-gated so `pw_host_plane` is unchanged). HW bring-up
+    corrected the design's assumptions (all reflected in the code): the IP exposes
+    **two 64 KB BARs** (BAR0=CSR@0 unchanged, BAR1=XDMA regs — not a 128 KB split);
+    the single-descriptor completed-count **resets on RUN** (read the baseline
+    after RUN); the **C2H length is not in `desc.bytes`** (recovered from the
+    frame's L2/L3 headers); **C2H uses a continuously-running circular descriptor
+    ring** (per-frame stop/re-arm wedges the engine); the daemon punt-reap poll cap
+    was cut 100 ms→1 ms; and cRPD binds the TAP as `interface net0` (not `net0.0`,
+    + TUNSETCARRIER to mark the tun carrier up). Remaining: true 9000 B jumbo needs
+    the MAC↔dp_clk CDC FIFO widened (separate RTL change). See
+    `docs/design/dma-slow-path.md` §5c and `configs/examples/lab-crpd-2node/`.
   - **Unmatched frames split out of `drops`; LED no longer red on no-match
     (RTL + SW).** A classifier **no-match** is no longer counted as a drop or
     treated as an error. Per-port `drops` (`rx_bad_frame`) now counts **real

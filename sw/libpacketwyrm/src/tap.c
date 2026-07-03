@@ -42,6 +42,21 @@ pw_status pw_tap_open(const char *requested_name,
         /* Not fatal: kernels without persist support still work. */
     }
 
+    /* Mark the tun carrier UP so the netdev reports operstate UP instead of the
+     * tun default IF_OPER_UNKNOWN. A routing daemon attached to this TAP (e.g.
+     * cRPD) requires the interface's physical link to be UP before it runs an IGP
+     * on it: with OPER_UNKNOWN, OSPF/IS-IS silently skip the interface (BGP/ping
+     * still work via the kernel route, but no OSPF/IS-IS adjacency forms). Using
+     * TUNSETCARRIER switches the driver into explicit operstate tracking -> UP.
+     * Best-effort (needs Linux >= 5.0); harmless where unsupported. */
+#ifndef TUNSETCARRIER
+#define TUNSETCARRIER _IOW('T', 226, int)
+#endif
+    {
+        int carrier_on = 1;
+        (void)ioctl(fd, TUNSETCARRIER, &carrier_on);
+    }
+
     snprintf(out_name, PW_TAP_IFNAME_MAX, "%s", ifr.ifr_name);
     *out_fd = fd;
     return PW_OK;

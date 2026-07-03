@@ -24,11 +24,17 @@
 #include <unistd.h>
 
 /* --- DMA slow-path state (CAP_HAS_DMA build; XDMA AXI-Stream) -----------
- * Single-descriptor poll mode per direction: adequate for the control-plane
- * slow path (cRPD ARP/ping/BGP/OSPF/IS-IS) that pw_host_plane_step polls. A
- * multi-descriptor C2H ring can be added later if throughput demands it. */
+ * H2C (inject): single descriptor, RUN + poll per frame (host-driven, one at a
+ * time). C2H (punt): a CIRCULAR descriptor ring the engine runs continuously --
+ * never stopped/re-armed per frame. That matters because a per-frame stop->run
+ * wedges/settles the engine (an earlier single-descriptor-inline-rearm attempt
+ * hit 100% loss), and a deferred re-arm left a ~100 ms unarmed gap that dropped
+ * punt frames -> cRPD retransmits -> multi-second RTT + no OSPF/IS-IS adjacency.
+ * With a circular ring the engine always has posted buffers; the host reaps by a
+ * consumer index vs the completed-descriptor count (each frame exactly once). */
 #define PW_DMA_FRAME_CAP  9216u   /* jumbo frame buffer (matches RTL inject/punt) */
 #define PW_DMA_HDR_LEN    8u      /* pw_dma_slowpath in-band metadata header */
+#define PW_DMA_RX_RING    16u     /* C2H circular ring depth (descriptors + buffers) */
 
 struct dma_state {
     void    *xdma_regs;       /* mmap of BAR1 = XDMA DMA/SGDMA control registers */
@@ -38,12 +44,13 @@ struct dma_state {
     uint64_t pool_iova;       /* identity IOVA of pool (== (uintptr_t)pool) */
     /* sub-regions carved out of pool (host VA + device IOVA) */
     struct pwfpga_xdma_desc *h2c_desc;  uint64_t h2c_desc_iova;
-    struct pwfpga_xdma_desc *c2h_desc;  uint64_t c2h_desc_iova;
     uint8_t *tx_buf;   uint64_t tx_iova;   /* H2C (inject) frame buffer */
-    uint8_t *rx_buf;   uint64_t rx_iova;   /* C2H (punt) frame buffer   */
-    uint32_t h2c_cmpl_base;   /* completed-desc-count baseline (H2C)   */
-    uint32_t c2h_cmpl_base;   /* completed-desc-count baseline (C2H)   */
-    int      c2h_armed;       /* a C2H descriptor is currently posted   */
+    struct pwfpga_xdma_desc *c2h_ring; uint64_t c2h_ring_iova;  /* [PW_DMA_RX_RING], circular */
+    uint8_t *rx_bufs;  uint64_t rx_bufs_iova;                   /* N * FRAME_CAP */
+    uint32_t h2c_cmpl_base;   /* completed-desc-count baseline (H2C) */
+    uint32_t c2h_cmpl_base;   /* completed-desc-count at ring arm (C2H) */
+    uint32_t rx_consumed;     /* C2H frames reaped since arm */
+    int      c2h_armed;       /* the C2H ring is running */
 };
 
 struct bar_ctx {
@@ -253,7 +260,8 @@ static pw_status dma_setup(struct bar_ctx *c) {
 
     long ps = sysconf(_SC_PAGESIZE);
     if (ps <= 0) ps = 4096;
-    size_t need = 256 + 2u * PW_DMA_FRAME_CAP;              /* desc region + 2 buffers */
+    /* h2c_desc + c2h_ring[N] descriptors (<=1 KB), then TX buffer + N RX buffers */
+    size_t need = 1024 + (1u + PW_DMA_RX_RING) * (size_t)PW_DMA_FRAME_CAP;
     size_t len  = ((need + (size_t)ps - 1) / (size_t)ps) * (size_t)ps;
     void *pool = NULL;
     if (posix_memalign(&pool, (size_t)ps, len) != 0 || !pool) {
@@ -272,11 +280,18 @@ static pw_status dma_setup(struct bar_ctx *c) {
     d->xdma_regs = xregs; d->xdma_regs_len = xlen;
     d->pool = pool; d->pool_len = len; d->pool_iova = iova;
     uint8_t *p = pool;
-    d->h2c_desc = (void *)(p +   0);   d->h2c_desc_iova = iova +   0;   /* 32 B */
-    d->c2h_desc = (void *)(p +  64);   d->c2h_desc_iova = iova +  64;   /* 32 B */
-    d->tx_buf   = p + 256;             d->tx_iova       = iova + 256;
-    d->rx_buf   = p + 256 + PW_DMA_FRAME_CAP;
-    d->rx_iova  = iova + 256 + PW_DMA_FRAME_CAP;
+    /* Layout (must NOT overlap): h2c_desc @0 (32 B), c2h_ring @64 (N*32 B), then
+     * the TX buffer AFTER the whole ring (64 B-aligned), then N RX buffers. A
+     * previous off_tx=512 overlapped ring descriptors 14/15 (64 + 16*32 = 576),
+     * so injecting corrupted them and the ring broke once it wrapped past idx 13. */
+    size_t off_ring   = 64;
+    size_t ring_bytes = (size_t)PW_DMA_RX_RING * sizeof(struct pwfpga_xdma_desc);
+    size_t off_tx     = ((off_ring + ring_bytes + 63) / 64) * 64;   /* 64B-aligned, past the ring */
+    size_t off_rx     = off_tx + PW_DMA_FRAME_CAP;
+    d->h2c_desc = (void *)(p + 0);         d->h2c_desc_iova = iova + 0;          /* 32 B */
+    d->c2h_ring = (void *)(p + off_ring);  d->c2h_ring_iova = iova + off_ring;   /* N * 32 B */
+    d->tx_buf   = p + off_tx;              d->tx_iova       = iova + off_tx;
+    d->rx_bufs  = p + off_rx;              d->rx_bufs_iova  = iova + off_rx;
     c->dma = d;
     return PW_OK;
 }
@@ -309,12 +324,18 @@ static pw_status dma_slow_path_tx(struct bar_ctx *c, const void *frame, size_t l
               PWFPGA_XDMA_DESC_STOP | PWFPGA_XDMA_DESC_EOP | PWFPGA_XDMA_DESC_COMPLETED,
               total, d->tx_iova, 0);
 
-    uint32_t base = xdma_rd(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_COMPLETED_COUNT);
     xdma_wr(c, PWFPGA_XDMA_H2C_SGDMA + PWFPGA_XDMA_SG_DESC_ADDR_LO, (uint32_t)d->h2c_desc_iova);
     xdma_wr(c, PWFPGA_XDMA_H2C_SGDMA + PWFPGA_XDMA_SG_DESC_ADDR_HI, (uint32_t)(d->h2c_desc_iova >> 32));
     xdma_wr(c, PWFPGA_XDMA_H2C_SGDMA + PWFPGA_XDMA_SG_DESC_ADJ, 0);
     xdma_wr(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_CONTROL, PWFPGA_XDMA_CTRL_RUN);
 
+    /* Read the completed-count baseline AFTER RUN. Like C2H, this single-descriptor
+     * count RESETS to 0 on RUN, so reading it BEFORE RUN latched the stale value 1
+     * from the previous inject's completion; the poll then saw cnt(reset 0) !=
+     * base(1) and returned "OK" IMMEDIATELY without the frame having been DMA'd --
+     * silently dropping ~1/3 of injected frames (they never egressed -> never
+     * looped -> never punted, the cause of the residual ping loss). */
+    uint32_t base = xdma_rd(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_COMPLETED_COUNT);
     pw_status r = PW_E_IO;
     for (int i = 0; i < 1000000; i++)
         if (xdma_rd(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_COMPLETED_COUNT) != base) { r = PW_OK; break; }
@@ -322,47 +343,85 @@ static pw_status dma_slow_path_tx(struct bar_ctx *c, const void *frame, size_t l
     return r;
 }
 
-/* Post a C2H descriptor pointing at rx_buf (buffer capacity as the max len). */
+/* Arm the C2H CIRCULAR ring: N descriptors, each -> its own RX buffer, linked
+ * desc[i].next -> desc[(i+1)%N] with NO stop bit, so the engine runs forever and
+ * always has posted buffers (no per-frame stop/re-arm -> no settle-wedge, no
+ * unarmed gap). Armed ONCE; the completed-descriptor count then free-runs and the
+ * host reaps by a consumer index. */
 static void dma_arm_c2h(struct bar_ctx *c) {
     struct dma_state *d = c->dma;
-    desc_fill(d->c2h_desc,
-              PWFPGA_XDMA_DESC_STOP | PWFPGA_XDMA_DESC_COMPLETED,
-              PW_DMA_FRAME_CAP, 0, d->rx_iova);
+    for (uint32_t i = 0; i < PW_DMA_RX_RING; i++) {
+        uint64_t dst  = d->rx_bufs_iova + (uint64_t)i * PW_DMA_FRAME_CAP;
+        uint64_t nxt  = d->c2h_ring_iova + (uint64_t)((i + 1u) % PW_DMA_RX_RING)
+                                            * sizeof(struct pwfpga_xdma_desc);
+        desc_fill(&d->c2h_ring[i], PWFPGA_XDMA_DESC_COMPLETED, PW_DMA_FRAME_CAP, 0, dst);
+        d->c2h_ring[i].next_lo = (uint32_t)nxt;
+        d->c2h_ring[i].next_hi = (uint32_t)(nxt >> 32);
+    }
+    d->rx_consumed = 0;
+    /* Read the completed-count baseline BEFORE RUN. The ring runs continuously and
+     * the count is cumulative (it does NOT reset per frame like the STOP-based
+     * single-descriptor mode), so any completion after RUN is a new frame; reading
+     * the baseline AFTER RUN could miss a frame that completes in the gap. */
     d->c2h_cmpl_base = xdma_rd(c, PWFPGA_XDMA_C2H_CHANNEL + PWFPGA_XDMA_CH_COMPLETED_COUNT);
-    xdma_wr(c, PWFPGA_XDMA_C2H_SGDMA + PWFPGA_XDMA_SG_DESC_ADDR_LO, (uint32_t)d->c2h_desc_iova);
-    xdma_wr(c, PWFPGA_XDMA_C2H_SGDMA + PWFPGA_XDMA_SG_DESC_ADDR_HI, (uint32_t)(d->c2h_desc_iova >> 32));
+    xdma_wr(c, PWFPGA_XDMA_C2H_SGDMA + PWFPGA_XDMA_SG_DESC_ADDR_LO, (uint32_t)d->c2h_ring_iova);
+    xdma_wr(c, PWFPGA_XDMA_C2H_SGDMA + PWFPGA_XDMA_SG_DESC_ADDR_HI, (uint32_t)(d->c2h_ring_iova >> 32));
     xdma_wr(c, PWFPGA_XDMA_C2H_SGDMA + PWFPGA_XDMA_SG_DESC_ADJ, 0);
     xdma_wr(c, PWFPGA_XDMA_C2H_CHANNEL + PWFPGA_XDMA_CH_CONTROL, PWFPGA_XDMA_CTRL_RUN);
     d->c2h_armed = 1;
 }
 
-/* Punt (FPGA -> host) via the C2H channel: poll for a completed descriptor,
- * parse the 8-byte in-band header {lif_id[31:0], ingress in byte 4}, copy the
- * payload, re-arm. Returns bytes copied, 0 if no frame, <0 on error. */
+/* Derive the punted Ethernet frame's true length from its own headers. The XDMA
+ * AXI-Stream C2H engine does NOT write the received length back into desc.bytes
+ * (it stays at the programmed capacity, confirmed on HW), and there is no in-band
+ * length field in the v1 punt header, so we recover it from L2/L3 -- which is
+ * exact for every protocol the slow path punts (ARP / IPv4 / IPv6 / IS-IS-over-
+ * LLC). Returns 0 if unrecognised (caller falls back to a cap). Assumes untagged
+ * frames (the lab uses untagged lifs; add VLAN skip here if tagged punt lands). */
+static uint32_t punt_frame_len(const uint8_t *f, uint32_t cap) {
+    uint32_t et = ((uint32_t)f[12] << 8) | f[13];
+    uint32_t len;
+    if (et < 0x0600u)              len = 14u + et;                       /* 802.3 len (IS-IS/LLC) */
+    else if (et == 0x0800u)        len = 14u + (((uint32_t)f[16] << 8) | f[17]);        /* IPv4 total_length */
+    else if (et == 0x86DDu)        len = 14u + 40u + (((uint32_t)f[18] << 8) | f[19]);  /* IPv6 payload_length */
+    else if (et == 0x0806u)        len = 42u;                            /* ARP: eth(14)+arp(28) */
+    else                           len = 0u;                             /* unknown */
+    if (len > cap) len = cap;
+    return len;
+}
+
+/* Punt (FPGA -> host) via the C2H circular ring: reap the next completed frame.
+ * The engine runs continuously; a consumer index vs the completed-descriptor
+ * count delivers each frame exactly once (no dups) and buffers stay posted (no
+ * loss). Length comes from the frame's own headers (punt_frame_len). Returns
+ * bytes copied, 0 if none, <0 on error. */
 static int dma_slow_path_rx(struct bar_ctx *c, void *buf, size_t buflen,
                             uint32_t *out_lif, uint64_t *out_rx_ts) {
     struct dma_state *d = c->dma;
     if (!buf) return PW_E_INVAL;
     if (!d->c2h_armed) dma_arm_c2h(c);
 
-    uint32_t cnt = xdma_rd(c, PWFPGA_XDMA_C2H_CHANNEL + PWFPGA_XDMA_CH_COMPLETED_COUNT);
-    if (cnt == d->c2h_cmpl_base) return 0;                 /* no punt frame yet */
+    uint32_t cnt  = xdma_rd(c, PWFPGA_XDMA_C2H_CHANNEL + PWFPGA_XDMA_CH_COMPLETED_COUNT);
+    uint32_t done = cnt - d->c2h_cmpl_base;    /* frames completed since arm (unsigned wrap ok) */
+    if (d->rx_consumed >= done) return 0;      /* no new punt frame */
 
-    xdma_wr(c, PWFPGA_XDMA_C2H_CHANNEL + PWFPGA_XDMA_CH_CONTROL, 0);   /* stop */
-    d->c2h_armed = 0;
+    /* If we fell more than a ring behind, the engine wrapped and overwrote the
+     * oldest buffers; skip to the freshest N to avoid reading stale data. */
+    if (done - d->rx_consumed > PW_DMA_RX_RING)
+        d->rx_consumed = done - PW_DMA_RX_RING;
 
-    uint32_t lif = (uint32_t)d->rx_buf[0]        | ((uint32_t)d->rx_buf[1] << 8)
-                 | ((uint32_t)d->rx_buf[2] << 16) | ((uint32_t)d->rx_buf[3] << 24);
-    /* [HW BRING-UP -- #1 PG195 item] received byte count of an AXI-Stream C2H
-     * transfer that ended on EOP (tlast). The XDMA engine writes the transferred
-     * length back into the descriptor's `bytes` on completion; read it here. If
-     * silicon reports it elsewhere (e.g. a status DWORD / writeback region),
-     * fix this single read. The in-band header (lif/ingress) is always valid. */
-    uint32_t total = d->c2h_desc->bytes;
-    if (total < PW_DMA_HDR_LEN || total > PW_DMA_FRAME_CAP) total = 0;
-    uint32_t payload = total ? total - PW_DMA_HDR_LEN : 0;
+    uint32_t idx = d->rx_consumed % PW_DMA_RX_RING;
+    uint8_t *rb  = d->rx_bufs + (size_t)idx * PW_DMA_FRAME_CAP;
+    uint32_t lif = (uint32_t)rb[0]        | ((uint32_t)rb[1] << 8)
+                 | ((uint32_t)rb[2] << 16) | ((uint32_t)rb[3] << 24);
+    const uint8_t *fr = rb + PW_DMA_HDR_LEN;
+    uint32_t payload = punt_frame_len(fr, PW_DMA_FRAME_CAP - PW_DMA_HDR_LEN);
+    if (getenv("PW_DMA_DEBUG"))
+        fprintf(stderr, "[dma rx] cnt=%u done=%u consumed=%u idx=%u len=%u lif=%u et=%02x%02x\n",
+                cnt, done, d->rx_consumed, idx, payload, lif, fr[12], fr[13]);
     size_t copy = (payload > buflen) ? buflen : payload;
-    if (copy) memcpy(buf, d->rx_buf + PW_DMA_HDR_LEN, copy);
+    if (copy) memcpy(buf, fr, copy);
+    d->rx_consumed++;
 
     if (out_lif)   *out_lif   = lif;
     if (out_rx_ts) *out_rx_ts = 0;         /* rx_ts not carried in the v1 8B header */
@@ -499,14 +558,23 @@ static pw_status bar_backend_attach(void *base, size_t sz,
             c->csr_off = PWFPGA_CSR_DMA_OFFSET;
     }
 
-    /* Bring up the XDMA slow path when the bitstream advertises HAS_DMA and we
-     * own the device via vfio (bus-master DMA needs the IOMMU; dma_setup maps
-     * BAR1 + the ring pool). Non-fatal on failure: CSR access still works, the
-     * slow path is simply unavailable (the DMA build has no CSR-window fallback). */
-    if (vfio) {
-        uint32_t caps = *reg_at(c, PWFPGA_REG_CAPABILITIES);
-        if (caps & PWFPGA_CAP_HAS_DMA)
-            (void)dma_setup(c);
+    /* Bring up the XDMA slow path when the bitstream advertises HAS_DMA. It needs
+     * vfio (bus-master DMA over the IOMMU; dma_setup maps BAR1 + the ring pool).
+     * On a DMA build, having HAS_DMA set but the DMA path NOT up is a broken state
+     * -- the CSR-window punt/inject were removed from the RTL, so there is no
+     * fallback. So FAIL the attach if HAS_DMA and DMA didn't come up (sysfs path
+     * has no vfio, or dma_setup failed). pw_bar_backend_open then falls back to
+     * the vfio path (which brings DMA up); a genuine dma_setup failure surfaces
+     * as an open error instead of a silently dead slow path. */
+    uint32_t caps = *reg_at(c, PWFPGA_REG_CAPABILITIES);
+    if (caps & PWFPGA_CAP_HAS_DMA) {
+        if (vfio) (void)dma_setup(c);
+        if (!c->dma) {
+            if (vfio) pw_vfio_close(vfio);
+            else      pw_pci_close_bar0(base, sz);
+            free(c);
+            return PW_E_BACKEND;
+        }
     }
 
     out->ops = &bar_ops;

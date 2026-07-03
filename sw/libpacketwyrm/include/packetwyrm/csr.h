@@ -498,21 +498,27 @@ struct pwfpga_test_hdr {
  * drives the XDMA descriptor engine directly over vfio (no xdma.ko). Layout,
  * descriptor format and register offsets are from Xilinx PG195.
  *
- * BAR0 layout on the DMA build (verified via ip/probe_xdma_bars.tcl): BAR0 is
- * 128 KB and split in half --
- *   [0x00000, 0x10000)  XDMA DMA/SGDMA control registers (this block)
- *   [0x10000, 0x20000)  AXI-Lite-master CSR window (the register map above)
- * So on a DMA build every CSR access adds PWFPGA_CSR_DMA_OFFSET. The backend
- * auto-detects which half is the CSR by probing PWFPGA_REG_DEVICE_ID (see
- * backend), so a future layout flip does not need a code change.
+ * BAR layout on the DMA build (VERIFIED on silicon 2026-07-04, not the .xci's
+ * apparent 128 KB split-BAR0): the IP exposes TWO 64 KB BARs --
+ *   BAR0  AXI-Lite-master CSR window (the register map above), at offset 0
+ *         -- UNCHANGED from the legacy (non-DMA) build; the CSR did NOT move.
+ *   BAR1  XDMA DMA/SGDMA control registers (this block).
+ * So the backend maps BAR0 for CSR (offset 0, csr_off=0) and BAR1 for the XDMA
+ * engine. PWFPGA_CSR_DMA_OFFSET below is retained only as a fallback for a
+ * hypothetical future single-big-BAR build (the backend probes DEVICE_ID at 0
+ * and at that offset and self-selects); on THIS build it is unused (csr_off=0).
  *
- * NB (HW bring-up): the exact XDMA control-register BIT positions + the
- * poll-mode writeback semantics need confirmation against PG195 on silicon;
- * they are centralised here so a fix is one edit. The register/target OFFSETS
- * and the 32-byte descriptor FORMAT are stable across PG195 revisions. */
+ * NB (HW bring-up, done): the XDMA control-register bit positions + completion
+ * semantics were confirmed on silicon -- the single-descriptor completed-count
+ * RESETS to 0 on RUN (read the baseline AFTER RUN for H2C/single-desc), the C2H
+ * received length is NOT written to desc.bytes (recover it from the frame's own
+ * L2/L3 headers), and a per-frame stop/re-arm wedges the engine (C2H uses a
+ * continuously-running circular ring). Register/target OFFSETS + the 32-byte
+ * descriptor FORMAT are PG195-stable. */
 
-/* CSR-window offset within BAR0 when the XDMA DMA engine is enabled (BAR0=128KB,
- * upper half is the AXI-Lite CSR). Legacy 64 KB BAR0 (no DMA) uses offset 0. */
+/* CSR-window offset for a hypothetical future single-big-BAR layout where the
+ * CSR sits in the upper half (the backend probes + self-selects). On the current
+ * two-BAR DMA build the CSR is BAR0 offset 0, so this is unused (csr_off=0). */
 #define PWFPGA_CSR_DMA_OFFSET   0x10000u
 
 /* XDMA register targets (each block is 0x1000; PG195 Table "PCIe DMA reg space").

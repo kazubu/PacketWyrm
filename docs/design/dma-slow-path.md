@@ -257,8 +257,9 @@ H2C/C2H streams DOWN into the core as new ports; DMA drives `inj_*_w`, sinks
 positive — axi_aclk 250 MHz WNS +0.257 / WHS +0.012, dp_clk 156.25 +0.272 /
 +0.011; "all timing constraints met". **LUT 154316/162720 = 94.84 %** (baseline
 83.98 % + ~17.7 k for the two 256-b taxi async-FIFO adapters) — FITS, no
-feature-cut. bit+bin under `build/pwfpga_as02mc04_phase3/`. **Not flashed yet**
-(see §5c: the CSR moved to BAR0+0x10000, so the host driver must land first).
+feature-cut. bit+bin under `build/pwfpga_as02mc04_phase3/`. **Flashed 07:00.0 +
+HW-validated (2026-07-04)** — see §5c; the pre-flash concern that the CSR would
+move to BAR0+0x10000 turned out moot (silicon uses two 64 KB BARs, CSR at BAR0:0).
 
 ## 5c. P2 host DMA driver — as-built (SW) + HW bring-up checklist
 
@@ -283,18 +284,44 @@ Implemented in `sw/libpacketwyrm/` (branch, unflashed):
   - `bar_slow_path_rx/tx` branch to the DMA path when `c->dma` is set — so
     `pw_host_plane_step` and the backend-ops signatures are **unchanged**.
 
-**HW bring-up checklist (verify against PG195 on silicon, in priority order):**
-1. **C2H received length** (the #1 unknown): `dma_slow_path_rx` reads the
-   transferred byte count of an EOP-terminated AXI-Stream C2H transfer from the
-   descriptor's `bytes` writeback. If silicon reports it elsewhere (status DWORD /
-   separate writeback region / completion), fix that one read.
-2. XDMA **channel control/status bit positions** (RUN / completed / stopped) and
-   whether an explicit poll-mode writeback address must be programmed.
-3. Confirm the **BAR0 128 KB split direction** at bring-up (`lspci -v` size +
-   the DEVICE_ID probe already self-selects; log which half won).
-4. IOMMU: `VFIO_IOMMU_MAP_DMA` success + no lockdown block on bus-master DMA.
-5. Then flash 07:00.0 (overwrites the working CSR-window image 0x6a4726ae) and
-   re-run the cRPD lab at MTU 9000 (P5).
+### HW bring-up — DONE (2026-07-04, flashed 07:00.0 build_id 0x6a47e2bc)
+
+Flashed + booted; **full cRPD 2-node control plane validated across the DUT via
+the DMA slow path: ARP, ICMP ping (0 % loss, ~2.2 ms RTT), BGP Established, OSPF
+Full, IS-IS L1+L2 Up** (R1/R2 learn each other's loopback via OSPF *and* IS-IS).
+Silicon corrected several design assumptions; the as-built code reflects these:
+
+1. **BAR layout: NOT a 128 KB split BAR0.** The IP exposes TWO 64 KB BARs —
+   **BAR0 = AXI-Lite CSR at offset 0 (UNCHANGED; the CSR did NOT move)**, **BAR1 =
+   XDMA control registers**. So `csr_off = 0`; the backend maps BAR0 for CSR +
+   BAR1 (via `pw_vfio_map_region`) for the XDMA engine. (`PWFPGA_CSR_DMA_OFFSET`
+   is kept only as a probe fallback for a hypothetical future single-big-BAR.)
+   → review #2's "+0x10000 breaks the daemon" concern was moot.
+2. **IOMMU `VFIO_IOMMU_MAP_DMA` works** (no Secure-Boot/lockdown block on
+   bus-master DMA); H2C inject validated end-to-end (frames egress + loop).
+3. **Completed-count RESETS to 0 on RUN** (single-descriptor mode). Read the
+   baseline AFTER RUN for H2C; reading it before RUN latched a stale 1 and caused
+   dup/immediate-false-completion (dropped injects). The **C2H uses a
+   continuously-running CIRCULAR descriptor ring** (never stop/re-armed per frame
+   — a per-frame stop→run wedges the engine) with a consumer index; each frame is
+   delivered exactly once, no unarmed gap.
+4. **C2H received length is NOT in `desc.bytes`** (it stays = the programmed
+   capacity). Recover the length from the punted frame's own L2/L3 headers
+   (`punt_frame_len`: ARP=42, IPv4=eth+IP-total-len, IPv6=eth+40+payload,
+   IS-IS/LLC=eth+802.3-len). A byte_len field in the RTL in-band header would be
+   the general fix for arbitrary punt (VLAN/unknown ethertype) — TODO.
+5. **Punt-reap cadence:** the daemon worker poll cap was cut 100 ms → 1 ms (C2H
+   has no fd to wake `poll`; 100 ms let punt replies sit a poll period → cRPD
+   retransmit storms → seconds of RTT + no adjacency).
+6. **DMA-pool layout must not overlap** — the TX buffer has to sit after the whole
+   C2H ring (an off-by-descriptors overlap corrupted ring entries 14/15).
+7. **cRPD interface reference:** OSPF/IS-IS use `interface net0` (device), NOT
+   `net0.0`; the `.0` unit form silently never attached. `packetwyrmd` also marks
+   the TAP tun carrier UP (TUNSETCARRIER). See the lab README.
+
+**Remaining:** true 9000 B jumbo needs `pw_mac_axis_cdc DEPTH` (2048 ≈ 2 KB)
+widened (separate RTL change); the general-purpose punt length wants a byte_len
+in-band header field. Control-plane traffic (≤~2 KB) fully works today.
 
 Reflash 07:00.0 → P5 revalidate are the remaining steps (flash = user-chosen HW
 window; it drops the current working image until the DMA path is validated).

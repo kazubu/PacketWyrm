@@ -28,14 +28,31 @@ packetwyrmd ── inject ▶ port0 TX ─DAC─ port1 RX ▶ punt ── packet
    - `set protocols isis hello-padding disable` (cRPD 26.2 rejects the older
      `no-hello-padding`).
 
-## Status (2026-07-03)
+## Status (2026-07-04) — full control plane over the DMA slow path
 
-Verified working across the DUT: **ARP, ICMP ping (small frames), BGP
-Established, OSPF Full**. Blocked: **IS-IS** and any frame >512 B, by the
-CSR-window slow path's `PWFPGA_INJECT_MAX_FRAME = 512` (large ping 1000 B → 0/2;
-IS-IS MTU-padded hellos / LSPs dropped at inject). The proper fix is the
-**DMA slow path** — see `docs/design/dma-slow-path.md`. Once DMA lands, re-run at
-MTU 9000 with hello-padding ON and confirm IS-IS + jumbo.
+**All verified across the DUT on the DMA slow-path build (build_id 0x6a47e2bc):
+ARP, ICMP ping (0 % loss, ~2.2 ms RTT), BGP Established, OSPF Full, IS-IS L1+L2
+Up**, with R1/R2 learning each other's loopback via BOTH OSPF and IS-IS. IS-IS
+and >512 B frames — blocked on the old CSR-window path — now work because the
+slow path is PCIe-DMA (`pw_dma_slowpath`), not the 512 B register window. See
+`docs/design/dma-slow-path.md`.
+
+### cRPD gotchas (in addition to the license / lo0-NET / hello-padding notes above)
+
+- **OSPF/IS-IS interface reference: use `interface net0`, NOT `interface net0.0`.**
+  cRPD binds the Linux-named TAP `net0` at the device level; the `.0` unit form
+  did NOT attach — the interface silently never appeared in `show ospf interface`
+  and no adjacency formed, even though BGP/ping worked. Use
+  `set protocols ospf area 0 interface net0` and `set protocols isis interface net0`.
+- `packetwyrmd` marks the TAP tun carrier UP (TUNSETCARRIER) so cRPD accepts the
+  interface, but the interface-reference form above is what actually gated the IGP.
+
+### Jumbo note
+
+True 9000 B jumbo across the DUT additionally needs the data-plane MAC↔dp_clk CDC
+FIFO (`pw_mac_axis_cdc DEPTH`, currently 2048 ≈ 2 KB) widened — a separate RTL
+change. Control-plane frames (IS-IS padded hellos at MTU 1514, LSPs, ≤~2 KB data)
+already traverse.
 
 `packetwyrm.yaml` uses **untagged** lifs: the slow-path inject does not add an
 802.1Q tag, so a VLAN-tagged lif would fail to match the (ingress+vlan) punt
