@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 /* --- DMA slow-path state (CAP_HAS_DMA build; XDMA AXI-Stream) -----------
@@ -30,6 +31,8 @@
 #define PW_DMA_HDR_LEN    8u      /* pw_dma_slowpath in-band metadata header */
 
 struct dma_state {
+    void    *xdma_regs;       /* mmap of BAR1 = XDMA DMA/SGDMA control registers */
+    size_t   xdma_regs_len;
     void    *pool;            /* one page-aligned, DMA-mapped region */
     size_t   pool_len;
     uint64_t pool_iova;       /* identity IOVA of pool (== (uintptr_t)pool) */
@@ -79,13 +82,15 @@ static pw_status bar_write32(void *vctx, uint32_t off, uint32_t v) {
     return PW_OK;
 }
 
-/* XDMA control-register accessors: absolute BAR offset (NO csr_off) -- the XDMA
- * DMA/SGDMA registers live in BAR0[0, 0x10000). Only valid on a DMA build. */
+/* XDMA control-register accessors: the XDMA DMA/SGDMA registers live on a
+ * SEPARATE BAR (BAR1, mapped into dma->xdma_regs), NOT in the CSR BAR (BAR0).
+ * Verified on silicon 2026-07-04: BAR0[0]=0xa502beef (CSR), BAR1[0]=0x1fc08006
+ * (XDMA channel id). Only valid when c->dma is set. */
 static void xdma_wr(struct bar_ctx *c, uint32_t off, uint32_t v) {
-    *(volatile uint32_t *)((volatile uint8_t *)c->base + off) = v;
+    *(volatile uint32_t *)((volatile uint8_t *)c->dma->xdma_regs + off) = v;
 }
 static uint32_t xdma_rd(struct bar_ctx *c, uint32_t off) {
-    return *(volatile uint32_t *)((volatile uint8_t *)c->base + off);
+    return *(volatile uint32_t *)((volatile uint8_t *)c->dma->xdma_regs + off);
 }
 
 static pw_status bar_card_info(void *vctx, struct pw_card_info *out) {
@@ -239,19 +244,32 @@ static void desc_fill(struct pwfpga_xdma_desc *dsc, uint32_t ctrl_flags,
 }
 
 static pw_status dma_setup(struct bar_ctx *c) {
+    /* Map BAR1 (the XDMA control-register BAR) on the already-open vfio device.
+     * The XDMA channel/SGDMA registers live here, distinct from the BAR0 CSR. */
+    void  *xregs = NULL;
+    size_t xlen  = 0;
+    pw_status rr = pw_vfio_map_region(&c->vfio, 1, &xregs, &xlen);
+    if (rr != PW_OK) return rr;
+
     long ps = sysconf(_SC_PAGESIZE);
     if (ps <= 0) ps = 4096;
     size_t need = 256 + 2u * PW_DMA_FRAME_CAP;              /* desc region + 2 buffers */
     size_t len  = ((need + (size_t)ps - 1) / (size_t)ps) * (size_t)ps;
     void *pool = NULL;
-    if (posix_memalign(&pool, (size_t)ps, len) != 0 || !pool) return PW_E_NO_RESOURCES;
+    if (posix_memalign(&pool, (size_t)ps, len) != 0 || !pool) {
+        munmap(xregs, xlen); return PW_E_NO_RESOURCES;
+    }
     memset(pool, 0, len);
     uint64_t iova = 0;
     pw_status r = pw_vfio_map_dma(&c->vfio, pool, len, &iova);
-    if (r != PW_OK) { free(pool); return r; }
+    if (r != PW_OK) { free(pool); munmap(xregs, xlen); return r; }
 
     struct dma_state *d = calloc(1, sizeof(*d));
-    if (!d) { pw_vfio_unmap_dma(&c->vfio, iova, len); free(pool); return PW_E_NO_RESOURCES; }
+    if (!d) {
+        pw_vfio_unmap_dma(&c->vfio, iova, len); free(pool); munmap(xregs, xlen);
+        return PW_E_NO_RESOURCES;
+    }
+    d->xdma_regs = xregs; d->xdma_regs_len = xlen;
     d->pool = pool; d->pool_len = len; d->pool_iova = iova;
     uint8_t *p = pool;
     d->h2c_desc = (void *)(p +   0);   d->h2c_desc_iova = iova +   0;   /* 32 B */
@@ -269,6 +287,7 @@ static void dma_teardown(struct bar_ctx *c) {
     xdma_wr(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_CONTROL, 0);
     xdma_wr(c, PWFPGA_XDMA_C2H_CHANNEL + PWFPGA_XDMA_CH_CONTROL, 0);
     if (d->pool) { pw_vfio_unmap_dma(&c->vfio, d->pool_iova, d->pool_len); free(d->pool); }
+    if (d->xdma_regs) munmap(d->xdma_regs, d->xdma_regs_len);
     free(d);
     c->dma = NULL;
 }
@@ -465,11 +484,12 @@ static pw_status bar_backend_attach(void *base, size_t sz,
     c->reg  = (volatile uint32_t *)base;
     if (vfio) { c->use_vfio = 1; c->vfio = *vfio; }
 
-    /* Detect the CSR window offset. On the DMA build BAR0 is 128 KB with the
-     * XDMA control registers in the low half and the AXI-Lite CSR in the high
-     * half (offset 0x10000). Probe DEVICE_ID (top 16 bits == 0xA502) at offset 0
-     * and at 0x10000; whichever reads the CSR id is the base. Robust to a future
-     * layout flip and to the legacy 64 KB (offset-0) BAR. */
+    /* CSR window offset. On the DMA build (verified on silicon 2026-07-04) the
+     * IP exposes TWO 64 KB BARs -- BAR0 = AXI-Lite CSR at offset 0 (UNCHANGED
+     * from the legacy build), BAR1 = XDMA control registers -- NOT one 128 KB
+     * split BAR0. So the CSR base does not move: csr_off = 0. (The probe below
+     * still self-selects if a future build ever puts the CSR at +0x10000 in a
+     * single big BAR.) */
     c->csr_off = 0;
     if (sz >= (size_t)PWFPGA_CSR_DMA_OFFSET + 0x1000) {
         volatile uint32_t *b = base;
@@ -479,11 +499,11 @@ static pw_status bar_backend_attach(void *base, size_t sz,
             c->csr_off = PWFPGA_CSR_DMA_OFFSET;
     }
 
-    /* If the DMA layout is present and we own the mapping via vfio (bus-master
-     * DMA needs the IOMMU), bring up the XDMA slow-path rings. dma_setup failing
-     * is non-fatal: CSR access still works; the slow path is simply unavailable
-     * (honest -- the DMA build has no CSR-window punt/inject to fall back to). */
-    if (c->csr_off == PWFPGA_CSR_DMA_OFFSET && vfio) {
+    /* Bring up the XDMA slow path when the bitstream advertises HAS_DMA and we
+     * own the device via vfio (bus-master DMA needs the IOMMU; dma_setup maps
+     * BAR1 + the ring pool). Non-fatal on failure: CSR access still works, the
+     * slow path is simply unavailable (the DMA build has no CSR-window fallback). */
+    if (vfio) {
         uint32_t caps = *reg_at(c, PWFPGA_REG_CAPABILITIES);
         if (caps & PWFPGA_CAP_HAS_DMA)
             (void)dma_setup(c);

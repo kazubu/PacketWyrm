@@ -107,6 +107,24 @@ pw_status pw_vfio_unmap_dma(struct pw_vfio_handle *h, uint64_t iova, size_t len)
     return PW_OK;
 }
 
+pw_status pw_vfio_map_region(struct pw_vfio_handle *h, int bar_index,
+                             void **out_base, size_t *out_size) {
+    if (!h || h->device_fd < 0 || !out_base || bar_index < 0 || bar_index > 5)
+        return PW_E_INVAL;
+    struct vfio_region_info ri = {
+        .argsz = sizeof(ri),
+        .index = (uint32_t)(VFIO_PCI_BAR0_REGION_INDEX + bar_index),
+    };
+    if (ioctl(h->device_fd, VFIO_DEVICE_GET_REGION_INFO, &ri) < 0) return PW_E_IO;
+    if (ri.size == 0 || !(ri.flags & VFIO_REGION_INFO_FLAG_MMAP)) return PW_E_BACKEND;
+    void *p = mmap(NULL, ri.size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                   h->device_fd, ri.offset);
+    if (p == MAP_FAILED) return PW_E_IO;
+    *out_base = p;
+    if (out_size) *out_size = ri.size;
+    return PW_OK;
+}
+
 pw_status pw_vfio_open_bar(const char *bdf, int bar_index,
                            struct pw_vfio_handle *h) {
     if (!bdf || !h || bar_index < 0 || bar_index > 5) return PW_E_INVAL;

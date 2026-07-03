@@ -44,6 +44,16 @@ pw_status pw_vfio_map_dma(struct pw_vfio_handle *h, void *vaddr, size_t len,
 /* Tear down a mapping established by pw_vfio_map_dma. */
 pw_status pw_vfio_unmap_dma(struct pw_vfio_handle *h, uint64_t iova, size_t len);
 
+/* mmap an ADDITIONAL BAR region on the already-open device in `h` (which was
+ * opened via pw_vfio_open_bar for some other BAR). Used to reach a second BAR
+ * without re-opening the IOMMU group (VFIO forbids opening a group twice). The
+ * XDMA DMA build exposes BAR0 = AXI-Lite CSR and BAR1 = XDMA control registers;
+ * the backend maps BAR0 via pw_vfio_open_bar and BAR1 via this. On success
+ * out_base and out_size receive the mmap; the caller munmaps it (not owned by
+ * `h`). */
+pw_status pw_vfio_map_region(struct pw_vfio_handle *h, int bar_index,
+                             void **out_base, size_t *out_size);
+
 /* Bind `bdf` to vfio-pci (root): unbind any current driver, set
  * driver_override to vfio-pci, bind. Returns PW_OK if already bound or
  * on success. Requires the vfio-pci module to be loaded/registered. */
