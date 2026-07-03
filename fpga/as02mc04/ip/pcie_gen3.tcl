@@ -55,6 +55,8 @@ set_property -dict [list \
     CONFIG.pl_link_cap_max_link_width          {X8}                   \
     CONFIG.axi_data_width                       {256_bit}             \
     CONFIG.axisten_freq                         {250}                 \
+    CONFIG.xdma_axi_intf_mm                     {AXI_Stream}          \
+    CONFIG.xdma_axilite_slave                   {false}               \
     CONFIG.axilite_master_en                    {true}                \
     CONFIG.axilite_master_scale                 {Kilobytes}           \
     CONFIG.axilite_master_size                  {64}                  \

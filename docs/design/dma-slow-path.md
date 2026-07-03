@@ -180,6 +180,41 @@ each direction. Per-frame metadata rides an **in-band header** (§9) prepended o
 punt (FPGA writes lif_id/ingress/rx_ts ahead of the frame) and consumed on inject
 (host prepends egress port; engine strips it before the TX arbiter).
 
+## 5b. P1 integration edit-list (turnkey; atomic — all land together before build)
+
+The slow-path wiring today (mapped): **inject** `pw_inject_tx_window` lives inside
+`pw_csr_full` (line ~588) → drives `inj_*_w` → data-plane `s_axis_inj_*`
+(pwfpga_top_phase3 ~452). **punt** data-plane `m_axis_punt_*` → `punt_*_w` →
+`pw_punt_rx_window u_punt` (core ~344) → CSR read/pop. Chosen integration puts
+`pw_dma_slowpath` **inside the core** (least top restructuring): route the XDMA
+H2C/C2H streams DOWN into the core as new ports; DMA drives `inj_*_w`, sinks
+`punt_*_w`.
+
+1. `ip/pcie_gen3.tcl`: **DONE** — `xdma_axi_intf_mm=AXI_Stream`,
+   `xdma_axilite_slave=false`.
+2. `src/pcie_axi_lite_bridge.sv`: remove the `m_axi_*` (MM) tie-offs; wire the
+   IP's `m_axis_h2c_*_0` / `s_axis_c2h_*_0` (256 b) to new bridge ports; keep
+   `m_axil_*` CSR + `usr_irq_req=0`. Expose H2C(out)/C2H(in) + axi_aclk/aresetn.
+3. `pwfpga_top_phase3.sv` (core): add ports {axi_clk, axi_rst, s_h2c_*, m_c2h_*};
+   instantiate `pw_dma_slowpath` (axi side ← new ports; dp side: `m_inj*`→`inj_*_w`
+   incl. `inj_eg_w`, `s_punt*`←`punt_*_w`; dp_clk=clk, dp_rst=~rst_n). Drive
+   `inj_*_w` from `pw_dma_slowpath.m_inj` instead of `pw_csr_full.inj_m_*` (leave
+   the csr inject-window output open, or remove it in a later cleanup). Remove
+   `u_punt`; tie `pw_csr_full.punt_rd_data_i=0`.
+4. `pwfpga_top_phase3_board.sv`: connect bridge H2C/C2H ↔ core's new XDMA ports;
+   pass `axi_aclk` + `~axi_aresetn`.
+5. Set **`PWFPGA_CAP_HAS_DMA`** in the capability register (find in pw_csr_full).
+6. `project_phase3.tcl`: add `rtl/phase3/pw_dma_slowpath.sv` + taxi
+   `axis/rtl`,`sync/rtl`,`lib/rtl` (async-fifo-adapter deps) to the synth sources.
+7. Sims: `tb_phase3_top` (core gained XDMA ports → tie off / drive; its punt-via-
+   CSR checks change since `u_punt` is gone), `FULL_RTL`/`TOP_RTL` lists. Keep the
+   pw_dma_slowpath unit tb (passing).
+
+Then: gated build (WNS ≥ 0 all clocks; **LUT fit is the risk** — two 256-b taxi
+async-FIFO adapters vs the 84 % baseline, minus the removed CSR windows). If it
+overflows, feature-cut decision (defer a classifier/histogram block, or narrow
+the FIFOs). Reflash 07:00.0, then P2 host driver, then P5 revalidate.
+
 ## 6. Phasing
 
 1. **P1 — RTL DMA engine + sim.** `pw_dma_slowpath` + bridge wiring; a Verilator
