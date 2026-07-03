@@ -59,17 +59,20 @@ Two sub-variants for how frames reach the data-plane AXIS:
 - **A1 (AXI-MM + bridge):** keep XDMA in MM mode; attach a small card-side packet
   BRAM on `m_axi`; add MM↔AXIS shims to `pw_inject_tx_window`/`pw_punt_rx_window`
   AXIS ports. No IP regen. More card-side glue (MM slave + descriptor coord).
-- **A2 (AXI-Stream):** reconfigure XDMA for AXI-Stream H2C/C2H (IP regen, no BAR
-  change); H2C AXIS drives inject directly, punt AXIS drives C2H. Cleanest RTL
-  (no card-side buffer), but re-generates the PCIe IP (timing re-close risk).
+- **A2 (AXI-Stream):** reconfigure XDMA for AXI-Stream H2C/C2H (IP regen; the CSR
+  *register map* is unchanged but BAR0 grows to 128 KB and the CSR window moves to
+  offset `0x10000` — see §5a-bis); H2C AXIS drives inject directly, punt AXIS
+  drives C2H. Cleanest RTL (no card-side buffer), but re-generates the PCIe IP
+  (timing re-close risk).
 
 Host side (both): drive the XDMA descriptor engine from userspace over vfio
 (XDMA C2H/H2C descriptor format, PG195), rings in `VFIO_IOMMU_MAP_DMA`-mapped
 host buffers.
 
-**Pros:** least new FPGA logic (best for the 84 % LUT budget); CSR BAR untouched;
-IP already present. **Cons:** driving XDMA descriptors from userspace/vfio (no
-`xdma.ko`) is fiddly; A2 needs an IP regen.
+**Pros:** least new FPGA logic (best for the 84 % LUT budget); CSR *register map*
+untouched (only its BAR0 offset moves, §5a-bis); IP already present. **Cons:**
+driving XDMA descriptors from userspace/vfio (no `xdma.ko`) is fiddly; A2 needs
+an IP regen.
 
 ### Approach B — taxi DMA engine (Corundum-style)
 

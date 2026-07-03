@@ -83,8 +83,8 @@ pw_status pw_ipc_connect(const char *path, int *out_fd) {
  * fresh boot /var/run/packetwyrm (the default socket dir) may not exist yet, so
  * bind() would fail with ENOENT and the daemon would come up without a control
  * socket. Creating the tree here lets it start with no manual setup. The socket
- * FILE itself is chmod'd to `mode` below (that 0666 is the access ACL); the
- * directories are 0755 (traversable, not the ACL). */
+ * FILE itself is chmod'd to the caller's `mode` below (the daemon passes 0666,
+ * its access ACL); the directories are 0755 (traversable, not the ACL). */
 static void ensure_parent_dir(const char *path) {
     char buf[sizeof(((struct sockaddr_un *)0)->sun_path)];
     size_t n = strnlen(path, sizeof(buf));
