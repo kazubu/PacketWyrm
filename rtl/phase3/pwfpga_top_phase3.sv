@@ -130,7 +130,25 @@ module pwfpga_top_phase3 #(
     // produced by pw_sysmon + SYSMONE4 in the board top. Same clk domain.
     input  wire [15:0]       sysmon_temp_i,
     input  wire [15:0]       sysmon_vccint_i,
-    input  wire [15:0]       sysmon_vccaux_i
+    input  wire [15:0]       sysmon_vccaux_i,
+
+    // ---- XDMA AXI-Stream slow path (axi_clk 250 MHz PCIe domain) ----------
+    // Host <-> FPGA frame DMA via pw_dma_slowpath, replacing the CSR-window
+    // inject/punt path. H2C = host->FPGA (inject source), C2H = FPGA->host
+    // (punt sink), both 256-bit @ axi_clk. The board top wires these to the
+    // XDMA AXI-Stream channels on pcie_axi_lite_bridge. axi_rst is active-high.
+    input  wire              axi_clk,
+    input  wire              axi_rst,
+    input  wire [255:0]      s_h2c_tdata,
+    input  wire [31:0]       s_h2c_tkeep,
+    input  wire              s_h2c_tvalid,
+    output wire              s_h2c_tready,
+    input  wire              s_h2c_tlast,
+    output wire [255:0]      m_c2h_tdata,
+    output wire [31:0]       m_c2h_tkeep,
+    output wire              m_c2h_tvalid,
+    input  wire              m_c2h_tready,
+    output wire              m_c2h_tlast
 );
 
     // --- Data-plane <-> CSR_full wiring -------------------------
@@ -194,14 +212,15 @@ module pwfpga_top_phase3 #(
     logic [15:0] hist_rd_addr_w;
     logic [63:0] hist_rd_data_w;
 
-    // Punt path: data plane punt AXIS -> pw_punt_rx_window; CSR read/pop.
+    // Punt path: data plane punt AXIS -> pw_dma_slowpath (C2H). The CSR
+    // punt-read nets remain declared but are retired (no reader).
     logic [63:0] punt_td_w;  logic [7:0] punt_tk_w;
     logic        punt_tv_w,  punt_tr_w,  punt_tl_w;
     logic [99:0] punt_tu_w;   // {rx_ts[63:0], ingress[3:0], lif[31:0]}
-    logic        punt_rd_en_w; logic [15:0] punt_rd_addr_w; logic [31:0] punt_rd_data_w;
+    logic        punt_rd_en_w; logic [15:0] punt_rd_addr_w;
     logic        punt_pop_w;
 
-    // Slow-path TX inject: pw_csr_full (inject window) -> data plane egress.
+    // Slow-path TX inject: pw_dma_slowpath (H2C) -> data plane egress.
     logic [63:0] inj_td_w;  logic [7:0] inj_tk_w;
     logic        inj_tv_w,  inj_tr_w,  inj_tl_w;
     logic [3:0]  inj_eg_w;
@@ -324,37 +343,61 @@ module pwfpga_top_phase3 #(
         .spi_mosi_o          (spi_mosi_o),
         .spi_miso_i          (spi_miso_i),
         .icap_reboot_o       (icap_reboot_w),
+        // Slow-path punt/inject moved to pw_dma_slowpath (XDMA AXI-Stream).
+        // The CSR punt-read window is retired: no reader, so hold data_i=0.
         .punt_rd_en_o        (punt_rd_en_w),
         .punt_rd_addr_o      (punt_rd_addr_w),
-        .punt_rd_data_i      (punt_rd_data_w),
+        .punt_rd_data_i      (32'h0),
         .punt_pop_o          (punt_pop_w),
-        .inj_m_tdata         (inj_td_w),
-        .inj_m_tkeep         (inj_tk_w),
-        .inj_m_tvalid        (inj_tv_w),
-        .inj_m_tready        (inj_tr_w),
-        .inj_m_tlast         (inj_tl_w),
-        .inj_egress_o        (inj_eg_w)
+        // The CSR inject window is decommissioned: pw_dma_slowpath (H2C) now
+        // drives the inject AXIS. Leave the window outputs open, hold ready low.
+        .inj_m_tdata         (),
+        .inj_m_tkeep         (),
+        .inj_m_tvalid        (),
+        .inj_m_tready        (1'b0),
+        .inj_m_tlast         (),
+        .inj_egress_o        ()
     );
 
-    // Punt / slow-path RX window: sinks the data plane punt AXIS, host
-    // drains it over the CSR BAR (PWFPGA_WIN_PUNT_RX).
-    pw_punt_rx_window #(
-        .ADDR_W    (16),
-        .BUF_BEATS (256)            // 2 KB max punt frame
-    ) u_punt (
-        .clk           (clk),
-        .rst_n         (rst_n),
-        .s_tdata       (punt_td_w),
-        .s_tkeep       (punt_tk_w),
-        .s_tvalid      (punt_tv_w),
-        .s_tready      (punt_tr_w),
-        .s_tlast       (punt_tl_w),
-        .s_tuser       (punt_tu_w),
-        .rd_en_i       (punt_rd_en_w),
-        .rd_addr_i     (punt_rd_addr_w),
-        .rd_data_o     (punt_rd_data_w),
-        .pop_i         (punt_pop_w),
-        .frame_valid_o ()
+    // PCIe-DMA slow path (XDMA AXI-Stream). Replaces the CSR-window inject/punt
+    // (pw_inject_tx_window / pw_punt_rx_window), lifting the 512 B/2048 B frame
+    // ceiling to jumbo. Bridges the 256 b @ axi_clk XDMA H2C/C2H streams to the
+    // 64 b @ dp_clk (=clk) data-plane inject/punt AXIS (async CDC + width conv +
+    // 8-byte in-band metadata header). See docs/design/dma-slow-path.md (A2).
+    //   H2C (host->FPGA) -> inject: drives inj_*_w into the data plane.
+    //   punt (data plane m_axis_punt) -> C2H (FPGA->host).
+    pw_dma_slowpath #(
+        .DP_DATA_W (64),
+        .XD_DATA_W (256)
+    ) u_dma (
+        .axi_clk       (axi_clk),
+        .axi_rst       (axi_rst),
+        .s_h2c_tdata   (s_h2c_tdata),
+        .s_h2c_tkeep   (s_h2c_tkeep),
+        .s_h2c_tvalid  (s_h2c_tvalid),
+        .s_h2c_tready  (s_h2c_tready),
+        .s_h2c_tlast   (s_h2c_tlast),
+        .m_c2h_tdata   (m_c2h_tdata),
+        .m_c2h_tkeep   (m_c2h_tkeep),
+        .m_c2h_tvalid  (m_c2h_tvalid),
+        .m_c2h_tready  (m_c2h_tready),
+        .m_c2h_tlast   (m_c2h_tlast),
+        .dp_clk        (clk),
+        .dp_rst        (~rst_n),
+        // inject out -> data-plane inject AXIS (egress selected per-frame)
+        .m_inj_tdata   (inj_td_w),
+        .m_inj_tkeep   (inj_tk_w),
+        .m_inj_tvalid  (inj_tv_w),
+        .m_inj_tready  (inj_tr_w),
+        .m_inj_tlast   (inj_tl_w),
+        .m_inj_egress  (inj_eg_w),
+        // punt in <- data-plane punt AXIS (tuser = {rx_ts,ingress,lif})
+        .s_punt_tdata  (punt_td_w),
+        .s_punt_tkeep  (punt_tk_w),
+        .s_punt_tvalid (punt_tv_w),
+        .s_punt_tready (punt_tr_w),
+        .s_punt_tlast  (punt_tl_w),
+        .s_punt_tuser  (punt_tu_w)
     );
 
     // In-band reconfiguration: CSR magic -> ICAP IPROG -> reload from flash.

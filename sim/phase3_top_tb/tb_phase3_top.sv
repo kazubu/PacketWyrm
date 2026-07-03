@@ -88,12 +88,29 @@ module tb_phase3_top;
     logic        tx_tlast  [NUM_PORTS];
     logic        tx_tuser  [NUM_PORTS];   // generator-test-frame marker
 
-    // Punt AXIS
+    // Punt AXIS (legacy tb nets; punt now leaves via the C2H DMA stream)
     logic [63:0] punt_tdata;
     logic [7:0]  punt_tkeep;
     logic        punt_tvalid;
     logic        punt_tready;
     logic        punt_tlast;
+
+    // XDMA AXI-Stream slow path. In the tb the whole DUT runs on one clock, so
+    // axi_clk = clk. H2C (inject) is driven idle; C2H (punt) is drained and its
+    // first beat captured -- that beat is pw_dma_slowpath's 8-byte in-band
+    // header {lif_id[31:0], ingress in byte4}, upsized into the low 64 b.
+    logic [255:0] c2h_tdata;
+    logic [31:0]  c2h_tkeep;
+    logic         c2h_tvalid, c2h_tlast;
+    logic         c2h_tready = 1'b1;
+    logic [255:0] c2h_first  = '0;
+    logic         c2h_seen   = 1'b0;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin c2h_seen <= 1'b0; c2h_first <= '0; end
+        else if (c2h_tvalid && c2h_tready && !c2h_seen) begin
+            c2h_first <= c2h_tdata; c2h_seen <= 1'b1;
+        end
+    end
 
     logic [63:0] ts;
     always_ff @(posedge clk or negedge rst_n) begin
@@ -173,7 +190,20 @@ module tb_phase3_top;
         .status_activity_o (),
         .sysmon_temp_i     (16'h0),
         .sysmon_vccint_i   (16'h0),
-        .sysmon_vccaux_i   (16'h0)
+        .sysmon_vccaux_i   (16'h0),
+        // XDMA AXI-Stream slow path (single-clock tb: axi_clk = clk)
+        .axi_clk           (clk),
+        .axi_rst           (~rst_n),
+        .s_h2c_tdata       (256'h0),
+        .s_h2c_tkeep       (32'h0),
+        .s_h2c_tvalid      (1'b0),
+        .s_h2c_tready      (),
+        .s_h2c_tlast       (1'b0),
+        .m_c2h_tdata       (c2h_tdata),
+        .m_c2h_tkeep       (c2h_tkeep),
+        .m_c2h_tvalid      (c2h_tvalid),
+        .m_c2h_tready      (c2h_tready),
+        .m_c2h_tlast       (c2h_tlast)
     );
 
     int    errors = 0;
@@ -388,26 +418,20 @@ module tb_phase3_top;
                      (minlat > 0 && minlat < 32'd256) ? 1 : 0, 1);
         end
 
-        // ---- ARP punt path: drive an ARP frame on RX[0], drain it from
-        //      the punt RX window over the CSR BAR --------------------
+        // ---- ARP punt path: drive an ARP frame on RX[0]; it is now punted
+        //      out the C2H (FPGA->host) DMA stream via pw_dma_slowpath, not the
+        //      retired CSR window. The stream is prefixed with the 8-byte
+        //      in-band header {lif_id[31:0], ingress in byte4}, upsized 64->256
+        //      so it lands in the first C2H beat's low 64 bits. -------------
         scenario = "punt";
         begin
-            logic [31:0] st, info, lif;
             send_arp_on_rx(0);
-            repeat (24) @(posedge clk);
-            axi_read(PUNT_STATUS, st);
-            check_eq("punt frame_valid",  st[0], 1);
-            check_eq("punt no overflow",  st[1], 0);
-            axi_read(PUNT_INFO, info);
-            check_eq("punt byte_len > 0", (info[13:0] > 0) ? 1 : 0, 1);
-            check_eq("punt ingress port", info[19:16], 0);
-            axi_read(PUNT_LIF, lif);
-            check_eq("punt logical_if_id", lif, 32'h0000_0099);
-            // release the slot and confirm it clears
-            axi_write(PUNT_POP, 32'h1);
-            repeat (4) @(posedge clk);
-            axi_read(PUNT_STATUS, st);
-            check_eq("punt slot freed", st[0], 0);
+            // Frame-mode async FIFO releases only after tlast, then dp->axi
+            // CDC + upsize; a few dozen cycles suffice in this single-clock tb.
+            for (int i = 0; i < 400 && !c2h_seen; i++) @(posedge clk);
+            check_eq("punt c2h frame seen", c2h_seen, 1);
+            check_eq("punt logical_if_id",  c2h_first[31:0],  32'h0000_0099);
+            check_eq("punt ingress port",   c2h_first[39:32], 0);
         end
 
         if (errors == 0) begin

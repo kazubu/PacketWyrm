@@ -9,6 +9,58 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **All SW binaries now embed the build-time git revision in their version
+    string.** `pw_version_string()` — the single funnel for `pktwyrm version`,
+    the daemon `version` RPC / `packetwyrm_build_info` metric, the proxyd
+    `/proxyd/version` endpoint and the Web GUI versions panel — now returns
+    e.g. `0.1.0 (5c5e9abb1f0a+dirty)`. The Makefile computes the short SHA (+
+    `+dirty` when tracked files differ from HEAD, `unknown` outside a git tree)
+    and injects it via `-DPW_GIT_REV` into `version.o`, which is rebuilt every
+    `make` so the stamp stays current. Mirrors the FPGA bitstream's per-build
+    `build_id`/`git_hash` so a running SW binary can be traced to its source.
+  - **PCIe-DMA slow path (`pw_dma_slowpath`) integrated into the Phase 3 core
+    — RTL + sim (host driver pending).** The CSR-window inject/punt slow path
+    (512 B inject / 2048 B punt, ~200 ms MMIO-per-word) is replaced by a
+    PCIe-DMA engine so control-plane routing (cRPD IS-IS, MTU-padded hellos,
+    1500 B data, jumbo) works across the DUT. Approach **A2**: the Xilinx XDMA IP
+    is reconfigured for **AXI-Stream** H2C/C2H (`xdma_axi_intf_mm=AXI_Stream`),
+    keeping the AXI-Lite-master CSR **register map** unchanged (its offset within
+    BAR0 moves to `0x10000` — BAR0 grows to 128 KB and the host adds that offset
+    when `HAS_DMA`; see the design doc §5a-bis). `pw_dma_slowpath` bridges the
+    256 b @ `axi_clk` XDMA streams to the 64 b @ `dp_clk` data-plane inject/punt
+    AXIS (async CDC + width conversion via the taxi async-FIFO adapter, plus an
+    8-byte in-band metadata header: inject carries egress port, punt carries
+    `logical_if_id` + ingress). It is wired inside `pwfpga_top_phase3` (new
+    `axi_clk`/`axi_rst`/H2C/C2H ports driven from `pcie_axi_lite_bridge`), driving
+    the inject AXIS and sinking the punt AXIS; the CSR-window `pw_punt_rx_window`
+    is removed and the `pw_inject_tx_window` decommissioned. `PW_PHASE3_CAPABILITIES`
+    now advertises `CAP_HAS_DMA` in place of the retired `CAP_HAS_PUNT`
+    (`0x0000_002D`). Verified in Verilator: the standalone `sim_dma` bridge tb and
+    the integrated `sim_top` (ARP punt now observed on the C2H stream with the
+    correct in-band `lif_id`/`ingress`) both pass; full `sim_all` (40 TBs) green.
+    **Gated build passed** (build_id `0x6a47e2bc`, LUT 94.84 %, all clocks WNS>0),
+    **flashed to 07:00.0 and HW-validated (2026-07-04):** the full cRPD 2-node
+    control plane now works across the DUT over the DMA slow path — **dual-stack:
+    IPv4 (ARP, ICMP ping 0 % loss ~2.2 ms, BGP, OSPFv2 Full, IS-IS L1+L2) AND IPv6
+    (ND, ICMPv6 ping, BGP-over-IPv6 Established, OSPFv3 Full, IS-IS IPv6)**, with
+    both routers learning each other's v4+v6 loopbacks via OSPF/OSPFv3 and IS-IS.
+    IS-IS and >512 B frames, blocked on the old CSR window, now traverse. The
+    IPv6 control plane is gated on `ipv6_nd: true` (punts ICMPv6 ND); the flow
+    compiler then also emits the IPv6 punt variants of OSPFv3 / BGP-over-IPv6,
+    sharing comparators with the IPv4 rules (11/12 field comparators). The P2 host
+    DMA driver lives in `sw/libpacketwyrm` (`csr.h` XDMA reg map + 32-B SG
+    descriptor; `vfio` `MAP_DMA`/`UNMAP` + `map_region` for BAR1; `backend_bar.c`
+    DMA backend, capability-gated so `pw_host_plane` is unchanged). HW bring-up
+    corrected the design's assumptions (all reflected in the code): the IP exposes
+    **two 64 KB BARs** (BAR0=CSR@0 unchanged, BAR1=XDMA regs — not a 128 KB split);
+    the single-descriptor completed-count **resets on RUN** (H2C inject waits for
+    count != 0); the **C2H length is not in `desc.bytes`** (recovered from the
+    frame's L2/L3 headers); **C2H uses a continuously-running circular descriptor
+    ring** (per-frame stop/re-arm wedges the engine); the daemon punt-reap poll cap
+    was cut 100 ms→1 ms; and cRPD binds the TAP as `interface net0` (not `net0.0`,
+    + TUNSETCARRIER to mark the tun carrier up). Remaining: true 9000 B jumbo needs
+    the MAC↔dp_clk CDC FIFO widened (separate RTL change). See
+    `docs/design/dma-slow-path.md` §5c and `configs/examples/lab-crpd-2node/`.
   - **Unmatched frames split out of `drops`; LED no longer red on no-match
     (RTL + SW).** A classifier **no-match** is no longer counted as a drop or
     treated as an error. Per-port `drops` (`rx_bad_frame`) now counts **real

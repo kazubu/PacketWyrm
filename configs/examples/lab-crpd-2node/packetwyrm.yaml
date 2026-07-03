@@ -1,0 +1,64 @@
+# Two-router cRPD lab: PacketWyrm side.
+#
+# One AS02MC04 card, two SFP+ ports cross-connected with a DAC
+# (SFP0<->SFP1). Each port carries one UNTAGGED logical interface; the
+# lab attaches a Juniper cRPD container to each TAP, and the two routers
+# peer BGP/OSPF/IS-IS across the DUT (the FPGA in the middle).
+#
+# The interfaces are UNTAGGED (vlan: 0): the slow-path inject does not add
+# an 802.1Q tag, so a VLAN-tagged lif would need the wire frames to already
+# carry the tag (which cRPD, configured untagged on net0, does not send).
+# Untagged also frees the VLAN field-comparator, keeping punt+forward under
+# the NCMP=12 pool.
+#
+# Data path per control-plane frame (UNTAGGED, no VLAN add/strip):
+#   cRPD R1 -> tap-pw-p0 -> packetwyrmd inject (untagged, no tag added)
+#     -> FPGA port0 TX -> DAC -> FPGA port1 RX -> classifier PUNT rule
+#     (ingress=port1, proto match) -> tap-pw-p1
+#     -> cRPD R2   (and symmetrically R2->R1)
+#
+# punt.* turns each control protocol into a PUNT_TO_HOST classifier rule
+# (per ingress port + vlan), so ARP / ICMP / BGP(TCP179) / OSPF(proto 89) /
+# IS-IS(LLC) reach the container instead of being dropped.
+#
+# ipv6_nd = true enables the IPv6 control plane on the lif: it punts ICMPv6 ND
+# AND (together with the ospf/bgp flags) the IPv6 variants OSPFv3 (0x86DD +
+# next-hdr 89) and BGP-over-IPv6 (0x86DD + TCP/179). The 0x86DD ethertype +
+# proto/L4 comparators are shared with the IPv4 rules (deduped by the compiler).
+#
+# NOTE: the field-comparator pool is limited (NCMP=12, shared across all
+# punt+forward rules). This lab's dual-stack set (ARP, ICMPv4, BGP, OSPF, IS-IS,
+# ipv6_nd + IPv6 OSPFv3/BGP) compiles to 11 field comparators (verify with
+# `pktwyrm load`). lldp is left OFF to keep headroom; untagged lifs (vlan: 0)
+# also free the VLAN comparator.
+
+system:
+  name: "pw-lab-crpd-2node"
+  mode: "multi-card"
+  default_speed: "10g"
+  control_socket: "/tmp/pw-crpd.sock"
+
+cards:
+  - id: 0
+    name: "card0"
+    pci: "0000:07:00.0"
+    ports:
+      - { local_port: 0, global_port: 0, name: "p0" }
+      - { local_port: 1, global_port: 1, name: "p1" }
+
+logical_interfaces:
+  - id: 1000
+    global_port: 0
+    vlan: 0
+    mac: "02:a5:02:00:00:64"
+    mtu: 9000
+    punt: { arp: true, ipv6_nd: true, lldp: false, icmp: true, bgp: true, ospf: true, is_is: true }
+
+  - id: 1001
+    global_port: 1
+    vlan: 0
+    mac: "02:a5:02:00:01:64"
+    mtu: 9000
+    punt: { arp: true, ipv6_nd: true, lldp: false, icmp: true, bgp: true, ospf: true, is_is: true }
+
+flows: []

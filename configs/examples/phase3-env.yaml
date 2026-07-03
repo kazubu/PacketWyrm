@@ -6,7 +6,7 @@ system:
   name: "pw-env"
   mode: "multi-card"
   default_speed: "10g"
-  control_socket: "/var/run/packetwyrm/packetwyrmd.sock"
+#  control_socket: "/var/run/packetwyrm/packetwyrmd.sock"
   # secret: "change-me"   # uncomment to require it on the control socket;
                           # clients read it from this file (read perm = access).
 cards:

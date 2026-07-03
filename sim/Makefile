@@ -110,6 +110,7 @@ TOP_RTL := \
     $(REPO)/rtl/phase3/pw_flow_gen_multi.sv \
     $(REPO)/rtl/phase3/pw_frame_saf.sv \
     $(REPO)/rtl/phase3/pw_data_plane_axis.sv \
+    $(REPO)/rtl/phase3/pw_dma_slowpath.sv \
     $(REPO)/rtl/phase3/pw_icap_reboot.sv \
     $(REPO)/rtl/phase3/pw_gpio_sync.sv \
     $(REPO)/rtl/phase3/pwfpga_top_phase3.sv
@@ -128,6 +129,10 @@ TB_DPA   := data_plane_axis_tb/tb_data_plane_axis.sv
 TB_SAF   := frame_saf_tb/tb_frame_saf.sv
 TB_PUNT  := punt_window_tb/tb_punt_window.sv
 TB_INJ   := inject_window_tb/tb_inject_window.sv
+TB_DMA   := dma_slowpath_tb/tb_dma_slowpath.sv
+TAXI_AXIS := $(REPO)/rtl/phase2/vendor/taxi/src/axis/rtl
+TAXI_SYNC := $(REPO)/rtl/phase2/vendor/taxi/src/sync/rtl
+TAXI_LIB  := $(REPO)/rtl/phase2/vendor/taxi/src/lib/rtl
 TB_CHK   := test_rx_checker_bram_tb/tb_test_rx_checker_bram.sv
 TB_CDC   := mac_cdc_tb/tb_mac_axis_cdc.sv
 
@@ -158,7 +163,7 @@ VFLAGS := --binary -j 0 \
           -Wno-PINCONNECTEMPTY \
           --timing
 
-.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_full sim_fga sim_fgm sim_fge sim_pax sim_pbnd sim_saf sim_punt sim_inj sim_cdc sim_macloop sim_dpa sim_top sim_vec sim_all wave clean vectors
+.PHONY: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_spi sim_full sim_fga sim_fgm sim_fge sim_pax sim_pbnd sim_saf sim_punt sim_inj sim_dma sim_cdc sim_macloop sim_dpa sim_top sim_vec sim_all wave clean vectors
 
 sim: sim_build/data_plane
 	./sim_build/data_plane
@@ -223,6 +228,9 @@ sim_saf: sim_build/frame_saf
 sim_punt: sim_build/punt_window
 	./sim_build/punt_window
 
+sim_dma: sim_build/dma_slowpath
+	./sim_build/dma_slowpath
+
 sim_inj: sim_build/inject_window
 	./sim_build/inject_window
 
@@ -269,7 +277,7 @@ vectors_clean:
 sim_vec: sim_build/wire_vectors $(VECTORS)
 	./sim_build/wire_vectors
 
-sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_chk sim_slice sim_fclass sim_hclass sim_fidmap sim_spi sim_icap sim_tsi sim_gsync sim_full sim_fga sim_fgm sim_fge sim_pax sim_pbnd sim_saf sim_punt sim_inj sim_cdc sim_macloop sim_dpa sim_top sim_vec
+sim_all: sim sim_axis sim_csr sim_flow sim_stats sim_lat sim_chk sim_slice sim_fclass sim_hclass sim_fidmap sim_spi sim_icap sim_tsi sim_gsync sim_full sim_fga sim_fgm sim_fge sim_pax sim_pbnd sim_saf sim_punt sim_inj sim_dma sim_cdc sim_macloop sim_dpa sim_top sim_vec
 
 wave: VFLAGS += --trace-fst
 wave: clean sim_build/data_plane
@@ -408,6 +416,17 @@ sim_build/inject_window: $(REPO)/rtl/phase3/pw_inject_tx_window.sv $(TB_INJ)
 	    -o inject_window \
 	    $(REPO)/rtl/phase3/pw_inject_tx_window.sv $(TB_INJ)
 
+# DMA slow-path bridge. Uses the taxi async-FIFO+adapter (resolved from the taxi
+# rtl dirs via -y). SYNCASYNCNET/MULTIDRIVEN are expected for the CDC FIFO.
+sim_build/dma_slowpath: $(REPO)/rtl/phase3/pw_dma_slowpath.sv $(TB_DMA)
+	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Wno-MULTIDRIVEN -Wno-TIMESCALEMOD \
+	    -Wno-PINMISSING -Wno-UNOPTFLAT \
+	    -y $(TAXI_AXIS) -y $(TAXI_SYNC) -y $(TAXI_LIB) \
+	    -Mdir sim_build \
+	    --top-module tb_dma_slowpath \
+	    -o dma_slowpath \
+	    $(REPO)/rtl/phase3/pw_dma_slowpath.sv $(TB_DMA)
+
 sim_build/data_plane_axis: $(DPA_RTL) $(TB_DPA)
 	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET \
 	    -Mdir sim_build \
@@ -415,8 +434,13 @@ sim_build/data_plane_axis: $(DPA_RTL) $(TB_DPA)
 	    -o data_plane_axis \
 	    $(DPA_RTL) $(TB_DPA)
 
+# The core now instantiates pw_dma_slowpath (taxi async-FIFO+adapter), resolved
+# from the taxi rtl dirs via -y. SYNCASYNCNET/MULTIDRIVEN/UNOPTFLAT are expected
+# for the CDC FIFO (same as the standalone sim_dma rule).
 sim_build/phase3_top: $(TOP_RTL) $(TB_TOP)
-	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET \
+	$(VERILATOR) $(VFLAGS) -Wno-SYNCASYNCNET -Wno-MULTIDRIVEN -Wno-UNOPTFLAT \
+	    -Wno-PINMISSING -Wno-TIMESCALEMOD \
+	    -y $(TAXI_AXIS) -y $(TAXI_SYNC) -y $(TAXI_LIB) \
 	    -Mdir sim_build \
 	    --top-module tb_phase3_top \
 	    -o phase3_top \

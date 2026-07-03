@@ -68,9 +68,13 @@ static void *card_worker_main(void *arg) {
     while (!atomic_load_explicit(&w->stop, memory_order_relaxed)) {
         for (int i = 0; i < w->n_fds; i++)
             pfds[i] = (struct pollfd){ .fd = w->fds[i], .events = POLLIN };
-        /* 100 ms cap so the stop flag is observed promptly even
-         * when no traffic flows. */
-        (void)poll(w->n_fds ? pfds : NULL, w->n_fds, 100);
+        /* Short poll cap: the punt (C2H) direction has no fd to wake poll, so
+         * host_plane_step must run frequently to reap punted frames promptly.
+         * With a 100 ms cap, a punt reply sat up to 100 ms per hop when no TAP
+         * was readable -> ARP/hello round-trips timed out and cascaded to loss.
+         * 1 ms keeps punt latency low (MMIO completed-count reads are ~us) and
+         * still observes the stop flag promptly. */
+        (void)poll(w->n_fds ? pfds : NULL, w->n_fds, 1);
         pw_host_plane_step(w->hp, 16);
     }
     return NULL;

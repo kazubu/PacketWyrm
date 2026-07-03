@@ -26,13 +26,17 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
     |   |                            strobes -- flow window + fc cmp/udf/rule)
     |   +-- pw_spi_flash         CSR SPI master (live config-flash access)
     |   +-- DP_RESET / REBOOT / STATS_CLEAR / SNAPSHOT triggers
-    +-- pw_punt_rx_window        punt AXIS -> CSR-polled frame buffer (host RX);
-    |                            carries the 64-bit RX wire timestamp (sampled in
-    |                            the MAC RX clock at SOF -- the TRUE wire arrival,
-    |                            not a post-FIFO dp_clk sample) -> RX_TS regs
-    +-- pw_inject_tx_window      CSR frame buffer -> AXIS into egress (host TX);
-    |                            latches the egress wire timestamp of the injected
-    |                            frame (servo-facing) -> INJECT_TX_TS regs
+    +-- pw_dma_slowpath          PCIe-DMA slow path (XDMA AXI-Stream): bridges the
+    |                            256b@axi_clk H2C/C2H streams to the 64b@dp_clk
+    |                            inject/punt AXIS (async CDC + width conv via taxi
+    |                            async-FIFO adapter + 8-byte in-band metadata
+    |                            header). H2C -> inject (egress from header); punt
+    |                            (m_axis_punt, tuser lif/ingress/rx_ts) -> C2H.
+    |                            Replaces the retired CSR-window punt/inject pair,
+    |                            lifting the 512B/2048B frame ceiling to jumbo.
+    |   (pw_punt_rx_window        RETIRED -- punt now leaves via pw_dma_slowpath C2H;
+    |    pw_inject_tx_window       the inject window stays instantiated in csr_full
+    |                             but is decommissioned: outputs open, ready held 0)
     +-- pw_data_plane_axis       64-bit AXIS streaming data plane
         +-- pw_flow_table_bram   BRAM flow table (commit-walk decode; per-port
         |                        read port + compact scheduling FF array)

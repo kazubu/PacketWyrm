@@ -197,18 +197,20 @@ The former SLOW_RX/TX placeholders (0x8000 / 0x9000) were reclaimed.
 
 | Bit | Name                  | Meaning                                  |
 |----:|-----------------------|------------------------------------------|
-|   0 | CAP_HAS_DMA           | slow-path DMA ring implemented           |
+|   0 | CAP_HAS_DMA           | PCIe-DMA slow path (`pw_dma_slowpath`)    |
 |   1 | CAP_HAS_MSIX          | MSI-X interrupts implemented             |
 |   2 | CAP_HAS_HISTOGRAM     | per-flow latency histograms implemented  |
 |   3 | CAP_HAS_QINQ_PARSER   | QinQ parser implemented                  |
 |   4 | CAP_HAS_TIMESTAMP_SYNC| cross-card timestamp sync available      |
 |   5 | CAP_HAS_MIRROR        | classifier `MIRROR_TO_HOST` implemented  |
-|   6 | CAP_HAS_PUNT          | slow-path punt RX + TX-inject windows    |
+|   6 | CAP_HAS_PUNT          | (retired) CSR-window punt RX + TX-inject |
 
 > **Note:** the Phase 3 board top advertises `PW_PHASE3_CAPABILITIES`
-> = `0x0000_006C` (HISTOGRAM | QINQ_PARSER | MIRROR | PUNT — the features
-> implemented in the data plane; DMA / MSI-X / cross-card timestamp sync
-> stay clear). Software does not currently gate on these bits.
+> = `0x0000_002D` (DMA | HISTOGRAM | QINQ_PARSER | MIRROR). `CAP_HAS_DMA`
+> replaces the retired `CAP_HAS_PUNT`: the slow path is now the PCIe-DMA
+> engine `pw_dma_slowpath` (XDMA AXI-Stream), not the CSR-window punt/inject
+> pair. MSI-X / cross-card timestamp sync stay clear. Software selects the
+> DMA backend when `CAP_HAS_DMA` is set (see `docs/design/dma-slow-path.md`).
 
 ## Port stats block (per port)
 

@@ -28,12 +28,13 @@ package pw_pkg;
     localparam logic [31:0] PW_PHASE1_CAPABILITIES = 32'h0000_0000;
 
     // Phase 3 advertises the features that are implemented on silicon:
-    // BRAM histogram, QinQ parser, classifier MIRROR_TO_HOST, and the
-    // slow-path punt RX + TX-inject windows. (DMA / MSI-X / cross-card
-    // timestamp sync are not implemented, so their bits stay clear.)
+    // PCIe-DMA slow path (pw_dma_slowpath, XDMA AXI-Stream), BRAM histogram,
+    // QinQ parser, classifier MIRROR_TO_HOST. HAS_DMA replaces the retired
+    // CSR-window punt/inject (HAS_PUNT), so software selects the DMA backend.
+    // (MSI-X / cross-card timestamp sync are not implemented -> bits clear.)
     localparam logic [31:0] PW_PHASE3_CAPABILITIES =
-        PW_CAP_HAS_HISTOGRAM | PW_CAP_HAS_QINQ_PARSER |
-        PW_CAP_HAS_MIRROR    | PW_CAP_HAS_PUNT;   // = 0x0000_006C
+        PW_CAP_HAS_DMA       | PW_CAP_HAS_HISTOGRAM |
+        PW_CAP_HAS_QINQ_PARSER | PW_CAP_HAS_MIRROR;   // = 0x0000_002D
 
     // BAR0 register offsets (see docs/design/csr-map.md).
     localparam logic [11:0] PW_REG_DEVICE_ID      = 12'h000;

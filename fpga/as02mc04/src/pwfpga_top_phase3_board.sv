@@ -49,6 +49,11 @@ module pwfpga_top_phase3_board (
     wire [ADDR_W-1:0] aw, ar;  wire [31:0] wd, rd;  wire [3:0] ws;
     wire awv,awr,wv,wr,bv,br,arv,arr,rv,rr;  wire [1:0] bresp,rresp;
 
+    // XDMA AXI-Stream slow-path channels (axi_aclk domain): H2C = host->FPGA
+    // (inject), C2H = FPGA->host (punt). Bridge <-> core (pw_dma_slowpath).
+    wire [255:0] h2c_td, c2h_td;  wire [31:0] h2c_tk, c2h_tk;
+    wire         h2c_tv, h2c_tr, h2c_tl, c2h_tv, c2h_tr, c2h_tl;
+
     pcie_axi_lite_bridge #(.AXIL_ADDR_W(ADDR_W)) u_pcie (
         .pcie_refclk_p(pcie_refclk_p), .pcie_refclk_n(pcie_refclk_n), .pcie_perst_n(pcie_reset_n),
         .pcie_rx_p(pcie_rx_p), .pcie_rx_n(pcie_rx_n), .pcie_tx_p(pcie_tx_p), .pcie_tx_n(pcie_tx_n),
@@ -58,6 +63,10 @@ module pwfpga_top_phase3_board (
         .m_axi_bresp(bresp), .m_axi_bvalid(bv), .m_axi_bready(br),
         .m_axi_araddr(ar), .m_axi_arvalid(arv), .m_axi_arready(arr),
         .m_axi_rdata(rd), .m_axi_rresp(rresp), .m_axi_rvalid(rv), .m_axi_rready(rr),
+        .h2c_tdata(h2c_td), .h2c_tkeep(h2c_tk), .h2c_tvalid(h2c_tv),
+        .h2c_tready(h2c_tr), .h2c_tlast(h2c_tl),
+        .c2h_tdata(c2h_td), .c2h_tkeep(c2h_tk), .c2h_tvalid(c2h_tv),
+        .c2h_tready(c2h_tr), .c2h_tlast(c2h_tl),
         .link_up(pcie_link_up)
     );
 
@@ -286,7 +295,13 @@ module pwfpga_top_phase3_board (
         .sfp_i2c_i(sfp_i2c_i), .sfp_i2c_o(sfp_i2c_o), .sfp_i2c_t(sfp_i2c_t),
         .status_err_o(status_err_dp), .status_activity_o(status_act_dp),
         .sysmon_temp_i(sysmon_temp_w), .sysmon_vccint_i(sysmon_vccint_w),
-        .sysmon_vccaux_i(sysmon_vccaux_w)
+        .sysmon_vccaux_i(sysmon_vccaux_w),
+        // XDMA AXI-Stream slow path (axi_aclk domain; axi_rst active-high).
+        .axi_clk(axi_aclk), .axi_rst(~axi_aresetn),
+        .s_h2c_tdata(h2c_td), .s_h2c_tkeep(h2c_tk), .s_h2c_tvalid(h2c_tv),
+        .s_h2c_tready(h2c_tr), .s_h2c_tlast(h2c_tl),
+        .m_c2h_tdata(c2h_td), .m_c2h_tkeep(c2h_tk), .m_c2h_tvalid(c2h_tv),
+        .m_c2h_tready(c2h_tr), .m_c2h_tlast(c2h_tl)
     );
 
     // ---- On-chip SYSMON (die temperature + VCCINT/VCCAUX) --------------------
