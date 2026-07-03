@@ -218,7 +218,7 @@ Each block is `0xF8` bytes; counters are 64-bit pairs.
 +0x00 rx_frames_low / +0x04 rx_frames_high
 +0x08 rx_bytes_low  / +0x0c rx_bytes_high
 +0x10 rx_fcs_error_low / +0x14 _high
-+0x18 rx_bad_frame_low / +0x1c _high
++0x18 rx_bad_frame_low / +0x1c _high   ; = real drops only (SAF overflow)
 +0x20 rx_oversize_low  / +0x24 _high
 +0x28 rx_undersize_low / +0x2c _high
 +0x30 tx_frames_low / +0x34 _high
@@ -226,16 +226,19 @@ Each block is `0xF8` bytes; counters are 64-bit pairs.
 +0x40 link_up_count        (u32)
 +0x44 link_down_count      (u32)
 +0x48 block_lock_loss      (u32)
-+0x4c drop_nomatch         (u32)   ; classifier no-match DROP count
-+0x50 drop_saf             (u32)   ; SAF forward-buffer-full drop count
-+0x54 last_drop_ctx        (u32)   ; last no-match frame context (packed)
-+0x58 last_drop_flowid     (u32)   ; last no-match frame's test_flow_id
++0x4c rx_unmatched         (u32)   ; classifier no-match count (NOT a drop)
++0x50 last_unmatched_ctx   (u32)   ; last unmatched frame context (packed)
++0x54 last_unmatched_flowid(u32)   ; last unmatched frame's test_flow_id
++0x58 reserved
 +0x5c reserved
 ```
-`rx_bad_frame` (+0x18) is the sum of `drop_nomatch` + `drop_saf` (back-compat);
-the split counters + `last_drop_ctx` (`{l3_proto[31:24], ethertype[23:8],
-is_arp[7], action[6:4], hit[3], is_ipv6[2], is_ipv4[1], is_test[0]}`) let
-software attribute a rare DROP to its cause and the offending frame's identity.
+`rx_bad_frame` (+0x18) = **real drops only** (SAF forward-buffer overflow). A
+classifier no-match is NOT a drop — the frame was received (counted in
+`rx_frames`) but matched no rule; it is counted separately in `rx_unmatched`
+(+0x4c) and does not light the error LED. `last_unmatched_ctx`
+(`{l3_proto[31:24], ethertype[23:8], is_arp[7], action[6:4], hit[3],
+is_ipv6[2], is_ipv4[1], is_test[0]}`) + `last_unmatched_flowid` let software
+attribute a rare miss to the offending frame's identity.
 
 Reading the `_low` of a counter latches its `_high` into a shadow
 register so the next read of `_high` returns the matched value.

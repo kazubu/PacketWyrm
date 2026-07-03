@@ -39,17 +39,18 @@ struct pw_port_stats {
     uint32_t link_up_count;
     uint32_t link_down_count;
     uint32_t block_lock_loss;
-    /* DROP classification (bytes 76..91 of the 128 B per-port snapshot block).
-     * rx_bad_frame above is the sum (back-compat). drop_nomatch = classifier
-     * no-match/DROP action; drop_saf = store-and-forward buffer-full drop.
-     * last_drop_ctx = a bit-packed context of the most recent no-match frame
-     * {l3_proto[31:24], ethertype[23:8], is_arp[7], action[6:4], hit[3],
-     *  is_ipv6[2], is_ipv4[1], is_test[0]}; last_drop_flowid = its test_flow_id.
-     * Lets software tell a real test-frame miss from a stray/garbage frame. */
-    uint32_t drop_nomatch;
-    uint32_t drop_saf;
-    uint32_t last_drop_ctx;
-    uint32_t last_drop_flowid;
+    /* rx_bad_frame above = REAL drops only (store-and-forward buffer overflow).
+     * Classifier no-match is NOT a drop -- it is counted separately here as
+     * rx_unmatched (informational; e.g. the host TAP's own IPv6 ND/MLD looped
+     * back to the port). Bytes 76..87 of the 128 B per-port snapshot block.
+     * last_unmatched_ctx = a bit-packed context of the most recent unmatched
+     * frame {l3_proto[31:24], ethertype[23:8], is_arp[7], action[6:4], hit[3],
+     *  is_ipv6[2], is_ipv4[1], is_test[0]}; last_unmatched_flowid = its
+     * test_flow_id. Lets software tell a real test-frame miss (is_test + known
+     * flow_id) from stray/garbage traffic. rx_unmatched does NOT light the LED. */
+    uint32_t rx_unmatched;
+    uint32_t last_unmatched_ctx;
+    uint32_t last_unmatched_flowid;
 };
 
 struct pw_flow_stats {

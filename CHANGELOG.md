@@ -9,20 +9,29 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
-  - **Per-port DROP classification + last-drop capture (RTL + SW).** The single
-    per-port `drops` counter is now split by cause: `drop_nomatch` (classifier
-    no-match / explicit DROP action) and `drop_saf` (store-and-forward
-    forward-buffer overflow) — `drops` stays as their sum (back-compat). Plus a
-    per-port capture of the most recent no-match frame's identity
-    (`last_drop_ctx` = `{l3_proto, ethertype, is_arp, action, hit, is_ipv6,
-    is_ipv4, is_test}` + `last_drop_flowid`), so a rare DROP is attributable at a
-    glance: a real test-frame miss carries `is_test` + a known `flow_id`; a
-    stray/garbage frame does not. Surfaced through `ports.stats`
-    (`drop_nomatch`/`drop_saf`/`last_drop`) and the GUI health panel (drop
-    breakdown + last-frame identity). Added to the 128-byte per-port snapshot
-    block at bytes 76..91; `struct pw_port_stats` extended to match. A proper
-    tester feature (drop reasons), which also instruments the rare phantom-drop
-    investigation. RTL diagnostic build — timing gated.
+  - **Unmatched frames split out of `drops`; LED no longer red on no-match
+    (RTL + SW).** A classifier **no-match** is no longer counted as a drop or
+    treated as an error. Per-port `drops` (`rx_bad_frame`) now counts **real
+    drops only** — a store-and-forward forward-buffer overflow. Frames that were
+    received (and counted in `rx_frames`) but matched no flow/forward/punt rule
+    are counted separately in the new `rx_unmatched` counter — informational,
+    e.g. the host TAP's own IPv6 ND/MLD looped back to the port. The front-panel
+    error LED (`err_sticky`) now latches on per-flow `lost` + `rx_fcs_error` +
+    real SAF-overflow `drops` **only**; `rx_unmatched` is deliberately excluded,
+    so benign stray traffic no longer turns the LED red. A per-port capture of
+    the most recent unmatched frame's identity (`last_unmatched_ctx` =
+    `{l3_proto, ethertype, is_arp, action, hit, is_ipv6, is_ipv4, is_test}` +
+    `last_unmatched_flowid`) lets a rare miss be attributed at a glance: a real
+    test-frame miss carries `is_test` + a known `flow_id`; stray/garbage traffic
+    does not. Surfaced through `ports.stats` (`drops`/`rx_unmatched`/
+    `last_unmatched`) and the GUI health panel (real drops as an error cause,
+    unmatched as an informational note + a new `unmatched` port-table column).
+    Per-port snapshot block: `rx_unmatched`@byte76, `last_unmatched_ctx`@80,
+    `last_unmatched_flowid`@84; `struct pw_port_stats` updated to match (the
+    interim `drop_nomatch`/`drop_saf`/`last_drop` fields are removed —
+    unreleased). RTL change — timing gated. (Supersedes the interim per-port
+    DROP-classification entry; the diagnostic pinned the phantom-drop cause to
+    host-TAP ICMPv6, which this reclassifies as `rx_unmatched`, not a drop.)
   - **frame_len minimum lowered 64 → 60 (the true 64-byte wire frame).**
     `frame_len` is the pre-FCS L2 length, so the smallest legal Ethernet frame
     (64 B on the wire *including* FCS) is 60 B pre-FCS — the old floor of 64

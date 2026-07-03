@@ -67,11 +67,12 @@ module pw_stats_snapshot #(
     input  wire [31:0]                link_up_cnt_i    [PORTS],
     input  wire [31:0]                link_down_cnt_i  [PORTS],
     input  wire [31:0]                block_lock_loss_i[PORTS],
-    // DROP classification + last-no-match capture (per-port block bytes 76..91).
-    input  wire [31:0]                drop_nomatch_i   [PORTS],
-    input  wire [31:0]                drop_saf_i       [PORTS],
-    input  wire [31:0]                last_drop_ctx_i  [PORTS],
-    input  wire [31:0]                last_drop_fid_i  [PORTS],
+    // Unmatched-frame counter + last-unmatched capture (per-port block bytes
+    // 76..87). port_drops_i above = real drops (SAF overflow); rx_unmatched is
+    // informational (classifier no-match) and is NOT a drop.
+    input  wire [31:0]                rx_unmatched_i       [PORTS],
+    input  wire [31:0]                last_unmatched_ctx_i [PORTS],
+    input  wire [31:0]                last_unmatched_fid_i [PORTS],
 
     // Per-flow stats are BRAM-backed in the data plane and read one flow at a
     // time. The snapshot drives flow_rd_addr_o and the merged record arrives
@@ -156,8 +157,9 @@ module pw_stats_snapshot #(
                 logic [PORT_STRIDE*8-1:0] pr;
                 pr = '0;
                 // pw_port_stats layout: rx_frames@0, rx_bytes@8, rx_fcs_error@16,
-                // rx_bad_frame@24 (we surface DROP here), ..., tx_frames@48,
-                // tx_bytes@56, link counters @64/68/72. Counters 48-bit -> u64.
+                // rx_bad_frame@24 (= real drops: SAF overflow), ..., tx_frames@48,
+                // tx_bytes@56, link counters @64/68/72, rx_unmatched@76,
+                // last_unmatched_ctx@80, last_unmatched_flowid@84. 48-bit -> u64.
                 pr = put_u64(pr,  0, {16'h0, rx_frames_i[p]});
                 pr = put_u64(pr,  8, {16'h0, rx_bytes_i[p]});
                 pr = put_u64(pr, 16, {16'h0, rx_fcs_err_i[p]});  // rx_fcs_error
@@ -167,10 +169,9 @@ module pw_stats_snapshot #(
                 pr = put_u32_port(pr, 64, link_up_cnt_i[p]);     // link_up_count
                 pr = put_u32_port(pr, 68, link_down_cnt_i[p]);   // link_down_count
                 pr = put_u32_port(pr, 72, block_lock_loss_i[p]); // block_lock_loss
-                pr = put_u32_port(pr, 76, drop_nomatch_i[p]);    // drop_nomatch
-                pr = put_u32_port(pr, 80, drop_saf_i[p]);        // drop_saf
-                pr = put_u32_port(pr, 84, last_drop_ctx_i[p]);   // last_drop_ctx
-                pr = put_u32_port(pr, 88, last_drop_fid_i[p]);   // last_drop_flowid
+                pr = put_u32_port(pr, 76, rx_unmatched_i[p]);       // rx_unmatched
+                pr = put_u32_port(pr, 80, last_unmatched_ctx_i[p]); // last_unmatched_ctx
+                pr = put_u32_port(pr, 84, last_unmatched_fid_i[p]); // last_unmatched_flowid
                 shadow_port[p] <= pr;
             end
             walking <= 1'b1;

@@ -1357,19 +1357,20 @@ static struct json_object *build_port_stats(const struct pw_config *cfg,
             json_object_object_add(o, "tx_frames", json_object_new_int64((int64_t)ps.tx_frames));
             json_object_object_add(o, "tx_bytes",  json_object_new_int64((int64_t)ps.tx_bytes));
             json_object_object_add(o, "rx_fcs_error", json_object_new_int64((int64_t)ps.rx_fcs_error));
-            /* The snapshot's rx_bad_frame slot carries the data-plane DROP
-             * counter (no-match / explicit DROP action) -- expose it as `drops`.
-             * FCS + drops are the two per-port inputs to the LED err_sticky. */
+            /* `drops` = REAL drops only (store-and-forward buffer overflow).
+             * FCS + drops are the two per-port inputs to the LED err_sticky. A
+             * classifier no-match is NOT a drop (see rx_unmatched below). */
             json_object_object_add(o, "drops", json_object_new_int64((int64_t)ps.rx_bad_frame));
-            /* DROP classification breakdown: no-match (classifier) vs SAF
-             * forward-buffer overflow. `drops` above is their sum (back-compat). */
-            json_object_object_add(o, "drop_nomatch", json_object_new_int64((int64_t)ps.drop_nomatch));
-            json_object_object_add(o, "drop_saf", json_object_new_int64((int64_t)ps.drop_saf));
-            /* Most-recent no-match frame's context (decoded) so a rare drop can be
-             * attributed: was it a real test frame (is_test + its flow_id) or a
+            /* rx_unmatched: frames that arrived and were counted in rx_frames but
+             * matched no classifier rule (informational, e.g. the host TAP's own
+             * IPv6 ND/MLD looped back). Deliberately separate from `drops` and
+             * does NOT light the LED. */
+            json_object_object_add(o, "rx_unmatched", json_object_new_int64((int64_t)ps.rx_unmatched));
+            /* Most-recent unmatched frame's context (decoded) so a rare miss can
+             * be attributed: was it a real test frame (is_test + its flow_id) or a
              * stray/garbage frame? Raw ctx word + decoded fields + flow_id. */
             {
-                uint32_t c = ps.last_drop_ctx;
+                uint32_t c = ps.last_unmatched_ctx;
                 struct json_object *ld = json_object_new_object();
                 json_object_object_add(ld, "ctx_raw", json_object_new_int64((int64_t)c));
                 json_object_object_add(ld, "is_test",  json_object_new_boolean(c & 0x1));
@@ -1380,8 +1381,8 @@ static struct json_object *build_port_stats(const struct pw_config *cfg,
                 json_object_object_add(ld, "is_arp",   json_object_new_boolean((c>>7) & 0x1));
                 json_object_object_add(ld, "ethertype",json_object_new_int((int)((c>>8) & 0xFFFF)));
                 json_object_object_add(ld, "l3_proto", json_object_new_int((int)((c>>24) & 0xFF)));
-                json_object_object_add(ld, "flow_id",  json_object_new_int64((int64_t)ps.last_drop_flowid));
-                json_object_object_add(o, "last_drop", ld);
+                json_object_object_add(ld, "flow_id",  json_object_new_int64((int64_t)ps.last_unmatched_flowid));
+                json_object_object_add(o, "last_unmatched", ld);
             }
             json_object_object_add(o, "link_up_count", json_object_new_int64((int64_t)ps.link_up_count));
             json_object_object_add(o, "block_lock_loss", json_object_new_int64((int64_t)ps.block_lock_loss));

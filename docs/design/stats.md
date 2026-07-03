@@ -11,7 +11,7 @@ counters, their semantics, and how multi-card aggregation works.
 | `rx_frames`            | u64  | post-FCS, valid + invalid              |
 | `rx_bytes`             | u64  | wire bytes including FCS               |
 | `rx_fcs_error`         | u64  | RX `tuser`-on-`tlast` errored frames   |
-| `rx_bad_frame`         | u64  | DROP/no-match + SAF overflow drops     |
+| `rx_bad_frame`         | u64  | REAL drops only: SAF forward-buffer overflow (exposed as `drops`) |
 | `rx_oversize`          | u64  | > MTU (not yet produced)               |
 | `rx_undersize`         | u64  | < 64 B (not yet produced)              |
 | `tx_frames`            | u64  |                                        |
@@ -19,19 +19,22 @@ counters, their semantics, and how multi-card aggregation works.
 | `link_up_count`        | u32  | rising-edge count of MAC link_up       |
 | `link_down_count`      | u32  | falling-edge count of MAC link_up      |
 | `block_lock_loss`      | u32  | falling-edge count of PCS block_lock   |
-| `drop_nomatch`         | u32  | DROP action count: classifier no-match |
-| `drop_saf`             | u32  | SAF forward-buffer-full drop count     |
-| `last_drop_ctx`        | u32  | most recent no-match frame's context: `{l3_proto[31:24], ethertype[23:8], is_arp[7], action[6:4], hit[3], is_ipv6[2], is_ipv4[1], is_test[0]}` |
-| `last_drop_flowid`     | u32  | that frame's `test_flow_id` (0 if not a test frame) |
+| `rx_unmatched`         | u32  | frames counted in `rx_frames` that matched no classifier rule (informational, NOT a drop) |
+| `last_unmatched_ctx`   | u32  | most recent unmatched frame's context: `{l3_proto[31:24], ethertype[23:8], is_arp[7], action[6:4], hit[3], is_ipv6[2], is_ipv4[1], is_test[0]}` |
+| `last_unmatched_flowid`| u32  | that frame's `test_flow_id` (0 if not a test frame) |
 
-`rx_bad_frame` is the **sum** `drop_nomatch + drop_saf` (kept for back-compat as
-`drops`); the two new counters split it by cause, and `last_drop_ctx`/
-`last_drop_flowid` capture the identity of the most recent no-match frame so a
-rare drop is diagnosable (a real test-frame miss carries `is_test` + a known
-`flow_id`; a stray/garbage frame does not).
+`rx_bad_frame` (exposed as `drops`) counts **real drops only** — a
+store-and-forward forward-buffer overflow. A classifier **no-match** is NOT a
+drop: the frame was still received and counted in `rx_frames`, it simply matched
+no flow/forward/punt rule (e.g. the host TAP's own IPv6 ND/MLD looped back to the
+port). That case is counted separately in `rx_unmatched` and deliberately does
+**not** light the front-panel error LED. `last_unmatched_ctx`/`last_unmatched_flowid`
+capture the identity of the most recent unmatched frame so it is diagnosable (a
+real test-frame miss carries `is_test` + a known `flow_id`; stray/garbage traffic
+does not).
 
-`rx_frames/bytes`, `tx_frames/bytes`, `rx_fcs_error` and `rx_bad_frame`
-are counted at the port edge in `pw_data_plane_axis` (48-bit, zero-extended
+`rx_frames/bytes`, `tx_frames/bytes`, `rx_fcs_error`, `rx_bad_frame` and
+`rx_unmatched` are counted at the port edge in `pw_data_plane_axis` (48-bit, zero-extended
 to the snapshot fields; cleared by `stats_clear`). Link health
 (`link_up/down_count`, `block_lock_loss`) is derived by 2-FF synchronizing
 the async MAC/PCS status levels into `dp_clk` and edge-counting; these are
