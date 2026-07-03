@@ -28,14 +28,26 @@ packetwyrmd ── inject ▶ port0 TX ─DAC─ port1 RX ▶ punt ── packet
    - `set protocols isis hello-padding disable` (cRPD 26.2 rejects the older
      `no-hello-padding`).
 
-## Status (2026-07-04) — full control plane over the DMA slow path
+## Status (2026-07-04) — full dual-stack control plane over the DMA slow path
 
-**All verified across the DUT on the DMA slow-path build (build_id 0x6a47e2bc):
-ARP, ICMP ping (0 % loss, ~2.2 ms RTT), BGP Established, OSPF Full, IS-IS L1+L2
-Up**, with R1/R2 learning each other's loopback via BOTH OSPF and IS-IS. IS-IS
-and >512 B frames — blocked on the old CSR-window path — now work because the
-slow path is PCIe-DMA (`pw_dma_slowpath`), not the 512 B register window. See
-`docs/design/dma-slow-path.md`.
+**All verified across the DUT on the DMA slow-path build (build_id 0x6a47e2bc):**
+- **IPv4:** ARP, ICMP ping (0 % loss, ~2.2 ms RTT), BGP Established, OSPF (v2)
+  Full, IS-IS L1+L2 Up.
+- **IPv6:** ND, ICMPv6 ping (0 % loss), **BGP over IPv6 Established**, **OSPFv3
+  Full**, IS-IS IPv6 topology.
+
+Both routers learn each other's IPv4 *and* IPv6 loopback via OSPF/OSPFv3 *and*
+IS-IS. IS-IS and >512 B frames — blocked on the old CSR-window path — now work
+because the slow path is PCIe-DMA (`pw_dma_slowpath`), not the 512 B register
+window. See `docs/design/dma-slow-path.md`.
+
+The IPv6 control plane needs **`ipv6_nd: true`** in `packetwyrm.yaml` (punts
+ICMPv6 ND); the flow compiler then also emits the IPv6 punt variants of OSPFv3
+(0x86DD + next-hdr 89) and BGP-over-IPv6 (0x86DD + TCP/179), sharing the 0x86DD
+ethertype + proto/L4 comparators with the IPv4 rules → 11/12 field comparators.
+cRPD config adds `family inet6` on net0, `protocols ospf3 area 0 interface net0`,
+a BGP group with an IPv6 neighbor + `family inet6 unicast`, and
+`protocols isis topologies ipv6-unicast`.
 
 ### cRPD gotchas (in addition to the license / lo0-NET / hello-padding notes above)
 

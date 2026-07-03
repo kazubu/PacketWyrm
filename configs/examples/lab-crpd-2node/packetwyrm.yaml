@@ -47,13 +47,13 @@ logical_interfaces:
     vlan: 0
     mac: "02:a5:02:00:00:64"
     mtu: 9000
-    punt: { arp: true, ipv6_nd: false, lldp: false, icmp: true, bgp: true, ospf: true, is_is: true }
+    punt: { arp: true, ipv6_nd: true, lldp: false, icmp: true, bgp: true, ospf: true, is_is: true }
 
   - id: 1001
     global_port: 1
     vlan: 0
     mac: "02:a5:02:00:01:64"
     mtu: 9000
-    punt: { arp: true, ipv6_nd: false, lldp: false, icmp: true, bgp: true, ospf: true, is_is: true }
+    punt: { arp: true, ipv6_nd: true, lldp: false, icmp: true, bgp: true, ospf: true, is_is: true }
 
 flows: []

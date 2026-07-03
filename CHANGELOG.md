@@ -40,10 +40,14 @@ For where work is going next, see `NEXT-STEPS.md`.
     correct in-band `lif_id`/`ingress`) both pass; full `sim_all` (40 TBs) green.
     **Gated build passed** (build_id `0x6a47e2bc`, LUT 94.84 %, all clocks WNS>0),
     **flashed to 07:00.0 and HW-validated (2026-07-04):** the full cRPD 2-node
-    control plane now works across the DUT over the DMA slow path — **ARP, ICMP
-    ping (0 % loss, ~2.2 ms RTT), BGP Established, OSPF Full, IS-IS L1+L2 Up**,
-    with both routers learning each other's loopback via OSPF *and* IS-IS. IS-IS
-    and >512 B frames, blocked on the old CSR window, now traverse. The P2 host
+    control plane now works across the DUT over the DMA slow path — **dual-stack:
+    IPv4 (ARP, ICMP ping 0 % loss ~2.2 ms, BGP, OSPFv2 Full, IS-IS L1+L2) AND IPv6
+    (ND, ICMPv6 ping, BGP-over-IPv6 Established, OSPFv3 Full, IS-IS IPv6)**, with
+    both routers learning each other's v4+v6 loopbacks via OSPF/OSPFv3 and IS-IS.
+    IS-IS and >512 B frames, blocked on the old CSR window, now traverse. The
+    IPv6 control plane is gated on `ipv6_nd: true` (punts ICMPv6 ND); the flow
+    compiler then also emits the IPv6 punt variants of OSPFv3 / BGP-over-IPv6,
+    sharing comparators with the IPv4 rules (11/12 field comparators). The P2 host
     DMA driver lives in `sw/libpacketwyrm` (`csr.h` XDMA reg map + 32-B SG
     descriptor; `vfio` `MAP_DMA`/`UNMAP` + `map_region` for BAR1; `backend_bar.c`
     DMA backend, capability-gated so `pw_host_plane` is unchanged). HW bring-up
