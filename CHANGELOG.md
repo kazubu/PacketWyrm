@@ -9,6 +9,15 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **All SW binaries now embed the build-time git revision in their version
+    string.** `pw_version_string()` — the single funnel for `pktwyrm version`,
+    the daemon `version` RPC / `packetwyrm_build_info` metric, the proxyd
+    `/proxyd/version` endpoint and the Web GUI versions panel — now returns
+    e.g. `0.1.0 (5c5e9abb1f0a+dirty)`. The Makefile computes the short SHA (+
+    `+dirty` when tracked files differ from HEAD, `unknown` outside a git tree)
+    and injects it via `-DPW_GIT_REV` into `version.o`, which is rebuilt every
+    `make` so the stamp stays current. Mirrors the FPGA bitstream's per-build
+    `build_id`/`git_hash` so a running SW binary can be traced to its source.
   - **PCIe-DMA slow path (`pw_dma_slowpath`) integrated into the Phase 3 core
     — RTL + sim (host driver pending).** The CSR-window inject/punt slow path
     (512 B inject / 2048 B punt, ~200 ms MMIO-per-word) is replaced by a

@@ -30,6 +30,13 @@ SSL_LIBS    := $(shell $(PKG_CONFIG) --libs openssl)
 EXTRA_CFLAGS := $(YAML_CFLAGS) $(JSON_CFLAGS)
 EXTRA_LIBS   := $(YAML_LIBS) $(JSON_LIBS) -lpthread
 
+# Build-time git revision embedded into pw_version_string() (all SW binaries
+# funnel through it). Short SHA + "+dirty" when tracked files differ from HEAD;
+# "unknown" outside a git tree. Injected only into version.o (see rule below).
+GIT_REV    := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+GIT_DIRTY  := $(shell git diff --quiet HEAD 2>/dev/null || echo +dirty)
+PW_GIT_REV := $(GIT_REV)$(GIT_DIRTY)
+
 LIB_DIR     := libpacketwyrm
 LIB_INC     := $(LIB_DIR)/include
 LIB_SRC_DIR := $(LIB_DIR)/src
@@ -65,6 +72,16 @@ $(BUILD_DIR):
 
 %.o: %.c
 	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -c -o $@ $<
+
+# version.o carries the build-time git revision. Rebuild it on every make (FORCE)
+# so the embedded rev/dirty flag stays current, and inject the string here only
+# (the rest of the lib is untouched when just the rev changes). This explicit
+# rule takes precedence over the generic %.o rule above.
+$(LIB_SRC_DIR)/version.o: $(LIB_SRC_DIR)/version.c FORCE
+	$(CC) $(CFLAGS) $(INCLUDES) -DPW_GIT_REV='"$(PW_GIT_REV)"' -MMD -MP -c -o $@ $<
+
+.PHONY: FORCE
+FORCE:
 
 # Header dependency tracking: rebuild objects when an included header changes
 # (e.g. a struct in config.h). Without this, editing a header left stale .o
