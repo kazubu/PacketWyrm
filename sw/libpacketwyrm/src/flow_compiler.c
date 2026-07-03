@@ -560,11 +560,14 @@ static pw_status compile_punt_rules(struct pw_program *out, const struct pw_conf
             PUNT(0x0800, 6, PWFPGA_FC_SRC_L4_SRC, 179, 0, 0, 30);
         }
         if (l->punt.ospf)    PUNT(0x0800, 89, 0, 0, 0, 0, 30);   /* OSPFv2 */
-        /* IPv6 control plane: when ipv6_nd is set (the lif runs IPv6), also punt
-         * the IPv6 variants of ospf/bgp. The ethertype 0x86DD comparator is shared
-         * with the ipv6_nd rule and the proto/L4 comparators with the IPv4 rules,
-         * so these cost ~0 extra field comparators (deduped) -> stays under NCMP.
-         * OSPFv3 = IPv6 next-header 89; BGP-over-IPv6 = TCP/179 over IPv6. */
+        /* IPv6 control plane. NB (API semantics): `ipv6_nd` acts as the per-lif
+         * "IPv6 control-plane enable" -- with it set, the ospf/bgp flags emit their
+         * IPv6 variants too (OSPFv3 = next-hdr 89; BGP-over-IPv6 = TCP/179), not
+         * just ICMPv6 ND. This is deliberate (IPv6 always needs ND), but it means
+         * `ipv6_nd` is broader than its name; a future schema could split it into
+         * ipv6_nd / ospf3 / bgp_ipv6 for finer control. The 0x86DD ethertype
+         * comparator is shared with the ND rule and the proto/L4 comparators with
+         * the IPv4 rules, so these cost ~0 extra field comparators (deduped). */
         if (l->punt.ospf && l->punt.ipv6_nd) PUNT(0x86DD, 89, 0, 0, 0, 0, 30);
         if (l->punt.bgp  && l->punt.ipv6_nd) {
             PUNT(0x86DD, 6, PWFPGA_FC_SRC_L4_DST, 179, 0, 0, 30);

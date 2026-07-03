@@ -263,26 +263,34 @@ move to BAR0+0x10000 turned out moot (silicon uses two 64 KB BARs, CSR at BAR0:0
 
 ## 5c. P2 host DMA driver — as-built (SW) + HW bring-up checklist
 
-Implemented in `sw/libpacketwyrm/` (branch, unflashed):
-- **`csr.h`**: `PWFPGA_CSR_DMA_OFFSET` (0x10000), XDMA register map (H2C/C2H
-  channel + SGDMA blocks, config/irq targets), `struct pwfpga_xdma_desc` (32-B
-  SG descriptor + control magic/flags), poll-mode writeback struct.
+Implemented in `sw/libpacketwyrm/` — **as-built after HW bring-up** (the design
+below reflects the silicon findings in the next section, not the pre-flash draft):
+- **`csr.h`**: XDMA register map (H2C/C2H channel + SGDMA blocks, config/irq
+  targets), `struct pwfpga_xdma_desc` (32-B SG descriptor + control magic/flags).
+  `PWFPGA_CSR_DMA_OFFSET` (0x10000) is retained only as a probe fallback for a
+  hypothetical future single-big-BAR; on this build the CSR is BAR0:0 (csr_off=0).
 - **`vfio.[ch]`**: `pw_vfio_map_dma`/`unmap_dma` (VFIO_IOMMU_MAP_DMA, identity
-  IOVA) so the FPGA bus-masters host buffers.
+  IOVA) for host ring/frame buffers, and `pw_vfio_map_region` to map BAR1 (the
+  XDMA control registers) on the already-open device.
 - **`backend_bar.c`**: the DMA backend is folded into the existing BAR backend —
-  - **CSR base auto-detect**: probes `DEVICE_ID` (top16 == 0xA502) at offset 0 and
-    0x10000, sets `csr_off`; every CSR access adds it. Robust to the legacy 64 KB
-    BAR and to a future layout flip.
-  - **`dma_setup`**: one page-aligned DMA-mapped pool → {H2C desc, C2H desc, TX
-    jumbo buf, RX jumbo buf}; brought up only when `csr_off==0x10000 && HAS_DMA &&
-    vfio` (bus-master DMA needs the IOMMU). Failure is non-fatal (CSR still works).
+  - **Two BARs**: BAR0 = CSR (offset 0, `csr_off=0`, unchanged from legacy);
+    **BAR1 = XDMA control registers** (mapped via `pw_vfio_map_region`; `xdma_wr/rd`
+    target it). A `DEVICE_ID` probe still self-selects if a future build differs.
+  - **`dma_setup`**: maps BAR1 + one page-aligned DMA-mapped pool → {H2C desc,
+    C2H descriptor ring[16], TX buf, N RX buffers}. Brought up when **`HAS_DMA`
+    && vfio**; if `HAS_DMA` but DMA does NOT come up (sysfs path / failure) the
+    attach **FAILS** (fatal — no CSR-window fallback exists), so `pw_bar_backend_open`
+    retries via vfio or surfaces the error.
   - **`dma_slow_path_tx`** (H2C, inject): prepend the 8-B header {egress}, DMA the
-    frame, poll the completed-descriptor count. **`dma_slow_path_rx`** (C2H, punt):
-    arm a C2H descriptor at the RX buffer, poll the completed count, parse the 8-B
-    header {lif_id, ingress}, copy payload, re-arm. Single-descriptor poll mode
-    (adequate for the cRPD control plane; a C2H ring can come later).
+    frame, wait for the H2C completed-count != 0 (it resets to 0 on RUN).
+    **`dma_slow_path_rx`** (C2H, punt): a **continuously-running CIRCULAR
+    descriptor ring** (never stop/re-armed per frame — that wedges the engine),
+    reaped by a consumer index vs the completed count (each frame once, no loss/
+    dup). Length from the frame's own L2/L3 headers (`punt_frame_len`), not
+    `desc.bytes`. In-band header carries {lif_id, ingress}.
   - `bar_slow_path_rx/tx` branch to the DMA path when `c->dma` is set — so
-    `pw_host_plane_step` and the backend-ops signatures are **unchanged**.
+    `pw_host_plane_step` and the backend-ops signatures are **unchanged**. The
+    daemon worker poll cap is 1 ms (C2H has no fd to wake `poll`).
 
 ### HW bring-up — DONE (2026-07-04, flashed 07:00.0 build_id 0x6a47e2bc)
 
@@ -323,10 +331,16 @@ Silicon corrected several design assumptions; the as-built code reflects these:
 widened (separate RTL change); the general-purpose punt length wants a byte_len
 in-band header field. Control-plane traffic (≤~2 KB) fully works today.
 
-Reflash 07:00.0 → P5 revalidate are the remaining steps (flash = user-chosen HW
-window; it drops the current working image until the DMA path is validated).
+Flash + cRPD re-validation are **DONE** (2026-07-04); see the bring-up section
+above. The only remaining item is true 9000 B jumbo (the MAC-CDC widen).
 
-## 6. Phasing
+## 6. Phasing — **P1–P5 COMPLETE (2026-07-04)** except jumbo
+
+P1 (RTL+sim), P2 (host DMA driver), P3 (integrate under `pw_host_plane`),
+P4 (gated build + flash 07:00.0 + HW bring-up), and P5 (cRPD lab: dual-stack
+ARP/ND/ping/BGP/BGP-v6/OSPFv2/OSPFv3/IS-IS all Up across the DUT) are all done.
+Outstanding: true 9000 B jumbo needs `pw_mac_axis_cdc DEPTH` widened (§ above).
+The original phase descriptions follow for reference:
 
 1. **P1 — RTL DMA engine + sim.** `pw_dma_slowpath` + bridge wiring; a Verilator
    tb that loops a TX-ring frame through AXIS into the RX ring. No HW yet.

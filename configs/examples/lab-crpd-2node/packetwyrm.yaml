@@ -21,11 +21,16 @@
 # (per ingress port + vlan), so ARP / ICMP / BGP(TCP179) / OSPF(proto 89) /
 # IS-IS(LLC) reach the container instead of being dropped.
 #
+# ipv6_nd = true enables the IPv6 control plane on the lif: it punts ICMPv6 ND
+# AND (together with the ospf/bgp flags) the IPv6 variants OSPFv3 (0x86DD +
+# next-hdr 89) and BGP-over-IPv6 (0x86DD + TCP/179). The 0x86DD ethertype +
+# proto/L4 comparators are shared with the IPv4 rules (deduped by the compiler).
+#
 # NOTE: the field-comparator pool is limited (NCMP=12, shared across all
-# punt+forward rules). This lab targets the requested protocols (ARP, ICMPv4
-# ping, BGP, OSPF, IS-IS) = 11 distinct comparators. lldp + ipv6_nd are left
-# OFF here to stay under the limit; enable them only if you drop another (e.g.
-# make the lifs untagged (vlan: 0) to free the VLAN comparator).
+# punt+forward rules). This lab's dual-stack set (ARP, ICMPv4, BGP, OSPF, IS-IS,
+# ipv6_nd + IPv6 OSPFv3/BGP) compiles to 11 field comparators (verify with
+# `pktwyrm load`). lldp is left OFF to keep headroom; untagged lifs (vlan: 0)
+# also free the VLAN comparator.
 
 system:
   name: "pw-lab-crpd-2node"

@@ -329,16 +329,15 @@ static pw_status dma_slow_path_tx(struct bar_ctx *c, const void *frame, size_t l
     xdma_wr(c, PWFPGA_XDMA_H2C_SGDMA + PWFPGA_XDMA_SG_DESC_ADJ, 0);
     xdma_wr(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_CONTROL, PWFPGA_XDMA_CTRL_RUN);
 
-    /* Read the completed-count baseline AFTER RUN. Like C2H, this single-descriptor
-     * count RESETS to 0 on RUN, so reading it BEFORE RUN latched the stale value 1
-     * from the previous inject's completion; the poll then saw cnt(reset 0) !=
-     * base(1) and returned "OK" IMMEDIATELY without the frame having been DMA'd --
-     * silently dropping ~1/3 of injected frames (they never egressed -> never
-     * looped -> never punted, the cause of the residual ping loss). */
-    uint32_t base = xdma_rd(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_COMPLETED_COUNT);
+    /* The single-descriptor completed-count RESETS to 0 on RUN, then becomes 1
+     * when the descriptor finishes. Wait for count != 0 WITHOUT reading a baseline:
+     * reading a baseline has a race either way -- before RUN it latches the stale
+     * 1 from the previous inject (false immediate completion, frame not DMA'd),
+     * and after RUN a descriptor that completes before the baseline read latches
+     * base=1 so count never changes (spin to timeout). count!=0 is unambiguous. */
     pw_status r = PW_E_IO;
     for (int i = 0; i < 1000000; i++)
-        if (xdma_rd(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_COMPLETED_COUNT) != base) { r = PW_OK; break; }
+        if (xdma_rd(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_COMPLETED_COUNT) != 0) { r = PW_OK; break; }
     xdma_wr(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_CONTROL, 0);   /* stop */
     return r;
 }
@@ -625,8 +624,17 @@ pw_status pw_bar_backend_open(const char *pci_bdf, struct pw_card_backend *out) 
     void  *base = NULL;
     size_t sz   = 0;
     pw_status r = pw_pci_open_bar0(pci_bdf, &base, &sz);
-    if (r == PW_OK)
-        return bar_backend_attach(base, sz, pci_bdf, NULL, out);
+    if (r == PW_OK) {
+        pw_status ar = bar_backend_attach(base, sz, pci_bdf, NULL, out);
+        if (ar == PW_OK) return PW_OK;
+        /* sysfs mmap worked but attach was rejected -- on a DMA build (HAS_DMA)
+         * the sysfs path has no vfio, so bus-master DMA can't be set up and
+         * attach returns PW_E_BACKEND (it already released the sysfs mapping).
+         * Fall back to vfio (which brings the DMA path up) unless sysfs is forced. */
+        if (force && strcmp(force, "sysfs") == 0) return ar;
+        pw_status rv = pw_bar_backend_open_vfio(pci_bdf, out);
+        return (rv == PW_OK) ? PW_OK : ar;
+    }
 
     if (force && strcmp(force, "sysfs") == 0)
         return r;  /* caller pinned sysfs; report its error */
