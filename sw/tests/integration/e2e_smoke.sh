@@ -125,6 +125,49 @@ else
 fi
 rm -f "$WORK/failflag"
 
+# IPC read timeout: a client that announces a body length then stalls must not
+# wedge the single-threaded daemon -- after the read timeout the daemon closes
+# it and the next RPC still works. (Skipped without python3.)
+if command -v python3 >/dev/null 2>&1; then
+    python3 - "$SOCK" <<'PY' &
+import socket, sys, time
+s = socket.socket(socket.AF_UNIX)
+s.connect(sys.argv[1])
+s.sendall(b'\x00\x00\x00\x10')   # announce a 16-byte body, then never send it
+time.sleep(12)                   # hold past the daemon's 5 s read timeout
+PY
+    stall_pid=$!
+    sleep 0.5
+    if timeout 20 "$CLI" rpc version --socket "$SOCK" 2>&1 | grep -q '"version"'; then
+        echo "[ ok ] IPC read timeout: daemon recovers from a stalled client"
+    else
+        echo "[FAIL IPC timeout] daemon did not service a normal RPC after a stalled client"
+        kill "$stall_pid" 2>/dev/null || true; exit 1
+    fi
+    kill "$stall_pid" 2>/dev/null || true
+else
+    echo "(skipping IPC-timeout test: no python3)"
+fi
+
+# A control socket that can't be created is fatal (not a silent warning): the
+# daemon would be unmanageable. Point control_socket under a regular FILE so the
+# bind fails (ENOTDIR), and expect a nonzero exit with a diagnostic. `timeout`
+# guards against a regression that would leave the daemon running.
+touch "$WORK/afile"
+BADCFG="$WORK/badsock.yaml"
+sed -e '/^system:/a\  control_socket: "'"$WORK/afile/pw.sock"'"' \
+    "$ROOT/configs/examples/single-card.yaml" > "$BADCFG"
+if timeout 10 "$DAEMON" -s 0 -F -c "$BADCFG" >"$WORK/badsock.log" 2>&1; then
+    echo "[FAIL socket-fatal] daemon exited 0 despite an unusable control socket"; exit 1
+else
+    if grep -q 'control socket' "$WORK/badsock.log"; then
+        echo "[ ok ] unusable control socket is a fatal startup failure"
+    else
+        echo "[FAIL socket-fatal] nonzero exit but no control-socket diagnostic:"
+        cat "$WORK/badsock.log"; exit 1
+    fi
+fi
+
 cleanup
 trap 'rm -rf "$WORK"' EXIT
 

@@ -9,6 +9,36 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Daemon availability hardening (4th full-codebase review) — HW-validated.**
+    Five items where the single-threaded daemon could hang or come up
+    unmanageable. Re-validated on 07:00.0 (daemon restarted on the new binary
+    without `-F`, no false fatal on the real card + TAPs, cRPD dual-stack control
+    plane reconverged — v4/v6 ping 0 % loss, OSPFv2/v3 Full, IS-IS L1+L2 Up, BGP
+    v4+v6 Established):
+    - **A stalled local IPC client can no longer wedge the main loop.** The
+      control socket is 0666 and the daemon is single-threaded, so a client that
+      sent a 4-byte length header and then stalled blocked the whole loop (servo,
+      metrics, every RPC) forever — a pre-auth local DoS. Accepted control-socket
+      (and Prometheus) connections now get a 5 s `SO_RCVTIMEO`/`SO_SNDTIMEO`, so a
+      stalled peer times out and the connection closes. e2e regression: a client
+      that announces a body and never sends it, after which a normal RPC still
+      succeeds.
+    - **Initial FPGA programming failure is fatal without `-F`.** Startup used to
+      only warn if `program_backends` failed (BAR error / card drop / window
+      mismatch) — leaving the daemon alive with an out-of-sync device. Now fatal
+      unless `--allow-fake` (dev/CI keeps the warning).
+    - **Control-socket bind/listen failure is fatal.** It was a warning, leaving
+      a daemon that looks healthy under systemd but is unmanageable (no
+      config.load / flow control / stats / proxyd). Now a fatal startup failure.
+      e2e regression: a control_socket path under a regular file (ENOTDIR) exits
+      nonzero with a diagnostic.
+    - **`ipc.h` auth comment corrected** — it claimed `0660 root:packetwyrm`
+      while the daemon creates the socket `0666`; now describes the actual
+      `system.secret` model + 0666 default.
+    - **RTL standalone defaults aligned:** `pw_field_classifier` /
+      `pw_slice_match` `HDR_BYTES` default 160 → 176 to match the production
+      `pw_data_plane_axis` (the top always overrides; this only affects
+      standalone instantiation / future reuse).
   - **Daemon failure-mode hardening (3rd full-codebase review) — HW-validated.**
     Four items where the daemon could come up "alive but dead" or diverge from
     the documented contract. Re-validated on 07:00.0 (restarted the daemon on the

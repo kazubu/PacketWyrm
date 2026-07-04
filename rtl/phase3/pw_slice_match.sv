@@ -20,7 +20,9 @@
 `default_nettype none
 
 module pw_slice_match #(
-    parameter int HDR_BYTES = 160          // captured header window depth
+    parameter int HDR_BYTES = 176          // captured header window depth; matches
+                                           // production pw_data_plane_axis (the top
+                                           // overrides -- default = standalone only)
 ) (
     input  wire [HDR_BYTES*8-1:0] window_i,   // byte b at window_i[b*8 +: 8]
     input  wire [15:0]            base_i,     // inner-frame base byte offset

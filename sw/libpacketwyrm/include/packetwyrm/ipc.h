@@ -14,8 +14,11 @@
  * Responses are JSON objects. Errors look like
  *   { "error": "...", "code": "PW_E_..." }
  *
- * Authentication is by socket permissions; the daemon runs the
- * socket as 0660 root:packetwyrm by default. */
+ * Authentication is the `system.secret` model (constant-time secret
+ * check; with no secret configured, the socket file permissions are
+ * the ACL). The daemon currently creates the control socket 0666
+ * (dev-friendly -- see main.c); a production deployment tightens this
+ * via the daemon user/group + a stricter mode, or requires a secret. */
 #ifndef PACKETWYRM_IPC_H
 #define PACKETWYRM_IPC_H
 
