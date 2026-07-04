@@ -1,9 +1,9 @@
-# Reproducible Vivado project for the AS02MC04 Phase 2 bitstream
-# (Phase 1 PCIe/CSR + dual SFP+ 10GBASE-R via the Taxi MAC/PCS/GTY).
+# Reproducible Vivado project for the AS02MC04 Phase 3 bitstream -- the
+# production tester (PCIe/CSR + dual SFP+ 10GBASE-R Taxi MAC + 64-bit data
+# plane, flow gen/checker, PCIe-DMA slow path, cross-card GPIO sync).
 #
-#   vivado -mode batch -source project_phase2.tcl              # create
-#   vivado -mode batch -source project_phase2.tcl -tclargs synth
-#   vivado -mode batch -source project_phase2.tcl -tclargs impl
+#   vivado -mode batch -source project_phase3.tcl              # create
+#   vivado -mode batch -source scripts/synth_impl_phase3.tcl   # synth+impl+bit
 #
 # The Taxi submodule must be initialised:
 #   git submodule update --init rtl/phase2/vendor/taxi

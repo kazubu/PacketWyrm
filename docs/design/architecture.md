@@ -25,8 +25,10 @@ sub-system designs live in their own documents under `docs/design/`.
   *Stateless* TCP segment generation (fixed-flag segments with a correct L4
   checksum) IS implemented — see Part C.
 - Full IXIA / Spirent-class protocol emulation.
-- Cross-card one-way latency / jitter (no clock sync in Phase 0&ndash;9).
-- PTP / GPS / external clock sync.
+- Full PTP / GPS / external clock discipline. *Cross-card one-way latency /
+  jitter* IS supported — the daemon offset-corrects the RX-checker latency
+  using the J5 GPIO time-sync (a coarse latch, not a disciplined clock); see
+  the cross-card latency design note.
 - 25G production support.
 
 ## High-level diagram
