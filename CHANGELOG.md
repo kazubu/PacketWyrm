@@ -9,6 +9,12 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **`config.save` mode-apply is now fatal (9th full-codebase review).** The
+    tmp-file `fchmod` (which carries the env file's mode — the file holds
+    `system.secret`) ignored its return; a failure would leave a wrong-mode
+    file. It now aborts the save (`close`+`unlink`+error) on `fchmod` failure;
+    `fchown` (owner preservation) stays best-effort. (The 9th review otherwise
+    found **no High/Medium issues** — this was the sole remaining Low item.)
   - **proxyd accept-timeout check (8th full-codebase review).** The gateway's
     per-connection `SO_RCVTIMEO`/`SO_SNDTIMEO` `setsockopt` returns were ignored;
     the worker now drops the connection (closes, exits the thread) if the DoS-

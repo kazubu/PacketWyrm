@@ -899,8 +899,14 @@ static struct json_object *do_config_save(struct pw_config **cfg_pp,
     int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, mode);
     if (fd < 0) { free(rewritten); return build_error("cannot open env config for writing"); }
     /* Enforce mode + owner explicitly (open() mode is masked by umask; a
-     * preserved non-root owner needs an explicit fchown by the root daemon). */
-    (void)fchmod(fd, mode);
+     * preserved non-root owner needs an explicit fchown by the root daemon).
+     * The mode is the security-critical part (this file holds system.secret), so
+     * a failure to apply it ABORTS the save rather than leaving a wrong-mode
+     * file; fchown (owner preservation) stays best-effort. */
+    if (fchmod(fd, mode) != 0) {
+        close(fd); unlink(tmp); free(rewritten);
+        return build_error("cannot set env config mode");
+    }
     if (uid != (uid_t)-1 && fchown(fd, uid, gid) != 0) {
         /* best-effort owner preservation; mode (fchmod) is the security-
          * critical part and already applied */
