@@ -34,6 +34,10 @@ fi
 
 # -F: allow the no-op fake backend (no real card on the CI/dev host; BAR open
 # fails and the daemon now errors out by default without this).
+# PW_FAKE_FAIL_FLAG: when this file exists, the fake backend arms the next
+# staging commit (after a DP_RESET) to fail -- used by the rollback test below.
+# Absent at launch, so startup + all other checks program cleanly.
+export PW_FAKE_FAIL_FLAG="$WORK/failflag"
 "$DAEMON" -s 0 -F -c "$CFG" > "$WORK/daemon.log" 2>&1 &
 DPID=$!
 cleanup() { kill -INT "$DPID" 2>/dev/null || true; wait "$DPID" 2>/dev/null || true; }
@@ -95,6 +99,31 @@ else
     echo "$out2"
     exit 1
 fi
+
+# config.load rollback preserves the prior flow-enable state (regression for the
+# quiesce that used to disable the daemon's authoritative rows). Enable flow 1,
+# arm a staging fault (touch the flag), reload: the stage must fail and roll back
+# WITHOUT leaving flow 1 disabled.
+"$CLI" flow start 1 --socket "$SOCK" >/dev/null 2>&1
+before=$("$CLI" rpc flows --socket "$SOCK" 2>&1)
+if ! echo "$before" | grep -qE '"enabled":[[:space:]]*true'; then
+    echo "[FAIL rollback setup] flow 1 not enabled before reload:"; echo "$before"; exit 1
+fi
+touch "$WORK/failflag"
+rb=$("$CLI" load "$CFG" --socket "$SOCK" 2>&1 || true)
+if echo "$rb" | grep -q 'previous config still running'; then
+    echo "[ ok ] config.load stage-fail rolled back"
+else
+    echo "[FAIL rollback msg] expected 'previous config still running', got:"; echo "$rb"; exit 1
+fi
+after=$("$CLI" rpc flows --socket "$SOCK" 2>&1)
+if echo "$after" | grep -qE '"enabled":[[:space:]]*true'; then
+    echo "[ ok ] config.load rollback kept the flow enabled"
+else
+    echo "[FAIL rollback] flow disabled after a failed reload (rollback regressed):"
+    echo "$after"; exit 1
+fi
+rm -f "$WORK/failflag"
 
 cleanup
 trap 'rm -rf "$WORK"' EXIT

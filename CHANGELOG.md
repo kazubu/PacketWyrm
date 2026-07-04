@@ -21,8 +21,12 @@ For where work is going next, see `NEXT-STEPS.md`.
       rolled back to *all-flows-disabled* despite the "previous config still
       running" message. `set_flow_enable` gained a `persist` flag; the quiesce
       writes the disable to the FPGA only (`persist=false`), leaving the staged
-      program untouched so rollback re-programs the real prior state. (A
-      fault-injection regression test needs a fake-backend fail hook — follow-up.)
+      program untouched so rollback re-programs the real prior state. Guarded by
+      an `e2e_smoke` regression test: a fake-backend fault hook
+      (`PW_FAKE_FAIL_FLAG` + a DP_RESET-armed commit) fails the reload's staging
+      commit, and the test asserts the running flow stays `enabled` after the
+      rollback (it reads back `enabled:false` if the quiesce regresses to
+      mutating the staged rows — verified against the reintroduced bug).
     - **A real card that fails to open is now a startup failure (no `-F`).**
       `open_all_backends` returns a failure count; without `--allow-fake` the
       daemon exits instead of running with an unprogrammed data path (socket up,

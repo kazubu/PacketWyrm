@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define FAKE_NUM_FLOWS      256
 #define FAKE_NUM_CLASSIFIER 256
@@ -50,6 +51,7 @@ struct fake_ctx {
     struct fake_slow_fifo tx_inject; /* host -> FPGA */
 
     struct pw_fake_wr_counts wr;     /* per-window CSR write counts (test hook) */
+    int      fail_armed;             /* test hook: next flow_commit fails once */
 };
 
 static int slow_push(struct fake_slow_fifo *f, const void *data, size_t len,
@@ -104,6 +106,14 @@ static pw_status fake_read32(void *vctx, uint32_t off, uint32_t *out) {
 
 static pw_status fake_write32(void *vctx, uint32_t off, uint32_t v) {
     struct fake_ctx *c = vctx;
+    /* Test hook: a DP_RESET write while PW_FAKE_FAIL_FLAG names an existing file
+     * arms the NEXT flow_commit to fail once. program_backends() writes DP_RESET
+     * before (re)programming a card, so this fails the config.load staging commit
+     * (the quiesce does no DP_RESET) -- letting an e2e exercise rollback. */
+    if (off == PWFPGA_REG_DP_RESET) {
+        const char *ff = getenv("PW_FAKE_FAIL_FLAG");
+        if (ff && *ff && access(ff, F_OK) == 0) c->fail_armed = 1;
+    }
     switch (off) {
     case PWFPGA_REG_GLOBAL_CONTROL:
         c->global_ctl = v;
@@ -161,6 +171,11 @@ static pw_status fake_flow_write(void *vctx, uint32_t row,
 
 static pw_status fake_flow_commit(void *vctx) {
     struct fake_ctx *c = vctx;
+    /* Test hook (see fake_write32): a commit armed by a DP_RESET-while-flag
+     * fails once. This targets the config.load STAGING commit specifically --
+     * the quiesce that precedes it does no DP_RESET, so its commits still
+     * succeed, which is exactly what makes the rollback regression observable. */
+    if (c->fail_armed) { c->fail_armed = 0; return PW_E_IO; }
     memcpy(c->flow, c->flow_staged, sizeof(c->flow));
     return PW_OK;
 }
