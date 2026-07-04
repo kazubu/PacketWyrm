@@ -24,6 +24,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <json-c/json.h>
 
 #include "packetwyrm/packetwyrm.h"
@@ -2137,9 +2138,18 @@ int main(int argc, char **argv) {
         close_all_backends(cfg, cards);
         return 1;
     }
-    if (program_backends(prog, cfg, cards) != PW_OK)
+    if (program_backends(prog, cfg, cards) != PW_OK) {
+        if (!allow_fake) {
+            fprintf(stderr, "fatal: initial FPGA programming failed -- the device "
+                    "is not in sync with the config (BAR write error / card drop / "
+                    "window mismatch); refusing to run "
+                    "(pass -F/--allow-fake for dev/CI)\n");
+            close_all_backends(cfg, cards);
+            return 1;
+        }
         fprintf(stderr, "warning: initial FPGA programming hard-failed -- "
                 "device may not match config (check the card / BAR)\n");
+    }
     int n_taps = setup_taps(cfg, cards, hps, taps, true, allow_fake);
     if (n_taps < 0) {
         fprintf(stderr, "fatal: a configured logical_if could not get a working "
@@ -2169,8 +2179,15 @@ int main(int argc, char **argv) {
         : PW_IPC_DEFAULT_PATH;
     pw_status sr = pw_ipc_listen(sock_path, 0666, &ipc_listen_fd);
     if (sr != PW_OK) {
-        fprintf(stderr, "warning: control socket on %s unavailable: %s\n",
+        /* The control socket is how everything is driven -- config.load, flow
+         * start/stop, flash, stats, and the proxyd relay. Without it the daemon
+         * would look healthy under systemd but be entirely unmanageable, so a
+         * listen failure is fatal (not a warning). */
+        fprintf(stderr, "fatal: control socket on %s unavailable: %s -- the daemon "
+                "would be unmanageable; refusing to run\n",
                 sock_path, pw_strerror(sr));
+        close_all_backends(cfg, cards);
+        return 1;
     } else if (verbose) {
         printf("  control socket listening on %s\n", sock_path);
     }
@@ -2239,6 +2256,14 @@ int main(int argc, char **argv) {
         if (listen_idx != (size_t)-1 && (pfds[listen_idx].revents & POLLIN)) {
             int cfd = accept(ipc_listen_fd, NULL, NULL);
             if (cfd >= 0) {
+                /* Bound blocking reads/writes: the daemon is single-threaded and
+                 * the control socket is 0666, so a stalled or malicious local
+                 * client (send a 4-byte length, then no body) would otherwise
+                 * wedge the whole main loop (servo, metrics, all RPCs) forever.
+                 * A 5 s timeout makes read_all() fail and the connection close. */
+                struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+                setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+                setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
                 handle_client(cfd, &cfg, &prog, cards, hps, taps, n_taps);
                 close(cfd);
             }
@@ -2246,6 +2271,11 @@ int main(int argc, char **argv) {
         if (prom_idx != (size_t)-1 && (pfds[prom_idx].revents & POLLIN)) {
             int cfd = accept(prom_fd, NULL, NULL);
             if (cfd >= 0) {
+                /* Same rationale as the control socket: don't let a slow HTTP
+                 * client hang the single-threaded loop while it reads /metrics. */
+                struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
+                setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+                setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
                 promex_handle(cfd, cfg, cards, hps);
                 close(cfd);
             }

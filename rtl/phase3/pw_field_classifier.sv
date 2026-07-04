@@ -38,7 +38,9 @@
 import pw_classifier_pkg::*;
 
 module pw_field_classifier #(
-    parameter int HDR_BYTES = 160,
+    parameter int HDR_BYTES = 176,   // match the production pw_data_plane_axis
+                                     // depth; the top always overrides this, so
+                                     // the default only affects standalone use.
     parameter int SLICE_WIN = 48,    // legacy: UDF *offset* range hint (see below);
                                      // the UDF window now spans the full HDR_BYTES
                                      // capture so a UDF reaches the inner frame at
