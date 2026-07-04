@@ -19,11 +19,13 @@
 //     [7:0]   egress_local_port     (rest reserved, host sets 0)
 //   punt header (FPGA -> host, first 8 bytes of each C2H frame):
 //     [31:0]  logical_if_id
-//     [39:32] ingress_local_port    (rest reserved)
+//     [39:32] ingress_local_port
+//     [55:40] byte_len              (frame length in bytes, SAF-measured; LE)
+//     [63:56] reserved
 //
 // Metadata note: the punt RX wire timestamp (s_punt_tuser rx_ts) is NOT carried
-// in v1 (the 8-byte header holds lif_id + ingress only). If a future PTP servo
-// needs punt timestamps, widen the header to 16 B (add a second beat) on both
+// in v1 (the 8-byte header holds lif_id + ingress + byte_len). If a future PTP
+// servo needs punt timestamps, widen the header to 16 B (add a second beat) on both
 // this module and the host parser.
 
 `timescale 1ns / 1ps
