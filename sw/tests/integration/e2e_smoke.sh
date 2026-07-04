@@ -34,10 +34,12 @@ fi
 
 # -F: allow the no-op fake backend (no real card on the CI/dev host; BAR open
 # fails and the daemon now errors out by default without this).
-# PW_FAKE_FAIL_FLAG: when this file exists, the fake backend arms the next
-# staging commit (after a DP_RESET) to fail -- used by the rollback test below.
-# Absent at launch, so startup + all other checks program cleanly.
+# PW_FAKE_FAIL_FLAG (rising-edge, one-shot: fails only the reload STAGING commit
+# so the rollback re-program succeeds) and PW_FAKE_FAIL_FLAG_STICKY (fails every
+# commit while present: both staging AND rollback fail) drive the two config.load
+# rollback tests below. Both absent at launch, so startup programs cleanly.
 export PW_FAKE_FAIL_FLAG="$WORK/failflag"
+export PW_FAKE_FAIL_FLAG_STICKY="$WORK/failflag_sticky"
 "$DAEMON" -s 0 -F -c "$CFG" > "$WORK/daemon.log" 2>&1 &
 DPID=$!
 cleanup() { kill -INT "$DPID" 2>/dev/null || true; wait "$DPID" 2>/dev/null || true; }
@@ -124,6 +126,19 @@ else
     echo "$after"; exit 1
 fi
 rm -f "$WORK/failflag"
+
+# When BOTH the staging AND the rollback re-program fail (real hard fault), the
+# daemon must NOT claim "previous config still running" -- it reports the device
+# may be out of sync. The flow view stays enabled (the quiesce never mutated it).
+"$CLI" flow start 1 --socket "$SOCK" >/dev/null 2>&1
+touch "$WORK/failflag_sticky"
+rb2=$("$CLI" load "$CFG" --socket "$SOCK" 2>&1 || true)
+if echo "$rb2" | grep -qiE 'out of sync|rollback failed'; then
+    echo "[ ok ] config.load double-fault reports out-of-sync (not false success)"
+else
+    echo "[FAIL rollback-fail msg] expected an out-of-sync error, got:"; echo "$rb2"; exit 1
+fi
+rm -f "$WORK/failflag_sticky"
 
 # IPC read timeout: a client that announces a body length then stalls must not
 # wedge the single-threaded daemon -- after the read timeout the daemon closes
