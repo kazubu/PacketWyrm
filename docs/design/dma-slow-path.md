@@ -182,7 +182,16 @@ production). Accepted; resulting ports:
 `CONFIG.xdma_axilite_slave {false}`; keep `functional_mode DMA` + `axilite_master`
 CSR. **No control-BAR enable key is needed** — see the BAR-layout note below.
 
-### 5a-bis. BAR layout — VERIFIED (2026-07-04, probe_xdma_bars.tcl) — **P2 gate**
+### 5a-bis. BAR layout — ⚠️ SUPERSEDED (pre-silicon probe; see §5c point 1)
+
+> **SUPERSEDED — do not follow this section for the CSR offset.** This was a
+> *pre-silicon* read of the generated IP (`probe_xdma_bars.tcl`) that predicted a
+> single 128 KB split BAR0 with the CSR moved to `+0x10000`. On real silicon
+> (2026-07-04) the IP instead exposes **two 64 KB BARs — BAR0 = AXI-Lite CSR at
+> offset 0 (UNCHANGED), BAR1 = XDMA control registers** (see §5c point 1). The
+> `csr_off = 0` and the `+0x10000` offset is NOT applied; `PWFPGA_CSR_DMA_OFFSET`
+> survives only as a probe fallback for a hypothetical future single-big-BAR
+> build. The text below is kept for historical context only.
 
 Enumerated the generated IP for the production AXI-Stream config:
 - **`pf0_bar0` = 128 KB, Memory, enabled** (the only enabled BAR). Decoding the

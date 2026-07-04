@@ -13,13 +13,15 @@
 
 #include "packetwyrm/types.h"
 #include <stddef.h>
+#include <stdint.h>
 
 struct pw_vfio_handle {
-    int    container_fd;
-    int    group_fd;
-    int    device_fd;
-    void  *base;   /* mmap of the requested BAR, or NULL */
-    size_t size;   /* BAR size in bytes */
+    int      container_fd;
+    int      group_fd;
+    int      device_fd;
+    void    *base;      /* mmap of the requested BAR, or NULL */
+    size_t   size;      /* BAR size in bytes */
+    uint64_t iova_next; /* bump allocator for device DMA IOVAs (0 = uninit) */
 };
 
 /* Map BAR `bar_index` (0..5) of the vfio-pci-bound device `bdf`
@@ -33,11 +35,13 @@ pw_status pw_vfio_open_bar(const char *bdf, int bar_index,
 void pw_vfio_close(struct pw_vfio_handle *h);
 
 /* Map a userspace buffer for device (bus-master) DMA via VFIO_IOMMU_MAP_DMA,
- * so the FPGA can read/write it over PCIe. Uses identity IOVA (iova = vaddr);
- * *out_iova returns the device-visible address to program into XDMA
- * descriptors. `vaddr` and `len` must be page-aligned (posix_memalign to the
- * page size + round len up). Requires a mapped device (container_fd valid).
- * Returns PW_E_INVAL on bad args, PW_E_IO if the ioctl fails. */
+ * so the FPGA can read/write it over PCIe. The device-visible IOVA is allocated
+ * from a dedicated bump allocator in `h` (NOT the userspace VA -- a process VA
+ * is not guaranteed to be a valid IOVA within the IOMMU aperture); *out_iova
+ * returns the address to program into XDMA descriptors. `vaddr` and `len` must
+ * be page-aligned (posix_memalign to the page size + round len up). Requires a
+ * mapped device (container_fd valid). Returns PW_E_INVAL on bad args, PW_E_IO
+ * if the ioctl fails. */
 pw_status pw_vfio_map_dma(struct pw_vfio_handle *h, void *vaddr, size_t len,
                           uint64_t *out_iova);
 

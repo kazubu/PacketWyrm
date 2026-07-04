@@ -78,6 +78,33 @@ For where work is going next, see `NEXT-STEPS.md`.
     read `len=8062` straight from the header on a jumbo punt; full dual-stack
     control plane + v4/v6 jumbo pings (2000–8900 B) all 0 % loss. Gated build WNS
     +0.165 all clocks, LUT 94.81 %, BRAM 54.31 %.
+  - **DMA slow-path robustness follow-up (full-codebase review) — HW-validated.**
+    Five hardening items from a codebase review, re-validated on 07:00.0 (build
+    0x6a48854f unchanged; cRPD dual-stack control plane reconverged after a daemon
+    restart on the new binary: v4/v6 ping 0 % loss, OSPFv2/v3 Full, IS-IS L1+L2
+    Up, BGP v4+v6 Established; 317 punt frames, `overrun=0`, no errors):
+    - **VFIO DMA IOVA no longer aliases the userspace VA.** `pw_vfio_map_dma` now
+      bump-allocates device IOVAs from a dedicated base (4 GiB) instead of reusing
+      `(uintptr_t)vaddr` — a process VA is not guaranteed to be a valid IOVA within
+      the IOMMU aperture. Decouples IOVA from VA for portability.
+    - **H2C completion wait is bounded by a monotonic deadline + reads channel
+      status.** The inject completion poll was a fixed 1M-iteration spin that never
+      looked at `CH_STATUS`; it now aborts on a channel error bit
+      (`PWFPGA_XDMA_STAT_ERR`) or a 200 ms deadline, logs the status, and clears
+      the latched error via `STATUS_RC` so a wedged engine can't spin forever or
+      hide its cause.
+    - **C2H ring overrun is now observable.** When the host falls behind the 16-desc
+      ring and drops punt frames, `dma_state.c2h_overrun` counts them and a
+      rate-limited warning (once per 16 dropped) hits the daemon log — previously
+      the loss was silent (it surfaces as BGP/OSPF/ND flaps).
+    - **RTL punt SAF guards against an oversize frame** (`pw_dma_slowpath.sv`): a
+      frame exceeding `PSAF_BEATS` (10240 B) now enters a `PS_DROP` state that
+      swallows it to `tlast` without emitting, so `psaf_wr` can never index past
+      the BRAM. Unreachable at the current 9599 B MAC ceiling — defensive for a
+      future cap change. Verified by a new `sim_dma` oversize-drop/no-desync case.
+      (RTL source + sim only; ships on the next bitstream.)
+    - **Docs: the pre-silicon §5a-bis BAR0+0x10000 premise is marked SUPERSEDED**
+      (real silicon uses two 64 KB BARs, CSR at BAR0:0 — see §5c point 1).
   - **Punt DMA buffer raised to cover the full configured frame ceiling
     (`PW_DMA_FRAME_CAP` 9216 → 16384).** Review follow-up: the MAC accepts up to
     9599 B (`cfg_*_max_pkt_len`) and `pw_dma_slowpath`'s punt SAF buffers up to

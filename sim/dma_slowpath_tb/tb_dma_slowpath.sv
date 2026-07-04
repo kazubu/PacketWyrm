@@ -235,6 +235,24 @@ module tb_dma_slowpath;
             check("punt big: payload pattern intact under backpressure", ok);
         end
 
+        // ---- Test 5: oversize punt frame is dropped without desync ----
+        // A frame longer than PSAF_BEATS*8 bytes must be swallowed by the SAF
+        // (PS_DROP: no C2H output, psaf_wr never indexes past the BRAM), and the
+        // NEXT frame must still parse correctly. Guards the #4 oversize path.
+        c2h_bytes = {}; c2h_frames = 0;
+        s_punt_tuser = {64'd0, 4'd3, 32'h0000_00BB};
+        drive_punt(10248);                            // 1281 beats > PSAF_BEATS (1280)
+        repeat (200) @(posedge axi_clk);
+        check("punt oversize: dropped (no C2H frame)", c2h_frames == 0);
+        s_punt_tuser = {64'd0, 4'd1, 32'h0000_00CC};
+        drive_punt(24);                               // a normal frame right after
+        repeat (300) @(posedge axi_clk);
+        check("punt oversize: next frame emitted (no desync)", c2h_frames == 1);
+        check("punt oversize: next frame 32 bytes (8 hdr + 24)", c2h_bytes.size() == 32);
+        if (c2h_bytes.size() == 32)
+            check("punt oversize: next byte_len = 24",
+                  ({c2h_bytes[6], c2h_bytes[5]}) == 16'd24);
+
         if (errors == 0) $display("ALL DMA SLOWPATH SCENARIOS PASS");
         else             $display("FAILED with %0d error(s)", errors);
         $finish;
