@@ -201,6 +201,12 @@ static int daemon_relay(const char *body, size_t blen,
                         char *resp, size_t rcap, size_t *rlen) {
     int fd = -1;
     if (pw_ipc_connect(g_daemon_sock, &fd) != PW_OK) return -1;
+    /* Bound the relay: the daemon is single-threaded, so a busy/wedged daemon
+     * must not pin this worker (and eventually all PROXYD_MAX_THREADS) forever.
+     * 10 s is generous for a control RPC over a local socket. */
+    struct timeval tv = { .tv_sec = 10, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
     int rc = -1;
     if (pw_ipc_write_frame(fd, body, blen) == PW_OK &&
         pw_ipc_read_frame(fd, resp, rcap, rlen) == PW_OK)

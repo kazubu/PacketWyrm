@@ -9,6 +9,22 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **First-install config seed + proxyd relay timeout + kernel CI (review #7).**
+    "No serious issues"; three P2/P3 + CI-gap items:
+    - **P2: the shipped unit's config file is now seeded on first install.**
+      `packetwyrmd.service` runs `-c /etc/packetwyrm/packetwyrm.yaml`, but
+      `make install` only shipped `*.yaml.example`, so a fresh `systemctl start`
+      failed on a missing config. `install` now seeds `packetwyrm.yaml` from
+      `single-card.yaml` **only if absent** (0640; never clobbers operator
+      edits) and the post-install note says to edit it.
+    - **P3: the proxyd→daemon relay is now bounded by a timeout.** `daemon_relay`
+      connected and read the daemon's reply with no timeout, so a busy/wedged
+      (single-threaded) daemon could pin a proxyd worker — and eventually all of
+      `PROXYD_MAX_THREADS` — indefinitely. It now sets a 10 s
+      `SO_RCVTIMEO`/`SO_SNDTIMEO` on the daemon socket.
+    - **CI gap: the kernel skeleton is now built in CI** (best-effort — installs
+      the runner's `linux-headers`, builds if kbuild is present, skips gracefully
+      otherwise) so a compile break (like the earlier `pci_dev` mistype) is caught.
   - **Lab-tool safety + concurrency contract + injection guards (fresh-context
     review #6).** No P0 blocker (all CI green); one P1 + several P2/P3:
     - **P1: `pktwyrm-tinet down` could kill an unrelated process.** `LabState`

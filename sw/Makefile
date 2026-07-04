@@ -251,6 +251,15 @@ install: all
 	    $(DESTDIR)$(SYSCONFDIR)/packetwyrm/single-card.yaml.example
 	$(INST) 0644 $(PKGROOT)/configs/examples/multi-card.yaml \
 	    $(DESTDIR)$(SYSCONFDIR)/packetwyrm/multi-card.yaml.example
+	@# Seed the env config the unit points at (-c /etc/packetwyrm/packetwyrm.yaml)
+	@# from an example ON FIRST INSTALL ONLY (never clobber an operator's edits),
+	@# so `systemctl start` finds a file to edit in place instead of failing on a
+	@# missing config. 0640: it may later hold system.secret.
+	if [ ! -e $(DESTDIR)$(SYSCONFDIR)/packetwyrm/packetwyrm.yaml ]; then \
+	    $(INST) 0640 $(PKGROOT)/configs/examples/single-card.yaml \
+	        $(DESTDIR)$(SYSCONFDIR)/packetwyrm/packetwyrm.yaml; \
+	    echo "seeded $(SYSCONFDIR)/packetwyrm/packetwyrm.yaml (edit for your card)"; \
+	fi
 	$(INST_MK) $(DESTDIR)$(UNITDIR)
 	$(INST) 0644 $(PKGROOT)/packaging/packetwyrmd.service \
 	    $(DESTDIR)$(UNITDIR)/packetwyrmd.service
@@ -268,6 +277,7 @@ install: all
 	@echo "Installed under $(DESTDIR)$(PREFIX). Don't forget:"
 	@echo "  systemd-sysusers && systemd-tmpfiles --create && systemctl daemon-reload"
 	@echo "  udevadm control --reload && udevadm trigger"
+	@echo "  edit $(SYSCONFDIR)/packetwyrm/packetwyrm.yaml for your card (PCI BDF, lifs)"
 
 uninstall:
 	rm -f $(DESTDIR)$(SBINDIR)/packetwyrmd
