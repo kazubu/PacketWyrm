@@ -9,6 +9,31 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Lab-tool safety + concurrency contract + injection guards (fresh-context
+    review #6).** No P0 blocker (all CI green); one P1 + several P2/P3:
+    - **P1: `pktwyrm-tinet down` could kill an unrelated process.** `LabState`
+      stored only the daemon PID and `pid_alive()` was a bare `os.kill(pid,0)`;
+      a stale state file whose PID was recycled would let `down` (run as root)
+      SIGTERM/SIGKILL a different process. The state now also records the daemon's
+      `/proc/<pid>/stat` starttime, and up/down/conf verify identity
+      (`daemon_alive_and_ours`: starttime + a packetwyrmd cmdline) before acting —
+      a recycled PID is never signalled. Regression test added.
+    - **P2: documented the backend concurrency contract** (`backend.h`): a card's
+      ops run from both its worker thread (slow path) and the main thread
+      (control RPCs); a backend with shared mutable state must lock internally.
+      The fake backend now mutex-guards its slow-path FIFO (the one genuinely
+      shared structure); the BAR backend's worker/main state is disjoint
+      (documented) so it needs none.
+    - **P3: `pktwyrm-tinet` validates lab-YAML values that reach FRR config.**
+      router name (charset), `router_id`/neighbor (IP), `network` (CIDR) are now
+      validated at load, so a value with a newline/control char can't inject FRR
+      directives (shell was already `shlex`-quoted). Injection test added.
+    - **P4: doc drift fixed** — `risks.md` claimed a headless `make synth` CI job
+      (CI is Verilator sim + lint, no Vivado); `daemon.md` process model now marks
+      the `epoll`/SPSC/stats-aggregator design as target vs the implemented
+      main-thread `poll()` + per-card workers.
+    - **P5: kernel skeleton** `struct pw_card.pci` retyped `pci_dev __iomem *` →
+      `pci_dev *` (a PCI device pointer, not MMIO).
   - **Operational-safety hardening (fresh-context review #5).** No P0/P1 found
     (all CI targets pass); four P2/P3 operational items fixed:
     - **proxyd refuses `--no-tls` on a non-loopback bind.** With

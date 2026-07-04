@@ -6,7 +6,19 @@
  *
  * The interface is intentionally narrow: register reads / writes, table
  * commits, and a stats snapshot pull. Anything richer goes through the
- * documented CSR map. */
+ * documented CSR map.
+ *
+ * CONCURRENCY CONTRACT: in packetwyrmd a card's ops are invoked from TWO
+ * threads -- its per-card worker (slow_path_rx/tx via pw_host_plane_step) and
+ * the main thread (control RPCs: flow_write/commit, write32/read32, stats,
+ * programming). A backend whose ops touch shared mutable state MUST serialize
+ * internally (a per-context lock). The two current backends satisfy this:
+ *   - fake: guards its context with an internal mutex (backend_fake.c).
+ *   - BAR: the worker's slow path touches only the XDMA engine registers/ring
+ *     (BAR1) while control RPCs touch the AXI-Lite CSR window (BAR0) -- disjoint
+ *     regions, and the DMA-ring reaper state is owned solely by the worker, so
+ *     no shared C-level state is mutated from both threads (see backend_bar.c).
+ * A future backend that shares state across ops must add its own locking. */
 #ifndef PACKETWYRM_BACKEND_H
 #define PACKETWYRM_BACKEND_H
 

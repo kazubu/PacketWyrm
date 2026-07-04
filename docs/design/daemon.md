@@ -7,19 +7,21 @@ slow-path packets between FPGA punt rings and Linux TAP devices.
 
 ## Process model
 
-A single `packetwyrmd` process per host. It is built around an event
-loop (`epoll`) with a small number of long-running threads:
+A single `packetwyrmd` process per host. The threading model below is the
+TARGET; **as implemented today** it is a main-thread `poll()` loop plus one
+worker thread per card (the host packet plane is merged into the card worker,
+and stats are snapshotted on the main thread -- there is no separate `epoll`
+reactor or stats-aggregator thread yet):
 
-- **main thread** &mdash; event loop, control socket, CLI / IPC, config
-  reload, orchestration.
-- **card workers** &mdash; one thread per card, owning that card's BAR
-  region, slow-path rings and stats polling. No card-to-card sharing
-  except through the main thread.
-- **host packet plane** &mdash; one or more threads that bridge TAP fds
-  to per-card slow-path rings. May be merged with card workers if
-  CPU pressure permits.
-- **stats aggregator** &mdash; thread (or main-thread timer) that
-  snapshots each card's stats and merges them into the global view.
+- **main thread** &mdash; `poll()` loop: control socket, CLI / IPC, config
+  reload, cross-card latency servo, stats print. (Target: an `epoll` reactor.)
+- **card workers** &mdash; one thread per card, owning that card's TAP fds and
+  running the host-plane bridge (slow-path punt/inject). No card-to-card
+  sharing except through the main thread.
+- **host packet plane** &mdash; bridges TAP fds to per-card slow-path rings;
+  **today merged into the card worker** (a `pw_host_plane` per card).
+- **stats aggregator** &mdash; **today a main-thread snapshot** on the stats
+  print / `stats` RPC path (target: a dedicated thread or timer).
 
 Locking — **as implemented today:** each card's host-plane worker owns its TAP
 fds and runs independently; control RPCs (including `config.load`'s

@@ -22,12 +22,43 @@ generator can resolve `logical_if_id` to the kernel TAP name
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 import pathlib
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
+
+# Router name becomes an FRR `hostname` directive and a shell/container name;
+# restrict it so a lab YAML value can't inject FRR config lines or shell.
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def _valid_name(where: str, val: str) -> str:
+    if not _NAME_RE.match(val):
+        raise LabError(f"{where}: invalid name {val!r} (allowed: [A-Za-z0-9_.-], "
+                       f"leading alnum)")
+    return val
+
+
+def _valid_ip(where: str, val: str) -> str:
+    """An IPv4/IPv6 address (no prefix). Goes into FRR router-id / neighbor."""
+    try:
+        ipaddress.ip_address(val)
+    except ValueError:
+        raise LabError(f"{where}: invalid IP address {val!r}")
+    return val
+
+
+def _valid_cidr(where: str, val: str) -> str:
+    """An IPv4/IPv6 network in CIDR form. Goes into FRR `network`."""
+    try:
+        ipaddress.ip_network(val, strict=False)
+    except ValueError:
+        raise LabError(f"{where}: invalid network/CIDR {val!r}")
+    return val
 
 
 class LabError(Exception):
@@ -81,17 +112,18 @@ def _parse_bgp(raw: dict, where: str) -> BgpConfig:
     asn = int(_require(raw, "asn", where))
     if not (1 <= asn <= 4294967295):
         raise LabError(f"{where}: asn {asn} out of range")
-    router_id = str(_require(raw, "router_id", where))
+    router_id = _valid_ip(f"{where}.router_id", str(_require(raw, "router_id", where)))
     neighbors_raw = raw.get("neighbors", [])
     if not isinstance(neighbors_raw, list):
         raise LabError(f"{where}: neighbors must be a list")
     neighbors = []
     for i, nb in enumerate(neighbors_raw):
         loc = f"{where}.neighbors[{i}]"
-        peer = str(_require(nb, "peer", loc))
+        peer = _valid_ip(f"{loc}.peer", str(_require(nb, "peer", loc)))
         remote_as = int(_require(nb, "remote_as", loc))
         neighbors.append(BgpNeighbor(peer=peer, remote_as=remote_as))
-    networks = [str(x) for x in raw.get("networks", [])]
+    networks = [_valid_cidr(f"{where}.networks[{i}]", str(x))
+                for i, x in enumerate(raw.get("networks", []))]
     return BgpConfig(
         asn=asn, router_id=router_id, neighbors=neighbors, networks=networks
     )
@@ -99,7 +131,7 @@ def _parse_bgp(raw: dict, where: str) -> BgpConfig:
 
 def _parse_router(raw: dict, idx: int) -> Router:
     where = f"routers[{idx}]"
-    name = str(_require(raw, "name", where))
+    name = _valid_name(f"{where}.name", str(_require(raw, "name", where)))
     image = str(_require(raw, "image", where))
     lif = int(_require(raw, "logical_if_id", where))
     addr = str(_require(raw, "addr", where))
