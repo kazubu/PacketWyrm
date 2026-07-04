@@ -261,12 +261,16 @@ static ssize_t read_request(struct conn *c, char *buf, size_t cap,
 }
 
 static void serve(struct conn *c) {
-    char *buf = malloc(PROXYD_REQ_MAX);
+    /* +1 so we can always NUL-terminate: the parse below treats buf as a C
+     * string (sscanf "%s"), and without a terminator a request with no
+     * whitespace/NUL in the received bytes would read past the buffer. */
+    char *buf = malloc(PROXYD_REQ_MAX + 1);
     if (!buf) { http_error(c, 500, "out of memory"); return; }
 
     size_t body_off = 0, body_len = 0;
     ssize_t total = read_request(c, buf, PROXYD_REQ_MAX, &body_off, &body_len);
     if (total < 0) { free(buf); return; }
+    buf[total] = '\0';   /* bound the string parse below (total <= PROXYD_REQ_MAX) */
 
     /* Parse the request line: "METHOD SP PATH SP VERSION". */
     char method[8] = {0}, path[256] = {0};

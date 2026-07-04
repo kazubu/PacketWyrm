@@ -21,16 +21,18 @@ card-local and identical across slots.
 The project currently ships:
 
 - **Host stack** &mdash; data model, YAML config + validator (with
-  JSON Schema mirror, duplicate-id + cross-card latency rejection),
+  JSON Schema mirror, duplicate-id + unknown-port rejection; cross-card
+  latency is supported via J5 GPIO time-sync, not rejected),
   flow compiler, software fake-card backend, real BAR-mmap backend,
   sysfs PCI discovery, Linux TAP device control, host packet plane
   (TAP &harr; FPGA punt / inject bridge), Unix-socket JSON RPC,
   Prometheus `/metrics` exporter.
 - **`packetwyrmd`** &mdash; long-running daemon. Loads YAML, opens a
-  backend per card (BAR if the card is there, fake otherwise),
-  creates one Linux TAP per logical interface, spawns per-card
-  worker threads, exposes a control socket. Live `config.load`
-  reload deploys a new program without restart.
+  real backend per card; a BAR-open failure is fatal unless `-F` /
+  `--allow-fake` is passed (then it falls back to the no-op fake
+  backend, for dev/CI), creates one Linux TAP per logical interface,
+  spawns per-card worker threads, exposes a control socket. Live
+  `config.load` reload deploys a new program without restart.
 - **`pktwyrm`** &mdash; CLI. Offline subcommands work on YAML files
   (`pktwyrm cards / ports / map / load / flow show`). Online
   subcommands talk to a running `packetwyrmd` over the control
@@ -53,10 +55,13 @@ The project currently ships:
   live SPI-flash write over PCIe (`pktwyrm flash`), and in-band
   reconfiguration via ICAP (`pw_reboot`). The classifier `FORWARD_PORT`
   action (host-selectable egress port) and the full slow path are on
-  silicon too: **PUNT_TO_HOST / MIRROR_TO_HOST RX** via the BAR-polled
-  `pw_punt_rx_window` (0x1000) and **host&rarr;FPGA TX inject** via the
-  BAR-driven `pw_inject_tx_window` (0x0D00) &mdash; both round-tripped
-  on hardware.
+  silicon too: **PUNT_TO_HOST / MIRROR_TO_HOST RX** and **host&rarr;FPGA
+  TX inject** ride a **PCIe-DMA slow path** (`pw_dma_slowpath`, XDMA
+  AXI-Stream) &mdash; validated end-to-end on hardware by a full cRPD
+  dual-stack control plane across the DUT (ARP/ND, ping, BGP+BGP-v6,
+  OSPFv2/OSPFv3, IS-IS) at MTU 9000. The legacy BAR-polled
+  `pw_punt_rx_window` (0x1000) / `pw_inject_tx_window` (0x0D00) remain
+  only for the older non-DMA bitstream.
 - **Lab / container integration** &mdash; `tools/pktwyrm-tinet/`
   turns a small lab spec into a [tinet](https://github.com/tinynetwork/tinet)
   topology + per-router FRR configs that boot N routing containers
