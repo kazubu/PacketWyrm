@@ -2197,8 +2197,9 @@ int main(int argc, char **argv) {
     /* Control socket. Path comes from config; fall back to the library default.
      * The daemon runs as root, so a client that can write this socket gets
      * root-equivalent device ops (flow control, config.save, flash.write). In
-     * production (no -F) create it 0660 so it is NOT world-writable -- only root
-     * (or a future daemon group) can drive it, on top of the system.secret
+     * production (no -F) create it 0660 so it is NOT world-writable, then
+     * group-own it root:packetwyrm below so root or the packetwyrm group (e.g.
+     * the packetwyrm-proxyd gateway) can drive it, on top of the system.secret
      * check. Dev/CI (-F) uses 0666 so non-root tests work without group setup. */
     int ipc_listen_fd = -1;
     mode_t sock_mode = allow_fake ? 0666 : 0660;

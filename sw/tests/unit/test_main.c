@@ -1774,6 +1774,18 @@ static void test_ipc_listen_connect(void) {
     unlink(path);
 }
 
+static void test_ipc_path_too_long(void) {
+    /* A path longer than sockaddr_un.sun_path (~108 B) must be REJECTED, not
+     * silently truncated (which would bind/connect to a different socket). */
+    char path[300];
+    memset(path, 'x', sizeof(path) - 1);
+    path[0] = '/';
+    path[sizeof(path) - 1] = '\0';
+    int fd = -1;
+    PW_ASSERT_EQ(pw_ipc_listen(path, 0600, &fd), PW_E_OUT_OF_RANGE);
+    PW_ASSERT_EQ(pw_ipc_connect(path, &fd), PW_E_OUT_OF_RANGE);
+}
+
 static void test_tap_basic(void) {
     /* Tries to create a real TAP device; requires CAP_NET_ADMIN.
      * If permission is denied, the test logs and passes (so the
@@ -1913,6 +1925,7 @@ int main(void) {
         { "host_plane_with_real_tap", test_host_plane_with_real_tap },
         { "ipc_framing", test_ipc_framing },
         { "ipc_listen_connect", test_ipc_listen_connect },
+        { "ipc_path_too_long", test_ipc_path_too_long },
         { "yaml_schema_well_formed", test_yaml_schema_well_formed },
     };
     for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
