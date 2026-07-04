@@ -512,10 +512,19 @@ struct pwfpga_test_hdr {
  * semantics were confirmed on silicon -- the single-descriptor completed-count
  * RESETS to 0 on RUN (so for H2C/single-desc just wait for count != 0 -- reading
  * a baseline races either way), the C2H
- * received length is NOT written to desc.bytes (recover it from the frame's own
- * L2/L3 headers), and a per-frame stop/re-arm wedges the engine (C2H uses a
- * continuously-running circular ring). Register/target OFFSETS + the 32-byte
- * descriptor FORMAT are PG195-stable. */
+ * received length is NOT written to desc.bytes -- so the punt in-band header
+ * carries a byte_len field (bytes 5-6, LE), SAF-measured in the FPGA, which the
+ * host reads directly (the frame-own L2/L3 parse is retained only as a
+ * byte_len==0 fallback); and a per-frame stop/re-arm wedges the engine (C2H uses
+ * a continuously-running circular ring). Register/target OFFSETS + the 32-byte
+ * descriptor FORMAT are PG195-stable.
+ *
+ * Punt in-band header (8 B, prepended by pw_dma_slowpath ahead of each frame):
+ *   bytes 0-3  lif_id   (LE)
+ *   byte  4    ingress  (low nibble)
+ *   bytes 5-6  byte_len (LE) -- frame length, SAF-measured in the dp domain
+ *   byte  7    reserved (0)
+ * Inject header (host->card): byte 0 = egress port; the engine strips it. */
 
 /* CSR-window offset for a hypothetical future single-big-BAR layout where the
  * CSR sits in the upper half (the backend probes + self-selects). On the current
