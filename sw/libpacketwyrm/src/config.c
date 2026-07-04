@@ -573,7 +573,13 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
      * The minimum is 60: frame_len is the pre-FCS L2 length, and the smallest
      * legal Ethernet frame is 64 B ON THE WIRE INCLUDING FCS = 60 B pre-FCS. So
      * frame_len:60 emits a true 64-byte wire frame (the 64 B / 14.88 Mpps line-
-     * rate point); anything smaller the MAC pads to 60 anyway. */
+     * rate point); anything smaller the MAC pads to 60 anyway.
+     * NOTE: the 1518 ceiling is a GENERATOR limit and is deliberate -- it is
+     * NOT the control-plane/slow-path MTU-9000 jumbo (that path is the DMA punt/
+     * inject, not generated test traffic). Raising it is not just a number here:
+     * pw_flow_gen_multi carries frame_len/built_len/byte_off in 12 bits (max
+     * 4095), so generator jumbo would need those widened to >=14 bits + a new
+     * bitstream. Keep the two concepts distinct. */
     if (f->traffic.frame_len_fixed_set &&
         (pw_yaml_map_get(tr, "frame_len_min") || pw_yaml_map_get(tr, "frame_len_max") ||
          pw_yaml_map_get(tr, "frame_len_step"))) {

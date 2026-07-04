@@ -173,6 +173,13 @@ flows:
                                    #   to it; a raw frame_template lowers the floor
                                    #   (to the template's header size, so 60 emits a
                                    #   true 64-byte wire frame).
+                                   #   NOTE: 1518 is a GENERATOR cap (standard
+                                   #   Ethernet) and is distinct from the control-
+                                   #   plane/slow-path MTU-9000 jumbo (DMA punt/
+                                   #   inject) -- generated test traffic does NOT
+                                   #   support jumbo (the RTL generator's length
+                                   #   fields are 12-bit; widening needs a new
+                                   #   bitstream).
       rate_bps: 1000000000         # or rate_pps
       burst_size: 1                # optional, default 1. A burst_size:1 (1-frame
                                    #   bucket) small-frame flow still reaches line

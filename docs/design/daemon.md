@@ -246,8 +246,10 @@ Initial RPCs:
 | `debug.regs`         | raw register read window                      |
 | `card.reset/disable/enable` | card-level lifecycle                   |
 
-All RPCs are idempotent where it makes sense. Unauthenticated for
-Phase 0; access is gated by socket permissions.
+All RPCs are idempotent where it makes sense. Access control is the
+`system.secret` model described above (constant-time secret check; when no
+secret is configured, the Unix-socket file permissions are the ACL). Remote
+access adds TLS + the same secret via `packetwyrm-proxyd`.
 
 ## Configuration lifecycle
 

@@ -94,8 +94,10 @@ static void usage(const char *prog) {
         "                    smaller = less ~ppm-skew residual between updates --\n"
         "                    1.6 ppm x period; 10 ms ~= 16 ns, 1 ms ~= 1.6 ns. The\n"
         "                    J5 edge updates every ~210 us so below that is moot)\n"
-        "  -p PORT           bind a Prometheus /metrics exporter on this TCP\n"
-        "                    port; 0 (default) leaves it disabled\n"
+        "  -p [ADDR:]PORT    bind a Prometheus /metrics exporter; ADDR defaults\n"
+        "                    to 127.0.0.1 (loopback). Use 0.0.0.0:PORT to expose\n"
+        "                    it on all interfaces (unauthenticated -- opt in\n"
+        "                    deliberately). 0/unset leaves it disabled\n"
         "  -F                allow falling back to the no-op fake backend when a\n"
         "                    card's BAR cannot be opened (dev/CI; default: error)\n",
         prog);
@@ -1881,16 +1883,21 @@ static void handle_client(int cfd,
 
 /* ---- Prometheus exporter --------------------------------------------- */
 
-static int promex_listen(int port, int *out_fd) {
+/* The exporter serves plain, unauthenticated HTTP (build/version, card state,
+ * host-plane counters, logical labels), so it binds 127.0.0.1 by DEFAULT --
+ * exposing operational state to the whole LAN must be an explicit operator
+ * choice (`-p 0.0.0.0:9100`), matching how proxyd gates remote access. */
+static int promex_listen(const char *addr, int port, int *out_fd) {
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
     int one = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
     struct sockaddr_in sa = {
         .sin_family = AF_INET,
-        .sin_addr.s_addr = htonl(INADDR_ANY),
         .sin_port = htons((uint16_t)port),
     };
+    if (!addr || !*addr) addr = "127.0.0.1";
+    if (inet_pton(AF_INET, addr, &sa.sin_addr) != 1) { close(fd); return -1; }
     if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) { close(fd); return -1; }
     if (listen(fd, 4) < 0) { close(fd); return -1; }
     *out_fd = fd;
@@ -2011,6 +2018,7 @@ int main(int argc, char **argv) {
     int  stats_interval = 5000;
     int  servo_interval = 10;     /* cross-card lat_correction servo period (ms) */
     int  prom_port      = 0;
+    const char *prom_addr = "127.0.0.1";   /* -p default: loopback only */
 
     int opt;
     while ((opt = getopt(argc, argv, "c:e:t:nvs:S:p:Fh")) != -1) {
@@ -2021,7 +2029,12 @@ int main(int argc, char **argv) {
         case 'v': verbose = true; break;
         case 's': stats_interval = atoi(optarg); break;
         case 'S': servo_interval = atoi(optarg); if (servo_interval < 1) servo_interval = 1; break;
-        case 'p': prom_port = atoi(optarg); break;
+        case 'p': {   /* -p [ADDR:]PORT ; ADDR defaults to 127.0.0.1 */
+            char *colon = strrchr(optarg, ':');
+            if (colon) { *colon = '\0'; prom_addr = optarg; prom_port = atoi(colon + 1); }
+            else       { prom_port = atoi(optarg); }
+            break;
+        }
         case 'F': allow_fake = true; break;
         case 'h': default: usage(argv[0]); return opt == 'h' ? 0 : 2;
         }
@@ -2098,11 +2111,11 @@ int main(int argc, char **argv) {
 
     int prom_fd = -1;
     if (prom_port > 0) {
-        if (promex_listen(prom_port, &prom_fd) < 0) {
-            fprintf(stderr, "warning: Prometheus listener on :%d failed\n", prom_port);
+        if (promex_listen(prom_addr, prom_port, &prom_fd) < 0) {
+            fprintf(stderr, "warning: Prometheus listener on %s:%d failed\n", prom_addr, prom_port);
             prom_fd = -1;
         } else if (verbose) {
-            printf("  Prometheus exporter on :%d/metrics\n", prom_port);
+            printf("  Prometheus exporter on %s:%d/metrics\n", prom_addr, prom_port);
         }
     }
 

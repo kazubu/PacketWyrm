@@ -145,6 +145,18 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now packetwyrmd
 ```
 
+After enabling, **verify the daemon actually reached the card under systemd**
+(not just under a manual `sudo`): the unit runs as root with the full
+capability set precisely because the BAR mmap / PCI-config prep need it, so a
+too-narrow `CapabilityBoundingSet` would let a manual run work while the service
+silently fails to open the BAR. Confirm with:
+
+```sh
+systemctl status packetwyrmd            # active (running), no restart loop
+sudo journalctl -u packetwyrmd -b       # look for the card BAR opening, no
+                                        #   "BAR open failed" / permission errors
+```
+
 The default unit runs against `/etc/packetwyrm/packetwyrm.yaml`;
 pick one of the example configs as a starting point:
 
