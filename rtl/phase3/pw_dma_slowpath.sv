@@ -144,41 +144,90 @@ module pw_dma_slowpath #(
     taxi_axis_if #(.DATA_W(DP_DATA_W)) punt_dp ();
     taxi_axis_if #(.DATA_W(XD_DATA_W)) punt_xd ();
 
-    // Header-insert FSM (dp domain): on each frame, emit one header beat built
-    // from s_punt_tuser, then the frame beats. tuser = {rx_ts[63:0],
-    // ingress[3:0], lif_id[31:0]}.
-    logic        punt_state;   // S_HDR: emit header; S_PAY: pass frame
-    wire  [31:0] punt_lif      = s_punt_tuser[31:0];
-    wire  [3:0]  punt_ingress  = s_punt_tuser[35:32];
-    // header beat: byte0..3 = lif_id[31:0] (LE), byte4 = {4'b0, ingress[3:0]}
-    wire  [DP_DATA_W-1:0] punt_hdr = { {(DP_DATA_W-40){1'b0}}, 4'b0, punt_ingress, punt_lif };
+    // Store-and-forward + length header (dp domain): buffer one punt frame while
+    // counting its byte length, then emit a full 64-b in-band header beat followed
+    // by the frame beats into the async FIFO (which upsizes 64->256 and packs the
+    // header contiguously with the frame -- no partial-keep mid-stream beat, which
+    // the header must be a full dp beat to avoid). The header carries the byte
+    // length so the host sizes the frame WITHOUT parsing L2/L3 (VLAN/QinQ/unknown-
+    // ethertype/LLDP all work). tuser = {rx_ts[63:0], ingress[3:0], lif_id[31:0]}.
+    //   header: byte0-3 = lif_id (LE), byte4 = {4'b0, ingress}, byte5-6 = byte_len,
+    //           byte7 = 0.
+    localparam int PSAF_BEATS = 1280;                     // >= a jumbo frame (9600 B / 8)
+    localparam int PAW = $clog2(PSAF_BEATS);
+    (* ram_style = "block" *) logic [DP_DATA_W-1:0] psaf_d [PSAF_BEATS];
+    (* ram_style = "block" *) logic [DP_KEEP_W-1:0] psaf_k [PSAF_BEATS];
+    localparam logic [1:0] PS_FILL = 2'd0, PS_HDR = 2'd1, PS_DRAIN = 2'd2;
+    logic [1:0]       psaf_st;
+    logic [PAW-1:0]   psaf_wr, psaf_rd, psaf_n;   // n = beat count of the buffered frame
+    logic [15:0]      psaf_len, psaf_len_acc;
+    logic [31:0]      psaf_lif;
+    logic [3:0]       psaf_ing;
+    logic [DP_DATA_W-1:0] psaf_dq;                // registered BRAM read
+    logic [DP_KEEP_W-1:0] psaf_kq;
+
+    function automatic [4:0] keepcnt(input [DP_KEEP_W-1:0] k);
+        keepcnt = '0;
+        for (int i = 0; i < DP_KEEP_W; i++) if (k[i]) keepcnt = keepcnt + 5'd1;
+    endfunction
+
+    wire fill_acc  = (psaf_st == PS_FILL) && s_punt_tvalid;                 // s_punt accepted
+    wire hdr_acc   = (psaf_st == PS_HDR)  && punt_dp.tready;                // header beat accepted
+    wire drain_acc = (psaf_st == PS_DRAIN) && punt_dp.tvalid && punt_dp.tready;
+    // Read the address we will PRESENT next cycle (1-ahead so the registered BRAM
+    // read stays aligned with psaf_rd).
+    wire [PAW-1:0] rd_nxt = drain_acc ? (psaf_rd + 1'b1) : psaf_rd;
 
     always_ff @(posedge dp_clk) begin
         if (dp_rst) begin
-            punt_state <= S_HDR;
+            psaf_st <= PS_FILL; psaf_wr <= '0; psaf_rd <= '0; psaf_n <= '0;
+            psaf_len_acc <= '0;
         end else begin
-            if (punt_dp.tvalid && punt_dp.tready) begin
-                if (punt_state == S_HDR) punt_state <= S_PAY;
-                else if (punt_dp.tlast)  punt_state <= S_HDR;
+            case (psaf_st)
+            PS_FILL: if (fill_acc) begin
+                psaf_d[psaf_wr] <= s_punt_tdata;
+                psaf_k[psaf_wr] <= s_punt_tkeep;
+                psaf_wr      <= psaf_wr + 1'b1;
+                psaf_len_acc <= psaf_len_acc + 16'(keepcnt(s_punt_tkeep));
+                if (s_punt_tlast) begin
+                    psaf_n   <= psaf_wr;                     // last index (0..n = the beats)
+                    psaf_len <= psaf_len_acc + 16'(keepcnt(s_punt_tkeep));
+                    psaf_lif <= s_punt_tuser[31:0];
+                    psaf_ing <= s_punt_tuser[35:32];
+                    psaf_rd  <= '0;
+                    psaf_st  <= PS_HDR;
+                end
             end
+            PS_HDR: if (hdr_acc) psaf_st <= PS_DRAIN;
+            PS_DRAIN: if (drain_acc) begin
+                psaf_rd <= psaf_rd + 1'b1;
+                if (psaf_rd == psaf_n) begin                 // last beat drained
+                    psaf_st <= PS_FILL; psaf_wr <= '0; psaf_len_acc <= '0;
+                end
+            end
+            default: psaf_st <= PS_FILL;
+            endcase
         end
     end
+    // Registered BRAM read, 1-ahead of psaf_rd (see rd_nxt). Primed during PS_HDR
+    // (rd_nxt = psaf_rd = 0) so beat 0 is ready when PS_DRAIN begins.
+    always_ff @(posedge dp_clk) begin
+        psaf_dq <= psaf_d[rd_nxt];
+        psaf_kq <= psaf_k[rd_nxt];
+    end
 
-    wire punt_hdr_beat = (punt_state == S_HDR);
-    // Present either the header beat (from tuser, don't consume s_punt yet) or the
-    // frame beats (pass-through from s_punt).
-    assign punt_dp.tdata  = punt_hdr_beat ? punt_hdr        : s_punt_tdata;
-    assign punt_dp.tkeep  = punt_hdr_beat ? {DP_KEEP_W{1'b1}} : s_punt_tkeep;
+    wire [DP_DATA_W-1:0] punt_hdr =
+        { 8'b0, psaf_len, 4'b0, psaf_ing, psaf_lif };        // b0-3 lif, b4 ing, b5-6 len, b7 0
+
+    assign s_punt_tready  = (psaf_st == PS_FILL);
+    assign punt_dp.tvalid = (psaf_st == PS_HDR) || (psaf_st == PS_DRAIN);
+    assign punt_dp.tdata  = (psaf_st == PS_HDR) ? punt_hdr           : psaf_dq;
+    assign punt_dp.tkeep  = (psaf_st == PS_HDR) ? {DP_KEEP_W{1'b1}}  : psaf_kq;
     assign punt_dp.tstrb  = punt_dp.tkeep;
-    assign punt_dp.tlast  = punt_hdr_beat ? 1'b0            : s_punt_tlast;
+    assign punt_dp.tlast  = (psaf_st == PS_DRAIN) && (psaf_rd == psaf_n);
     assign punt_dp.tid    = '0;
     assign punt_dp.tdest  = '0;
     assign punt_dp.tuser  = '0;
-    // valid: header beat is valid whenever a frame is waiting (s_punt_tvalid);
-    // frame beats follow s_punt_tvalid.
-    assign punt_dp.tvalid = s_punt_tvalid;
-    // consume s_punt only during payload (the header beat does not pop s_punt)
-    assign s_punt_tready  = (~punt_hdr_beat) & punt_dp.tready;
 
     taxi_axis_async_fifo_adapter #(
         .DEPTH          (FIFO_DEPTH),

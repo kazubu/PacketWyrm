@@ -134,6 +134,9 @@ module tb_dma_slowpath;
             logic [31:0] lif = {c2h_bytes[3],c2h_bytes[2],c2h_bytes[1],c2h_bytes[0]};
             check("punt: header lif_id = 0x1234", lif == 32'h0000_1234);
             check("punt: header ingress = 1", c2h_bytes[4] == 8'd1);
+            // byte_len (bytes 5-6, LE) = the 16-byte frame the SAF measured.
+            check("punt: header byte_len = 16",
+                  ({c2h_bytes[6], c2h_bytes[5]}) == 16'd16);
             check("punt: payload byte[0]=0x01", c2h_bytes[8] == 8'h01);
             check("punt: payload byte[15]=0x10", c2h_bytes[23] == 8'h10);
         end
