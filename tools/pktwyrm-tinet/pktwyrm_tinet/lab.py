@@ -150,21 +150,23 @@ def _wait_for_taps(tap_names: Sequence[str], *, timeout_s: float = 10.0) -> None
 
 def _start_daemon(daemon_bin: str, packetwyrm_config: pathlib.Path, log_path: pathlib.Path) -> int:
     """Fork packetwyrmd into the background; return its PID."""
-    log_fd = open(log_path, "ab", buffering=0)
-    proc = subprocess.Popen(
-        [daemon_bin, "-c", str(packetwyrm_config), "-v"],
-        stdout=log_fd, stderr=log_fd, stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    # Give it a fraction of a second to fail fast on bad config.
-    time.sleep(0.3)
-    if proc.poll() is not None and proc.returncode != 0:
-        log_fd.close()
-        raise LabRuntimeError(
-            f"packetwyrmd exited rc={proc.returncode} at startup;"
-            f" see {log_path}"
+    # `with` so the PARENT's copy of the log fd is closed on both the success
+    # and the error path (the child keeps its own inherited dup) -- otherwise
+    # each _start_daemon leaks an fd into a long-lived caller.
+    with open(log_path, "ab", buffering=0) as log_fd:
+        proc = subprocess.Popen(
+            [daemon_bin, "-c", str(packetwyrm_config), "-v"],
+            stdout=log_fd, stderr=log_fd, stdin=subprocess.DEVNULL,
+            start_new_session=True,
         )
-    return proc.pid
+        # Give it a fraction of a second to fail fast on bad config.
+        time.sleep(0.3)
+        if proc.poll() is not None and proc.returncode != 0:
+            raise LabRuntimeError(
+                f"packetwyrmd exited rc={proc.returncode} at startup;"
+                f" see {log_path}"
+            )
+        return proc.pid
 
 
 def _stop_daemon(pid: int, *, timeout_s: float = 5.0) -> None:
