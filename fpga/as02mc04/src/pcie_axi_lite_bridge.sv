@@ -1,14 +1,16 @@
 // PCIe Gen3 endpoint -> AXI4-Lite master bridge.
 //
 // Thin shim around the Xilinx DMA/Bridge Subsystem for PCIe (module
-// `pcie_gen3_wrapper`, generated as xdma in DMA mode by
+// `pcie_gen3_wrapper`, generated as xdma in AXI-Stream DMA mode by
 // ip/pcie_gen3.tcl). The IP's AXI4-Lite *master* (M_AXI_LITE, ports
 // m_axil_*) is a PCIe BAR mapped to host MMIO: host reads/writes to
 // that BAR appear here as AXI-Lite transactions, which drive the
-// pw_csr_min CSR slave in the top-level. The IP's DMA AXI-MM master
-// (m_axi_*), config-management (cfg_mgmt_*) and user IRQ ports are
-// unused in Phase 1 and tied off; Phase 2 will use the DMA engine for
-// the host punt / inject rings.
+// pw_csr_min / pw_csr_full CSR slave in the top-level. The DMA rides the
+// XDMA AXI-Stream channels -- H2C (m_axis_h2c_*_0 -> inject) and C2H
+// (s_axis_c2h_*_0 <- punt), exposed upward as h2c_*/c2h_* and driven by
+// pw_dma_slowpath in Phase 3. The IP is in AXI-Stream mode, so there are
+// NO m_axi_* AXI-MM master ports. config-management (cfg_mgmt_*) and the
+// user IRQ are unused/tied off; Phase 1 leaves the DMA stream ports open.
 //
 // This module's interface to the top-level is unchanged from the
 // earlier stub-era version (axi_aclk/axi_aresetn, a 32-bit-data
