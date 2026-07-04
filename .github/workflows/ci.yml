@@ -42,6 +42,18 @@ jobs:
           test -x /tmp/pw-staging/usr/local/bin/pktwyrm
           test -f /tmp/pw-staging/lib/systemd/system/packetwyrmd.service
           test -f /tmp/pw-staging/lib/systemd/system/packetwyrm-proxyd.service
+      - name: kernel module build (best-effort)
+        run: |
+          # The kernel skeleton is out-of-tree, so it needs matching kbuild
+          # headers. Build it when the runner has them (catches compile breakage
+          # like a bad struct/type); skip gracefully otherwise so CI isn't tied
+          # to the runner kernel.
+          sudo apt-get install -y "linux-headers-$(uname -r)" || true
+          if [ -d "/lib/modules/$(uname -r)/build" ]; then
+            make -C kernel && make -C kernel clean
+          else
+            echo "skip: no kbuild headers for $(uname -r) on this runner"
+          fi
 
   rtl-sim:
     name: RTL data-plane sim (Verilator)
