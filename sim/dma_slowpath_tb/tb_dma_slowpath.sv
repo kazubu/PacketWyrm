@@ -74,6 +74,33 @@ module tb_dma_slowpath;
         end
     end
 
+    // Drive one punt frame of `nbytes` bytes over 64-b beats (last beat partial
+    // tkeep when nbytes%8). Byte value pattern = (index & 0xFF). Advances
+    // beat-by-beat on the accept counter (same race-free scheme as Test 2).
+    task automatic drive_punt(int nbytes);
+        int full  = nbytes / 8;
+        int rem   = nbytes % 8;
+        int beats = full + (rem ? 1 : 0);
+        int idx   = 0;
+        for (int bt = 0; bt < beats; bt++) begin
+            logic [DP-1:0]   d = '0;
+            logic [DP/8-1:0] k = '0;
+            int nb   = (bt == full) ? rem : 8;
+            int prev;
+            for (int j = 0; j < nb; j++) begin
+                d[j*8 +: 8] = 8'(idx & 8'hFF);
+                k[j]        = 1'b1;
+                idx++;
+            end
+            @(negedge dp_clk);
+            s_punt_tdata = d; s_punt_tkeep = k;
+            s_punt_tvalid = 1; s_punt_tlast = (bt == beats - 1);
+            prev = punt_accepts; wait (punt_accepts == prev + 1);
+        end
+        @(negedge dp_clk);
+        s_punt_tvalid = 0; s_punt_tlast = 0; s_punt_tkeep = '0;
+    endtask
+
     initial begin
         s_h2c_tdata='0; s_h2c_tkeep='0; s_h2c_tvalid=0; s_h2c_tlast=0;
         s_punt_tdata='0; s_punt_tkeep='0; s_punt_tvalid=0; s_punt_tlast=0; s_punt_tuser='0;
@@ -173,6 +200,39 @@ module tb_dma_slowpath;
             logic ok = 1;
             for (int i = 0; i < 16; i++) if (inj_bytes[i] != 8'(8'hA0 + i)) ok = 0;
             check("inject hdr-only: next payload correct", ok);
+        end
+
+        // ---- Test 4: larger punt frame + partial tkeep + C2H backpressure ----
+        // Exercises the store-and-forward byte counter on a multi-beat frame
+        // whose length is not a multiple of 8 (partial tkeep on the last beat),
+        // while the C2H sink de-asserts ready 1-in-4. byte_len must equal the
+        // exact frame length and the payload must survive the backpressure. This
+        // is the guard the summary review asked for (a max-length case here would
+        // trip any host DMA-buffer cap that is < MAC max + header).
+        c2h_bytes = {}; c2h_frames = 0;
+        s_punt_tuser = {64'd0, 4'd2, 32'h0000_00AA};  // lif=0xAA, ingress=2
+        fork
+            drive_punt(100);                          // 12 full beats + 4-byte tail
+            begin : bp                                // backpressure the C2H sink
+                for (int k = 0; k < 250; k++) begin
+                    @(posedge axi_clk);
+                    m_c2h_tready = (k % 4 != 0);
+                end
+                m_c2h_tready = 1;
+            end
+        join
+        repeat (200) @(posedge axi_clk);
+        check("punt big: one frame emitted", c2h_frames == 1);
+        check("punt big: 108 bytes (8 hdr + 100 payload)", c2h_bytes.size() == 108);
+        if (c2h_bytes.size() == 108) begin
+            logic [31:0] lif = {c2h_bytes[3],c2h_bytes[2],c2h_bytes[1],c2h_bytes[0]};
+            logic ok = 1;
+            check("punt big: header lif = 0xAA", lif == 32'h0000_00AA);
+            check("punt big: header ingress = 2", c2h_bytes[4] == 8'd2);
+            check("punt big: byte_len = 100 (partial-tkeep counted)",
+                  ({c2h_bytes[6], c2h_bytes[5]}) == 16'd100);
+            for (int i = 0; i < 100; i++) if (c2h_bytes[8+i] != 8'(i & 8'hFF)) ok = 0;
+            check("punt big: payload pattern intact under backpressure", ok);
         end
 
         if (errors == 0) $display("ALL DMA SLOWPATH SCENARIOS PASS");

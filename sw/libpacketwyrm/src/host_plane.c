@@ -11,7 +11,8 @@
 /* Punt/inject frame buffer. Must hold a full jumbo frame (MTU 9000 ~ 9018 B on
  * the wire); the DMA slow path + data-plane FIFOs are sized for jumbo, so this
  * host-side buffer (was 2048, which silently truncated >~2 KB frames) is the
- * matching cap. Kept just under the DMA buffer (PWFPGA... FRAME_CAP 9216). */
+ * matching cap. Sits at the MAC ceiling (9600) and below the DMA buffer
+ * (PW_DMA_FRAME_CAP 16384, which holds this + the 8-B in-band header). */
 #define PW_HOST_FRAME_MAX 9600
 
 pw_status pw_host_plane_init(struct pw_host_plane *hp,

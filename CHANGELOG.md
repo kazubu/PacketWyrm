@@ -78,6 +78,17 @@ For where work is going next, see `NEXT-STEPS.md`.
     read `len=8062` straight from the header on a jumbo punt; full dual-stack
     control plane + v4/v6 jumbo pings (2000–8900 B) all 0 % loss. Gated build WNS
     +0.165 all clocks, LUT 94.81 %, BRAM 54.31 %.
+  - **Punt DMA buffer raised to cover the full configured frame ceiling
+    (`PW_DMA_FRAME_CAP` 9216 → 16384).** Review follow-up: the MAC accepts up to
+    9599 B (`cfg_*_max_pkt_len`) and `pw_dma_slowpath`'s punt SAF buffers up to
+    PSAF_BEATS×8 = 10240 B, but the host C2H descriptor buffers were only 9216 B,
+    so a punt of `{9209..9599 B frame + 8 B header}` could truncate on C2H. The
+    buffer now matches the RTL async-FIFO DEPTH (16384) and clears both ceilings
+    (host-side only — no reflash; the MTU-9000 traffic HW-validated earlier is
+    ≤~9018 B, so this hardens the configured-max edge). Also fixed the stale
+    `PW_HOST_FRAME_MAX` and `pw_dma_slowpath.sv` header comments (the punt header
+    carries `byte_len` too), and added a `sim_dma` case that punts a 100-B frame
+    (partial `tkeep` + C2H backpressure) verifying `byte_len` and payload integrity.
   - **Unmatched frames split out of `drops`; LED no longer red on no-match
     (RTL + SW).** A classifier **no-match** is no longer counted as a drop or
     treated as an error. Per-port `drops` (`rx_bad_frame`) now counts **real

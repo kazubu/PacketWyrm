@@ -32,7 +32,13 @@
  * punt frames -> cRPD retransmits -> multi-second RTT + no OSPF/IS-IS adjacency.
  * With a circular ring the engine always has posted buffers; the host reaps by a
  * consumer index vs the completed-descriptor count (each frame exactly once). */
-#define PW_DMA_FRAME_CAP  9216u   /* jumbo frame buffer (matches RTL inject/punt) */
+/* C2H/H2C DMA buffer capacity. Must cover the WIDEST frame the RTL can deliver
+ * plus the 8-B in-band header: the MAC accepts up to 9599 B (pw_sfp_10g
+ * cfg_*_max_pkt_len = 9600-1) and pw_dma_slowpath's punt SAF buffers up to
+ * PSAF_BEATS*8 = 10240 B, so a punt of {<=9599 B frame + 8 B hdr} must fit here.
+ * 16384 matches the RTL async-FIFO DEPTH and clears both ceilings with margin
+ * (the old 9216 left frames in 9209..9599 B liable to truncate on C2H). */
+#define PW_DMA_FRAME_CAP  16384u  /* jumbo frame buffer (>= MAC max + hdr; RTL FIFO) */
 #define PW_DMA_HDR_LEN    8u      /* pw_dma_slowpath in-band metadata header */
 #define PW_DMA_RX_RING    16u     /* C2H circular ring depth (descriptors + buffers) */
 

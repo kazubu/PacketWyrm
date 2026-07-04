@@ -336,9 +336,8 @@ Silicon corrected several design assumptions; the as-built code reflects these:
 
 ### Jumbo (MTU 9000) — DONE + HW-validated (2026-07-04, build_id 0x6a481d26)
 
-Four data-path frame-size caps had to be raised together (the DMA descriptors +
-host DMA buffer 9216 were already jumbo-ready); each was found by a graduated
-ping (1600 B OK / 2000 B drop pinned each successive ~2 KB limiter):
+Four data-path frame-size caps had to be raised together; each was found by a
+graduated ping (1600 B OK / 2000 B drop pinned each successive ~2 KB limiter):
 1. **MAC BASE-R PCS** `cfg_tx/rx_max_pkt_len` 1518 → 9600 (pw_sfp_10g).
 2. **MAC↔dp_clk CDC FIFO** DEPTH 2048 → 16384 B (board).
 3. **Data-plane forward/punt SAF** `SAF_DEPTH_BEATS` 512 → 2048 (16 KB; threaded
@@ -346,6 +345,13 @@ ping (1600 B OK / 2000 B drop pinned each successive ~2 KB limiter):
 4. **pw_dma_slowpath async-FIFO** FIFO_DEPTH 2048 → 16384 B (the taxi DEPTH is in
    BYTES, not "words×8" — this was the last, subtlest cap).
 5. **Host** `PW_HOST_FRAME_MAX` 2048 → 9600 B (daemon punt/inject buffer).
+6. **Host DMA buffer** `PW_DMA_FRAME_CAP` 9216 → 16384 B (the C2H/H2C descriptor
+   buffers). The MAC accepts up to 9599 B and the punt SAF buffers up to
+   PSAF_BEATS×8 = 10240 B, so a punt of `{≤9599 B frame + 8 B header}` must fit
+   the C2H buffer; the old 9216 left frames in 9209..9599 B liable to C2H
+   truncation (fixed to match the RTL async-FIFO DEPTH, host-side only — no
+   reflash; the MTU-9000 traffic already validated on HW is ≤~9018 B, so this is
+   a hardening of the configured-max edge, not a regression of the tested path).
 
 Validated on 07:00.0 at MTU 9000: v4 pings 2000/4000/6000/8000/8900 B and a v6
 8000 B ping all 0 % loss; the full dual-stack control plane (OSPFv2/OSPFv3 Full,
