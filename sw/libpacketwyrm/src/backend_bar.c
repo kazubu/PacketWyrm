@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 
 /* --- DMA slow-path state (CAP_HAS_DMA build; XDMA AXI-Stream) -----------
@@ -47,7 +48,7 @@ struct dma_state {
     size_t   xdma_regs_len;
     void    *pool;            /* one page-aligned, DMA-mapped region */
     size_t   pool_len;
-    uint64_t pool_iova;       /* identity IOVA of pool (== (uintptr_t)pool) */
+    uint64_t pool_iova;       /* device IOVA of pool (bump-allocated by vfio) */
     /* sub-regions carved out of pool (host VA + device IOVA) */
     struct pwfpga_xdma_desc *h2c_desc;  uint64_t h2c_desc_iova;
     uint8_t *tx_buf;   uint64_t tx_iova;   /* H2C (inject) frame buffer */
@@ -56,6 +57,7 @@ struct dma_state {
     uint32_t h2c_cmpl_base;   /* completed-desc-count baseline (H2C) */
     uint32_t c2h_cmpl_base;   /* completed-desc-count at ring arm (C2H) */
     uint32_t rx_consumed;     /* C2H frames reaped since arm */
+    uint64_t c2h_overrun;     /* punt frames dropped because the host fell behind */
     int      c2h_armed;       /* the C2H ring is running */
 };
 
@@ -340,11 +342,33 @@ static pw_status dma_slow_path_tx(struct bar_ctx *c, const void *frame, size_t l
      * reading a baseline has a race either way -- before RUN it latches the stale
      * 1 from the previous inject (false immediate completion, frame not DMA'd),
      * and after RUN a descriptor that completes before the baseline read latches
-     * base=1 so count never changes (spin to timeout). count!=0 is unambiguous. */
+     * base=1 so count never changes (spin to timeout). count!=0 is unambiguous.
+     * Bound the poll by a MONOTONIC deadline (not an iteration count) and abort
+     * on a channel error status, so a wedged engine cannot spin forever burning
+     * CPU or hide its cause behind a generic timeout. */
+    struct timespec t0, tn;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
     pw_status r = PW_E_IO;
-    for (int i = 0; i < 1000000; i++)
-        if (xdma_rd(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_COMPLETED_COUNT) != 0) { r = PW_OK; break; }
-    xdma_wr(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_CONTROL, 0);   /* stop */
+    uint32_t st = 0;
+    for (;;) {
+        if (xdma_rd(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_COMPLETED_COUNT) != 0) {
+            r = PW_OK; break;
+        }
+        st = xdma_rd(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_STATUS);
+        if (st & PWFPGA_XDMA_STAT_ERR) {
+            fprintf(stderr, "[dma tx] H2C channel error, status=0x%08x\n", st);
+            break;
+        }
+        clock_gettime(CLOCK_MONOTONIC, &tn);
+        double ms = (tn.tv_sec - t0.tv_sec) * 1e3 + (tn.tv_nsec - t0.tv_nsec) / 1e6;
+        if (ms > 200.0) {
+            fprintf(stderr, "[dma tx] H2C completion timeout (200 ms), status=0x%08x\n", st);
+            break;
+        }
+    }
+    xdma_wr(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_CONTROL, 0);       /* stop */
+    if (r != PW_OK)
+        (void)xdma_rd(c, PWFPGA_XDMA_H2C_CHANNEL + PWFPGA_XDMA_CH_STATUS_RC); /* clear latched err */
     return r;
 }
 
@@ -411,9 +435,20 @@ static int dma_slow_path_rx(struct bar_ctx *c, void *buf, size_t buflen,
     if (d->rx_consumed >= done) return 0;      /* no new punt frame */
 
     /* If we fell more than a ring behind, the engine wrapped and overwrote the
-     * oldest buffers; skip to the freshest N to avoid reading stale data. */
-    if (done - d->rx_consumed > PW_DMA_RX_RING)
+     * oldest buffers; skip to the freshest N to avoid reading stale data. This is
+     * punt loss (shows up as BGP/OSPF/ND flaps), so count it and warn -- sparsely
+     * (once per 16 dropped) so a storm can't flood the daemon log. Without this,
+     * the overrun was silent and the loss un-attributable. */
+    if (done - d->rx_consumed > PW_DMA_RX_RING) {
+        uint32_t skipped = (done - d->rx_consumed) - PW_DMA_RX_RING;
+        uint64_t before  = d->c2h_overrun;
+        d->c2h_overrun += skipped;
+        if (before / 16 != d->c2h_overrun / 16)
+            fprintf(stderr, "[dma rx] WARNING C2H overrun: dropped %u punt frame(s) "
+                    "(total %llu); host behind the %u-desc ring\n",
+                    skipped, (unsigned long long)d->c2h_overrun, PW_DMA_RX_RING);
         d->rx_consumed = done - PW_DMA_RX_RING;
+    }
 
     uint32_t idx = d->rx_consumed % PW_DMA_RX_RING;
     uint8_t *rb  = d->rx_bufs + (size_t)idx * PW_DMA_FRAME_CAP;
@@ -429,8 +464,10 @@ static int dma_slow_path_rx(struct bar_ctx *c, void *buf, size_t buflen,
                                : punt_frame_len(fr, PW_DMA_FRAME_CAP - PW_DMA_HDR_LEN);
     if (payload > PW_DMA_FRAME_CAP - PW_DMA_HDR_LEN) payload = PW_DMA_FRAME_CAP - PW_DMA_HDR_LEN;
     if (getenv("PW_DMA_DEBUG"))
-        fprintf(stderr, "[dma rx] cnt=%u done=%u consumed=%u idx=%u len=%u lif=%u et=%02x%02x\n",
-                cnt, done, d->rx_consumed, idx, payload, lif, fr[12], fr[13]);
+        fprintf(stderr, "[dma rx] cnt=%u done=%u consumed=%u idx=%u len=%u lif=%u "
+                "et=%02x%02x overrun=%llu\n",
+                cnt, done, d->rx_consumed, idx, payload, lif, fr[12], fr[13],
+                (unsigned long long)d->c2h_overrun);
     size_t copy = (payload > buflen) ? buflen : payload;
     if (copy) memcpy(buf, fr, copy);
     d->rx_consumed++;

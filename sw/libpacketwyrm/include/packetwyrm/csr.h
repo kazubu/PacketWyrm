@@ -576,11 +576,17 @@ enum {
     PWFPGA_XDMA_CTRL_IE_READ_ERR    = 0x1fu << 9,
     PWFPGA_XDMA_CTRL_IE_DESC_ERR    = 0x1fu << 19,
 };
-/* Channel Status register bits (VERIFY on HW). */
+/* Channel Status register bits (VERIFY on HW). The error bits share the bit
+ * positions of the control register's interrupt-enable error masks (PG195):
+ * align (bit 3), read errors (bits 9-13), descriptor errors (bits 19-23). On a
+ * clean completion they read 0, so PWFPGA_XDMA_STAT_ERR is a safe abort signal
+ * for the H2C completion poll (the primary success signal stays the
+ * completed-descriptor count). */
 enum {
     PWFPGA_XDMA_STAT_BUSY          = 1u << 0,
     PWFPGA_XDMA_STAT_DESC_STOPPED  = 1u << 1,
     PWFPGA_XDMA_STAT_DESC_COMPLETED= 1u << 2,
+    PWFPGA_XDMA_STAT_ERR           = (1u << 3) | (0x1Fu << 9) | (0x1Fu << 19),
 };
 
 /* XDMA hardware scatter-gather descriptor (PG195, 32 bytes, little-endian).

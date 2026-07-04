@@ -159,7 +159,12 @@ module pw_dma_slowpath #(
     localparam int PAW = $clog2(PSAF_BEATS);
     (* ram_style = "block" *) logic [DP_DATA_W-1:0] psaf_d [PSAF_BEATS];
     (* ram_style = "block" *) logic [DP_KEEP_W-1:0] psaf_k [PSAF_BEATS];
-    localparam logic [1:0] PS_FILL = 2'd0, PS_HDR = 2'd1, PS_DRAIN = 2'd2;
+    // PS_DROP: an oversize frame (more beats than PSAF_BEATS) is swallowed to
+    // tlast and NOT emitted, so psaf_wr can never index past the BRAM. The MAC
+    // ceiling (9599 B < PSAF_BEATS*8 = 10240 B) keeps this unreachable today; it
+    // is a guard against a future cap change or a malformed stream.
+    localparam logic [1:0] PS_FILL = 2'd0, PS_HDR = 2'd1, PS_DRAIN = 2'd2,
+                           PS_DROP = 2'd3;
     logic [1:0]       psaf_st;
     logic [PAW-1:0]   psaf_wr, psaf_rd, psaf_n;   // n = beat count of the buffered frame
     logic [15:0]      psaf_len, psaf_len_acc;
@@ -174,6 +179,7 @@ module pw_dma_slowpath #(
     endfunction
 
     wire fill_acc  = (psaf_st == PS_FILL) && s_punt_tvalid;                 // s_punt accepted
+    wire drop_acc  = (psaf_st == PS_DROP) && s_punt_tvalid;                 // oversize swallow
     wire hdr_acc   = (psaf_st == PS_HDR)  && punt_dp.tready;                // header beat accepted
     wire drain_acc = (psaf_st == PS_DRAIN) && punt_dp.tvalid && punt_dp.tready;
     // Read the address we will PRESENT next cycle (1-ahead so the registered BRAM
@@ -187,9 +193,8 @@ module pw_dma_slowpath #(
         end else begin
             case (psaf_st)
             PS_FILL: if (fill_acc) begin
-                psaf_d[psaf_wr] <= s_punt_tdata;
+                psaf_d[psaf_wr] <= s_punt_tdata;             // psaf_wr is in-range here
                 psaf_k[psaf_wr] <= s_punt_tkeep;
-                psaf_wr      <= psaf_wr + 1'b1;
                 psaf_len_acc <= psaf_len_acc + 16'(keepcnt(s_punt_tkeep));
                 if (s_punt_tlast) begin
                     psaf_n   <= psaf_wr;                     // last index (0..n = the beats)
@@ -198,7 +203,16 @@ module pw_dma_slowpath #(
                     psaf_ing <= s_punt_tuser[35:32];
                     psaf_rd  <= '0;
                     psaf_st  <= PS_HDR;
+                end else if (psaf_wr == PAW'(PSAF_BEATS - 1)) begin
+                    psaf_st <= PS_DROP;                      // next beat would overflow -> drop
+                end else begin
+                    psaf_wr <= psaf_wr + 1'b1;
                 end
+            end
+            // Swallow the rest of an oversize frame without emitting it, then
+            // re-arm for the next frame (no desync).
+            PS_DROP: if (drop_acc && s_punt_tlast) begin
+                psaf_st <= PS_FILL; psaf_wr <= '0; psaf_len_acc <= '0;
             end
             PS_HDR: if (hdr_acc) psaf_st <= PS_DRAIN;
             PS_DRAIN: if (drain_acc) begin
@@ -221,7 +235,7 @@ module pw_dma_slowpath #(
     wire [DP_DATA_W-1:0] punt_hdr =
         { 8'b0, psaf_len, 4'b0, psaf_ing, psaf_lif };        // b0-3 lif, b4 ing, b5-6 len, b7 0
 
-    assign s_punt_tready  = (psaf_st == PS_FILL);
+    assign s_punt_tready  = (psaf_st == PS_FILL) || (psaf_st == PS_DROP);
     assign punt_dp.tvalid = (psaf_st == PS_HDR) || (psaf_st == PS_DRAIN);
     assign punt_dp.tdata  = (psaf_st == PS_HDR) ? punt_hdr           : psaf_dq;
     assign punt_dp.tkeep  = (psaf_st == PS_HDR) ? {DP_KEEP_W{1'b1}}  : psaf_kq;

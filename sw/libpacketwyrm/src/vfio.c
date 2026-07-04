@@ -77,13 +77,22 @@ void pw_vfio_close(struct pw_vfio_handle *h) {
 
 /* --- bus-master DMA buffer mapping (IOMMU) ----------------------------- */
 
+/* Base of the device-DMA IOVA space. IOVAs are bump-allocated from here rather
+ * than reused from the userspace VA: VFIO TYPE1 maps any page-aligned IOVA in
+ * the IOMMU aperture to the buffer VA, and a process VA is not guaranteed to be
+ * a valid IOVA (it depends on the aperture / kernel config). 4 GiB sits above
+ * the low reserved regions (the MSI window at 0xFEEx_xxxx etc.) and inside the
+ * aperture on every VT-d / AMD-Vi host we target. */
+#define PW_VFIO_IOVA_BASE  0x100000000ull
+
 pw_status pw_vfio_map_dma(struct pw_vfio_handle *h, void *vaddr, size_t len,
                           uint64_t *out_iova) {
     if (!h || h->container_fd < 0 || !vaddr || len == 0) return PW_E_INVAL;
-    /* Identity IOVA: iova == the userspace VA. Simple and unambiguous; the x86
-     * IOMMU aperture covers the process VA range. TYPE1 requires page-aligned
-     * iova/size (the caller posix_memalign's + rounds len). */
-    uint64_t iova = (uint64_t)(uintptr_t)vaddr;
+    /* Allocate a fresh IOVA range from the bump allocator (page-aligned; the
+     * caller posix_memalign's vaddr + rounds len up to the page size, so the
+     * bump pointer stays page-aligned across calls). */
+    if (h->iova_next == 0) h->iova_next = PW_VFIO_IOVA_BASE;
+    uint64_t iova = h->iova_next;
     struct vfio_iommu_type1_dma_map dm = {
         .argsz = sizeof(dm),
         .flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE,
@@ -92,6 +101,7 @@ pw_status pw_vfio_map_dma(struct pw_vfio_handle *h, void *vaddr, size_t len,
         .size  = len,
     };
     if (ioctl(h->container_fd, VFIO_IOMMU_MAP_DMA, &dm) < 0) return PW_E_IO;
+    h->iova_next = iova + len;
     if (out_iova) *out_iova = iova;
     return PW_OK;
 }
@@ -135,6 +145,7 @@ pw_status pw_vfio_open_bar(const char *bdf, int bar_index,
     h->container_fd = h->group_fd = h->device_fd = -1;
     h->base = NULL;
     h->size = 0;
+    h->iova_next = 0;
 
     int grp = iommu_group_of(bdf);
     if (grp < 0) return PW_E_IO;
