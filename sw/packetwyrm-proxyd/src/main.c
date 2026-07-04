@@ -312,10 +312,16 @@ static void *worker(void *arg) {
 
     /* Network-facing gateway with a bounded thread pool: don't let a slow or
      * stuck client hold a worker (and eventually all PROXYD_MAX_THREADS) open.
-     * A read/write that stalls past the timeout fails the connection. */
+     * A read/write that stalls past the timeout fails the connection; if the
+     * timeout can't even be armed, drop the connection rather than serve it
+     * unbounded (matches the daemon's set_conn_timeout). */
     struct timeval tv = { .tv_sec = 15, .tv_usec = 0 };
-    setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    if (setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) != 0 ||
+        setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv) != 0) {
+        close(cfd);
+        atomic_fetch_sub(&g_active_threads, 1);
+        return NULL;
+    }
 
     if (g_ssl_ctx) {
         c.ssl = SSL_new(g_ssl_ctx);

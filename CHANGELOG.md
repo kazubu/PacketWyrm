@@ -9,6 +9,12 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **proxyd accept-timeout check (8th full-codebase review).** The gateway's
+    per-connection `SO_RCVTIMEO`/`SO_SNDTIMEO` `setsockopt` returns were ignored;
+    the worker now drops the connection (closes, exits the thread) if the DoS-
+    guard timeout can't be armed — symmetric with the daemon's `set_conn_timeout`.
+    (The 8th review otherwise found **no High/Medium issues** — this was the sole
+    remaining Low hardening item.)
   - **IPC layer robustness (7th full-codebase review).** Three items in the Unix
     control-socket layer (`ipc.c`); SW-only, covered by unit + e2e (no data-path
     or validated-socket-behavior change, so no HW re-run):
