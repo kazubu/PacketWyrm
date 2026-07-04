@@ -9,6 +9,23 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **IPC layer robustness (7th full-codebase review).** Three items in the Unix
+    control-socket layer (`ipc.c`); SW-only, covered by unit + e2e (no data-path
+    or validated-socket-behavior change, so no HW re-run):
+    - **Over-length socket paths are rejected, not silently truncated.**
+      `sockaddr_un.sun_path` is ~108 B while `system.control_socket` is 128 B, so
+      a configured path could fit the config struct but overflow the socket API —
+      binding/connecting to a *different* (prefix) path. A shared
+      `fill_sockaddr_un` helper now rejects `path >= sizeof(sun_path)` with
+      `PW_E_OUT_OF_RANGE` in both `pw_ipc_listen` and `pw_ipc_connect`; new unit
+      test `ipc_path_too_long`.
+    - **`chmod` on the socket is now fatal on failure.** The mode is the access
+      ACL when no secret is set, so a silent `chmod` failure could leave the
+      socket at the umask default; `pw_ipc_listen` now `close`+`unlink`+errors
+      instead of `(void)chmod`.
+    - **Stale IPC comments corrected** (`ipc.h`, `ipc.c`, the main.c socket
+      comment) — they still described the old `0666` / "future daemon group"
+      model instead of the shipped `0660 root:packetwyrm` (prod) / `0666` (-F).
   - **Socket-group ACL + proxyd packaging fix (6th full-codebase review) —
     HW-validated.** The previous round's 0660 control socket (root:root) broke
     the shipped `packetwyrm-proxyd` gateway, which runs unprivileged — a

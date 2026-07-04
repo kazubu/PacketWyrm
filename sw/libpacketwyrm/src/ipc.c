@@ -65,12 +65,25 @@ pw_status pw_ipc_write_frame(int fd, const void *buf, size_t len) {
     return PW_OK;
 }
 
+/* Fill sa->sun_path from `path`, REJECTING a path that doesn't fit sun_path
+ * (Linux ~108 B) instead of silently truncating. pw_system.control_socket is
+ * 128 B, so a configured path can fit the struct but not the socket API; a
+ * silent truncation would bind/connect to a DIFFERENT socket than configured. */
+static pw_status fill_sockaddr_un(const char *path, struct sockaddr_un *sa) {
+    size_t n = strnlen(path, sizeof(sa->sun_path));
+    if (n >= sizeof(sa->sun_path)) return PW_E_OUT_OF_RANGE;
+    sa->sun_family = AF_UNIX;
+    memcpy(sa->sun_path, path, n + 1);
+    return PW_OK;
+}
+
 pw_status pw_ipc_connect(const char *path, int *out_fd) {
     if (!path || !out_fd) return PW_E_INVAL;
+    struct sockaddr_un sa = {0};
+    pw_status r = fill_sockaddr_un(path, &sa);
+    if (r != PW_OK) return r;
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return PW_E_IO;
-    struct sockaddr_un sa = { .sun_family = AF_UNIX };
-    snprintf(sa.sun_path, sizeof(sa.sun_path), "%s", path);
     if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
         close(fd);
         return PW_E_IO;
@@ -83,8 +96,9 @@ pw_status pw_ipc_connect(const char *path, int *out_fd) {
  * fresh boot /var/run/packetwyrm (the default socket dir) may not exist yet, so
  * bind() would fail with ENOENT and the daemon would come up without a control
  * socket. Creating the tree here lets it start with no manual setup. The socket
- * FILE itself is chmod'd to the caller's `mode` below (the daemon passes 0666,
- * its access ACL); the directories are 0755 (traversable, not the ACL). */
+ * FILE itself is chmod'd to the caller's `mode` below (in production the daemon
+ * passes 0660 and group-owns it root:packetwyrm; dev/CI -F uses 0666) -- that is
+ * its access ACL; the directories are 0755 (traversable, not the ACL). */
 static void ensure_parent_dir(const char *path) {
     char buf[sizeof(((struct sockaddr_un *)0)->sun_path)];
     size_t n = strnlen(path, sizeof(buf));
@@ -106,10 +120,11 @@ pw_status pw_ipc_listen(const char *path, mode_t mode, int *out_fd) {
     /* Best-effort: remove stale leftover */
     unlink(path);
 
+    struct sockaddr_un sa = {0};
+    pw_status r = fill_sockaddr_un(path, &sa);
+    if (r != PW_OK) return r;
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return PW_E_IO;
-    struct sockaddr_un sa = { .sun_family = AF_UNIX };
-    snprintf(sa.sun_path, sizeof(sa.sun_path), "%s", path);
     if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
         close(fd);
         return PW_E_IO;
@@ -118,7 +133,14 @@ pw_status pw_ipc_listen(const char *path, mode_t mode, int *out_fd) {
         close(fd);
         return PW_E_IO;
     }
-    (void)chmod(path, mode);
+    /* The mode IS the access ACL when no secret is set, so a failure to apply it
+     * must not leave the socket at the umask default -- treat it like the other
+     * listen failures (fatal to the caller). */
+    if (chmod(path, mode) != 0) {
+        close(fd);
+        unlink(path);
+        return PW_E_IO;
+    }
     *out_fd = fd;
     return PW_OK;
 }

@@ -16,9 +16,9 @@
  *
  * Authentication is the `system.secret` model (constant-time secret
  * check; with no secret configured, the socket file permissions are
- * the ACL). The daemon currently creates the control socket 0666
- * (dev-friendly -- see main.c); a production deployment tightens this
- * via the daemon user/group + a stricter mode, or requires a secret. */
+ * the ACL). In production the daemon creates the socket 0660
+ * root:packetwyrm (root, or the packetwyrm group -- e.g. the
+ * packetwyrm-proxyd gateway); dev/CI (-F) uses 0666. See main.c. */
 #ifndef PACKETWYRM_IPC_H
 #define PACKETWYRM_IPC_H
 
