@@ -2,6 +2,7 @@
  * latency requests. No FPGA required. */
 
 #include "packetwyrm/config.h"
+#include "packetwyrm/tap.h"   /* PW_TAP_IFNAME_MAX (TAP netdev name limit) */
 
 #include <stdio.h>
 #include <string.h>
@@ -61,10 +62,28 @@ pw_status pw_config_validate(const struct pw_config *cfg, struct pw_diag *d) {
 
     /* logical_if id + name duplicates, port resolution */
     for (size_t i = 0; i < cfg->n_logical_if; i++) {
+        /* The name becomes the Linux TAP netdev name, so it must fit IFNAMSIZ
+         * (PW_TAP_IFNAME_MAX; the TAP layer truncates at 15 chars) or the
+         * created device won't match the configured name -- the daemon would
+         * bind a truncated name and tools would wait for the full one. */
+        if (strlen(cfg->logical_if[i].name) >= PW_TAP_IFNAME_MAX) {
+            char p[80]; snprintf(p, sizeof(p), "logical_interfaces[%zu].name", i);
+            diag(d, PW_E_INVAL, p,
+                 "logical_if name too long for a TAP device (max 15 chars)");
+            return PW_E_INVAL;
+        }
         for (size_t j = i + 1; j < cfg->n_logical_if; j++) {
             if (cfg->logical_if[i].id == cfg->logical_if[j].id) {
                 char p[80]; snprintf(p, sizeof(p), "logical_interfaces[%zu].id", j);
                 diag(d, PW_E_DUP_LOGICAL_IF, p, "duplicate logical_if id");
+                return PW_E_DUP_LOGICAL_IF;
+            }
+            /* Distinct logical_ifs must have distinct names: each maps to its
+             * own TAP netdev, and two with the same name would collide (create
+             * failure or an unintended attach to the same device). */
+            if (strcmp(cfg->logical_if[i].name, cfg->logical_if[j].name) == 0) {
+                char p[80]; snprintf(p, sizeof(p), "logical_interfaces[%zu].name", j);
+                diag(d, PW_E_DUP_LOGICAL_IF, p, "duplicate logical_if name");
                 return PW_E_DUP_LOGICAL_IF;
             }
         }

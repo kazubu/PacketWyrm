@@ -151,6 +151,41 @@ static void test_config_split_env_test(void) {
     pw_config_free(env);
 }
 
+/* Two logical_ifs sharing an explicit name -- must be rejected (each maps to a
+ * distinct TAP netdev). */
+static const char *cfg_dup_lif_name =
+"system:\n  name: e\n  mode: multi-card\n  default_speed: 10g\n"
+"cards:\n  - id: 0\n    pci: \"0000:03:00.0\"\n    ports:\n"
+"      - { local_port: 0, global_port: 0 }\n"
+"      - { local_port: 1, global_port: 1 }\n"
+"logical_interfaces:\n"
+"  - { id: 1000, global_port: 0, name: eth0, mac: \"02:a5:02:00:00:64\" }\n"
+"  - { id: 1001, global_port: 1, name: eth0, mac: \"02:a5:02:00:00:65\" }\n";
+
+/* A logical_if name too long for a TAP netdev (>= IFNAMSIZ) -- must be rejected. */
+static const char *cfg_long_lif_name =
+"system:\n  name: e\n  mode: multi-card\n  default_speed: 10g\n"
+"cards:\n  - id: 0\n    pci: \"0000:03:00.0\"\n    ports:\n"
+"      - { local_port: 0, global_port: 0 }\n"
+"logical_interfaces:\n"
+"  - { id: 1000, global_port: 0, name: this-name-is-way-too-long, mac: \"02:a5:02:00:00:64\" }\n";
+
+static void test_validate_lif_name_rules(void) {
+    struct pw_diag d = {0};
+    /* duplicate name -> rejected */
+    struct pw_config *c1 = pw_config_new();
+    pw_status r1 = pw_config_parse_string(cfg_dup_lif_name, strlen(cfg_dup_lif_name), c1, &d);
+    if (r1 == PW_OK) r1 = pw_config_validate(c1, &d);
+    PW_ASSERT(r1 != PW_OK);
+    pw_config_free(c1);
+    /* over-length name -> rejected */
+    struct pw_config *c2 = pw_config_new();
+    pw_status r2 = pw_config_parse_string(cfg_long_lif_name, strlen(cfg_long_lif_name), c2, &d);
+    if (r2 == PW_OK) r2 = pw_config_validate(c2, &d);
+    PW_ASSERT(r2 != PW_OK);
+    pw_config_free(c2);
+}
+
 static const char *cfg_dual_cross_card_with_latency =
 "system: { name: pw-dual, mode: multi-card, default_speed: 10g }\n"
 "cards:\n"
@@ -1899,6 +1934,7 @@ int main(void) {
     struct test_case cases[] = {
         { "tap_name", test_tap_name },
         { "parse_u64_hardening", test_parse_u64_hardening },
+        { "validate_lif_name_rules", test_validate_lif_name_rules },
         { "parse_single_card", test_parse_single_card },
         { "accept_cross_card_latency", test_accept_cross_card_latency },
         { "config_split_env_test", test_config_split_env_test },

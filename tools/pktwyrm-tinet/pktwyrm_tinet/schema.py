@@ -153,7 +153,12 @@ def _resolve_tap_names(routers: list[Router], pw_cfg: dict, where: str) -> None:
             )
         r.global_port = gport
         r.vlan = vlan
-        r.tap_name = f"tap-pw-p{gport}-v{vlan}"
+        # Match packetwyrmd's TAP naming (config.c): an explicit logical_if
+        # `name` is used verbatim; only when absent does the daemon synthesize
+        # tap-pw-p<gport>-v<vlan>. Mirror that here or we'd wait for the wrong
+        # netdev and time out when a custom name is configured.
+        lif_name = lif.get("name")
+        r.tap_name = lif_name if lif_name else f"tap-pw-p{gport}-v{vlan}"
         mtu = lif.get("mtu")
         if mtu is not None:
             r.mtu = int(mtu)
