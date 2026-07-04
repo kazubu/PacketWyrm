@@ -9,6 +9,32 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Packaging / CI-coverage / docs fixes (fresh-context review #3).** A third
+    from-scratch review (Codex ran the CI targets + a staged install) found
+    coverage gaps and a shipped-unit config bug:
+    - **`config.save` would fail under the shipped systemd unit.**
+      `packetwyrmd.service` has `ProtectSystem=strict` with `ReadWritePaths`
+      that omitted `/etc/packetwyrm`, so the atomic env-file rewrite
+      (`config.save`, GUI/CLI env edit) would hit a read-only `/etc` — a failure
+      the non-systemd e2e can't see. Added `/etc/packetwyrm` to `ReadWritePaths`.
+    - **FPGA lint now covers the Phase 3 production data-plane core**, not just
+      the Phase 1 top. Added `scripts/lint-phase3.sh` (Verilator lint of
+      `pwfpga_top_phase3`: data plane + DMA slow path + classifiers + GPIO/ICAP/
+      SPI, with the taxi submodule) and wired it into `make lint` and the CI step
+      (renamed to reflect phase1 + phase3-core; the vendor-heavy phase3 *board*
+      wrapper stays a Vivado-synth check).
+    - **CI now runs the `pktwyrm-tinet` unit tests and `scripts/check-schema.sh`**
+      (added `python3` + `python3-yaml` + `python3-jsonschema` to the host job) —
+      previously neither ran in CI, so tinet regressions and example-YAML vs
+      JSON-schema drift could land unnoticed.
+    - **Doc phase-drift corrected:** `project_phase3.tcl` header (said "Phase 2"),
+      `fpga/as02mc04/README.md` ("make targets build the Phase 1 top" — the
+      Makefile defaults to `PHASE=3`), and `docs/design/architecture.md` (listed
+      cross-card latency as out-of-scope "no clock sync" though it's implemented
+      via J5 GPIO time-sync).
+    - Noted (not code, HW/design): `pktwyrm --host` TLS is unauthenticated
+      (self-signed, lab tradeoff — CA/fingerprint pinning is a future option),
+      and Phase 3 RTL changes still want a Vivado `report_cdc`/timing gate.
   - **proxyd request-parse memory safety + doc/tooling fixes (fresh-context
     review #2).** Another from-scratch review (Codex, empty context, ran the CI
     targets) found:

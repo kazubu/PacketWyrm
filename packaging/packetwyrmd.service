@@ -37,7 +37,10 @@ ConfigurationDirectory=packetwyrm
 # scans, so neither is enabled here.
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/run/packetwyrm /var/lib/packetwyrm /var/log/packetwyrm
+# /etc/packetwyrm is writable because config.save (GUI/CLI env edit) rewrites
+# the -c/-e env file (/etc/packetwyrm/packetwyrm.yaml) atomically (tmp+rename);
+# under ProtectSystem=strict /etc is otherwise read-only and the save would fail.
+ReadWritePaths=/run/packetwyrm /var/lib/packetwyrm /var/log/packetwyrm /etc/packetwyrm
 ProtectHome=true
 ProtectControlGroups=true
 PrivateTmp=true

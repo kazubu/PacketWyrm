@@ -134,12 +134,15 @@ make program HW_TARGET=*jlink*
 > stub build with `make synth` `... -tclargs use_ip=0` only for a
 > LED/timing smoke test -- PCIe will not enumerate.
 
-> **Building the Phase 3 bitstream.** The `make` targets above build
-> the Phase 1 top (`pwfpga_top_phase1`). The full tester is a separate
-> project: `project_phase3.tcl` creates
-> `build/pwfpga_as02mc04_phase3/`, and
-> `scripts/synth_impl_phase3.tcl` runs synth + impl + write_bitstream
-> and prints the final WNS. The bitstream lands at
+> **Phase selection.** The Makefile defaults to `PHASE ?= 3` -- the
+> production tester (`pwfpga_top_phase3_board`), so the `make` targets
+> above build Phase 3 by default. Use `make <target> PHASE=1` for the
+> Phase 1 PCIe/CSR/LED smoke top (`pwfpga_top_phase1`) or `PHASE=2` for
+> the 10G bring-up top. Phase 3 uses its own project/impl scripts:
+> `project_phase3.tcl` creates `build/pwfpga_as02mc04_phase3/`, and
+> `make impl` (PHASE=3) runs `scripts/synth_impl_phase3.tcl` (synth +
+> impl + write_bitstream, prints the final WNS + stamps build_id). The
+> bitstream lands at
 > `build/pwfpga_as02mc04_phase3/pwfpga_as02mc04_phase3.runs/impl_1/pwfpga_top_phase3_board.bit`;
 > program it over JTAG with `scripts/program.tcl` or write it to the
 > onboard flash with `scripts/flash.tcl` for power-on boot.

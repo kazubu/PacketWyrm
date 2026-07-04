@@ -48,8 +48,13 @@ BITFILE   := $(PROJ_DIR)/$(PROJ_NAME).runs/impl_1/$(TOP).bit
 # board has a different device.
 CFGMEM ?= mt25qu256-spi-x1_x2_x4
 
+# Lint both board tops: the Phase 1 top (PCIe bridge + CSR + clocking) and the
+# Phase 3 production data-plane core (data plane + DMA slow path + classifiers +
+# GPIO/ICAP/SPI). The Phase 3 *board* wrapper (GT/clocking/PCIe) is vendor-heavy
+# and is checked at Vivado synth time.
 lint:
 	./scripts/lint.sh
+	./scripts/lint-phase3.sh
 
 project:
 	$(PROJECT_CMD)

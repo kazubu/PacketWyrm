@@ -18,7 +18,8 @@ jobs:
           sudo apt-get install -y \
             build-essential pkg-config \
             libyaml-dev libjson-c-dev libssl-dev \
-            xxd curl iproute2
+            xxd curl iproute2 \
+            python3 python3-yaml python3-jsonschema
       - name: build
         working-directory: sw
         run: make -j
@@ -28,6 +29,10 @@ jobs:
       - name: e2e smoke (daemon + CLI)
         working-directory: sw
         run: make e2e
+      - name: config schema drift (examples vs JSON schema)
+        run: ./scripts/check-schema.sh
+      - name: pktwyrm-tinet unit tests
+        run: make -C tools/pktwyrm-tinet test
       - name: staged install
         working-directory: sw
         run: |
@@ -83,6 +88,6 @@ jobs:
       - name: build + run sim (data plane + axis serial)
         working-directory: sim
         run: make sim_all
-      - name: lint AS02MC04 RTL
+      - name: lint AS02MC04 RTL (phase1 top + phase3 data-plane core)
         working-directory: fpga/as02mc04
         run: make lint
