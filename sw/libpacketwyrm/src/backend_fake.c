@@ -52,6 +52,7 @@ struct fake_ctx {
 
     struct pw_fake_wr_counts wr;     /* per-window CSR write counts (test hook) */
     int      fail_armed;             /* test hook: next flow_commit fails once */
+    int      flag_was_present;       /* test hook: prior PW_FAKE_FAIL_FLAG state */
 };
 
 static int slow_push(struct fake_slow_fifo *f, const void *data, size_t len,
@@ -106,13 +107,26 @@ static pw_status fake_read32(void *vctx, uint32_t off, uint32_t *out) {
 
 static pw_status fake_write32(void *vctx, uint32_t off, uint32_t v) {
     struct fake_ctx *c = vctx;
-    /* Test hook: a DP_RESET write while PW_FAKE_FAIL_FLAG names an existing file
-     * arms the NEXT flow_commit to fail once. program_backends() writes DP_RESET
-     * before (re)programming a card, so this fails the config.load staging commit
-     * (the quiesce does no DP_RESET) -- letting an e2e exercise rollback. */
+    /* Test hook: a DP_RESET write arms the NEXT flow_commit to fail once.
+     * program_backends() writes DP_RESET before (re)programming a card (the
+     * config.load quiesce does not), so this targets the staging/rollback
+     * commits. Two modes:
+     *   PW_FAKE_FAIL_FLAG         -- RISING EDGE only: arms on the first DP_RESET
+     *                                after the flag appears, so config.load's
+     *                                staging fails but the rollback re-program
+     *                                SUCCEEDS (tests the "rolled back, still
+     *                                running" path).
+     *   PW_FAKE_FAIL_FLAG_STICKY  -- arms on EVERY DP_RESET while present, so both
+     *                                the staging AND the rollback fail (tests the
+     *                                "device may be out of sync" path). */
     if (off == PWFPGA_REG_DP_RESET) {
         const char *ff = getenv("PW_FAKE_FAIL_FLAG");
-        if (ff && *ff && access(ff, F_OK) == 0) c->fail_armed = 1;
+        const char *fs = getenv("PW_FAKE_FAIL_FLAG_STICKY");
+        int oneshot = (ff && *ff && access(ff, F_OK) == 0);
+        int sticky  = (fs && *fs && access(fs, F_OK) == 0);
+        if (sticky)                              c->fail_armed = 1;
+        else if (oneshot && !c->flag_was_present) c->fail_armed = 1;
+        c->flag_was_present = oneshot;
     }
     switch (off) {
     case PWFPGA_REG_GLOBAL_CONTROL:

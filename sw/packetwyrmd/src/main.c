@@ -643,14 +643,27 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
     pw_status prog_st = program_backends(new_prog, new_cfg, cards);
     if (prog_st != PW_OK) {
         fprintf(stderr, "load: stage failed (%s) -- rolling back to the previous "
-                "config (still running)\n", pw_strerror(prog_st));
-        (void)program_backends(*prog_pp, *cfg_pp, cards);   /* restore the FPGA */
+                "config\n", pw_strerror(prog_st));
+        pw_status rb_st = program_backends(*prog_pp, *cfg_pp, cards);  /* restore */
         pw_program_free(new_prog);
         pw_config_free(new_cfg);
-        char msg[160];
-        snprintf(msg, sizeof msg,
-                 "stage failed (%s); rolled back, previous config still running",
-                 pw_strerror(prog_st));
+        char msg[240];
+        if (rb_st == PW_OK) {
+            snprintf(msg, sizeof msg,
+                     "stage failed (%s); rolled back, previous config still running",
+                     pw_strerror(prog_st));
+        } else {
+            /* Both the new config AND the restore failed: the FPGA no longer
+             * matches the daemon's (unchanged) view. Report it honestly -- a
+             * "still running" message here would be a lie -- so the operator
+             * re-syncs (test.arm) or restarts instead of trusting stale state. */
+            fprintf(stderr, "load: ROLLBACK ALSO FAILED (%s) -- device may be out "
+                    "of sync with the daemon view\n", pw_strerror(rb_st));
+            snprintf(msg, sizeof msg,
+                     "stage failed (%s) AND rollback failed (%s); device may be OUT "
+                     "OF SYNC -- re-arm (test.arm) or restart the daemon",
+                     pw_strerror(prog_st), pw_strerror(rb_st));
+        }
         return build_error(msg);
     }
 
@@ -1932,6 +1945,17 @@ static void handle_client(int cfd,
  * host-plane counters, logical labels), so it binds 127.0.0.1 by DEFAULT --
  * exposing operational state to the whole LAN must be an explicit operator
  * choice (`-p 0.0.0.0:9100`), matching how proxyd gates remote access. */
+/* Bound blocking reads/writes on an accepted connection so a stalled client
+ * can't wedge the single-threaded main loop. Returns false (caller closes +
+ * skips) if either timeout can't be set -- the DoS guard must not be silently
+ * absent. */
+static bool set_conn_timeout(int fd, int seconds) {
+    struct timeval tv = { .tv_sec = seconds, .tv_usec = 0 };
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) return false;
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) return false;
+    return true;
+}
+
 static int promex_listen(const char *addr, int port, int *out_fd) {
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
@@ -2169,15 +2193,18 @@ int main(int argc, char **argv) {
         fprintf(stderr, "warning: no TAPs were created\n");
     }
 
-    /* Control socket. Path comes from config; fall back to the
-     * library default. Permissions 0666 in the dev container so
-     * tests run without group setup. Production deployments will
-     * tighten this via udev / the daemon's own user/group. */
+    /* Control socket. Path comes from config; fall back to the library default.
+     * The daemon runs as root, so a client that can write this socket gets
+     * root-equivalent device ops (flow control, config.save, flash.write). In
+     * production (no -F) create it 0660 so it is NOT world-writable -- only root
+     * (or a future daemon group) can drive it, on top of the system.secret
+     * check. Dev/CI (-F) uses 0666 so non-root tests work without group setup. */
     int ipc_listen_fd = -1;
+    mode_t sock_mode = allow_fake ? 0666 : 0660;
     const char *sock_path = cfg->system.control_socket[0]
         ? cfg->system.control_socket
         : PW_IPC_DEFAULT_PATH;
-    pw_status sr = pw_ipc_listen(sock_path, 0666, &ipc_listen_fd);
+    pw_status sr = pw_ipc_listen(sock_path, sock_mode, &ipc_listen_fd);
     if (sr != PW_OK) {
         /* The control socket is how everything is driven -- config.load, flow
          * start/stop, flash, stats, and the proxyd relay. Without it the daemon
@@ -2256,16 +2283,19 @@ int main(int argc, char **argv) {
         if (listen_idx != (size_t)-1 && (pfds[listen_idx].revents & POLLIN)) {
             int cfd = accept(ipc_listen_fd, NULL, NULL);
             if (cfd >= 0) {
-                /* Bound blocking reads/writes: the daemon is single-threaded and
-                 * the control socket is 0666, so a stalled or malicious local
-                 * client (send a 4-byte length, then no body) would otherwise
-                 * wedge the whole main loop (servo, metrics, all RPCs) forever.
-                 * A 5 s timeout makes read_all() fail and the connection close. */
-                struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
-                setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-                setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-                handle_client(cfd, &cfg, &prog, cards, hps, taps, n_taps);
-                close(cfd);
+                /* The daemon is single-threaded and the control socket is world-
+                 * accessible in dev mode, so a stalled/malicious client (send a
+                 * 4-byte length, then no body) would otherwise wedge the whole
+                 * main loop (servo, metrics, all RPCs) forever. A 5 s timeout
+                 * makes read_all() fail and the connection close. */
+                if (!set_conn_timeout(cfd, 5)) {
+                    fprintf(stderr, "warning: could not arm control-socket timeout; "
+                            "dropping connection\n");
+                    close(cfd);
+                } else {
+                    handle_client(cfd, &cfg, &prog, cards, hps, taps, n_taps);
+                    close(cfd);
+                }
             }
         }
         if (prom_idx != (size_t)-1 && (pfds[prom_idx].revents & POLLIN)) {
@@ -2273,11 +2303,14 @@ int main(int argc, char **argv) {
             if (cfd >= 0) {
                 /* Same rationale as the control socket: don't let a slow HTTP
                  * client hang the single-threaded loop while it reads /metrics. */
-                struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
-                setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-                setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-                promex_handle(cfd, cfg, cards, hps);
-                close(cfd);
+                if (!set_conn_timeout(cfd, 5)) {
+                    fprintf(stderr, "warning: could not arm metrics-socket timeout; "
+                            "dropping connection\n");
+                    close(cfd);
+                } else {
+                    promex_handle(cfd, cfg, cards, hps);
+                    close(cfd);
+                }
             }
         }
 

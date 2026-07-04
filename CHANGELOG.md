@@ -9,6 +9,32 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Daemon honesty & socket-privilege hardening (5th full-codebase review) —
+    HW-validated.** Four items (2 Medium, 2 Low; no new High). Re-validated on
+    07:00.0 (daemon restarted `-F`-less on the new binary — control socket now
+    `srw-rw----` 0660 root:root, no false fatal, cRPD dual-stack control plane
+    reconverged: v4/v6 ping 0 % loss, OSPFv2/v3 Full, IS-IS L1+L2 Up, BGP v4+v6
+    Established):
+    - **`config.load` no longer claims success when the rollback itself fails.**
+      On a staging failure the daemon re-programs the previous config; that
+      restore's return was discarded and the reply was always "previous config
+      still running". Now, if the restore ALSO fails (real card drop / BAR fault /
+      window mismatch), it returns "stage failed … AND rollback failed …; device
+      may be OUT OF SYNC — re-arm (test.arm) or restart". e2e regression: a new
+      fake-backend sticky fault mode (`PW_FAKE_FAIL_FLAG_STICKY`) fails both the
+      staging and the rollback commit; the existing rising-edge `PW_FAKE_FAIL_FLAG`
+      now fails only staging (rollback succeeds) so both paths are covered.
+    - **Production control socket is 0660 (root-only), not world-writable.** The
+      daemon runs as root, so a client that can write the socket gets
+      root-equivalent device ops (flow control, config.save, flash.write). It is
+      now created `0660` unless `-F` (dev/CI keeps `0666` so non-root tests work),
+      on top of the `system.secret` check.
+    - **`setsockopt` timeout failures are no longer ignored** — the accept path
+      uses a `set_conn_timeout` helper and drops the connection (with a warning)
+      if the DoS-guard timeout can't be armed, rather than proceeding unbounded.
+    - **(noted) `TIMING-9` (Unknown CDC Logic)** in `fpga-known-warnings.md`
+      still needs a `report_cdc -details` pass at the next bitstream sign-off —
+      an investigation that requires a Vivado run (deferred, documented).
   - **Daemon availability hardening (4th full-codebase review) — HW-validated.**
     Five items where the single-threaded daemon could hang or come up
     unmanageable. Re-validated on 07:00.0 (daemon restarted on the new binary
