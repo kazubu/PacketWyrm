@@ -9,6 +9,27 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **CI-breaking FPGA lint fix + input hardening (fresh-context review).** A
+    from-scratch review (Codex, empty context) that actually RAN the CI targets
+    caught three items the prior static rounds missed:
+    - **FPGA `make lint` was FAILING on main (CI red).** The DMA slow-path work
+      rewired `pcie_axi_lite_bridge` to the XDMA **AXI-Stream** ports
+      (`m_axis_h2c_*_0` / `s_axis_c2h_*_0`) but the Verilator lint stub
+      `pcie_gen3_stub.sv` still declared the old **MM master** ports (`m_axi_*`)
+      → 10 `PINNOTFOUND` errors; and `pwfpga_top_phase1` didn't connect the
+      bridge's new DMA stream ports → `PINMISSING`. Re-synced the lint stub to
+      the AXI-Stream IP (dropped `m_axi_*`, added the H2C/C2H AXIS ports) and
+      tied those ports off in the phase-1 top. `make -C fpga/as02mc04 lint` is
+      green again (the `rtl-sim` CI job runs it).
+    - **Unsigned config parser accepted negatives / overflow.** `pw_parse_u64`
+      (base for u32/u16/u8) called `strtoull` without rejecting a leading `+/-`
+      or checking `ERANGE`, so `rate_bps: -1` or an overflowing literal became a
+      huge value (an unbounded rate/count). It now rejects a sign, an empty /
+      underscores-only string, no-digit / trailing junk, and `ERANGE`.
+    - **`pktwyrm-tinet` shell-quotes YAML-derived values.** The lab emitter builds
+      shell fragments run as **root** (`tinet … | sh`); router/TAP names, addrs
+      and MTU are now `shlex.quote`d so a crafted lab YAML can't inject commands.
+      New unit tests for the quoting; the golden was regenerated.
   - **`config.save` mode-apply is now fatal (9th full-codebase review).** The
     tmp-file `fchmod` (which carries the env file's mode — the file holds
     `system.secret`) ignored its return; a failure would leave a wrong-mode

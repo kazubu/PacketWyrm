@@ -60,6 +60,36 @@ class TwoRouterBgpGolden(unittest.TestCase):
             self.assertEqual(r.mtu, 9000)
 
 
+class ShellQuotingSafety(unittest.TestCase):
+    """The emitted cmds run as root (`tinet ... | sh`); YAML-derived values
+    must be shell-quoted so a crafted name/addr can't inject commands."""
+
+    def _router(self, **kw):
+        from pktwyrm_tinet.schema import Router
+        base = dict(name="r1", image="img", logical_if_id=1000,
+                    addr="10.0.0.1/30", tap_name="net0")
+        base.update(kw)
+        return Router(**base)
+
+    def test_malicious_addr_is_quoted(self):
+        from pktwyrm_tinet.emitter import _emit_node_config
+        r = self._router(addr="1.2.3.4/30; rm -rf /")
+        cmds = [c["cmd"] for c in _emit_node_config(r)["cmds"]]
+        joined = "\n".join(cmds)
+        # The raw injection must not appear unquoted; shlex.quote wraps it.
+        self.assertNotIn("dev net0; rm -rf /", joined)
+        self.assertIn("'1.2.3.4/30; rm -rf /'", joined)
+
+    def test_malicious_tap_and_router_name_quoted(self):
+        from pktwyrm_tinet.emitter import _emit_postinit
+        r = self._router(tap_name="net0; reboot", name="r1$(id)")
+        cmds = [c["cmd"] for c in _emit_postinit([r])]
+        joined = "\n".join(cmds)
+        self.assertIn("'net0; reboot'", joined)
+        self.assertIn("'r1$(id)'", joined)
+        self.assertNotIn("netns r1$(id)", joined)   # not left raw
+
+
 class WriteFilesEndToEnd(unittest.TestCase):
     """Verify the on-disk layout when write_files=True."""
 

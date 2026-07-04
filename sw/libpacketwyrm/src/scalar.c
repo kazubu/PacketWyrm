@@ -1,6 +1,7 @@
 #include "scalar.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,9 +31,17 @@ bool pw_parse_u64(const char *s, uint64_t *out) {
         buf[bi++] = *p;
     }
     buf[bi] = '\0';
+    if (bi == 0) return false;               /* empty / underscores only */
+    /* Reject a signed literal: strtoull() would silently WRAP "-1" to a huge
+     * unsigned (an unbounded rate/count), and "+1" is not a value we accept. */
+    const char *q = buf;
+    while (*q == ' ' || *q == '\t') q++;
+    if (*q == '-' || *q == '+') return false;
+    errno = 0;
     char *end = NULL;
     unsigned long long v = strtoull(buf, &end, 0);
-    if (!end || *end != '\0') return false;
+    if (end == buf || !end || *end != '\0') return false;  /* no digits / trailing junk */
+    if (errno == ERANGE) return false;                     /* overflow */
     *out = (uint64_t)v;
     return true;
 }

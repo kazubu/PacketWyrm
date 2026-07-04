@@ -34,9 +34,9 @@ node_configs:
   - cmd: ip addr add 192.0.2.2/30 dev tap-pw-p1-v100
   - cmd: /usr/lib/frr/frrinit.sh start
 postinit_cmds:
-- cmd: ip link show tap-pw-p0-v100 >/dev/null 2>&1 || { echo "TAP tap-pw-p0-v100 not
-    present; is packetwyrmd up?" >&2; exit 1; }
+- cmd: ip link show tap-pw-p0-v100 >/dev/null 2>&1 || { echo "TAP" tap-pw-p0-v100
+    "not present; is packetwyrmd up?" >&2; exit 1; }
 - cmd: ip link set tap-pw-p0-v100 netns r1
-- cmd: ip link show tap-pw-p1-v100 >/dev/null 2>&1 || { echo "TAP tap-pw-p1-v100 not
-    present; is packetwyrmd up?" >&2; exit 1; }
+- cmd: ip link show tap-pw-p1-v100 >/dev/null 2>&1 || { echo "TAP" tap-pw-p1-v100
+    "not present; is packetwyrmd up?" >&2; exit 1; }
 - cmd: ip link set tap-pw-p1-v100 netns r2

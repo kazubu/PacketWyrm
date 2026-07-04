@@ -18,6 +18,7 @@ recipe.
 from __future__ import annotations
 
 import pathlib
+import shlex
 from dataclasses import dataclass
 from typing import Any
 
@@ -67,25 +68,34 @@ def _emit_postinit(routers: list[Router]) -> list[dict[str, str]]:
     """Run as root once containers exist: move each TAP into its netns."""
     cmds: list[dict[str, str]] = []
     for r in routers:
+        # These strings are run as root (`tinet ... | sh`); shell-quote every
+        # value that comes from the (lab) YAML so a crafted tap/router name can't
+        # inject commands. The quoted value goes OUTSIDE the echo's double quotes
+        # (embedding it inside "..." would let an embedded quote break out).
+        tap = shlex.quote(r.tap_name)
+        name = shlex.quote(r.name)
         cmds.append(_cmd(
-            f"ip link show {r.tap_name} >/dev/null 2>&1 ||"
-            f' {{ echo "TAP {r.tap_name} not present; is packetwyrmd up?" >&2; exit 1; }}'
+            f"ip link show {tap} >/dev/null 2>&1 ||"
+            f' {{ echo "TAP" {tap} "not present; is packetwyrmd up?" >&2; exit 1; }}'
         ))
-        cmds.append(_cmd(f"ip link set {r.tap_name} netns {r.name}"))
+        cmds.append(_cmd(f"ip link set {tap} netns {name}"))
     return cmds
 
 
 def _emit_node_config(r: Router) -> dict[str, Any]:
     """Run inside the container netns via `docker exec` (tinet conf)."""
+    # Run as root via `docker exec`; shell-quote every YAML-derived value.
+    tap = shlex.quote(r.tap_name)
+    addr = shlex.quote(r.addr)
     cmds: list[dict[str, str]] = [
         _cmd("ip link set lo up"),
-        _cmd(f"ip link set {r.tap_name} up"),
-        _cmd(f"ip addr add {r.addr} dev {r.tap_name}"),
+        _cmd(f"ip link set {tap} up"),
+        _cmd(f"ip addr add {addr} dev {tap}"),
     ]
     if r.mtu is not None:
-        cmds.insert(2, _cmd(f"ip link set {r.tap_name} mtu {r.mtu}"))
+        cmds.insert(2, _cmd(f"ip link set {tap} mtu {shlex.quote(str(r.mtu))}"))
     if r.addr6 is not None:
-        cmds.append(_cmd(f"ip -6 addr add {r.addr6} dev {r.tap_name}"))
+        cmds.append(_cmd(f"ip -6 addr add {shlex.quote(r.addr6)} dev {tap}"))
     cmds.append(_cmd("/usr/lib/frr/frrinit.sh start"))
     return {"name": r.name, "cmds": cmds}
 
