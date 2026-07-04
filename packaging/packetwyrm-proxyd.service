@@ -15,9 +15,11 @@ ExecStart=/usr/local/sbin/packetwyrm-proxyd \
 Restart=on-failure
 RestartSec=2s
 
-# Network-facing and holds no hardware: runs unprivileged. It only needs
-# to reach the daemon's 0666 control socket. The daemon remains the sole
-# authority for the access secret (this process forwards it verbatim).
+# Network-facing and holds no hardware: runs unprivileged as the packetwyrm
+# user/group (created by packaging/packetwyrm.sysusers). It reaches the daemon's
+# control socket, which the daemon creates 0660 root:packetwyrm in production --
+# so this gateway connects via its packetwyrm group membership, not as root. The
+# daemon remains the sole authority for the access secret (forwarded verbatim).
 User=packetwyrm
 Group=packetwyrm
 

@@ -418,9 +418,11 @@ this precedence: `pktwyrm --secret S`  >  `$PACKETWYRM_SECRET`  >  the `secret`
 key of the environment config (`--env PATH`, default
 `/etc/packetwyrm/packetwyrm.yaml`). So **read permission on the environment
 config file is the access gate** — a process that can't read it can't obtain the
-secret and is rejected. If no secret is configured, auth is disabled (the socket
-is otherwise open, mode 0666). The `secret` field is injected by `pktwyrm`
-automatically; a raw `pktwyrm rpc` also picks it up.
+secret and is rejected. If no secret is configured, auth is disabled and the
+socket file permissions are the only ACL: in production the daemon creates it
+`0660 root:packetwyrm` (root, or a member of the `packetwyrm` group such as the
+proxyd gateway), while dev/CI (`-F`) uses `0666`. The `secret` field is injected
+by `pktwyrm` automatically; a raw `pktwyrm rpc` also picks it up.
 
 ## Errors
 
