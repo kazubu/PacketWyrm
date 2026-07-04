@@ -248,6 +248,24 @@ static void test_tap_name(void) {
     PW_ASSERT_STR_EQ(buf, "tap-pw-p3-v0");
 }
 
+/* pw_parse_u64 lives in the library's private scalar.c (not a public header);
+ * declare it here to regression-test its input hardening (reject negatives /
+ * overflow / empty), so a config like `rate_bps: -1` can't become a huge rate. */
+bool pw_parse_u64(const char *s, uint64_t *out);
+
+static void test_parse_u64_hardening(void) {
+    uint64_t v = 0;
+    PW_ASSERT(pw_parse_u64("1000", &v) && v == 1000);
+    PW_ASSERT(pw_parse_u64("1_000_000", &v) && v == 1000000);
+    PW_ASSERT(pw_parse_u64("0x10", &v) && v == 16);
+    PW_ASSERT(!pw_parse_u64("-1", &v));      /* negative -> reject (no silent wrap) */
+    PW_ASSERT(!pw_parse_u64("+5", &v));      /* leading + -> reject */
+    PW_ASSERT(!pw_parse_u64("", &v));        /* empty -> reject */
+    PW_ASSERT(!pw_parse_u64("___", &v));     /* underscores only -> reject */
+    PW_ASSERT(!pw_parse_u64("12x", &v));     /* trailing junk -> reject */
+    PW_ASSERT(!pw_parse_u64("99999999999999999999999999", &v)); /* ERANGE overflow */
+}
+
 static void test_parse_single_card(void) {
     struct pw_config *cfg = pw_config_new();
     struct pw_diag d = {0};
@@ -1880,6 +1898,7 @@ static void test_yaml_schema_well_formed(void) {
 int main(void) {
     struct test_case cases[] = {
         { "tap_name", test_tap_name },
+        { "parse_u64_hardening", test_parse_u64_hardening },
         { "parse_single_card", test_parse_single_card },
         { "accept_cross_card_latency", test_accept_cross_card_latency },
         { "config_split_env_test", test_config_split_env_test },
