@@ -9,6 +9,31 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Operational / packaging hardening (2nd full-codebase review).** Five
+    non-datapath items from a follow-up review:
+    - **systemd unit no longer strips the capabilities the hardware backend
+      needs.** `packetwyrmd.service` clamped `CapabilityBoundingSet=CAP_NET_ADMIN`
+      while running as root — dropping `CAP_SYS_RAWIO`/`CAP_SYS_ADMIN` etc., so
+      `systemctl start` could fail to mmap the BAR / prep PCI even though a manual
+      `sudo packetwyrmd` worked. Removed the clamp (root keeps the full set) with
+      a comment on why, and getting-started now tells operators to verify the
+      service reached the card via `journalctl`.
+    - **Prometheus exporter binds `127.0.0.1` by default.** `-p` now takes
+      `[ADDR:]PORT` (default `127.0.0.1`); the unauthenticated `/metrics` endpoint
+      is loopback-only unless the operator explicitly opts into `-p 0.0.0.0:9100`.
+      The shipped unit's `-p 9100` is now loopback. (Was `INADDR_ANY` — LAN-public
+      by default, inconsistent with how proxyd gates remote access.)
+    - **Generator vs control-plane jumbo made explicit.** Documented that the
+      traffic generator's `frame_len` cap (1518) is deliberate and separate from
+      the MTU-9000 control-plane/slow-path jumbo — the RTL generator's length
+      fields are 12-bit, so generator jumbo would need an RTL widen + rebuild
+      (config.c + yaml-schema.md). Fixed the JSON schema `frame_len` minimum
+      64 → 60 to match the parser's pre-FCS floor.
+    - **Legacy CSR punt/inject windows in `csr.h` marked LEGACY (non-DMA
+      bitstream only)** so they're not mistaken for a production fallback (the
+      DMA bitstream uses `pw_dma_slowpath` exclusively).
+    - **Removed stale "Unauthenticated for Phase 0" wording in `daemon.md`**
+      (superseded by the `system.secret` access-control model).
   - **All SW binaries now embed the build-time git revision in their version
     string.** `pw_version_string()` — the single funnel for `pktwyrm version`,
     the daemon `version` RPC / `packetwyrm_build_info` metric, the proxyd

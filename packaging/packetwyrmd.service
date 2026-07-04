@@ -6,20 +6,24 @@ Requires=sys-subsystem-net-devices-tun.device
 
 [Service]
 Type=simple
+# -p 9100 binds the (unauthenticated) Prometheus /metrics exporter to
+# 127.0.0.1 by default. To scrape from another host, change it to
+# -p 0.0.0.0:9100 (deliberate opt-in) and firewall it.
 ExecStart=/usr/local/sbin/packetwyrmd -c /etc/packetwyrm/packetwyrm.yaml \
                                      -s 5000 -p 9100
 Restart=on-failure
 RestartSec=2s
 
-# CAP_NET_ADMIN: create TAP devices.
-# We keep User=root for now because the BAR backend mmap of
-# /sys/bus/pci/devices/.../resource0 requires it on most systems
-# unless the supplied udev rule (scripts/99-packetwyrm.rules) has
-# been installed. Drop to User=packetwyrm once that udev rule is
-# in place and the operator's setup is comfortable with it.
+# This daemon runs as root and needs the FULL root capability set: it mmaps
+# the FPGA PCI BAR via /sys/.../resource0 (CAP_SYS_RAWIO), reads/writes PCI
+# config + power sysfs (CAP_SYS_ADMIN), creates TAP devices (CAP_NET_ADMIN),
+# and drives VFIO. Do NOT clamp CapabilityBoundingSet to CAP_NET_ADMIN --
+# that silently drops the capabilities the hardware backend needs, so
+# `systemctl start` fails to mmap the BAR / prep PCI even though a manual
+# `sudo packetwyrmd` (full caps) works. Drop to User=packetwyrm + a narrow
+# CapabilityBoundingSet only once the udev rule (scripts/99-packetwyrm.rules)
+# grants unprivileged BAR access on the operator's setup.
 User=root
-AmbientCapabilities=CAP_NET_ADMIN
-CapabilityBoundingSet=CAP_NET_ADMIN
 
 # systemd-managed directories (created on start, removed on stop).
 RuntimeDirectory=packetwyrm

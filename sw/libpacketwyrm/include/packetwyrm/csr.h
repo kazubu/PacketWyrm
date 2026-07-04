@@ -690,7 +690,14 @@ struct pwfpga_xdma_poll_wb {
  * of classifier PUNT_TO_HOST / MIRROR_TO_HOST frames, BAR-polled (no DMA).
  * Lives in the free 0x1000 region. One frame at a time: poll STATUS, read
  * INFO + LIF + the DATA words, then write POP to release the slot. Frames
- * larger than the buffer (2 KB) are dropped and flagged in STATUS. */
+ * larger than the buffer (2 KB) are dropped and flagged in STATUS.
+ *
+ * ⚠️ LEGACY (non-DMA bitstream ONLY). The production Phase-3 DMA bitstream
+ * (CAP_HAS_DMA) replaces this CSR window with the PCIe-DMA slow path
+ * (pw_dma_slowpath; see the XDMA section above) and does NOT instantiate
+ * pw_punt_rx_window at all -- HAS_DMA attach uses the DMA path exclusively
+ * (no CSR-window fallback). This block is retained only for the older
+ * non-DMA bitstream; do NOT treat it as a production fallback. */
 #define PWFPGA_WIN_PUNT_RX                 0x1000u
 #define PWFPGA_REG_PUNT_STATUS             (PWFPGA_WIN_PUNT_RX + 0x000u) /* R:[0]frame_valid [1]overflow */
 #define PWFPGA_REG_PUNT_INFO               (PWFPGA_WIN_PUNT_RX + 0x004u) /* R:[13:0]byte_len [19:16]ingress_port */
@@ -710,7 +717,10 @@ struct pwfpga_xdma_poll_wb {
  * INFO (byte_len + egress_port), then writes CTRL.go=1; the window emits it
  * into the chosen egress port's TX arbiter. Poll CTRL.busy for completion.
  * Slow-path control traffic only -> 512 B max frame. Lives in the free
- * 0x0D00 region (below the punt window). */
+ * 0x0D00 region (below the punt window).
+ *
+ * ⚠️ LEGACY (non-DMA bitstream ONLY) -- same as the punt window above: the
+ * DMA bitstream (CAP_HAS_DMA) injects via pw_dma_slowpath, not this window. */
 #define PWFPGA_WIN_INJECT_TX               0x0D00u
 #define PWFPGA_REG_INJECT_CTRL             (PWFPGA_WIN_INJECT_TX + 0x000u) /* W:[0]go  R:[0]busy */
 #define PWFPGA_REG_INJECT_INFO             (PWFPGA_WIN_INJECT_TX + 0x004u) /* W:[13:0]byte_len [19:16]egress_port */

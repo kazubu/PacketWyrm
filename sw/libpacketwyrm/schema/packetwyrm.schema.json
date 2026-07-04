@@ -169,9 +169,9 @@
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "frame_len":       { "type": "integer", "minimum": 64, "maximum": 1518 },
-                        "frame_len_min":   { "type": "integer", "minimum": 64, "maximum": 1518 },
-                        "frame_len_max":   { "type": "integer", "minimum": 64, "maximum": 1518 },
+                        "frame_len":       { "type": "integer", "minimum": 60, "maximum": 1518 },
+                        "frame_len_min":   { "type": "integer", "minimum": 60, "maximum": 1518 },
+                        "frame_len_max":   { "type": "integer", "minimum": 60, "maximum": 1518 },
                         "frame_len_step":  { "type": "integer", "minimum": 1 },
                         "rate_bps":        { "type": "integer", "minimum": 1 },
                         "rate_pps":        { "type": "integer", "minimum": 1 },
