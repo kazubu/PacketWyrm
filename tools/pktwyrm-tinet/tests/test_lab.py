@@ -172,6 +172,8 @@ class CmdDownIdempotent(unittest.TestCase):
             write_state(_sample_state(pid=99999999), d)
             (d / "tinet.yaml").write_text("nodes: []\n")
             with mock.patch.object(lab_mod, "_require_root", lambda: None), \
+                 mock.patch.object(lab_mod, "daemon_alive_and_ours",
+                                   lambda pid, ticks: True), \
                  mock.patch.object(lab_mod, "_run_shell", fake_run), \
                  mock.patch.object(lab_mod, "_stop_daemon", fake_stop):
                 lab_mod.cmd_down(d)
@@ -198,6 +200,27 @@ class CmdDownIdempotent(unittest.TestCase):
                 lab_mod.cmd_down(d, keep_daemon=True)
         self.assertEqual(stopped, [])
 
+    def test_recycled_pid_not_killed(self):
+        """A stale state whose PID was reused must NOT be SIGKILL'd (P1)."""
+        stopped = []
+        with tempfile.TemporaryDirectory() as td:
+            d = pathlib.Path(td)
+            write_state(_sample_state(pid=os.getpid()), d)   # a live but wrong PID
+            (d / "tinet.yaml").write_text("x")
+            with mock.patch.object(lab_mod, "_require_root", lambda: None), \
+                 mock.patch.object(lab_mod, "daemon_alive_and_ours",
+                                   lambda pid, ticks: False), \
+                 mock.patch.object(
+                     lab_mod, "_run_shell",
+                     lambda cmd, *, check=True: subprocess.CompletedProcess(
+                         args=cmd, returncode=0)), \
+                 mock.patch.object(
+                     lab_mod, "_stop_daemon",
+                     lambda pid, *, timeout_s=5.0: stopped.append(pid)):
+                lab_mod.cmd_down(d)
+            self.assertIsNone(read_state(d))   # state still cleaned up
+        self.assertEqual(stopped, [])          # but nothing was killed
+
 
 class CmdConfRequiresRunningDaemon(unittest.TestCase):
 
@@ -221,6 +244,8 @@ class CmdConfRequiresRunningDaemon(unittest.TestCase):
             d = pathlib.Path(td)
             write_state(_sample_state(pid=os.getpid()), d)
             with mock.patch.object(lab_mod, "_require_root", lambda: None), \
+                 mock.patch.object(lab_mod, "daemon_alive_and_ours",
+                                   lambda pid, ticks: True), \
                  mock.patch.object(
                      lab_mod, "_run_shell",
                      lambda cmd, *, check=True: calls.append(cmd) or
@@ -236,7 +261,9 @@ class CmdUpRefusesIfAlreadyUp(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             d = pathlib.Path(td)
             write_state(_sample_state(pid=os.getpid()), d)
-            with mock.patch.object(lab_mod, "_require_root", lambda: None):
+            with mock.patch.object(lab_mod, "_require_root", lambda: None), \
+                 mock.patch.object(lab_mod, "daemon_alive_and_ours",
+                                   lambda pid, ticks: True):
                 with self.assertRaises(LabRuntimeError) as cm:
                     lab_mod.cmd_up(GOLDEN / "two-router-bgp.lab.yaml", d)
                 self.assertIn("already up", str(cm.exception))

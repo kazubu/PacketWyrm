@@ -133,6 +133,30 @@ class SchemaValidation(unittest.TestCase):
             with self.assertRaises(LabError):
                 load_lab(lab_path)
 
+    def test_frr_injection_values_rejected(self):
+        """Router name / router-id / neighbor / network go into FRR config +
+        shell; a value with a newline or non-IP must be rejected at load."""
+        import tempfile
+        bad_labs = [
+            # router name with an embedded FRR directive / newline
+            'routers:\n  - { name: "r1\\n log file /etc/x", image: x,'
+            ' logical_if_id: 1000, addr: 192.0.2.1/30 }\n',
+            # bad router-id (not an IP)
+            'routers:\n  - { name: r1, image: x, logical_if_id: 1000,'
+            ' addr: 192.0.2.1/30, routing: { bgp: { asn: 65001,'
+            ' router_id: "not-an-ip", neighbors: [] } } }\n',
+            # bad network (not a CIDR)
+            'routers:\n  - { name: r1, image: x, logical_if_id: 1000,'
+            ' addr: 192.0.2.1/30, routing: { bgp: { asn: 65001,'
+            ' router_id: 192.0.2.1, neighbors: [], networks: ["oops"] } } }\n',
+        ]
+        for bad in bad_labs:
+            with tempfile.TemporaryDirectory() as td:
+                lab_path = self._write_lab(
+                    td, "packetwyrm_config: ./two-router-bgp.packetwyrm.yaml\n" + bad)
+                with self.assertRaises(LabError):
+                    load_lab(lab_path)
+
     def test_unknown_logical_if_id_rejected(self):
         import tempfile
         with tempfile.TemporaryDirectory() as td:

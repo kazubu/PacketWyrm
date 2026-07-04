@@ -38,9 +38,11 @@ from `tcl` scripts (no GUI-edited binaries) are required.
 
 Mitigations:
 
-- `project.tcl` checked in; bitstream build is reproducible.
+- `project.tcl` / `project_phase3.tcl` checked in; bitstream build is reproducible.
 - Timing report archived per build under `fpga/as02mc04/builds/`.
-- A small CI job runs `make synth` headlessly.
+- CI runs Verilator `sim_all` + `make lint` (phase1 top + phase3 data-plane
+  core). NOTE: CI does **not** run Vivado synth/impl/timing/CDC (no Vivado on
+  the runners) -- those are checked at build time on the dev box / bring-up.
 
 ## 3. MAC / PCS frame transport
 

@@ -33,7 +33,7 @@ MODULE_PARM_DESC(force_match,
 	"Skip the device_id register check during probe (dev only).");
 
 struct pw_card {
-	struct pci_dev __iomem *pci;
+	struct pci_dev         *pci;   /* the PCI device (NOT an MMIO pointer) */
 	void __iomem           *bar0;
 	resource_size_t         bar0_len;
 	u32                     device_id;
@@ -54,7 +54,7 @@ static int pw_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	c = devm_kzalloc(&pdev->dev, sizeof(*c), GFP_KERNEL);
 	if (!c)
 		return -ENOMEM;
-	c->pci = (struct pci_dev __iomem *)pdev;
+	c->pci = pdev;
 
 	rc = pcim_enable_device(pdev);
 	if (rc) {

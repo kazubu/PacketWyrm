@@ -47,6 +47,12 @@ class LabState:
     tinet_yaml: str
     tap_names: list[str]
     started_at: float
+    # /proc/<pid>/stat starttime (clock ticks) captured at launch. Together with
+    # the PID it identifies THIS daemon instance, so a stale state file whose PID
+    # was recycled to an unrelated process is not mistaken for the daemon (and
+    # never SIGKILL'd). Default 0 = legacy state file (fall back to a cmdline
+    # check only).
+    packetwyrmd_start_ticks: int = 0
 
     def to_json(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=2, sort_keys=True)
@@ -91,6 +97,47 @@ def pid_alive(pid: int) -> bool:
     except OSError as e:
         return e.errno == errno.EPERM   # exists but not ours
     return True
+
+
+def _proc_starttime(pid: int) -> int | None:
+    """/proc/<pid>/stat field 22 (starttime, clock ticks), or None if gone."""
+    try:
+        stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    # comm (2nd field) is parenthesized and may contain spaces/parens; parse the
+    # numeric fields after the last ')'. starttime is field 22 overall = index 19
+    # of the post-comm fields (which start at field 3, "state").
+    rp = stat.rfind(")")
+    if rp < 0:
+        return None
+    parts = stat[rp + 2:].split()
+    try:
+        return int(parts[19])
+    except (IndexError, ValueError):
+        return None
+
+
+def _proc_is_packetwyrmd(pid: int) -> bool:
+    try:
+        cmd = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return False
+    return b"packetwyrmd" in cmd
+
+
+def daemon_alive_and_ours(pid: int, start_ticks: int) -> bool:
+    """True only if `pid` is still OUR packetwyrmd -- alive, matching the saved
+    /proc starttime (so a recycled PID is rejected), and a packetwyrmd cmdline.
+    Legacy state (start_ticks == 0): fall back to the cmdline check alone."""
+    if pid <= 0:
+        return False
+    st = _proc_starttime(pid)
+    if st is None:
+        return False                       # not alive
+    if start_ticks and st != start_ticks:
+        return False                       # PID reused by another process
+    return _proc_is_packetwyrmd(pid)
 
 
 def tinet_up_cmd(tinet_yaml: pathlib.Path) -> str:
@@ -194,7 +241,8 @@ def cmd_up(lab_path: pathlib.Path, out_dir: pathlib.Path, *, daemon_bin: str | N
     _require_root()
 
     existing = read_state(out_dir) if out_dir.exists() else None
-    if existing is not None and pid_alive(existing.packetwyrmd_pid):
+    if existing is not None and daemon_alive_and_ours(
+            existing.packetwyrmd_pid, existing.packetwyrmd_start_ticks):
         raise LabRuntimeError(
             f"lab already up (packetwyrmd pid {existing.packetwyrmd_pid});"
             f" run `down` first"
@@ -209,6 +257,7 @@ def cmd_up(lab_path: pathlib.Path, out_dir: pathlib.Path, *, daemon_bin: str | N
     _require_binary("ip")
 
     pid = _start_daemon(daemon_bin, lab.packetwyrm_config_path, out_dir / "packetwyrmd.log")
+    start_ticks = _proc_starttime(pid) or 0
     tap_names = [r.tap_name for r in lab.routers]
     tinet_up_done = False
     try:
@@ -231,6 +280,7 @@ def cmd_up(lab_path: pathlib.Path, out_dir: pathlib.Path, *, daemon_bin: str | N
         tinet_yaml=str(arts.tinet_yaml_path),
         tap_names=tap_names,
         started_at=time.time(),
+        packetwyrmd_start_ticks=start_ticks,
     )
     write_state(state, out_dir)
     return state
@@ -250,7 +300,13 @@ def cmd_down(out_dir: pathlib.Path, *, keep_daemon: bool = False) -> None:
 
     _run_shell(tinet_down_cmd(pathlib.Path(state.tinet_yaml)), check=False)
     if not keep_daemon:
-        _stop_daemon(state.packetwyrmd_pid)
+        # Only signal the PID if it is still OUR daemon: a stale state whose PID
+        # was recycled must NOT get an unrelated (possibly root) process killed.
+        if daemon_alive_and_ours(state.packetwyrmd_pid, state.packetwyrmd_start_ticks):
+            _stop_daemon(state.packetwyrmd_pid)
+        else:
+            print(f"note: packetwyrmd pid {state.packetwyrmd_pid} is not our daemon"
+                  f" (gone or PID reused); skipping kill, cleaning up state")
     delete_state(out_dir)
 
 
@@ -260,7 +316,7 @@ def cmd_conf(out_dir: pathlib.Path) -> None:
     state = read_state(out_dir)
     if state is None:
         raise LabRuntimeError(f"no state at {out_dir}; bring the lab up first")
-    if not pid_alive(state.packetwyrmd_pid):
+    if not daemon_alive_and_ours(state.packetwyrmd_pid, state.packetwyrmd_start_ticks):
         raise LabRuntimeError(
             f"packetwyrmd pid {state.packetwyrmd_pid} is gone; run `down` then `up`"
         )
@@ -268,7 +324,9 @@ def cmd_conf(out_dir: pathlib.Path) -> None:
 
 
 def cmd_status(out_dir: pathlib.Path) -> dict:
-    """Read-only summary; doesn't need root."""
+    """Read-only summary; doesn't need root. `packetwyrmd_alive` is a liveness
+    HINT (PID present); `packetwyrmd_ours` is the stricter identity check that the
+    up/down/conf paths use before acting (so a recycled PID is never killed)."""
     state = read_state(out_dir)
     if state is None:
         return {"state": "down", "out_dir": str(out_dir)}
@@ -276,6 +334,8 @@ def cmd_status(out_dir: pathlib.Path) -> dict:
         "state": "up" if pid_alive(state.packetwyrmd_pid) else "stale",
         "packetwyrmd_pid": state.packetwyrmd_pid,
         "packetwyrmd_alive": pid_alive(state.packetwyrmd_pid),
+        "packetwyrmd_ours": daemon_alive_and_ours(
+            state.packetwyrmd_pid, state.packetwyrmd_start_ticks),
         "packetwyrm_config": state.packetwyrm_config,
         "tinet_yaml": state.tinet_yaml,
         "tap_names": state.tap_names,

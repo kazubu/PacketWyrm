@@ -5,6 +5,7 @@
 
 #include "packetwyrm/backend.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,13 @@ struct fake_slow_fifo {
     size_t                 head;   /* push */
     size_t                 tail;   /* pop  */
     size_t                 count;
+    /* The slow-path FIFO is the one bit of fake-backend state that two threads
+     * can genuinely touch at once (the card worker's slow_path_rx/tx and a test
+     * helper), so it is mutex-guarded -- honoring backend.h's concurrency
+     * contract. The flow/stats/global state is touched only by the main-thread
+     * control ops, disjoint from the worker's FIFO ops (same as the BAR
+     * backend), so it needs no lock. */
+    pthread_mutex_t        lock;
 };
 
 struct fake_ctx {
@@ -57,29 +65,38 @@ struct fake_ctx {
 
 static int slow_push(struct fake_slow_fifo *f, const void *data, size_t len,
                      uint32_t lif, uint8_t egress) {
-    if (f->count >= FAKE_SLOW_PATH_DEPTH) return -1;
-    if (len > FAKE_SLOW_FRAME_MAX) return -1;
-    struct fake_slow_entry *e = &f->q[f->head];
-    memcpy(e->data, data, len);
-    e->len               = len;
-    e->logical_if_id     = lif;
-    e->egress_local_port = egress;
-    f->head = (f->head + 1) % FAKE_SLOW_PATH_DEPTH;
-    f->count++;
-    return 0;
+    pthread_mutex_lock(&f->lock);
+    int rc = -1;
+    if (f->count < FAKE_SLOW_PATH_DEPTH && len <= FAKE_SLOW_FRAME_MAX) {
+        struct fake_slow_entry *e = &f->q[f->head];
+        memcpy(e->data, data, len);
+        e->len               = len;
+        e->logical_if_id     = lif;
+        e->egress_local_port = egress;
+        f->head = (f->head + 1) % FAKE_SLOW_PATH_DEPTH;
+        f->count++;
+        rc = 0;
+    }
+    pthread_mutex_unlock(&f->lock);
+    return rc;
 }
 
 static int slow_pop(struct fake_slow_fifo *f, void *buf, size_t buflen,
                     uint32_t *out_lif, uint8_t *out_egress) {
-    if (f->count == 0) return 0;
-    struct fake_slow_entry *e = &f->q[f->tail];
-    size_t copy = e->len < buflen ? e->len : buflen;
-    memcpy(buf, e->data, copy);
-    if (out_lif)    *out_lif    = e->logical_if_id;
-    if (out_egress) *out_egress = e->egress_local_port;
-    f->tail = (f->tail + 1) % FAKE_SLOW_PATH_DEPTH;
-    f->count--;
-    return (int)copy;
+    pthread_mutex_lock(&f->lock);
+    int rc = 0;
+    if (f->count > 0) {
+        struct fake_slow_entry *e = &f->q[f->tail];
+        size_t copy = e->len < buflen ? e->len : buflen;
+        memcpy(buf, e->data, copy);
+        if (out_lif)    *out_lif    = e->logical_if_id;
+        if (out_egress) *out_egress = e->egress_local_port;
+        f->tail = (f->tail + 1) % FAKE_SLOW_PATH_DEPTH;
+        f->count--;
+        rc = (int)copy;
+    }
+    pthread_mutex_unlock(&f->lock);
+    return rc;
 }
 
 static pw_status fake_read32(void *vctx, uint32_t off, uint32_t *out) {
@@ -245,7 +262,14 @@ static pw_status fake_slow_path_tx(void *vctx, const void *frame, size_t len,
     return PW_OK;
 }
 
-static void fake_close(void *vctx) { free(vctx); }
+static void fake_close(void *vctx) {
+    struct fake_ctx *c = vctx;
+    if (c) {
+        pthread_mutex_destroy(&c->punt_rx.lock);
+        pthread_mutex_destroy(&c->tx_inject.lock);
+        free(c);
+    }
+}
 
 static const struct pw_card_backend_ops fake_ops = {
     .read32              = fake_read32,
@@ -288,6 +312,8 @@ pw_status pw_fake_backend_open(const char *pci_bdf, struct pw_card_backend *out)
     if (!out) return PW_E_INVAL;
     struct fake_ctx *c = calloc(1, sizeof(*c));
     if (!c) return PW_E_NO_RESOURCES;
+    pthread_mutex_init(&c->punt_rx.lock, NULL);
+    pthread_mutex_init(&c->tx_inject.lock, NULL);
     if (pci_bdf) snprintf(c->pci, sizeof(c->pci), "%s", pci_bdf);
     out->ops = &fake_ops;
     out->ctx = c;

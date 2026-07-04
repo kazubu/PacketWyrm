@@ -43,6 +43,11 @@
 #define PW_DMA_HDR_LEN    8u      /* pw_dma_slowpath in-band metadata header */
 #define PW_DMA_RX_RING    16u     /* C2H circular ring depth (descriptors + buffers) */
 
+/* Threading (see backend.h's concurrency contract): the DMA slow path
+ * (dma_slow_path_rx/tx) is driven only by the card's worker thread and owns all
+ * of dma_state (the C2H reaper index etc.); the main thread's control RPCs touch
+ * the AXI-Lite CSR window (BAR0) and never dma_state or the XDMA regs (BAR1).
+ * Those regions/state are disjoint, so no per-backend lock is needed here. */
 struct dma_state {
     void    *xdma_regs;       /* mmap of BAR1 = XDMA DMA/SGDMA control registers */
     size_t   xdma_regs_len;
