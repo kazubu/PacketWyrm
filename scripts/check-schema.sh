@@ -31,8 +31,11 @@ if [ ! -f "$schema" ]; then
 fi
 
 failed=0
-for cfg in "$root"/configs/examples/single-card.yaml \
-           "$root"/configs/examples/multi-card.yaml; do
+# Validate every example config, not just the canonical two -- the schema is
+# split-aware (env-only / test-only / combined all valid), so drift in any
+# example (new flow/forward key, missing schema property) is caught here.
+shopt -s nullglob
+for cfg in "$root"/configs/examples/*.yaml; do
     if [ ! -f "$cfg" ]; then continue; fi
     if python3 - "$schema" "$cfg" <<'PY'
 import json, sys, yaml, jsonschema

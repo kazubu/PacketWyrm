@@ -4,7 +4,7 @@
     "title": "PacketWyrm configuration",
     "type": "object",
     "additionalProperties": false,
-    "required": ["system", "cards", "logical_interfaces", "flows"],
+    "comment": "Config is split into an env part (system/cards/logical_interfaces[/secret]) and a test part (flows/forwards); a file may carry either or both, so no section is strictly required here. The C validator (libpacketwyrm) is authoritative; this schema is an editor/CI drift check.",
     "properties": {
         "system": { "$ref": "#/$defs/system" },
         "cards": {
@@ -19,6 +19,10 @@
         "flows": {
             "type": "array",
             "items": { "$ref": "#/$defs/flow" }
+        },
+        "forwards": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/forward" }
         }
     },
 
@@ -48,7 +52,8 @@
                 "mode":                   { "type": "string", "enum": ["multi-card"] },
                 "default_speed":          { "type": "string", "enum": ["10g"] },
                 "stats_poll_interval_ms": { "type": "integer", "minimum": 1 },
-                "control_socket":         { "type": "string", "minLength": 1 }
+                "control_socket":         { "type": "string", "minLength": 1 },
+                "secret":                 { "type": "string" }
             }
         },
 
@@ -111,7 +116,7 @@
         "flow": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id", "tx_global_port", "rx_global_port", "l2", "udp", "traffic"],
+            "required": ["id", "tx_global_port", "rx_global_port", "l2", "traffic"],
             "properties": {
                 "id":             { "type": "integer", "minimum": 1 },
                 "name":           { "type": "string" },
@@ -124,10 +129,11 @@
                     "additionalProperties": false,
                     "required": ["src_mac", "dst_mac"],
                     "properties": {
-                        "src_mac": { "$ref": "#/$defs/mac" },
-                        "dst_mac": { "$ref": "#/$defs/mac" },
-                        "vlan":    { "type": "integer", "minimum": 0, "maximum": 4094 },
-                        "pcp":     { "type": "integer", "minimum": 0, "maximum": 7  }
+                        "src_mac":   { "$ref": "#/$defs/mac" },
+                        "dst_mac":   { "$ref": "#/$defs/mac" },
+                        "vlan":      { "type": "integer", "minimum": 0, "maximum": 4094 },
+                        "pcp":       { "type": "integer", "minimum": 0, "maximum": 7  },
+                        "ethertype": { "type": "integer", "minimum": 0, "maximum": 65535 }
                     }
                 },
 
@@ -183,7 +189,9 @@
                         },
                         "payload_seed":    { "type": "integer", "minimum": 0 },
                         "insert_sequence": { "type": "boolean" },
-                        "insert_timestamp":{ "type": "boolean" }
+                        "insert_timestamp":{ "type": "boolean" },
+                        "frame_template":  { "type": "string",
+                                             "enum": ["test", "raw", "ip", "eth"] }
                     },
                     "allOf": [
                         { "oneOf": [
@@ -209,13 +217,38 @@
                         "latency": { "type": "boolean" },
                         "jitter":  { "type": "boolean" }
                     }
-                }
+                },
+
+                "tcp":        { "type": "object" },
+                "modifiers":  { "type": "object" },
+                "classify":   { "type": "string" },
+                "encap":      { "type": "object" },
+                "rx_expect":  { "type": "string" },
+                "background": { "type": "boolean" }
             },
 
             "oneOf": [
                 { "required": ["ipv4"], "not": { "required": ["ipv6"] } },
                 { "required": ["ipv6"], "not": { "required": ["ipv4"] } }
             ]
+        },
+
+        "forward": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ingress_port", "egress_port"],
+            "properties": {
+                "name":         { "type": "string" },
+                "ingress_port": { "type": "integer", "minimum": 0 },
+                "egress_port":  { "type": "integer", "minimum": 0 },
+                "priority":     { "type": "integer", "minimum": 0 },
+                "ethertype":    { "type": "integer", "minimum": 0, "maximum": 65535 },
+                "ip_proto":     { "type": "integer", "minimum": 0, "maximum": 255 },
+                "udp_dst":      { "type": "integer", "minimum": 0, "maximum": 65535 },
+                "vlan":         { "type": "integer", "minimum": 0, "maximum": 4094 },
+                "ipv6_src":     { "$ref": "#/$defs/ipv6" },
+                "ipv6_dst":     { "$ref": "#/$defs/ipv6" }
+            }
         }
     }
 }

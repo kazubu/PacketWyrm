@@ -9,6 +9,29 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Config-name consistency + JSON-schema catch-up (fresh-context review #4).**
+    A fourth from-scratch review found:
+    - **`pktwyrm-tinet` ignored a custom `logical_interfaces[].name`.** The daemon
+      names the TAP after the lif's `name` (or synthesizes `tap-pw-p<gp>-v<vlan>`
+      when absent); the lab tool always synthesized the name, so a custom-named
+      lif made the tool wait for the wrong netdev and time out. It now mirrors the
+      daemon (use `name` if set, else synthesize).
+    - **The validator now rejects duplicate `logical_if` names and over-length
+      names.** The name becomes the Linux TAP netdev name (IFNAMSIZ), so two lifs
+      with the same name would collide and a name ≥ 16 chars would be silently
+      truncated — the comment claimed name-dup was checked but only `id` was.
+      Added both checks + a `validate_lif_name_rules` unit test.
+    - **JSON schema caught up to the split env/test config + Phase 3 flow
+      features.** The schema still required a single combined file
+      (`system`+`cards`+`logical_interfaces`+`flows`, `udp` mandatory) and lacked
+      `forwards`, `system.secret`, and the flow keys `tcp` / `ipv6` / `modifiers`
+      / `classify` / `encap` / `rx_expect` / `background` / `frame_template` /
+      l2 `ethertype`, so only 2 of the 20 example configs validated. Made it
+      split-aware (no section strictly required; env-only / test-only / combined
+      all valid) and added the missing properties + a `forward` def. **All 20
+      `configs/examples/*.yaml` now validate**, and `scripts/check-schema.sh`
+      (run in CI) was broadened from 2 files to every example, so schema drift is
+      actually caught going forward.
   - **Packaging / CI-coverage / docs fixes (fresh-context review #3).** A third
     from-scratch review (Codex ran the CI targets + a staged install) found
     coverage gaps and a shipped-unit config bug:
