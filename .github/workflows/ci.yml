@@ -30,7 +30,7 @@ jobs:
         working-directory: sw
         run: make e2e
       - name: config schema drift (examples vs JSON schema)
-        run: ./scripts/check-schema.sh
+        run: ./scripts/check-schema.sh --strict
       - name: pktwyrm-tinet unit tests
         run: make -C tools/pktwyrm-tinet test
       - name: staged install

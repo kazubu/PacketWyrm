@@ -479,6 +479,20 @@ int main(int argc, char **argv) {
     else
         printf("  daemon auth: %s\n", sec == 1 ? "secret required" : "OPEN (no secret)");
 
+    /* Second safeguard: --no-tls on a non-loopback bind sends the access secret
+     * (in the JSON body) across the network in PLAINTEXT even when the daemon
+     * requires one. --no-tls is meant for localhost / an SSH tunnel; refuse a
+     * public plaintext bind unless the operator explicitly overrides. */
+    if (!loopback && o.no_tls && !o.insecure_no_auth) {
+        fprintf(stderr,
+            "proxyd: REFUSING to bind %s:%d with --no-tls -- the access secret "
+            "would cross the network in plaintext.\n"
+            "        Use TLS (drop --no-tls), bind 127.0.0.1 (localhost / SSH "
+            "tunnel), or pass --insecure-no-auth to override.\n",
+            o.listen_addr, o.listen_port);
+        return 1;
+    }
+
     /* TLS. */
     if (!o.no_tls) {
         g_ssl_ctx = tls_ctx_new(&o);

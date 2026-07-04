@@ -16,13 +16,22 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
 schema=$root/sw/libpacketwyrm/schema/packetwyrm.schema.json
 
+# --strict (or PW_SCHEMA_STRICT=1): treat missing deps as a FAILURE rather than
+# a skip. CI passes --strict (it installs the deps), so a future CI change that
+# drops python3-yaml/jsonschema fails loudly instead of silently skipping drift
+# detection. Local runs without the flag still skip gracefully.
+strict=0
+[ "${1:-}" = "--strict" ] && strict=1
+[ "${PW_SCHEMA_STRICT:-0}" = "1" ] && strict=1
+miss() {
+    if [ "$strict" = "1" ]; then echo "FAIL: $1"; exit 1; else echo "skip: $1"; exit 0; fi
+}
+
 if ! command -v python3 >/dev/null 2>&1; then
-    echo "skip: python3 not found"
-    exit 0
+    miss "python3 not found"
 fi
 if ! python3 -c "import yaml, jsonschema" >/dev/null 2>&1; then
-    echo "skip: install python3-yaml and python3-jsonschema to validate"
-    exit 0
+    miss "install python3-yaml and python3-jsonschema to validate"
 fi
 
 if [ ! -f "$schema" ]; then

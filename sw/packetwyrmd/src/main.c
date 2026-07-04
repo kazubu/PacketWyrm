@@ -553,11 +553,28 @@ static bool same_topology(const struct pw_config *a,
                           const struct pw_config *b) {
     if (a->n_cards != b->n_cards) return false;
     if (a->n_logical_if != b->n_logical_if) return false;
+    /* Compare the fields that actually define the TAP/backend binding, not just
+     * ids -- otherwise a combined config.load that keeps the ids but changes a
+     * PCI BDF, a port's global_port, or a lif's name/vlan/global_port/mac would
+     * be treated as "same topology": the env part silently discarded, only the
+     * flows applied on the OLD topology, and the operator sees a false success. */
     for (size_t i = 0; i < a->n_cards; i++) {
-        if (a->cards[i].id != b->cards[i].id) return false;
+        const struct pw_card *ca = &a->cards[i], *cb = &b->cards[i];
+        if (ca->id != cb->id) return false;
+        if (strcmp(ca->pci, cb->pci) != 0) return false;
+        if (ca->n_ports != cb->n_ports) return false;
+        for (size_t k = 0; k < ca->n_ports; k++) {
+            if (ca->ports[k].local_port  != cb->ports[k].local_port)  return false;
+            if (ca->ports[k].global_port != cb->ports[k].global_port) return false;
+        }
     }
     for (size_t i = 0; i < a->n_logical_if; i++) {
-        if (a->logical_if[i].id != b->logical_if[i].id) return false;
+        const struct pw_logical_if *la = &a->logical_if[i], *lb = &b->logical_if[i];
+        if (la->id != lb->id) return false;
+        if (la->global_port != lb->global_port) return false;
+        if (la->vlan != lb->vlan) return false;
+        if (strcmp(la->name, lb->name) != 0) return false;
+        if (memcmp(la->mac, lb->mac, sizeof(la->mac)) != 0) return false;
     }
     return true;
 }

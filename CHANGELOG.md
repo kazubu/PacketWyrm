@@ -9,6 +9,25 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Operational-safety hardening (fresh-context review #5).** No P0/P1 found
+    (all CI targets pass); four P2/P3 operational items fixed:
+    - **proxyd refuses `--no-tls` on a non-loopback bind.** With
+      `--no-tls --listen 0.0.0.0:…` the access secret (in the JSON body) would
+      cross the network in plaintext even when the daemon requires one. It now
+      refuses unless `--insecure-no-auth` (or a loopback bind); `--no-tls` on
+      127.0.0.1 (localhost / SSH tunnel) is still fine.
+    - **`config.load` topology check compares the actual binding, not just ids.**
+      `same_topology` only compared card/lif *ids* + counts, so a combined YAML
+      that kept the ids but changed a PCI BDF, a port's `global_port`, or a lif's
+      `name`/`vlan`/`global_port`/`mac` was accepted as "same topology" — the env
+      part silently discarded, flows applied on the *old* topology, a false
+      success. It now also compares pci/ports and lif name/vlan/global_port/mac.
+    - **`scripts/check-schema.sh --strict`** (used by CI) fails instead of
+      skipping when `python3`/`yaml`/`jsonschema` are missing, so a future CI
+      change that drops the deps can't silently stop catching schema drift.
+    - **`pktwyrm-tinet` no longer leaks the daemon log fd** — `_start_daemon`
+      now opens it in a `with` block so the parent's copy is closed on both the
+      success and error paths (the child keeps its inherited dup).
   - **Config-name consistency + JSON-schema catch-up (fresh-context review #4).**
     A fourth from-scratch review found:
     - **`pktwyrm-tinet` ignored a custom `logical_interfaces[].name`.** The daemon
