@@ -89,6 +89,19 @@ module pwfpga_top_phase1 (
         .m_axi_rvalid  (m_axi_rvalid),
         .m_axi_rready  (m_axi_rready),
 
+        // Phase 1 has no DMA slow path: tie off the bridge's XDMA AXI-Stream
+        // ports (h2c = host->FPGA out, c2h = FPGA->host in). Outputs left open.
+        .h2c_tdata     (),
+        .h2c_tkeep     (),
+        .h2c_tvalid    (),
+        .h2c_tready    (1'b0),
+        .h2c_tlast     (),
+        .c2h_tdata     (256'b0),
+        .c2h_tkeep     (32'b0),
+        .c2h_tvalid    (1'b0),
+        .c2h_tready    (),
+        .c2h_tlast     (1'b0),
+
         .link_up       (pcie_link_up)
     );
 
