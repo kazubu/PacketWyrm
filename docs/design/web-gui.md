@@ -61,9 +61,13 @@ packetwyrm-proxyd [--listen ADDR:PORT] [--socket DAEMON_SOCK]
   encrypted over the network. The gateway↔daemon hop is a local Unix
   socket (trusted, same host).
 - **Runs unprivileged.** The gateway only needs to reach the daemon's
-  `0666` control socket, so the shipped systemd unit
+  control socket, so the shipped systemd unit
   (`packaging/packetwyrm-proxyd.service`) runs it as the unprivileged
-  `packetwyrm` user — the network-facing process owns no hardware.
+  `packetwyrm` user/group — the network-facing process owns no hardware.
+  In production the daemon creates the socket `0660 root:packetwyrm` (not
+  world-writable), so the gateway reaches it via its `packetwyrm` group
+  membership; dev/CI (`-F`) uses `0666`. The `packetwyrm` user+group are
+  created by `packaging/packetwyrm.sysusers`.
 - **No-auth safeguard.** At startup the gateway probes the daemon with an
   unauthenticated `version`. If the daemon has **no** secret configured
   and the listen address is **not** loopback, the gateway *refuses to

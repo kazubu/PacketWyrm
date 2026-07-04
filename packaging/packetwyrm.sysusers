@@ -1,3 +1,8 @@
 # systemd-sysusers entry for PacketWyrm.
 # Install as /usr/lib/sysusers.d/packetwyrm.conf
-g packetwyrm - "PacketWyrm operators"
+#
+# Creates the `packetwyrm` system USER and matching GROUP. The user is what
+# packetwyrm-proxyd.service runs as (User=/Group=packetwyrm); the group owns the
+# daemon's 0660 control socket (root:packetwyrm), so the unprivileged gateway can
+# reach it without being root. `u` creates both the user and the group.
+u packetwyrm - "PacketWyrm daemon/gateway"

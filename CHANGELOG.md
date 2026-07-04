@@ -9,6 +9,26 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Socket-group ACL + proxyd packaging fix (6th full-codebase review) —
+    HW-validated.** The previous round's 0660 control socket (root:root) broke
+    the shipped `packetwyrm-proxyd` gateway, which runs unprivileged — a
+    regression the review caught:
+    - **The daemon now group-owns the production socket `root:packetwyrm`** (0660)
+      so the unprivileged proxyd (User/Group=`packetwyrm`) reaches it via group
+      membership; a local non-root, non-`packetwyrm` user still cannot. Done with
+      a best-effort `chown` after listen (via `getgrnam`); if the group isn't
+      installed the socket stays root-only with a warning. Dev/CI (`-F`) keeps
+      `0666`.
+    - **`packaging/packetwyrm.sysusers` now creates the `packetwyrm` USER**, not
+      just a group (`g` → `u`). The proxyd unit runs `User=packetwyrm`, so a
+      group-only entry failed the unit with "User packetwyrm not found" on a
+      clean install. Verified with `systemd-sysusers` (creates user+group) on the
+      rig; the daemon then chowns the socket to `root:packetwyrm` (confirmed
+      `srw-rw---- root packetwyrm`).
+    - **Docs/comments updated** for the 0660 model (`web-gui.md`,
+      `rpc-protocol.md`, the proxyd unit comment) — they claimed `0666`.
+    - **e2e packaging check:** the proxyd unit's `User=` must be created as a user
+      in the sysusers file (guards the group-only regression).
   - **Daemon honesty & socket-privilege hardening (5th full-codebase review) —
     HW-validated.** Four items (2 Medium, 2 Low; no new High). Re-validated on
     07:00.0 (daemon restarted `-F`-less on the new binary — control socket now

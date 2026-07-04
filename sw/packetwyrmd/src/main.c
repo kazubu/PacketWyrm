@@ -20,6 +20,7 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <libgen.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -2215,9 +2216,26 @@ int main(int argc, char **argv) {
                 sock_path, pw_strerror(sr));
         close_all_backends(cfg, cards);
         return 1;
-    } else if (verbose) {
-        printf("  control socket listening on %s\n", sock_path);
     }
+    /* In production the socket is 0660 (not world-writable). Group-own it by
+     * `packetwyrm` so the unprivileged packetwyrm-proxyd gateway (User/Group=
+     * packetwyrm) can reach it without being root. Best-effort: if the group
+     * isn't installed (dev box without packaging/packetwyrm.sysusers) the socket
+     * stays root-only and only root can drive it -- still safe, just no proxyd. */
+    if (!allow_fake) {
+        struct group *grp = getgrnam("packetwyrm");
+        if (grp) {
+            if (chown(sock_path, 0, grp->gr_gid) != 0)
+                fprintf(stderr, "warning: could not chown %s to root:packetwyrm: %s "
+                        "(proxyd may not connect)\n", sock_path, strerror(errno));
+        } else {
+            fprintf(stderr, "warning: group 'packetwyrm' not found -- control socket "
+                    "%s stays root-only; install packaging/packetwyrm.sysusers so "
+                    "packetwyrm-proxyd can connect\n", sock_path);
+        }
+    }
+    if (verbose)
+        printf("  control socket listening on %s\n", sock_path);
 
     int prom_fd = -1;
     if (prom_port > 0) {

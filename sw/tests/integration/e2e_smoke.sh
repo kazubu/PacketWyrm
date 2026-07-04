@@ -183,6 +183,17 @@ else
     fi
 fi
 
+# Packaging consistency: packetwyrm-proxyd.service runs as User=packetwyrm and
+# connects to the daemon's 0660 root:packetwyrm control socket, so the sysusers
+# file must actually create that USER (a bare group would fail the unit with
+# "User packetwyrm not found" and leave the gateway unable to reach the socket).
+SYSU="$ROOT/packaging/packetwyrm.sysusers"
+PROXU=$(grep -E '^User=' "$ROOT/packaging/packetwyrm-proxyd.service" | head -1 | cut -d= -f2)
+if [ -n "$PROXU" ] && ! grep -qE "^u[[:space:]]+$PROXU([[:space:]]|\$)" "$SYSU"; then
+    echo "[FAIL packaging] proxyd User=$PROXU is not created as a user in $SYSU"; exit 1
+fi
+echo "[ ok ] packaging: proxyd User is created by sysusers"
+
 cleanup
 trap 'rm -rf "$WORK"' EXIT
 
