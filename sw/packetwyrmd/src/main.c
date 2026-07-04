@@ -20,6 +20,7 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <libgen.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -118,8 +119,15 @@ static void print_summary(const struct pw_config *cfg, const struct pw_program *
     }
 }
 
-static void open_all_backends(const struct pw_config *cfg,
-                              struct card_runtime cards[], bool allow_fake) {
+/* Open a backend for every configured card. Returns the number of cards that
+ * could NOT be opened (0 = all good). With allow_fake a BAR-open failure falls
+ * back to the no-op fake backend (so the count stays 0); without it a failure
+ * leaves the card closed and is counted -- the caller turns a nonzero count
+ * into a startup failure so a real deployment never comes up "alive but no
+ * FPGA programmed". */
+static int open_all_backends(const struct pw_config *cfg,
+                             struct card_runtime cards[], bool allow_fake) {
+    int n_failed = 0;
     for (size_t i = 0; i < cfg->n_cards; i++) {
         cards[i].which = "bar";
         pw_status br = pw_bar_backend_open(cfg->cards[i].pci, &cards[i].backend);
@@ -137,11 +145,13 @@ static void open_all_backends(const struct pw_config *cfg,
         }
         cards[i].open = (br == PW_OK);
         if (!cards[i].open) {
+            n_failed++;
             fprintf(stderr, "could not open backend for %s (%s): %s%s\n",
                     cfg->cards[i].pci, cfg->cards[i].name, pw_strerror(br),
                     allow_fake ? "" : " (pass --allow-fake to use the no-op backend)");
         }
     }
+    return n_failed;
 }
 
 static void close_all_backends(const struct pw_config *cfg,
@@ -173,11 +183,17 @@ struct tap_handle {
     char     name[PW_TAP_IFNAME_MAX];
 };
 
+/* Create + bind a TAP for every logical_if. Returns the number of TAPs bound,
+ * or -1 if a configured logical_if could not be set up (unresolved port, TAP
+ * open/MAC/MTU/up ioctl, or host-plane bind failure) AND allow_fake is false --
+ * a missing/down TAP blackholes the control plane, so production (no -F) treats
+ * it as fatal; -F (dev/CI, often non-root without CAP_NET_ADMIN) tolerates it
+ * and just skips that binding. */
 static int setup_taps(const struct pw_config *cfg,
                       struct card_runtime cards[],
                       struct pw_host_plane *hps[MAX_CARDS],
                       struct tap_handle    *taps,
-                      bool verbose) {
+                      bool verbose, bool allow_fake) {
     int n_taps = 0;
     for (size_t i = 0; i < cfg->n_logical_if; i++) {
         const struct pw_logical_if *lif = &cfg->logical_if[i];
@@ -185,6 +201,7 @@ static int setup_taps(const struct pw_config *cfg,
         struct pw_card_backend *b = backend_for_lif(cfg, cards, lif, &egress_lp);
         if (!b) {
             fprintf(stderr, "logical_if %s: no backend (port unresolved)\n", lif->name);
+            if (!allow_fake) return -1;
             continue;
         }
         int fd = -1;
@@ -193,11 +210,21 @@ static int setup_taps(const struct pw_config *cfg,
         if (r != PW_OK) {
             fprintf(stderr, "logical_if %s: pw_tap_open failed: %s\n",
                     lif->name, pw_strerror(r));
+            if (!allow_fake) return -1;
             continue;
         }
-        pw_tap_set_mac(actual, lif->mac);
-        if (lif->mtu) pw_tap_set_mtu(actual, lif->mtu);
-        pw_tap_set_up(actual, true);
+        /* MAC/MTU/up are part of "the TAP is usable"; a failure here is a
+         * blackhole, so surface it (fatal in production). */
+        pw_status mr = pw_tap_set_mac(actual, lif->mac);
+        pw_status tr = lif->mtu ? pw_tap_set_mtu(actual, lif->mtu) : PW_OK;
+        pw_status ur = pw_tap_set_up(actual, true);
+        if ((mr != PW_OK || tr != PW_OK || ur != PW_OK) && !allow_fake) {
+            fprintf(stderr, "logical_if %s: TAP config failed "
+                    "(mac=%s mtu=%s up=%s)\n", lif->name,
+                    pw_strerror(mr), pw_strerror(tr), pw_strerror(ur));
+            pw_tap_close(fd);
+            return -1;
+        }
 
         /* Find the host_plane belonging to this lif's card. */
         size_t card_index = SIZE_MAX;
@@ -214,6 +241,7 @@ static int setup_taps(const struct pw_config *cfg,
             fprintf(stderr, "logical_if %s: bind failed: %s\n",
                     lif->name, pw_strerror(br));
             pw_tap_close(fd);
+            if (!allow_fake) return -1;
             continue;
         }
         taps[n_taps] = (struct tap_handle){ .fd = fd, .lif_id = lif->id };
@@ -424,12 +452,17 @@ static int find_tx_row(const struct pw_program *prog,
     return -1;
 }
 
-/* Re-write the TX flow row of `global_flow_id` with `enable` set
- * accordingly, then commit. */
+/* Re-write the TX flow row of `global_flow_id` with `enable` set accordingly,
+ * then commit. When `persist` is true the daemon's authoritative staged row is
+ * updated to match (flow.start/stop/test.*); when false the write goes to the
+ * FPGA only and the staged row is left untouched -- used by the config.load
+ * quiesce so a rollback re-programs the EXACT prior enable state (mutating the
+ * staged row there would make "rolled back, previous config still running"
+ * restore all-flows-disabled). */
 static pw_status set_flow_enable(struct pw_program *prog,
                                  struct card_runtime cards[],
                                  uint32_t global_flow_id,
-                                 bool enable) {
+                                 bool enable, bool persist) {
     int      ci  = -1;
     uint32_t row = 0;
     if (find_tx_row(prog, global_flow_id, &ci, &row) < 0) return PW_E_INVAL;
@@ -447,7 +480,7 @@ static pw_status set_flow_enable(struct pw_program *prog,
         : PW_E_NOT_IMPLEMENTED;
     if (s == PW_OK && b->ops->flow_commit)
         s = b->ops->flow_commit(b->ctx);
-    if (s == PW_OK) *fc = tmp;
+    if (s == PW_OK && persist) *fc = tmp;
     return s;
 }
 
@@ -597,7 +630,8 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
      * any stale row anyway. */
     for (size_t k = 0; k < (*prog_pp)->n_flow_meta; k++) {
         (void)set_flow_enable(*prog_pp, cards,
-                              (*prog_pp)->flow_meta[k].global_flow_id, false);
+                              (*prog_pp)->flow_meta[k].global_flow_id,
+                              false, /*persist=*/false);
     }
 
     /* Stage: program the new config into every open backend. On a hard fault
@@ -868,6 +902,16 @@ static struct json_object *do_config_save(struct pw_config **cfg_pp,
     if (!wok || rename(tmp, g_env_path) != 0) {
         unlink(tmp);
         return build_error("write failed");
+    }
+    /* fsync the PARENT directory so the rename (the new directory entry) is
+     * durable across a crash/power loss. The file contents were fsync'd above,
+     * but the dir entry pointing at them can still be lost otherwise -- and this
+     * file holds system.secret + the environment config. */
+    {
+        char dbuf[1024];
+        snprintf(dbuf, sizeof(dbuf), "%s", g_env_path);
+        int dfd = open(dirname(dbuf), O_DIRECTORY | O_RDONLY | O_CLOEXEC);
+        if (dfd >= 0) { (void)fsync(dfd); close(dfd); }
     }
 
     struct json_object *resp = json_object_new_object();
@@ -1757,7 +1801,7 @@ static void handle_client(int cfd,
                 for (size_t k = 0; k < prog->n_flow_meta; k++) {
                     pw_status s = set_flow_enable(prog, cards,
                                                   prog->flow_meta[k].global_flow_id,
-                                                  en);
+                                                  en, /*persist=*/true);
                     if (s == PW_OK) changed++;
                     else            failed++;
                 }
@@ -1800,7 +1844,7 @@ static void handle_client(int cfd,
             } else {
                 bool en = (strcmp(name, "flow.start") == 0);
                 uint32_t id = (uint32_t)json_object_get_int64(jid);
-                pw_status s = set_flow_enable(prog, cards, id, en);
+                pw_status s = set_flow_enable(prog, cards, id, en, /*persist=*/true);
                 resp = json_object_new_object();
                 json_object_object_add(resp, "id",     json_object_new_int64(id));
                 json_object_object_add(resp, "enable", json_object_new_boolean(en));
@@ -2084,12 +2128,34 @@ int main(int argc, char **argv) {
     struct pw_host_plane *hps[MAX_CARDS]  = {0};
     struct tap_handle    taps[PW_HOST_PLANE_MAX_BINDINGS] = {0};
 
-    open_all_backends(cfg, cards, allow_fake);
+    int n_failed = open_all_backends(cfg, cards, allow_fake);
+    if (n_failed > 0 && !allow_fake) {
+        fprintf(stderr, "fatal: %d of %zu card backend(s) failed to open; "
+                "refusing to run with an unprogrammed data path "
+                "(pass -F/--allow-fake for a dev/CI no-op backend)\n",
+                n_failed, cfg->n_cards);
+        close_all_backends(cfg, cards);
+        return 1;
+    }
     if (program_backends(prog, cfg, cards) != PW_OK)
         fprintf(stderr, "warning: initial FPGA programming hard-failed -- "
                 "device may not match config (check the card / BAR)\n");
-    int n_taps = setup_taps(cfg, cards, hps, taps, true);
+    int n_taps = setup_taps(cfg, cards, hps, taps, true, allow_fake);
+    if (n_taps < 0) {
+        fprintf(stderr, "fatal: a configured logical_if could not get a working "
+                "TAP; the control-plane path would blackhole "
+                "(pass -F/--allow-fake to tolerate missing TAPs in dev/CI)\n");
+        close_all_backends(cfg, cards);
+        return 1;
+    }
     if (n_taps == 0) {
+        if (cfg->n_logical_if > 0 && !allow_fake) {
+            fprintf(stderr, "fatal: no TAPs created though %zu logical_if(s) are "
+                    "configured (pass -F/--allow-fake for dev/CI)\n",
+                    cfg->n_logical_if);
+            close_all_backends(cfg, cards);
+            return 1;
+        }
         fprintf(stderr, "warning: no TAPs were created\n");
     }
 

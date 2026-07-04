@@ -9,6 +9,31 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Daemon failure-mode hardening (3rd full-codebase review) — HW-validated.**
+    Four items where the daemon could come up "alive but dead" or diverge from
+    the documented contract. Re-validated on 07:00.0 (restarted the daemon on the
+    new binary, no false fatal on the real card + TAPs; cRPD dual-stack control
+    plane reconverged — v4/v6 ping 0 % loss, OSPFv2/v3 Full, IS-IS L1+L2 Up, BGP
+    v4+v6 Established):
+    - **`config.load` rollback now restores the EXACT prior flow-enable state.**
+      The quiesce step (stop running flows before staging the new config) wrote
+      the disable into the daemon's authoritative staged rows, so a failed stage
+      rolled back to *all-flows-disabled* despite the "previous config still
+      running" message. `set_flow_enable` gained a `persist` flag; the quiesce
+      writes the disable to the FPGA only (`persist=false`), leaving the staged
+      program untouched so rollback re-programs the real prior state. (A
+      fault-injection regression test needs a fake-backend fail hook — follow-up.)
+    - **A real card that fails to open is now a startup failure (no `-F`).**
+      `open_all_backends` returns a failure count; without `--allow-fake` the
+      daemon exits instead of running with an unprogrammed data path (socket up,
+      FPGA doing nothing). CI/e2e keep using `-F`. Matches `daemon.md`.
+    - **A configured `logical_if` that can't get a working TAP is fatal (no
+      `-F`).** `setup_taps` now propagates TAP open / MAC / MTU / up / bind
+      failures (previously the ioctl returns were ignored) — a missing/down TAP
+      blackholes the control plane. `-F` tolerates it for non-root dev/CI.
+    - **`config.save` fsyncs the parent directory after the atomic rename**, so
+      the new directory entry (for the file holding `system.secret`) is durable
+      across a crash/power loss, not just the file contents.
   - **Operational / packaging hardening (2nd full-codebase review).** Five
     non-datapath items from a follow-up review:
     - **systemd unit no longer strips the capabilities the hardware backend
