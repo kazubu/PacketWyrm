@@ -208,11 +208,18 @@ def cmd_up(lab_path: pathlib.Path, out_dir: pathlib.Path, *, daemon_bin: str | N
 
     pid = _start_daemon(daemon_bin, lab.packetwyrm_config_path, out_dir / "packetwyrmd.log")
     tap_names = [r.tap_name for r in lab.routers]
+    tinet_up_done = False
     try:
         _wait_for_taps(tap_names)
         _run_shell(tinet_up_cmd(arts.tinet_yaml_path))
+        tinet_up_done = True
         _run_shell(tinet_conf_cmd(arts.tinet_yaml_path))
     except Exception:
+        # No state file is written on this path, so a later `down` can't clean
+        # up. If `tinet up` already created containers/netns (e.g. `conf`
+        # failed), best-effort tear them down here so they don't leak.
+        if tinet_up_done:
+            _run_shell(tinet_down_cmd(arts.tinet_yaml_path), check=False)
         _stop_daemon(pid)
         raise
 

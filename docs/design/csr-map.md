@@ -1,11 +1,13 @@
 # CSR / register map
 
-All control / status registers live in **BAR0**. **Implemented today is BAR-only
-access** — including the slow path, which is the BAR-polled punt-RX / inject-TX
-windows (below), *not* a DMA ring. The "Slow-path DMA rings" section near the end
-is a **future design sketch, not implemented**. Concrete field bit definitions
-are owned by the `fpga/as02mc04/` sources and the matching `libpacketwyrm`
-headers (those are authoritative; this map is intent).
+All control / status registers live in **BAR0** (the DMA build adds BAR1 for the
+XDMA control registers). AXI-Lite CSR access below is BAR-mmap. The **slow path
+is now the PCIe-DMA engine** `pw_dma_slowpath` (XDMA AXI-Stream; the
+`CAP_HAS_DMA` build — see the capabilities section below), HW-validated by the
+cRPD control plane across the DUT. The BAR-polled punt-RX / inject-TX windows
+documented below are **legacy, for the older non-DMA bitstream only**. Concrete
+field bit definitions are owned by the `fpga/as02mc04/` sources and the matching
+`libpacketwyrm` headers (those are authoritative; this map is intent).
 
 ## Conventions
 

@@ -9,6 +9,27 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **proxyd request-parse memory safety + doc/tooling fixes (fresh-context
+    review #2).** Another from-scratch review (Codex, empty context, ran the CI
+    targets) found:
+    - **proxyd HTTP request-line parse could read past the buffer.**
+      `read_request()` filled a `PROXYD_REQ_MAX` buffer with no NUL terminator,
+      then `serve()` ran `sscanf(buf, "%7s %255s", …)` on it as a C string — a
+      malformed request with no whitespace/NUL in the received bytes could scan
+      past the received data into adjacent heap (DoS / info-exposure on a
+      network-facing process). The buffer is now `PROXYD_REQ_MAX + 1` and
+      NUL-terminated at the received length before parsing.
+    - **`pktwyrm-tinet up` no longer leaks containers on a mid-bringup failure.**
+      If `tinet conf` failed after `tinet up` succeeded, the netns/containers
+      leaked (no state file is written on that path, so `down` couldn't clean
+      them). `cmd_up` now best-effort `tinet down`s on the exception path.
+    - **README / `daemon.md` / `csr-map.md` brought in line with the DMA slow
+      path.** They still described the slow path as the BAR-polled punt/inject
+      windows, implied a BAR-open auto-fallback to the fake backend (it needs
+      `-F`), and listed cross-card latency as *rejected* (it's supported via J5
+      time-sync). Updated to: PCIe-DMA slow path (`pw_dma_slowpath`, the legacy
+      CSR windows are non-DMA-bitstream only); fake backend only with `-F`;
+      cross-card latency supported.
   - **CI-breaking FPGA lint fix + input hardening (fresh-context review).** A
     from-scratch review (Codex, empty context) that actually RAN the CI targets
     caught three items the prior static rounds missed:

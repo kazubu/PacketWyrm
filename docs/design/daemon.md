@@ -184,12 +184,13 @@ auto link-local IPv6 whose ND/MLD loops back to the loopback ports and is counte
 there as `rx_unmatched` (informational, not a drop). Shown by the GUI Host-plane
 TAPs panel and `pktwyrm tap`.
 
-Both directions are live on the real card as of Phase 3: the BAR
-backend implements `slow_path_rx` (draining the punt window,
-`pw_punt_rx_window` @ 0x1000) and `slow_path_tx` (the inject window,
-`pw_inject_tx_window` @ 0x0D00), and `pw_host_plane` calls both. The
-FPGA→host direction is HW-validated; the host→FPGA inject path is
-HW-validated at the backend op level (`pw_phase3_inject` round-trip).
+Both directions are live on the real card as of Phase 3. On the shipped
+**DMA bitstream** (`CAP_HAS_DMA`) the backend `slow_path_rx` / `slow_path_tx`
+ride the **PCIe-DMA slow path** (`pw_dma_slowpath`, XDMA AXI-Stream), and
+`pw_host_plane` calls both — HW-validated end-to-end by the cRPD dual-stack
+control plane across the DUT. (On the older non-DMA bitstream the same ops
+drive the BAR-polled `pw_punt_rx_window` @ 0x1000 / `pw_inject_tx_window` @
+0x0D00 windows instead; those are legacy.)
 
 Implementation: `pw_host_plane` in `libpacketwyrm` is the concrete
 data-mover. `pw_tap_open()` / `pw_tap_set_*()` create the TAP
