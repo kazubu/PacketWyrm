@@ -68,6 +68,16 @@ For where work is going next, see `NEXT-STEPS.md`.
     to 8900 B + a v6 8000 B ping at 0 % loss with the full dual-stack control plane
     (OSPFv2/v3 Full, IS-IS L1+L2 Up, BGP v4+v6 Established) still up. Gated build
     WNS +0.084 all clocks, LUT 94.79 %, BRAM 53 %.
+  - **Punt in-band header carries the frame length (`byte_len`) — HW-validated
+    (build_id 0x6a48854f).** `pw_dma_slowpath` now runs a small dp-domain
+    store-and-forward on the punt path that counts each frame's bytes and writes
+    them into the in-band header (bytes 5-6, LE) ahead of the frame; the host
+    reads the length directly instead of recovering it from the frame's L2/L3
+    headers (that parse is kept only as a `byte_len==0` fallback). This generalises
+    punt to arbitrary ethertypes/VLAN/QinQ. Validated on 07:00.0: the debug log
+    read `len=8062` straight from the header on a jumbo punt; full dual-stack
+    control plane + v4/v6 jumbo pings (2000–8900 B) all 0 % loss. Gated build WNS
+    +0.165 all clocks, LUT 94.81 %, BRAM 54.31 %.
   - **Unmatched frames split out of `drops`; LED no longer red on no-match
     (RTL + SW).** A classifier **no-match** is no longer counted as a drop or
     treated as an error. Per-port `drops` (`rx_bad_frame`) now counts **real

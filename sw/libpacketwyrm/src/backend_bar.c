@@ -414,7 +414,14 @@ static int dma_slow_path_rx(struct bar_ctx *c, void *buf, size_t buflen,
     uint32_t lif = (uint32_t)rb[0]        | ((uint32_t)rb[1] << 8)
                  | ((uint32_t)rb[2] << 16) | ((uint32_t)rb[3] << 24);
     const uint8_t *fr = rb + PW_DMA_HDR_LEN;
-    uint32_t payload = punt_frame_len(fr, PW_DMA_FRAME_CAP - PW_DMA_HDR_LEN);
+    /* Prefer the frame length carried in the in-band header (byte 5-6, LE) -- the
+     * RTL SAF measures it, so it is exact for any frame incl. VLAN/QinQ/unknown
+     * ethertype. Fall back to the L2/L3 header parse when it is 0 (an older
+     * bitstream whose punt header did not carry a length). */
+    uint32_t hdr_len = (uint32_t)rb[5] | ((uint32_t)rb[6] << 8);
+    uint32_t payload = hdr_len ? hdr_len
+                               : punt_frame_len(fr, PW_DMA_FRAME_CAP - PW_DMA_HDR_LEN);
+    if (payload > PW_DMA_FRAME_CAP - PW_DMA_HDR_LEN) payload = PW_DMA_FRAME_CAP - PW_DMA_HDR_LEN;
     if (getenv("PW_DMA_DEBUG"))
         fprintf(stderr, "[dma rx] cnt=%u done=%u consumed=%u idx=%u len=%u lif=%u et=%02x%02x\n",
                 cnt, done, d->rx_consumed, idx, payload, lif, fr[12], fr[13]);

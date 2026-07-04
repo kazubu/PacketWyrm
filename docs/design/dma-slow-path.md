@@ -286,8 +286,9 @@ below reflects the silicon findings in the next section, not the pre-flash draft
     **`dma_slow_path_rx`** (C2H, punt): a **continuously-running CIRCULAR
     descriptor ring** (never stop/re-armed per frame — that wedges the engine),
     reaped by a consumer index vs the completed count (each frame once, no loss/
-    dup). Length from the frame's own L2/L3 headers (`punt_frame_len`), not
-    `desc.bytes`. In-band header carries {lif_id, ingress}.
+    dup). Length from the in-band header's `byte_len` (SAF-measured in the FPGA;
+    §9), with the L2/L3 parse (`punt_frame_len`) kept as a fallback for `byte_len==0`.
+    In-band header carries {lif_id, ingress, byte_len}.
   - `bar_slow_path_rx/tx` branch to the DMA path when `c->dma` is set — so
     `pw_host_plane_step` and the backend-ops signatures are **unchanged**. The
     daemon worker poll cap is 1 ms (C2H has no fd to wake `poll`).
@@ -316,10 +317,14 @@ Silicon corrected several design assumptions; the as-built code reflects these:
    the engine) with a consumer index; each frame is delivered exactly once, no
    unarmed gap.
 4. **C2H received length is NOT in `desc.bytes`** (it stays = the programmed
-   capacity). Recover the length from the punted frame's own L2/L3 headers
-   (`punt_frame_len`: ARP=42, IPv4=eth+IP-total-len, IPv6=eth+40+payload,
-   IS-IS/LLC=eth+802.3-len). A byte_len field in the RTL in-band header would be
-   the general fix for arbitrary punt (VLAN/unknown ethertype) — TODO.
+   capacity). The RTL now carries the frame length in a **`byte_len` field of the
+   in-band header** (§9): the punt SAF in `pw_dma_slowpath` counts the frame's
+   bytes in the dp domain and writes them at header bytes 5-6 (LE) ahead of the
+   frame. The host reads that directly. The old L2/L3 parse (`punt_frame_len`:
+   ARP=42, IPv4=eth+IP-total-len, IPv6=eth+40+payload, IS-IS/LLC=eth+802.3-len) is
+   kept only as a fallback for `byte_len==0`. This generalises punt to arbitrary
+   ethertypes/VLAN/QinQ. **DONE + HW-validated 2026-07-04 (build 0x6a48854f)** —
+   the debug log read `len=8062` straight from the header on a jumbo frame.
 5. **Punt-reap cadence:** the daemon worker poll cap was cut 100 ms → 1 ms (C2H
    has no fd to wake `poll`; 100 ms let punt replies sit a poll period → cRPD
    retransmit storms → seconds of RTT + no adjacency).
@@ -347,9 +352,10 @@ Validated on 07:00.0 at MTU 9000: v4 pings 2000/4000/6000/8000/8900 B and a v6
 IS-IS L1+L2 Up, BGP v4+v6 Established) stays up. Gated build WNS +0.084 (all
 clocks), LUT 94.79 %, BRAM 53 %.
 
-Follow-up (not blocking): a general-purpose punt length wants a byte_len in-band
-header field for VLAN/QinQ/unknown-ethertype punt (today the host recovers length
-from L2/L3 headers, which covers ARP/IPv4/IPv6/IS-IS).
+Follow-up: **DONE (2026-07-04, build 0x6a48854f)** — the punt in-band header now
+carries a `byte_len` field (SAF-measured in the FPGA; §9), so punt length no
+longer depends on the L2/L3 parse and generalises to VLAN/QinQ/unknown-ethertype.
+The L2/L3 recovery is retained only as a `byte_len==0` fallback.
 
 ## 6. Phasing — **P1–P5 COMPLETE incl. jumbo (2026-07-04)**
 
@@ -403,3 +409,19 @@ port, TX wire timestamp) is NOT in the byte stream. Options, to settle in P1:
 - a fixed **N-byte in-band metadata header** prepended to every frame on both
   directions (simplest; costs a few bytes/frame, trivial vs jumbo).
 Recommendation: in-band header first (simplest, no extra XDMA stream to wire).
+
+**As-built header (8 B, one 64-b beat), settled in P1 + extended 2026-07-04:**
+
+| bytes | field       | direction | notes                                            |
+|-------|-------------|-----------|--------------------------------------------------|
+| 0-3   | `lif_id`    | punt      | logical-IF id, little-endian                     |
+| 4     | `ingress`   | punt      | ingress port (low nibble)                        |
+| 5-6   | `byte_len`  | punt      | frame length in bytes, LE — **SAF-measured** in the dp domain by `pw_dma_slowpath` (see below) |
+| 7     | rsv         | —         | 0                                                |
+| 0     | `egress`    | inject    | egress port; engine strips the header before TX  |
+
+On punt the engine can't know the frame length until `tlast`, so
+`pw_dma_slowpath` runs a small dp-domain **store-and-forward** (PS_FILL → PS_HDR →
+PS_DRAIN): it buffers one frame in BRAM counting bytes, emits the header beat with
+the measured `byte_len`, then drains the frame into the async FIFO. The host
+prefers `byte_len`; a zero falls back to the L2/L3 parse (`punt_frame_len`).
