@@ -37,7 +37,7 @@ system:
   mode: "multi-card"            # required, must be "multi-card"
   default_speed: "10g"          # required for now; only "10g"
   stats_poll_interval_ms: 100   # optional, default 100
-  control_socket: "/var/run/packetwyrm/packetwyrmd.sock"  # optional
+  control_socket: "/run/packetwyrm/packetwyrmd.sock"  # optional
   secret: "..."                 # optional, ENVIRONMENT ONLY. When set, the
                                 # daemon requires every control-socket request
                                 # to carry it; a client reads it from the env

@@ -224,7 +224,7 @@ Exports: human table (CLI), JSON, optional Prometheus endpoint.
 ## IPC: control socket
 
 `packetwyrmd` listens on a Unix socket (default
-`/var/run/packetwyrm/packetwyrmd.sock`). `pktwyrm` connects, sends
+`/run/packetwyrm/packetwyrmd.sock`). `pktwyrm` connects, sends
 length-prefixed JSON requests, reads JSON responses. The wire schema
 is versioned (`schema_version`).
 

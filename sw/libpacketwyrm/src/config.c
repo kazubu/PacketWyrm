@@ -150,7 +150,7 @@ static pw_status parse_system(const pw_yaml_node *m, struct pw_system *sys, stru
 
     if ((r = get_scalar(m, "control_socket", "system", false, &s, diag)) != PW_OK) return r;
     copy_str(sys->control_socket, sizeof(sys->control_socket),
-             s ? s : "/var/run/packetwyrm/packetwyrmd.sock");
+             s ? s : "/run/packetwyrm/packetwyrmd.sock");
 
     /* Optional shared secret (environment config). Non-empty -> the daemon
      * enforces it on the control socket; read access to this file is the gate. */
