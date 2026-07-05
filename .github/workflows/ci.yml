@@ -42,18 +42,23 @@ jobs:
           test -x /tmp/pw-staging/usr/local/bin/pktwyrm
           test -f /tmp/pw-staging/lib/systemd/system/packetwyrmd.service
           test -f /tmp/pw-staging/lib/systemd/system/packetwyrm-proxyd.service
-      - name: kernel module build (best-effort)
+      - name: kernel module build
         run: |
-          # The kernel skeleton is out-of-tree, so it needs matching kbuild
-          # headers. Build it when the runner has them (catches compile breakage
-          # like a bad struct/type); skip gracefully otherwise so CI isn't tied
-          # to the runner kernel.
-          sudo apt-get install -y "linux-headers-$(uname -r)" || true
-          if [ -d "/lib/modules/$(uname -r)/build" ]; then
-            make -C kernel && make -C kernel clean
-          else
-            echo "skip: no kbuild headers for $(uname -r) on this runner"
+          # The kernel skeleton is out-of-tree, so it needs kbuild headers.
+          # Build against linux-headers-generic (always installable on the
+          # Ubuntu runner) rather than the running Azure kernel's headers (which
+          # are often NOT available from apt, which made the old best-effort step
+          # skip indefinitely and hide compile breakage). Pin KDIR to the
+          # installed generic headers so the compile is DETERMINISTIC (a bad
+          # struct/type in packetwyrm.c now fails CI).
+          sudo apt-get install -y linux-headers-generic build-essential
+          KDIR=$(ls -d /usr/src/linux-headers-*-generic 2>/dev/null | sort -V | tail -1)
+          if [ -z "$KDIR" ]; then
+            echo "FATAL: linux-headers-generic did not install a KDIR"; exit 1
           fi
+          echo "building kernel module against KDIR=$KDIR"
+          make -C kernel KDIR="$KDIR"
+          make -C kernel KDIR="$KDIR" clean
 
   rtl-sim:
     name: RTL data-plane sim (Verilator)

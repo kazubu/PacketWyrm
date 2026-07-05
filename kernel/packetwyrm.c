@@ -71,6 +71,18 @@ static int pw_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	c->bar0    = pcim_iomap_table(pdev)[0];
 	c->bar0_len = pci_resource_len(pdev, 0);
 
+	/* Validate BAR0 is large enough for the identity register block before
+	 * touching it. A malformed endpoint / partial BAR decode / wrong bitstream
+	 * / future PCI-ID collision could present a short BAR; reading past it is an
+	 * out-of-range MMIO access (the userspace BAR backend range-checks too). */
+	if (c->bar0_len < PW_REG_NUM_FLOWS + sizeof(u32)) {
+		dev_err(&pdev->dev,
+			"BAR0 too small: %llu bytes (need >= %zu)\n",
+			(unsigned long long)c->bar0_len,
+			(size_t)(PW_REG_NUM_FLOWS + sizeof(u32)));
+		return -ENODEV;
+	}
+
 	dev_id = ioread32(c->bar0 + PW_REG_DEVICE_ID);
 	if (!force_match && dev_id != PW_EXPECTED_DEVICE_ID) {
 		dev_warn(&pdev->dev,

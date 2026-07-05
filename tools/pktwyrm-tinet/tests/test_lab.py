@@ -39,11 +39,16 @@ from pktwyrm_tinet.lab import (
 )
 
 
-def _sample_state(pid: int = 12345) -> LabState:
+def _sample_state(pid: int = 12345, out_dir=None) -> LabState:
+    # cmd_down/cmd_conf now require the state's tinet_yaml to live inside out_dir
+    # (so a tampered state can't redirect the root-run `tinet | sh`). Tests that
+    # drive those commands pass out_dir so the fixture is realistic; the pure
+    # round-trip tests leave it at a fixed path.
+    tinet_yaml = str(pathlib.Path(out_dir) / "tinet.yaml") if out_dir else "/tmp/lab/tinet.yaml"
     return LabState(
         packetwyrmd_pid=pid,
         packetwyrm_config="/etc/packetwyrm/single.yaml",
-        tinet_yaml="/tmp/lab/tinet.yaml",
+        tinet_yaml=tinet_yaml,
         tap_names=["tap-pw-p0-v100", "tap-pw-p1-v100"],
         started_at=1700000000.0,
     )
@@ -114,7 +119,7 @@ class StatusOutput(unittest.TestCase):
     def test_up_when_pid_alive(self):
         with tempfile.TemporaryDirectory() as td:
             d = pathlib.Path(td)
-            write_state(_sample_state(pid=os.getpid()), d)
+            write_state(_sample_state(pid=os.getpid(), out_dir=d), d)
             got = lab_mod.cmd_status(d)
             self.assertEqual(got["state"], "up")
             self.assertTrue(got["packetwyrmd_alive"])
@@ -122,7 +127,7 @@ class StatusOutput(unittest.TestCase):
     def test_stale_when_pid_gone(self):
         with tempfile.TemporaryDirectory() as td:
             d = pathlib.Path(td)
-            write_state(_sample_state(pid=2_000_000_000), d)
+            write_state(_sample_state(pid=2_000_000_000, out_dir=d), d)
             got = lab_mod.cmd_status(d)
             self.assertEqual(got["state"], "stale")
             self.assertFalse(got["packetwyrmd_alive"])
@@ -169,7 +174,7 @@ class CmdDownIdempotent(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             d = pathlib.Path(td)
-            write_state(_sample_state(pid=99999999), d)
+            write_state(_sample_state(pid=99999999, out_dir=d), d)
             (d / "tinet.yaml").write_text("nodes: []\n")
             with mock.patch.object(lab_mod, "_require_root", lambda: None), \
                  mock.patch.object(lab_mod, "daemon_alive_and_ours",
@@ -187,7 +192,7 @@ class CmdDownIdempotent(unittest.TestCase):
         stopped = []
         with tempfile.TemporaryDirectory() as td:
             d = pathlib.Path(td)
-            write_state(_sample_state(pid=os.getpid()), d)
+            write_state(_sample_state(pid=os.getpid(), out_dir=d), d)
             (d / "tinet.yaml").write_text("x")
             with mock.patch.object(lab_mod, "_require_root", lambda: None), \
                  mock.patch.object(
@@ -205,7 +210,7 @@ class CmdDownIdempotent(unittest.TestCase):
         stopped = []
         with tempfile.TemporaryDirectory() as td:
             d = pathlib.Path(td)
-            write_state(_sample_state(pid=os.getpid()), d)   # a live but wrong PID
+            write_state(_sample_state(pid=os.getpid(), out_dir=d), d)   # a live but wrong PID
             (d / "tinet.yaml").write_text("x")
             with mock.patch.object(lab_mod, "_require_root", lambda: None), \
                  mock.patch.object(lab_mod, "daemon_alive_and_ours",
@@ -233,7 +238,7 @@ class CmdConfRequiresRunningDaemon(unittest.TestCase):
     def test_dead_pid_raises(self):
         with tempfile.TemporaryDirectory() as td:
             d = pathlib.Path(td)
-            write_state(_sample_state(pid=2_000_000_000), d)
+            write_state(_sample_state(pid=2_000_000_000, out_dir=d), d)
             with mock.patch.object(lab_mod, "_require_root", lambda: None):
                 with self.assertRaises(LabRuntimeError):
                     lab_mod.cmd_conf(d)
@@ -242,7 +247,7 @@ class CmdConfRequiresRunningDaemon(unittest.TestCase):
         calls = []
         with tempfile.TemporaryDirectory() as td:
             d = pathlib.Path(td)
-            write_state(_sample_state(pid=os.getpid()), d)
+            write_state(_sample_state(pid=os.getpid(), out_dir=d), d)
             with mock.patch.object(lab_mod, "_require_root", lambda: None), \
                  mock.patch.object(lab_mod, "daemon_alive_and_ours",
                                    lambda pid, ticks: True), \
@@ -255,12 +260,39 @@ class CmdConfRequiresRunningDaemon(unittest.TestCase):
         self.assertIn("tinet conf", calls[0])
 
 
+class OutDirSafety(unittest.TestCase):
+    """Root lifecycle commands must not trust a tamperable out-dir / state."""
+
+    def test_group_world_writable_out_dir_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = pathlib.Path(td)
+            write_state(_sample_state(pid=os.getpid(), out_dir=d), d)
+            os.chmod(d, 0o777)   # a local user could swap in a hostile state
+            with mock.patch.object(lab_mod, "_require_root", lambda: None):
+                with self.assertRaises(LabRuntimeError) as cm:
+                    lab_mod.cmd_down(d)
+            self.assertIn("writable", str(cm.exception))
+
+    def test_state_tinet_yaml_outside_out_dir_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = pathlib.Path(td)
+            # No out_dir -> fixture's tinet_yaml is /tmp/lab/tinet.yaml (outside d),
+            # i.e. a tampered state trying to redirect the root-run `tinet | sh`.
+            write_state(_sample_state(pid=os.getpid()), d)
+            with mock.patch.object(lab_mod, "_require_root", lambda: None), \
+                 mock.patch.object(lab_mod, "daemon_alive_and_ours",
+                                   lambda pid, ticks: True):
+                with self.assertRaises(LabRuntimeError) as cm:
+                    lab_mod.cmd_down(d)
+            self.assertIn("outside out-dir", str(cm.exception))
+
+
 class CmdUpRefusesIfAlreadyUp(unittest.TestCase):
 
     def test_existing_alive_pid_blocks_up(self):
         with tempfile.TemporaryDirectory() as td:
             d = pathlib.Path(td)
-            write_state(_sample_state(pid=os.getpid()), d)
+            write_state(_sample_state(pid=os.getpid(), out_dir=d), d)
             with mock.patch.object(lab_mod, "_require_root", lambda: None), \
                  mock.patch.object(lab_mod, "daemon_alive_and_ours",
                                    lambda pid, ticks: True):
