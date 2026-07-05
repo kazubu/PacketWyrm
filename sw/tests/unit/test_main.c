@@ -19,6 +19,8 @@
 
 #include "packetwyrm/packetwyrm.h"
 #include "packetwyrm/vfio.h"
+#include "packetwyrm/sfp.h"
+#include "packetwyrm/spi_flash.h"
 
 static int g_fail = 0;
 static int g_total = 0;
@@ -311,6 +313,54 @@ static void test_parse_mac_hardening(void) {
     PW_ASSERT(!pw_parse_mac("02:a5:02:00:00", m));          /* too few octets */
     PW_ASSERT(!pw_parse_mac("gg:a5:02:00:00:01", m));       /* non-hex */
     PW_ASSERT(!pw_parse_mac(NULL, m));
+}
+
+/* Part-review #3: device-driver / IO boundary hardening. These early-return
+ * before any hardware access, so they run against the fake backend in CI. */
+static void test_part3_driver_hardening(void) {
+    struct pw_card_backend b;
+    PW_ASSERT_EQ(pw_fake_backend_open("0000:03:00.0", &b), PW_OK);
+
+    /* SPI flash: 24-bit address space (16 MB). Out-of-range offset/len and a
+     * range that would wrap must be rejected before any erase/program. */
+    uint8_t data[4] = {1, 2, 3, 4};
+    uint64_t mism = 0;
+    PW_ASSERT_EQ(pw_flash_program(b.ops, b.ctx, 0x1000000u, data, sizeof(data), &mism),
+                 PW_E_OUT_OF_RANGE);                                  /* offset == 16 MB */
+    PW_ASSERT_EQ(pw_flash_program(b.ops, b.ctx, 0xFFFFFFu, data, 4, &mism),
+                 PW_E_OUT_OF_RANGE);                                  /* offset+len > 16 MB */
+    PW_ASSERT_EQ(pw_flash_program(b.ops, b.ctx, 0, NULL, 4, &mism), PW_E_INVAL);
+    /* pw_flash_read_id must NULL-check the output. */
+    PW_ASSERT_EQ(pw_flash_read_id(b.ops, b.ctx, NULL), PW_E_INVAL);
+
+    /* SFP read must reject a range past the 256-B page (matches write). */
+    uint8_t sbuf[100];
+    PW_ASSERT_EQ(pw_sfp_read(&b, 0, 0x50, 200, sbuf, sizeof(sbuf)), PW_E_INVAL);
+    PW_ASSERT_EQ(pw_sfp_read(&b, 2, 0x50, 0, sbuf, 1), PW_E_INVAL);   /* bad port */
+
+    pw_card_backend_close(&b);
+
+    /* TAP open must reject an over-length interface name (silent truncation
+     * would create a differently-named device). No CAP needed: the check is
+     * before /dev/net/tun is opened. */
+    int tfd = -1;
+    char tname[PW_TAP_IFNAME_MAX] = {0};
+    PW_ASSERT_EQ(pw_tap_open("this-name-is-way-too-long-for-ifnamsiz", &tfd, tname),
+                 PW_E_INVAL);
+
+    /* pw_ipc_listen must refuse to unlink/replace a NON-socket at its path. */
+    char rf[] = "/tmp/pw-ipc-notasock-XXXXXX";
+    int rfd = mkstemp(rf);
+    PW_ASSERT(rfd >= 0);
+    if (rfd >= 0) {
+        close(rfd);
+        int sfd = -1;
+        PW_ASSERT_EQ(pw_ipc_listen(rf, 0600, &sfd), PW_E_IO);   /* regular file: not clobbered */
+        struct stat stt;
+        PW_ASSERT_EQ(stat(rf, &stt), 0);   /* still there */
+        PW_ASSERT(S_ISREG(stt.st_mode));
+        unlink(rf);
+    }
 }
 
 /* Part-review #2: config/YAML boundary hardening. Each snippet perturbs a
@@ -2156,6 +2206,7 @@ int main(void) {
         { "tap_name", test_tap_name },
         { "parse_u64_hardening", test_parse_u64_hardening },
         { "parse_mac_hardening", test_parse_mac_hardening },
+        { "part3_driver_hardening", test_part3_driver_hardening },
         { "config_part2_hardening", test_config_part2_hardening },
         { "background_xcard_rx_slot", test_background_xcard_rx_slot },
         { "validate_lif_name_rules", test_validate_lif_name_rules },

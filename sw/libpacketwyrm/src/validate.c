@@ -72,6 +72,17 @@ pw_status pw_config_validate(const struct pw_config *cfg, struct pw_diag *d) {
                  "logical_if name too long for a TAP device (max 15 chars)");
             return PW_E_INVAL;
         }
+        /* `netns` is parsed but the TAP layer (pw_tap_*) is not namespace-aware
+         * yet -- it operates in the daemon's own netns. Reject a non-empty value
+         * rather than silently ignore it (which would leave the TAP in the wrong
+         * namespace). Lab tooling that needs a netns moves the TAP externally. */
+        if (cfg->logical_if[i].netns[0] != '\0') {
+            char p[80]; snprintf(p, sizeof(p), "logical_interfaces[%zu].netns", i);
+            diag(d, PW_E_INVAL, p,
+                 "logical_if netns is not yet supported (TAP stays in the daemon's "
+                 "namespace); move the TAP externally or omit netns");
+            return PW_E_INVAL;
+        }
         for (size_t j = i + 1; j < cfg->n_logical_if; j++) {
             if (cfg->logical_if[i].id == cfg->logical_if[j].id) {
                 char p[80]; snprintf(p, sizeof(p), "logical_interfaces[%zu].id", j);

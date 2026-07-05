@@ -16,10 +16,26 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 
+/* Copy an interface name into an ifreq, REJECTING one that doesn't fit rather
+ * than silently truncating (strncpy would target a DIFFERENT interface -- e.g.
+ * set the MAC of the wrong netdev). `name` must be non-empty. */
+static pw_status set_ifr_name(struct ifreq *ifr, const char *name) {
+    size_t n = strnlen(name, IFNAMSIZ);
+    if (n == 0 || n >= IFNAMSIZ) return PW_E_INVAL;
+    memcpy(ifr->ifr_name, name, n);
+    ifr->ifr_name[n] = '\0';
+    return PW_OK;
+}
+
 pw_status pw_tap_open(const char *requested_name,
                       int *out_fd,
                       char out_name[PW_TAP_IFNAME_MAX]) {
     if (!out_fd || !out_name) return PW_E_INVAL;
+    /* Reject an over-length requested name up front (before opening the fd) so a
+     * silent truncation can't create a differently-named interface. */
+    if (requested_name && *requested_name &&
+        strnlen(requested_name, IFNAMSIZ) >= IFNAMSIZ)
+        return PW_E_INVAL;
 
     int fd = open("/dev/net/tun", O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) return PW_E_BACKEND;
@@ -77,7 +93,8 @@ pw_status pw_tap_set_up(const char *name, bool up) {
 
     struct ifreq ifr;
     memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, name, IFNAMSIZ - 1);
+    pw_status nr = set_ifr_name(&ifr, name);
+    if (nr != PW_OK) { close(s); return nr; }
     if (ioctl(s, SIOCGIFFLAGS, &ifr) < 0) { close(s); return PW_E_BACKEND; }
 
     if (up) ifr.ifr_flags |= IFF_UP;
@@ -95,7 +112,8 @@ pw_status pw_tap_set_mac(const char *name, const uint8_t mac[6]) {
 
     struct ifreq ifr;
     memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, name, IFNAMSIZ - 1);
+    pw_status nr = set_ifr_name(&ifr, name);
+    if (nr != PW_OK) { close(s); return nr; }
     ifr.ifr_hwaddr.sa_family = 1;  /* ARPHRD_ETHER */
     memcpy(ifr.ifr_hwaddr.sa_data, mac, 6);
     pw_status r = (ioctl(s, SIOCSIFHWADDR, &ifr) < 0) ? PW_E_BACKEND : PW_OK;
@@ -110,7 +128,8 @@ pw_status pw_tap_set_mtu(const char *name, uint16_t mtu) {
 
     struct ifreq ifr;
     memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, name, IFNAMSIZ - 1);
+    pw_status nr = set_ifr_name(&ifr, name);
+    if (nr != PW_OK) { close(s); return nr; }
     ifr.ifr_mtu = mtu;
     pw_status r = (ioctl(s, SIOCSIFMTU, &ifr) < 0) ? PW_E_BACKEND : PW_OK;
     close(s);

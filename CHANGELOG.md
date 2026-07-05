@@ -9,6 +9,46 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **libpacketwyrm device-driver / IO hardening (part-review #3).** Scope:
+    pci/tap/sfp/spi_flash/gpio_sync/ipc. Eleven fixes:
+    - **P1: SPI flash — 24-bit address range validated.** `pw_flash_program`
+      rejects `offset ≥ 16 MB`, `len > 16 MB`, or `offset+len > 16 MB`
+      (`PW_E_OUT_OF_RANGE`, computed in 64-bit) — `addr3()` silently dropped
+      high bits, so an out-of-range write could erase/program the WRONG region.
+    - **P1: SPI flash — page-program no longer crosses a physical page.** For a
+      non-256-aligned offset the first chunk is now clamped to the bytes left in
+      that page; a page-program overrun wraps to the page start on most SPI NOR
+      and would corrupt the page head.
+    - **P1: TAP interface names are validated, not truncated.** `pw_tap_open` /
+      `set_up` / `set_mac` / `set_mtu` reject a name `≥ IFNAMSIZ`
+      (`PW_E_INVAL`) instead of `strncpy`-truncating — a truncated name targets
+      a *different* netdev.
+    - **P1: SFP I2C CSR errors propagate.** A latched-error flag in the bit-bang
+      bus turns a mid-transaction BAR/VFIO `write32`/`read32` failure into
+      `PW_E_IO` from `pw_sfp_read`/`pw_sfp_write`, instead of reading it as
+      ACK=0 / data=0 and reporting a successful transfer of zeros.
+    - **P1: `pw_ipc_listen` validates the path before touching the filesystem
+      and only unlinks a socket.** It no longer `unlink()`s before the length
+      check, and refuses (`PW_E_IO`) to replace a non-socket at the path — the
+      root-run daemon won't clobber a regular file/dir sharing the name.
+    - **P2: `pw_sfp_read` bounds its range to the 256-B page** (matched
+      `pw_sfp_write`).
+    - **P2: `pw_flash_read_id` NULL-checks its output.**
+    - **P2: `pw_gpio_sync_write_correction` bounds the slot** to the flow-table
+      capacity (a wild `slot*8` could write past the correction table into the
+      flow-id-map window).
+    - **P2: IPC writes use `send(MSG_NOSIGNAL)`** so a peer close surfaces as
+      `PW_E_IO` rather than SIGPIPE-killing a library user that hasn't ignored
+      it.
+    - **P3: `logical_if.netns` is rejected at validate** (parsed but the TAP
+      layer isn't namespace-aware — was silently ignored, leaving the TAP in
+      the daemon's namespace).
+    - **The SPI-flash and SFP-I2C serialization contract is documented** in
+      `spi_flash.h` / `sfp.h` (not internally synchronized; the caller — the
+      daemon's single-threaded control loop — serializes per-card access; the
+      card worker never touches those CSRs). A cross-process race is an operator
+      hazard no in-process lock addresses.
+    - No P0. sw test 473/473, e2e+proxyd 35, check-schema 20, sim_all green.
   - **libpacketwyrm config/flow-compiler hardening (part-review #2).** Eight
     fixes in the config/validate/compile layer:
     - **P1: a cross-card background (load) flow no longer aliases a real flow's

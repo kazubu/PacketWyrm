@@ -13,6 +13,12 @@ struct i2c_bus {
     const struct pw_card_backend *be;
     unsigned scl, sda;      /* drive-low bit indices for this port */
     uint8_t  drive;         /* shadow of the 4-bit drive-low register */
+    int      err;           /* latched: a CSR read/write failed mid-transaction.
+                             * The bit-bang helpers can't each return status, so
+                             * the first failure is latched here and the public
+                             * pw_sfp_read/write turn it into PW_E_IO -- otherwise
+                             * a BAR/VFIO fault reads as ACK=0/data=0 and looks
+                             * like a successful transfer of zeros. */
 };
 
 /* ~5 us half-bit; a BAR access is already ~1 us, so the bus runs well under
@@ -24,8 +30,10 @@ static void i2c_delay(void) {
 
 /* Push the shadow drive register to the CSR. */
 static void i2c_apply(struct i2c_bus *b) {
-    if (b->be && b->be->ops && b->be->ops->write32)
-        b->be->ops->write32(b->be->ctx, PWFPGA_REG_SFP_I2C, b->drive);
+    if (b->be && b->be->ops && b->be->ops->write32) {
+        if (b->be->ops->write32(b->be->ctx, PWFPGA_REG_SFP_I2C, b->drive) != PW_OK)
+            b->err = 1;
+    }
 }
 
 /* level=1 releases the line (open-drain -> pull-up = high); level=0 drives low. */
@@ -39,8 +47,10 @@ static void set_line(struct i2c_bus *b, unsigned bit, int level) {
 /* Read a line's pad state (releases nothing; caller releases first). */
 static int get_line(struct i2c_bus *b, unsigned bit) {
     uint32_t v = 0;
-    if (b->be && b->be->ops && b->be->ops->read32)
-        b->be->ops->read32(b->be->ctx, PWFPGA_REG_SFP_I2C, &v);
+    if (b->be && b->be->ops && b->be->ops->read32) {
+        if (b->be->ops->read32(b->be->ctx, PWFPGA_REG_SFP_I2C, &v) != PW_OK)
+            b->err = 1;
+    }
     return (int)((v >> (16 + bit)) & 1u);
 }
 
@@ -101,9 +111,10 @@ pw_status pw_sfp_read(const struct pw_card_backend *be, int port,
                       uint8_t *buf, size_t len) {
     if (!be || !be->ops || !be->ops->write32 || !be->ops->read32) return PW_E_NOT_IMPLEMENTED;
     if (port < 0 || port > 1 || !buf) return PW_E_INVAL;
+    if ((size_t)offset + len > 256) return PW_E_INVAL;   /* single 256-B page (matches write) */
 
     struct i2c_bus b = { .be = be, .scl = (unsigned)(port * 2),
-                         .sda = (unsigned)(port * 2 + 1), .drive = 0 };
+                         .sda = (unsigned)(port * 2 + 1), .drive = 0, .err = 0 };
     /* idle: both lines released */
     set_line(&b, b.scl, 1);
     set_line(&b, b.sda, 1);
@@ -117,6 +128,7 @@ pw_status pw_sfp_read(const struct pw_card_backend *be, int port,
     for (size_t i = 0; i < len; i++)
         buf[i] = i2c_read_byte(&b, i + 1 < len);   /* ACK all but the last */
     i2c_stop(&b);
+    if (b.err) return PW_E_IO;   /* a CSR access failed mid-transaction: data is invalid */
     return PW_OK;
 }
 
@@ -128,7 +140,7 @@ pw_status pw_sfp_write(const struct pw_card_backend *be, int port,
     if ((size_t)offset + len > 256) return PW_E_INVAL;   /* single 256-B page */
 
     struct i2c_bus b = { .be = be, .scl = (unsigned)(port * 2),
-                         .sda = (unsigned)(port * 2 + 1), .drive = 0 };
+                         .sda = (unsigned)(port * 2 + 1), .drive = 0, .err = 0 };
     set_line(&b, b.scl, 1);
     set_line(&b, b.sda, 1);
 
@@ -152,6 +164,7 @@ pw_status pw_sfp_write(const struct pw_card_backend *be, int port,
             if (ack == 0) { done = 1; break; }
         }
         if (!done) return PW_E_IO;
+        if (b.err) return PW_E_IO;   /* CSR access failed mid-transaction */
     }
     return PW_OK;
 }
