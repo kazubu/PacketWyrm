@@ -9,6 +9,60 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **RTL data-plane SAF timing-contract fix (part-review #6).** Scope: RTL
+    data-plane / DMA. **P1 (bitstream rebuild required):** `pw_frame_saf`'s
+    store-and-forward buffer takes its keep/drop decision one cycle after the
+    frame's `tlast` and holds only a SINGLE speculative frame. But
+    `pw_data_plane_axis` fed it the RAW ingress stream while the classifier
+    decision (`rx_kv_d`) lands `tlast + 8` cycles later (parser is 4-stage —
+    `eof_q`→`validA`→`validA2`→`key_valid` — plus the +4 hash-classifier
+    realignment). So back-to-back frames (line-rate min IFG ≪ 8 cycles) stream
+    into the SAF before the prior frame's decision, and a prior DROP's rollback
+    (`wr_spec ← wr_commit`) discards the FOLLOWING FORWARD/PUNT frame's already
+    buffered beats → forward/punt frame corruption, loss, or a drain stall. It
+    was latent because the loss=0 line-rate test is pure TEST_RX (SAF output
+    unused) and cRPD forward/punt is sparse (gaps ≫ 8 cycles); a line-rate
+    forwarding workload (or forward/punt interleaved with drop/test on one
+    ingress) would hit it. **Fix:** delay the stream into the SAF by 7 cycles so
+    its `tlast` lands at `+7` and the decision at `+8 = tlast+1`, restoring the
+    module's contract (`pw_frame_saf` itself is unchanged and correct). A
+    constant delay preserves inter-frame gaps, so the MAC's "≥1 idle cycle
+    between frames" invariant still holds; `frame_ts` is snapshotted from the
+    delayed stream so punt metadata stays frame-aligned. The extra registers are
+    FFs (not LUTs), negligible for fit. Reproduced + verified in sim: a new
+    `tb_data_plane_axis` scenario sends a DROP frame immediately followed by a
+    FORWARD frame and asserts the FORWARD frame emerges intact (fails at delay 4,
+    passes at 7). sim_all green, Verilator lint (phase1 + phase3 core) OK.
+    **Re-check (1 follow-on P2):** the new delay pipeline + `frame_ts` state now
+    reset with `dp_rst_n` (the datapath soft-reset), not the global `rst_n`, so a
+    `dp_soft_rst` mid-forward/punt flushes the delay line together with the SAF
+    it feeds (they were in different reset domains, so a soft reset would have
+    leaked pre-reset delayed beats into the emptied SAF). `pw_frame_saf` also
+    now refuses to commit a **zero-beat** "keep" (`wr_spec == wr_commit`) — the
+    only way that arises is a reset-boundary race, and committing it would push
+    a descriptor the drain can never advance (a stuck-descriptor wedge on the
+    very reset meant to recover from a wedge). SAF unit test covers the
+    zero-beat guard (bare keep drains nothing + the next frame still drains).
+    **Re-check #2 (1 follow-on P2):** if `dp_soft_rst` releases MID-frame the
+    delay line would feed the SAF the frame's TAIL beats (its head was dropped
+    during reset), and that frame's still-in-flight decision could then commit a
+    PARTIAL forward/punt frame (the 0-beat guard doesn't catch it — beats are
+    present). Added a per-port `rxd_armed` gate: after `dp_rst_n` the delay line
+    holds intake off until the raw stream goes idle once (a clean frame
+    boundary), then stays armed. With the 7-cycle delay + the 0-beat guard, the
+    straddling frame's decision reaches the empty SAF before the next frame's
+    beats propagate through the delay, so it drops cleanly and the next whole
+    frame forwards intact. New `tb_data_plane_axis` scenario asserts a whole
+    frame forwards after a `dp_soft_rst`. sim_all (30 PASS blocks) green, lint OK.
+    **HW-VALIDATED (build_id 0x6a4a18ad):** gated Vivado build met all timing
+    (dp_clk WNS +0.204 ns, axi_aclk +0.451 ns, "all user specified timing
+    constraints are met"), LUT 94.94% (154493/162720, +0.13% for the delay
+    line — fits), registers 36.08%. Flashed to 07:00.0 + ICAP-rebooted; on the
+    new bitstream a loopback TEST_RX flow ran loss=0 (tx/rx 486k) and a ping
+    ACROSS the DUT (exercising the SAF punt path both ways: inject → DAC → punt)
+    was 200/200 0% loss, drops 0, FCS 0, LED clean. (Part-review #7 —
+    top/board/CSR/PCIe-bridge/control modules — found no issues, so this is the
+    only RTL change this round.)
   - **CLI + gateway + GUI hardening (part-review #5).** Scope: `pktwyrm`,
     `packetwyrm-proxyd`, GUI `index.html`. Six fixes:
     - **P1: `pktwyrm --host` HTTPS request can't over-read the stack.**

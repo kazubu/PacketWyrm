@@ -122,7 +122,14 @@ module pw_frame_saf #(
             // whole speculative frame. (Per the timing contract no new beat
             // arrives this cycle, so wr_spec is stable here.)
             if (dec_valid_i) begin
-                if (dec_keep_i && !aborted && !desc_full) begin
+                // Only commit a frame that actually has beats (wr_spec != wr_commit).
+                // A zero-beat "keep" can only arise from a reset-boundary race (a
+                // pre-soft-reset decision landing after dp_rst_n emptied the buffer
+                // + flushed the input delay line); committing it would push a
+                // descriptor the drain can never advance (rd_ptr already ==
+                // wr_commit) -> a stuck descriptor / eventual desc_full wedge on
+                // the very reset meant to RECOVER from a wedge. Treat it as a drop.
+                if (dec_keep_i && !aborted && !desc_full && (wr_spec != wr_commit)) begin
                     wr_commit                   <= wr_spec;     // publish frame
                     desc_mem[desc_wr[DAW-1:0]]  <= dec_route_i;
                     desc_meta[desc_wr[DAW-1:0]] <= dec_meta_i;
