@@ -138,6 +138,27 @@ module tb_frame_saf;
         chk("recovered beats", drained_data.size(), 2);
         chk("recovered beat0", drained_data[0], {32'hEE, 32'd0});
         chk("recovered route", drained_route[0], 3);
+        drained_data.delete(); drained_route.delete(); drained_meta.delete(); drained_last.delete();
+
+        // --- scenario 6: zero-beat "keep" must NOT push a stuck descriptor ---
+        // A dec_keep pulse with no beats written (wr_spec==wr_commit) can only
+        // come from a reset-boundary race; it must be treated as a drop (no
+        // descriptor), or the drain (rd_ptr already == wr_commit) could never
+        // advance it and would wedge. Pulse a bare keep, then send a normal keep
+        // frame and confirm it drains cleanly (no stuck 0-beat descriptor ahead).
+        scen = "zero_beat_keep";
+        @(negedge clk);
+        dec_valid = 1'b1; dec_keep = 1'b1; dec_route = 5'd4; dec_meta = '0;   // no beats streamed
+        @(posedge clk); @(negedge clk); dec_valid = 1'b0;
+        repeat (4) @(posedge clk);
+        chk("zero-beat keep drains nothing", drained_data.size(), 0);
+        send_frame(2, 32'hAB, 1'b1, 5'd2);
+        repeat (8) @(posedge clk);
+        chk("next frame still drains (not wedged)", drained_data.size(), 2);
+        if (drained_data.size() == 2) begin
+            chk("next beat0", drained_data[0], {32'hAB, 32'd0});
+            chk("next route", drained_route[0], 2);
+        end
 
         if (errors == 0) $display("ALL FRAME_SAF SCENARIOS PASS");
         else begin $display("FAILED with %0d error(s)", errors); $fatal; end

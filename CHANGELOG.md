@@ -33,6 +33,16 @@ For where work is going next, see `NEXT-STEPS.md`.
     `tb_data_plane_axis` scenario sends a DROP frame immediately followed by a
     FORWARD frame and asserts the FORWARD frame emerges intact (fails at delay 4,
     passes at 7). sim_all green, Verilator lint (phase1 + phase3 core) OK.
+    **Re-check (1 follow-on P2):** the new delay pipeline + `frame_ts` state now
+    reset with `dp_rst_n` (the datapath soft-reset), not the global `rst_n`, so a
+    `dp_soft_rst` mid-forward/punt flushes the delay line together with the SAF
+    it feeds (they were in different reset domains, so a soft reset would have
+    leaked pre-reset delayed beats into the emptied SAF). `pw_frame_saf` also
+    now refuses to commit a **zero-beat** "keep" (`wr_spec == wr_commit`) — the
+    only way that arises is a reset-boundary race, and committing it would push
+    a descriptor the drain can never advance (a stuck-descriptor wedge on the
+    very reset meant to recover from a wedge). SAF unit test covers the
+    zero-beat guard (bare keep drains nothing + the next frame still drains).
     **Pending: gated Vivado build + flash + HW re-validation** (LUT ~94.8%) —
     batched with any part-review #7 RTL change.
   - **CLI + gateway + GUI hardening (part-review #5).** Scope: `pktwyrm`,

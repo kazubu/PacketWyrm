@@ -501,14 +501,21 @@ module pw_data_plane_axis #(
             // inter-frame gap, so the ">=1 idle cycle between frames" invariant
             // the MAC guarantees (min IFG ~2.5 beats) still holds. The extra
             // registers are FFs, not LUTs -- negligible for fit.
+            // Reset with dp_rst_n (NOT the global rst_n) so this pre-SAF stream
+            // state lives in the SAME soft-reset domain as pw_frame_saf below: a
+            // datapath soft reset (dp_soft_rst_i, the wedge-recovery) must flush
+            // the delay line AND the SAF together, or pre-reset delayed beats
+            // would leak into the freshly-emptied SAF. (The SAF's 0-beat-commit
+            // guard covers the residual case of a pre-reset decision landing on
+            // the emptied buffer.)
             localparam int SAF_DLY = 7;
             logic [63:0] rxd_td [1:SAF_DLY];
             logic [7:0]  rxd_tk [1:SAF_DLY];
             logic        rxd_tv [1:SAF_DLY];
             logic        rxd_tl [1:SAF_DLY];
             logic [63:0] rxd_ts [1:SAF_DLY];   // wire-ts pipelined alongside (for frame_ts)
-            always_ff @(posedge clk or negedge rst_n) begin
-                if (!rst_n) begin
+            always_ff @(posedge clk or negedge dp_rst_n) begin
+                if (!dp_rst_n) begin
                     for (int s = 1; s <= SAF_DLY; s++) begin
                         rxd_td[s] <= '0; rxd_tk[s] <= '0; rxd_tv[s] <= 1'b0;
                         rxd_tl[s] <= 1'b0; rxd_ts[s] <= '0;
@@ -531,8 +538,8 @@ module pw_data_plane_axis #(
             // and still holds the right frame's value when its decision lands.
             logic        in_frame;
             logic [63:0] sof_ts, frame_ts;
-            always_ff @(posedge clk or negedge rst_n) begin
-                if (!rst_n) begin in_frame <= 1'b0; sof_ts <= '0; frame_ts <= '0; end
+            always_ff @(posedge clk or negedge dp_rst_n) begin
+                if (!dp_rst_n) begin in_frame <= 1'b0; sof_ts <= '0; frame_ts <= '0; end
                 else if (rxd_tv[SAF_DLY]) begin
                     if (!in_frame) sof_ts <= rxd_ts[SAF_DLY];
                     in_frame <= !rxd_tl[SAF_DLY];
