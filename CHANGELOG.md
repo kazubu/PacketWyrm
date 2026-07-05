@@ -54,8 +54,15 @@ For where work is going next, see `NEXT-STEPS.md`.
     beats propagate through the delay, so it drops cleanly and the next whole
     frame forwards intact. New `tb_data_plane_axis` scenario asserts a whole
     frame forwards after a `dp_soft_rst`. sim_all (30 PASS blocks) green, lint OK.
-    **Pending: gated Vivado build + flash + HW re-validation** (LUT ~94.8%) —
-    batched with any part-review #7 RTL change.
+    **HW-VALIDATED (build_id 0x6a4a18ad):** gated Vivado build met all timing
+    (dp_clk WNS +0.204 ns, axi_aclk +0.451 ns, "all user specified timing
+    constraints are met"), LUT 94.94% (154493/162720, +0.13% for the delay
+    line — fits), registers 36.08%. Flashed to 07:00.0 + ICAP-rebooted; on the
+    new bitstream a loopback TEST_RX flow ran loss=0 (tx/rx 486k) and a ping
+    ACROSS the DUT (exercising the SAF punt path both ways: inject → DAC → punt)
+    was 200/200 0% loss, drops 0, FCS 0, LED clean. (Part-review #7 —
+    top/board/CSR/PCIe-bridge/control modules — found no issues, so this is the
+    only RTL change this round.)
   - **CLI + gateway + GUI hardening (part-review #5).** Scope: `pktwyrm`,
     `packetwyrm-proxyd`, GUI `index.html`. Six fixes:
     - **P1: `pktwyrm --host` HTTPS request can't over-read the stack.**
