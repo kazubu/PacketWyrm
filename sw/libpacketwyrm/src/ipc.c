@@ -15,7 +15,10 @@ static int write_all(int fd, const void *buf, size_t len) {
     const uint8_t *p = buf;
     size_t left = len;
     while (left > 0) {
-        ssize_t n = write(fd, p, left);
+        /* MSG_NOSIGNAL: the fd is always a socket here, and a peer that closed
+         * mid-write must surface as EPIPE/-1 (-> PW_E_IO), never SIGPIPE-kill the
+         * caller -- libpacketwyrm can't assume every user ignores SIGPIPE. */
+        ssize_t n = send(fd, p, left, MSG_NOSIGNAL);
         if (n < 0) {
             if (errno == EINTR) continue;
             return -1;
@@ -115,14 +118,21 @@ static void ensure_parent_dir(const char *path) {
 
 pw_status pw_ipc_listen(const char *path, mode_t mode, int *out_fd) {
     if (!path || !out_fd) return PW_E_INVAL;
-    /* Make sure the socket's directory exists before we bind into it. */
-    ensure_parent_dir(path);
-    /* Best-effort: remove stale leftover */
-    unlink(path);
-
+    /* Validate the path length FIRST -- before touching the filesystem -- so an
+     * unbindable (too-long) path can't cause an unlink of a same-named file. */
     struct sockaddr_un sa = {0};
     pw_status r = fill_sockaddr_un(path, &sa);
     if (r != PW_OK) return r;
+    /* Make sure the socket's directory exists before we bind into it. */
+    ensure_parent_dir(path);
+    /* Remove ONLY a stale socket. A leftover from a prior run is a socket;
+     * anything else at this path (a regular file, a dir) is a misconfiguration
+     * we must NOT silently destroy -- the daemon often runs as root. */
+    struct stat st;
+    if (lstat(path, &st) == 0) {
+        if (!S_ISSOCK(st.st_mode)) return PW_E_IO;   /* refuse to clobber a non-socket */
+        unlink(path);
+    }
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return PW_E_IO;
     if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {

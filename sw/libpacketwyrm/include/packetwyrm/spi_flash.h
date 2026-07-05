@@ -3,7 +3,16 @@
  * Drives the board config flash (MT25QU256) through the FPGA's STARTUPE3
  * primitive while the bitstream keeps running -- no JTAG, no FPGA
  * reconfiguration, PCIe stays up. Shared by the standalone pw_flash tool
- * and the packetwyrmd `flash.write` RPC. */
+ * and the packetwyrmd `flash.write` RPC.
+ *
+ * CONCURRENCY: these calls are NOT internally synchronized. Each is a multi-
+ * transaction sequence (WREN / erase / program / read-back) on one shared SPI
+ * CSR engine; two overlapping calls on the same card would interleave commands
+ * and corrupt the flash. The caller must serialize SPI-flash access per card.
+ * The daemon does: all flash.* RPCs run on its single-threaded control loop and
+ * the card worker thread never touches the SPI engine. (Cross-PROCESS use -- the
+ * pw_flash tool while the daemon runs -- is an operator hazard no in-process
+ * lock can prevent; the daemon is meant to be the sole controller.) */
 #ifndef PACKETWYRM_SPI_FLASH_H
 #define PACKETWYRM_SPI_FLASH_H
 

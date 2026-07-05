@@ -11,6 +11,14 @@
  *   0xA2 (7-bit addr 0x51): SFF-8472 DDM page (live diagnostics), present only
  *                           when the module reports DDM support. A passive DAC
  *                           answers 0xA0 (identifier) but has no 0xA2 optics.
+ *
+ * CONCURRENCY: not internally synchronized. Both cages of a card share the one
+ * REG_SFP_I2C register (drive-low bits [3:0]); each call drives a per-call
+ * shadow of all four bits, so two overlapping pw_sfp_* calls on the same card
+ * (either cage) would clobber each other's START/STOP/drive bits and corrupt
+ * the bus. The caller must serialize SFP I2C access per card -- the daemon does
+ * (sfp.* RPCs run on its single-threaded control loop; the card worker thread
+ * never touches REG_SFP_I2C).
  */
 #ifndef PACKETWYRM_SFP_H
 #define PACKETWYRM_SFP_H

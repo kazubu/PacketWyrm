@@ -8,6 +8,7 @@
 
 #define SECTOR   0x10000u   /* 64 KB sector erase (0xD8) */
 #define PAGE     256u
+#define FLASH_SZ 0x1000000u /* 16 MB: the 3-byte (24-bit) address space */
 
 /* One SPI transaction: shift `n` TX bytes, capture `n` RX bytes. */
 static pw_status spi_txn(const struct pw_card_backend_ops *o, void *ctx,
@@ -97,7 +98,7 @@ static pw_status flash_read(const struct pw_card_backend_ops *o, void *ctx,
 }
 
 pw_status pw_flash_read_id(const struct pw_card_backend_ops *o, void *ctx, uint8_t id[3]) {
-    if (!o || !o->write32 || !o->read32) return PW_E_INVAL;
+    if (!o || !o->write32 || !o->read32 || !id) return PW_E_INVAL;
     pw_status s = warmup(o, ctx);
     if (s != PW_OK) return s;
     uint8_t t[4] = {0x9F, 0, 0, 0}, r[4];
@@ -111,16 +112,31 @@ pw_status pw_flash_program(const struct pw_card_backend_ops *o, void *ctx,
                            uint32_t offset, const uint8_t *data, size_t len,
                            uint64_t *mismatch_out) {
     if (!o || !o->write32 || !o->read32 || !data || len == 0) return PW_E_INVAL;
+    /* The flash uses 3-byte (24-bit) addressing: everything must stay within the
+     * 16 MB space or addr3() would silently drop high bits and erase/program the
+     * WRONG region. Validate in 64-bit so offset+len can't wrap. */
+    if (offset >= FLASH_SZ || len > FLASH_SZ ||
+        (uint64_t)offset + (uint64_t)len > FLASH_SZ)
+        return PW_E_OUT_OF_RANGE;
+    uint32_t end = offset + (uint32_t)len;   /* <= FLASH_SZ, no wrap (validated) */
     pw_status ws = warmup(o, ctx);
     if (ws != PW_OK) return ws;
-    for (uint32_t a = offset & ~(SECTOR - 1); a < offset + (uint32_t)len; a += SECTOR) {
+    for (uint32_t a = offset & ~(SECTOR - 1); a < end; a += SECTOR) {
         pw_status s = sector_erase(o, ctx, a);
         if (s != PW_OK) return s;
     }
-    for (size_t p = 0; p < len; p += PAGE) {
-        int n = (len - p < PAGE) ? (int)(len - p) : (int)PAGE;
-        pw_status s = page_program(o, ctx, offset + (uint32_t)p, &data[p], n);
+    /* Program in chunks that never cross a physical page boundary: a page-program
+     * command that overruns the 256-B page wraps to the page START on most SPI
+     * NOR, corrupting the beginning of the page. When offset is not page-aligned
+     * the first chunk is only the bytes left in that page. */
+    for (size_t p = 0; p < len; ) {
+        uint32_t a = offset + (uint32_t)p;
+        size_t page_left = PAGE - (a & (PAGE - 1));   /* bytes to end of this page */
+        size_t n = len - p;
+        if (n > page_left) n = page_left;
+        pw_status s = page_program(o, ctx, a, &data[p], (int)n);
         if (s != PW_OK) return s;
+        p += n;
     }
     uint64_t mism = 0;
     for (size_t p = 0; p < len; p += 256) {
