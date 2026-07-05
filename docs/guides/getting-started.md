@@ -135,6 +135,15 @@ sudo python3 tools/pktwyrm-tinet/pktwyrm-tinet down -o /tmp/lab-frr/
 `/tmp/lab-frr/.pktwyrm-lab.json`. See `tools/pktwyrm-tinet/README.md`
 for the lab-spec format.
 
+> **Security note:** these commands run as root and execute a `tinet`-generated
+> shell script named by the state file under the out-dir, so the out-dir must be
+> **owned by root and private** — otherwise a local user could plant a hostile
+> state / tinet YAML and get root command execution. `up` creates a fresh
+> out-dir as `0700` root-owned; if you pre-create it, use
+> `sudo install -d -m 0700 /tmp/lab-frr`. `down`/`conf`/`up` refuse an out-dir
+> owned by another user or that is group/world-writable, and refuse a state
+> whose `tinet_yaml` points outside the out-dir.
+
 ## 6. Install (production)
 
 ```sh

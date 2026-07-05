@@ -24,8 +24,10 @@ import pathlib
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from typing import Sequence
@@ -69,6 +71,57 @@ def state_path(out_dir: pathlib.Path) -> pathlib.Path:
     return out_dir / STATE_FILE
 
 
+def require_safe_out_dir(out_dir: pathlib.Path) -> pathlib.Path:
+    """Root lifecycle commands (up/down/conf) trust files under out_dir: the
+    state file names a tinet YAML whose GENERATED SHELL SCRIPT is piped to `sh`
+    as root. So out_dir must not be tamperable by a non-root user, or a local
+    attacker could plant a state file / tinet YAML and get root command
+    execution (the documented workflow uses /tmp/lab-frr). Require: exists, is a
+    real directory (not a symlink), root-owned, and NOT group/world-writable.
+    Returns the resolved path."""
+    real = out_dir.resolve()
+    try:
+        st = os.lstat(real)
+    except OSError as e:
+        raise LabRuntimeError(f"out-dir {out_dir}: {e}")
+    if not stat.S_ISDIR(st.st_mode):
+        raise LabRuntimeError(f"out-dir {out_dir} is not a directory")
+    # Must be owned by whoever runs the lifecycle command (root in production,
+    # via _require_root). A dir owned by a DIFFERENT (lower-priv) user is the
+    # attack: that user could swap in a hostile state / tinet YAML that root
+    # then executes. Keying on geteuid() (not a hardcoded 0) keeps this the
+    # right property under root AND lets the non-root test suite exercise it.
+    euid = os.geteuid()
+    if st.st_uid != euid:
+        raise LabRuntimeError(
+            f"out-dir {out_dir} must be owned by the invoking user (uid {euid}); "
+            f"it is owned by uid {st.st_uid} -- run: install -d -m 0700 {out_dir}")
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise LabRuntimeError(
+            f"out-dir {out_dir} is group/world-writable (mode "
+            f"{oct(st.st_mode & 0o777)}); a local user could inject a root-run "
+            f"tinet script -- `sudo chmod 0700 {out_dir}`")
+    return real
+
+
+def ensure_safe_out_dir(out_dir: pathlib.Path) -> pathlib.Path:
+    """Create out_dir root-owned 0700 if absent, then validate it is safe."""
+    real = out_dir.resolve()
+    if not real.exists():
+        real.mkdir(parents=True, mode=0o700)
+    return require_safe_out_dir(real)
+
+
+def _within(out_dir: pathlib.Path, candidate: str) -> bool:
+    """True iff `candidate` resolves to a path inside out_dir (so a state file
+    can't redirect a root-run tinet invocation at an out-of-tree YAML)."""
+    try:
+        pathlib.Path(candidate).resolve().relative_to(out_dir.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def read_state(out_dir: pathlib.Path) -> LabState | None:
     p = state_path(out_dir)
     if not p.is_file():
@@ -80,7 +133,22 @@ def read_state(out_dir: pathlib.Path) -> LabState | None:
 
 
 def write_state(state: LabState, out_dir: pathlib.Path) -> None:
-    state_path(out_dir).write_text(state.to_json())
+    # Atomic write with a private (0600) mode via a temp file in the same dir +
+    # rename, so a concurrent reader never sees a half-written file and the
+    # state (which drives root-run commands) isn't left world-readable/writable.
+    d = out_dir.resolve()
+    fd, tmp = tempfile.mkstemp(prefix=".pktwyrm-lab.", dir=str(d))
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(state.to_json())
+        os.replace(tmp, str(state_path(d)))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def delete_state(out_dir: pathlib.Path) -> None:
@@ -239,6 +307,9 @@ def _stop_daemon(pid: int, *, timeout_s: float = 5.0) -> None:
 def cmd_up(lab_path: pathlib.Path, out_dir: pathlib.Path, *, daemon_bin: str | None = None) -> LabState:
     """Generate artifacts, start packetwyrmd, then tinet up + conf."""
     _require_root()
+    # Create (0700, root-owned) or validate out_dir BEFORE trusting/reading any
+    # state or writing artifacts a root-run tinet will later execute.
+    out_dir = ensure_safe_out_dir(out_dir)
 
     existing = read_state(out_dir) if out_dir.exists() else None
     if existing is not None and daemon_alive_and_ours(
@@ -289,6 +360,7 @@ def cmd_up(lab_path: pathlib.Path, out_dir: pathlib.Path, *, daemon_bin: str | N
 def cmd_down(out_dir: pathlib.Path, *, keep_daemon: bool = False) -> None:
     """`tinet down` first (so containers release the TAP netdev), then daemon."""
     _require_root()
+    out_dir = require_safe_out_dir(out_dir)
     state = read_state(out_dir)
     if state is None:
         # Nothing to do — but still try tinet down if a tinet.yaml is there,
@@ -298,6 +370,12 @@ def cmd_down(out_dir: pathlib.Path, *, keep_daemon: bool = False) -> None:
             _run_shell(tinet_down_cmd(tinet_yaml), check=False)
         return
 
+    # Refuse a state file that points its tinet YAML outside out_dir (a tampered
+    # state must not redirect the root-run `tinet | sh` at an out-of-tree YAML).
+    if not _within(out_dir, state.tinet_yaml):
+        raise LabRuntimeError(
+            f"state tinet_yaml {state.tinet_yaml} is outside out-dir {out_dir}; "
+            f"refusing to run it as root")
     _run_shell(tinet_down_cmd(pathlib.Path(state.tinet_yaml)), check=False)
     if not keep_daemon:
         # Only signal the PID if it is still OUR daemon: a stale state whose PID
@@ -313,6 +391,7 @@ def cmd_down(out_dir: pathlib.Path, *, keep_daemon: bool = False) -> None:
 def cmd_conf(out_dir: pathlib.Path) -> None:
     """Re-run `tinet conf` against an already-up lab."""
     _require_root()
+    out_dir = require_safe_out_dir(out_dir)
     state = read_state(out_dir)
     if state is None:
         raise LabRuntimeError(f"no state at {out_dir}; bring the lab up first")
@@ -320,6 +399,10 @@ def cmd_conf(out_dir: pathlib.Path) -> None:
         raise LabRuntimeError(
             f"packetwyrmd pid {state.packetwyrmd_pid} is gone; run `down` then `up`"
         )
+    if not _within(out_dir, state.tinet_yaml):
+        raise LabRuntimeError(
+            f"state tinet_yaml {state.tinet_yaml} is outside out-dir {out_dir}; "
+            f"refusing to run it as root")
     _run_shell(tinet_conf_cmd(pathlib.Path(state.tinet_yaml)))
 
 

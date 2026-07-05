@@ -9,6 +9,30 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Tooling / kernel / CI hardening (part-review #8).** Scope: pktwyrm-tinet,
+    kernel skeleton, CI, docs. None touch the FPGA data path (validated by unit
+    tests + the kernel build, not card HW). Three fixes:
+    - **P1: `pktwyrm-tinet` root lifecycle commands no longer trust a tamperable
+      out-dir.** `up`/`down`/`conf` run as root and pipe a `tinet`-generated
+      shell script (named by the state file under `--out-dir`) to `sh`. With the
+      documented `/tmp/lab-frr` workflow, a local user who pre-creates or can
+      write that dir could plant a hostile state / tinet YAML → root command
+      execution. Now: `up` creates the out-dir `0700` root-owned; all three
+      commands refuse an out-dir not owned by the invoking (root) user or that
+      is group/world-writable, refuse a state whose `tinet_yaml` resolves
+      outside the out-dir, and `write_state` writes atomically at `0600`. Tests
+      + a getting-started security note added.
+    - **P2: the kernel probe validates BAR0 length before reading CSRs.**
+      `pw_probe` read up to `PW_REG_NUM_FLOWS` without checking
+      `pci_resource_len(pdev,0)`; a short/partial BAR (malformed endpoint, wrong
+      bitstream, ID collision) would be an out-of-range MMIO read. Now rejected
+      with `-ENODEV` + a `dev_err` before the first `ioread32`.
+    - **P2: the CI kernel-module build is deterministic.** It installed
+      `linux-headers-$(uname -r)` (often unavailable on the Azure runner kernel)
+      and skipped if missing, so `kernel/` compile regressions could land
+      unnoticed. It now builds against `linux-headers-generic` with a pinned
+      `KDIR`, and fails if that isn't installed.
+    - No P0. sw test 476/476, tinet 41, kernel builds, check-schema 20 green.
   - **RTL data-plane SAF timing-contract fix (part-review #6).** Scope: RTL
     data-plane / DMA. **P1 (bitstream rebuild required):** `pw_frame_saf`'s
     store-and-forward buffer takes its keep/drop decision one cycle after the
