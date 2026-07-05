@@ -93,7 +93,7 @@ pw_status pw_ipc_connect(const char *path, int *out_fd) {
 }
 
 /* Create the parent directory of `path` (mkdir -p style), best-effort. On a
- * fresh boot /var/run/packetwyrm (the default socket dir) may not exist yet, so
+ * fresh boot /run/packetwyrm (the default socket dir) may not exist yet, so
  * bind() would fail with ENOENT and the daemon would come up without a control
  * socket. Creating the tree here lets it start with no manual setup. The socket
  * FILE itself is chmod'd to the caller's `mode` below (in production the daemon

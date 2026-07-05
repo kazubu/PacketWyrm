@@ -9,6 +9,15 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Control-socket default path unified to `/run` (review #10).** The
+    compile-time default (`PW_IPC_DEFAULT_PATH`), the `config.c` fallback, docs,
+    README, and the example env config all wrote `/var/run/packetwyrm/packetwyrmd.sock`
+    while the shipped systemd units use `/run/packetwyrm/packetwyrmd.sock`.
+    `/var/run` is a symlink to `/run` so the two resolve identically, but the
+    mismatch was confusing; everything now uses `/run/...` to match packaging.
+    No behavior change. Review #10 otherwise found no P0/P1 (the remaining
+    flagged items are the owner-accepted `pktwyrm --host` unverified-TLS lab
+    tradeoff, already documented, and the documented kernel skeleton).
   - **Background-flow `flow_meta` fix + proxyd loopback default (review #9).**
     - **P1: a background (load) flow left its `flow_meta` zero-initialized.** The
       flow compiler filled `prog->flow_meta[i]` *after* the background flow's

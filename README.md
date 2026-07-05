@@ -118,7 +118,7 @@ install) and the RTL job (`make sim_all` + AS02MC04 lint).
 | Default config      | `/etc/packetwyrm/packetwyrm.yaml`   |
 | Runtime state       | `/var/lib/packetwyrm/`              |
 | Logs                | `/var/log/packetwyrm/`              |
-| Control socket      | `/var/run/packetwyrm/packetwyrmd.sock` |
+| Control socket      | `/run/packetwyrm/packetwyrmd.sock` |
 | TAP / netdev format | `tap-pw-p<gport>-v<vlan>`           |
 
 `AS02MC04` may appear only in board-support code and hardware docs;

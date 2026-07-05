@@ -26,7 +26,7 @@
 
 #include "packetwyrm/types.h"
 
-#define PW_IPC_DEFAULT_PATH "/var/run/packetwyrm/packetwyrmd.sock"
+#define PW_IPC_DEFAULT_PATH "/run/packetwyrm/packetwyrmd.sock"
 #define PW_IPC_FRAME_MAX    65536
 
 /* Read a length-prefixed frame from `fd` into `buf`. On success,

@@ -1,7 +1,7 @@
 # JSON-RPC protocol
 
 `packetwyrmd` listens on a Unix domain socket (default
-`/var/run/packetwyrm/packetwyrmd.sock`, override via
+`/run/packetwyrm/packetwyrmd.sock`, override via
 `system.control_socket` in YAML). `pktwyrm` and any other client
 speak a tiny request/response protocol over it.
 

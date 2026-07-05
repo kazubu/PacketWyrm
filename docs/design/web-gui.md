@@ -42,7 +42,7 @@ packetwyrm-proxyd [--listen ADDR:PORT] [--socket DAEMON_SOCK]
 
 - `--listen` — default `0.0.0.0:8443`.
 - `--socket` — daemon control socket (default
-  `/var/run/packetwyrm/packetwyrmd.sock`).
+  `/run/packetwyrm/packetwyrmd.sock`).
 - `--tls-cert` / `--tls-key` — a real PEM certificate + key. If omitted,
   the gateway generates an **in-memory self-signed EC (P-256)**
   certificate at startup and prints its SHA-256 fingerprint (browsers

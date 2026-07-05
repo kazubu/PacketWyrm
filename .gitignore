@@ -29,5 +29,15 @@ sim/work/
 # pw_bar_backend output. Not source.
 sim/vectors/
 
+# Kernel module build droppings (kbuild out-of-tree artifacts)
+kernel/*.o
+kernel/*.ko
+kernel/*.mod
+kernel/*.mod.c
+kernel/*.mod.o
+kernel/.*.cmd
+kernel/Module.symvers
+kernel/modules.order
+
 # Claude Code local settings (machine-specific)
 .claude/
