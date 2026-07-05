@@ -317,6 +317,7 @@ static void servo_lat_correction(const struct pw_config *cfg,
                                  struct card_runtime cards[]) {
     for (size_t i = 0; i < prog->n_flow_meta; i++) {
         const struct pw_flow_meta *m = &prog->flow_meta[i];
+        if (!m->rx_slot_valid) continue;                /* background (TX-only): no RX slot to correct */
         if (m->tx_card_id == m->rx_card_id) continue;   /* same-card slot: stays 0 */
         int rx_ci = card_idx_by_id(cfg, m->rx_card_id);
         int tx_ci = card_idx_by_id(cfg, m->tx_card_id);
@@ -352,6 +353,7 @@ static void prime_lat_correction(const struct pw_config *cfg,
 
     for (size_t i = 0; i < prog->n_flow_meta; i++) {
         const struct pw_flow_meta *m = &prog->flow_meta[i];
+        if (!m->rx_slot_valid) continue;    /* background (TX-only): no RX slot to prime */
         int rx_ci = card_idx_by_id(cfg, m->rx_card_id);
         if (rx_ci < 0 || !cards[rx_ci].open) continue;
         unsigned slot = m->rx_local_flow_id;
@@ -1567,6 +1569,13 @@ static struct json_object *build_flow_hist(const struct pw_config *cfg,
         json_object_object_add(r, "error", json_object_new_string("unknown flow"));
         return r;
     }
+    if (!m->rx_slot_valid) {
+        /* background (TX-only): no RX checker slot, so no latency histogram --
+         * reading rx_local_flow_id would alias a real flow's slot. */
+        json_object_object_add(r, "error",
+            json_object_new_string("background (TX-only) flow: no RX latency histogram"));
+        return r;
+    }
     /* Cross-card histogram is now supported: the HW bins the per-sample
      * latency AFTER the lat_correction offset (the servo keeps it current), so
      * the buckets hold the true one-way latency, same as same-card. (Previously
@@ -1653,7 +1662,12 @@ static struct json_object *build_flow_stats(const struct pw_config *cfg,
          * Otherwise a dropped card / missing window reads as a genuine "0
          * traffic" result. (flow.hist reports the same via "backend not ready".) */
         bool read_ok = true;
-        if (rx_ci != (size_t)-1 && cards[rx_ci].open &&
+        if (!m->rx_slot_valid) {
+            /* background (TX-only): no RX checker slot. rx counters are
+             * legitimately zero (rs stays {0}); rx_local_flow_id must NOT be
+             * read -- it would alias a real flow's slot. Don't fault read_ok for
+             * the intentionally-absent RX side. */
+        } else if (rx_ci != (size_t)-1 && cards[rx_ci].open &&
             cards[rx_ci].backend.ops->flow_stats_read) {
             read_ok &= (rx_ci < MAX_CARDS ? snap_ok[rx_ci] : true);
             read_ok &= (cards[rx_ci].backend.ops->flow_stats_read(
@@ -1700,7 +1714,7 @@ static struct json_object *build_flow_stats(const struct pw_config *cfg,
          * counter read actually succeeded (read_ok) -- otherwise the fields are
          * stale/zero, not a real measurement. */
         bool xcard = (m->tx_card_id != m->rx_card_id);
-        bool lat_ok = read_ok && (m->latency_valid || xcard);
+        bool lat_ok = read_ok && m->rx_slot_valid && (m->latency_valid || xcard);
         json_object_object_add(f, "latency_valid", json_object_new_boolean(lat_ok));
         if (lat_ok) {
             json_object_object_add(f, "min_latency", json_object_new_int64((int64_t)(uint32_t)rs.min_latency));

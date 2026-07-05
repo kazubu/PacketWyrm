@@ -288,6 +288,7 @@ static void test_tap_name(void) {
  * declare it here to regression-test its input hardening (reject negatives /
  * overflow / empty), so a config like `rate_bps: -1` can't become a huge rate. */
 bool pw_parse_u64(const char *s, uint64_t *out);
+bool pw_parse_mac(const char *s, uint8_t out[6]);   /* private scalar.c, see above */
 
 static void test_parse_u64_hardening(void) {
     uint64_t v = 0;
@@ -300,6 +301,115 @@ static void test_parse_u64_hardening(void) {
     PW_ASSERT(!pw_parse_u64("___", &v));     /* underscores only -> reject */
     PW_ASSERT(!pw_parse_u64("12x", &v));     /* trailing junk -> reject */
     PW_ASSERT(!pw_parse_u64("99999999999999999999999999", &v)); /* ERANGE overflow */
+}
+
+static void test_parse_mac_hardening(void) {
+    uint8_t m[6];
+    PW_ASSERT(pw_parse_mac("02:a5:02:00:00:01", m) && m[0] == 0x02 && m[5] == 0x01);
+    PW_ASSERT(!pw_parse_mac("02:a5:02:00:00:01junk", m));   /* trailing junk */
+    PW_ASSERT(!pw_parse_mac("02:a5:02:00:00:01:07", m));    /* too many octets */
+    PW_ASSERT(!pw_parse_mac("02:a5:02:00:00", m));          /* too few octets */
+    PW_ASSERT(!pw_parse_mac("gg:a5:02:00:00:01", m));       /* non-hex */
+    PW_ASSERT(!pw_parse_mac(NULL, m));
+}
+
+/* Part-review #2: config/YAML boundary hardening. Each snippet perturbs a
+ * valid base one way and must be rejected (or, for background cross-card,
+ * compiled with the right rx_slot flag). */
+static void test_config_part2_hardening(void) {
+    struct pw_config *cfg; struct pw_diag d;
+
+    /* Duplicate mapping key -> YAML layer rejects (was silent first-wins). */
+    const char *dup =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "system: { name: pw2, mode: multi-card, default_speed: 10g }\n";
+    cfg = pw_config_new(); d = (struct pw_diag){0};
+    PW_ASSERT(pw_config_parse_string(dup, strlen(dup), cfg, &d) != PW_OK);
+    pw_config_free(cfg);
+
+    /* Multiple top-level documents -> rejected (was: trailing doc ignored). */
+    const char *multidoc =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards: [ { id: 0, pci: \"0000:03:00.0\", ports: [ { local_port: 0, global_port: 0 } ] } ]\n"
+        "---\n"
+        "system: { name: pw2, mode: multi-card, default_speed: 10g }\n";
+    cfg = pw_config_new(); d = (struct pw_diag){0};
+    PW_ASSERT(pw_config_parse_string(multidoc, strlen(multidoc), cfg, &d) != PW_OK);
+    pw_config_free(cfg);
+
+    /* Unknown top-level key (typo) -> rejected. */
+    const char *typo =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards: [ { id: 0, pci: \"0000:03:00.0\", ports: [ { local_port: 0, global_port: 0 } ] } ]\n"
+        "flowss: []\n";   /* typo of `flows` */
+    cfg = pw_config_new(); d = (struct pw_diag){0};
+    PW_ASSERT(pw_config_parse_string(typo, strlen(typo), cfg, &d) != PW_OK);
+    pw_config_free(cfg);
+
+    /* l2.pcp out of the 802.1Q 0..7 range -> rejected. */
+    const char *badpcp =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards: [ { id: 0, pci: \"0000:03:00.0\", ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ] } ]\n"
+        "flows:\n  - id: 1\n    tx_global_port: 0\n    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\", pcp: 8 }\n"
+        "    ipv4: { src: \"198.51.100.1\", dst: \"198.51.100.2\" }\n    udp: { src_port: 1, dst_port: 2 }\n"
+        "    traffic: { frame_len: 128, rate_bps: 1000000000 }\n";
+    cfg = pw_config_new(); d = (struct pw_diag){0};
+    PW_ASSERT_EQ(pw_config_parse_string(badpcp, strlen(badpcp), cfg, &d), PW_E_OUT_OF_RANGE);
+    pw_config_free(cfg);
+
+    /* background + measurements -> rejected at validate. */
+    const char *bgmeas =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards: [ { id: 0, pci: \"0000:03:00.0\", ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ] } ]\n"
+        "flows:\n  - id: 1\n    tx_global_port: 0\n    rx_global_port: 1\n    background: true\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv4: { src: \"198.51.100.1\", dst: \"198.51.100.2\" }\n    udp: { src_port: 1, dst_port: 2 }\n"
+        "    traffic: { frame_len: 128, rate_bps: 1000000000 }\n"
+        "    measurements: { latency: true }\n";
+    cfg = pw_config_new(); d = (struct pw_diag){0};
+    PW_ASSERT_EQ(pw_config_parse_string(bgmeas, strlen(bgmeas), cfg, &d), PW_OK);
+    PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_E_INVAL);
+    pw_config_free(cfg);
+}
+
+/* Part-review #2 P1: a cross-card background flow must NOT claim an RX checker
+ * slot that a following real flow reuses -- flow_meta.rx_slot_valid marks it,
+ * and its rx_local_flow_id must not collide with the real flow's. */
+static void test_background_xcard_rx_slot(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n"
+        "  - id: 0\n    pci: \"0000:03:00.0\"\n    ports: [ { local_port: 0, global_port: 0 } ]\n"
+        "  - id: 1\n    pci: \"0000:04:00.0\"\n    ports: [ { local_port: 0, global_port: 1 } ]\n"
+        "flows:\n"
+        /* cross-card background: TX card 0 -> RX card 1, TX-only */
+        "  - id: 1\n    tx_global_port: 0\n    rx_global_port: 1\n    background: true\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv4: { src: \"198.51.100.1\", dst: \"198.51.100.2\" }\n    udp: { src_port: 1, dst_port: 2 }\n"
+        "    traffic: { frame_len: 128, rate_bps: 1000000000 }\n"
+        /* real cross-card flow on the SAME RX card 1 */
+        "  - id: 2\n    tx_global_port: 0\n    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:03\", dst_mac: \"02:a5:02:00:00:04\" }\n"
+        "    ipv4: { src: \"198.51.100.3\", dst: \"198.51.100.4\" }\n    udp: { src_port: 5, dst_port: 6 }\n"
+        "    traffic: { frame_len: 128, rate_bps: 1000000000 }\n";
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
+    /* flow_meta[0] = background: TX-only, no RX slot. */
+    PW_ASSERT_EQ(prog->flow_meta[0].global_flow_id, 1u);
+    PW_ASSERT(!prog->flow_meta[0].rx_slot_valid);
+    /* flow_meta[1] = real cross-card flow: has a real RX slot. */
+    PW_ASSERT_EQ(prog->flow_meta[1].global_flow_id, 2u);
+    PW_ASSERT(prog->flow_meta[1].rx_slot_valid);
+    /* The real flow's RX slot is 0 (first row appended on card 1); the
+     * background flow did NOT consume it, so no daemon collision. */
+    PW_ASSERT_EQ(prog->flow_meta[1].rx_local_flow_id, 0u);
+    pw_program_free(prog);
+    pw_config_free(cfg);
 }
 
 static void test_parse_single_card(void) {
@@ -2017,6 +2127,9 @@ int main(void) {
     struct test_case cases[] = {
         { "tap_name", test_tap_name },
         { "parse_u64_hardening", test_parse_u64_hardening },
+        { "parse_mac_hardening", test_parse_mac_hardening },
+        { "config_part2_hardening", test_config_part2_hardening },
+        { "background_xcard_rx_slot", test_background_xcard_rx_slot },
         { "validate_lif_name_rules", test_validate_lif_name_rules },
         { "parse_single_card", test_parse_single_card },
         { "accept_cross_card_latency", test_accept_cross_card_latency },

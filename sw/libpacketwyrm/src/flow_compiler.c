@@ -286,8 +286,23 @@ static pw_status compile_one_flow(struct pw_program *out,
     struct pw_card_program *rx_cp = card_slot(out, rx.card_id);
     if (!tx_cp || !rx_cp) return PW_E_UNKNOWN_CARD;
 
+    /* Fail early if either card is already at the FPGA flow-table capacity,
+     * rather than letting append_flow() build a program with an out-of-range
+     * local_flow_id that pw_program_card_tables() would only reject at write
+     * time. A background flow consumes a TX row only. (The caller attributes
+     * the PW_E_NO_RESOURCES to this flow in its diagnostic.) */
+    if (tx_cp->n_flow_rows >= PWFPGA_FLOW_TABLE_ROWS) return PW_E_NO_RESOURCES;
+    if (!same_card && !f->background && rx_cp->n_flow_rows >= PWFPGA_FLOW_TABLE_ROWS)
+        return PW_E_NO_RESOURCES;
+
     uint32_t tx_lfid = (uint32_t)tx_cp->n_flow_rows;
-    uint32_t rx_lfid = same_card ? tx_lfid : (uint32_t)rx_cp->n_flow_rows;
+    /* Background flows allocate no RX row, so they must NOT derive rx_lfid from
+     * rx_cp->n_flow_rows -- that slot is never appended and a later real flow
+     * would reuse it, making this flow's meta alias the real flow's RX slot.
+     * Point it at tx_lfid (informational; rx_slot_valid=false tells the daemon
+     * to ignore it entirely). */
+    uint32_t rx_lfid = (same_card || f->background) ? tx_lfid
+                                                    : (uint32_t)rx_cp->n_flow_rows;
 
     /* TX flow row */
     struct pwfpga_flow_config tx_row = {0};
@@ -449,6 +464,7 @@ static pw_status compile_one_flow(struct pw_program *out,
         .tx_local_flow_id = tx_lfid,
         .rx_local_flow_id = rx_lfid,
         .latency_valid = same_card && !f->background,
+        .rx_slot_valid = !f->background,   /* background = TX-only, no RX slot */
     };
 
     if (f->background)
@@ -679,7 +695,17 @@ pw_status pw_flow_compile(const struct pw_config *cfg, struct pw_program *out,
 
     for (size_t i = 0; i < cfg->n_flows; i++) {
         r = compile_one_flow(out, cfg, &cfg->flows[i], i);
-        if (r != PW_OK) return r;
+        if (r != PW_OK) {
+            if (r == PW_E_NO_RESOURCES && diag) {
+                diag->code = r;
+                snprintf(diag->path, sizeof diag->path, "flows[%zu]", i);
+                snprintf(diag->message, sizeof diag->message,
+                         "flow %u: per-card resource capacity exceeded "
+                         "(flow-table rows max %u/card, or comparator/hash pool)",
+                         cfg->flows[i].id, (unsigned)PWFPGA_FLOW_TABLE_ROWS);
+            }
+            return r;
+        }
     }
 
     r = compile_punt_rules(out, cfg);

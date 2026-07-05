@@ -9,6 +9,41 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **libpacketwyrm config/flow-compiler hardening (part-review #2).** Eight
+    fixes in the config/validate/compile layer:
+    - **P1: a cross-card background (load) flow no longer aliases a real flow's
+      RX slot.** It speculatively numbered `rx_local_flow_id` from
+      `rx_cp->n_flow_rows` but then returned without appending an RX row, so a
+      later real flow on the same RX card reused that slot — and the daemon's
+      `servo_lat_correction` (which writes every cross-card flow's slot) would
+      corrupt the real flow's correction, plus `flow.stats` reported the wrong
+      RX counters. `pw_flow_meta` gains `rx_slot_valid` (false for background);
+      the compiler points a background flow's `rx_local_flow_id` at its TX slot
+      and the daemon skips `!rx_slot_valid` flows in the servo, priming,
+      `flow.stats` RX read, and `flow.hist`. Unit test asserts the flag + no
+      slot collision.
+    - **P1: the flow compiler fails early at flow-table capacity.** `append_flow`
+      grew rows unboundedly, so a config with >`PWFPGA_FLOW_TABLE_ROWS` flows on
+      a card compiled into a program with out-of-range `local_flow_id`s that
+      only `pw_program_card_tables` would reject at write time. `compile_one_flow`
+      now returns `PW_E_NO_RESOURCES` (with a per-flow diagnostic) when either
+      the TX or RX card is at capacity.
+    - **P2: duplicate YAML mapping keys are rejected** (was silent first-wins —
+      a flow with two `id:`/`traffic:` lines dropped one without warning).
+    - **P2: multiple top-level YAML documents are rejected** (was: the parser
+      stopped at the first `DOCUMENT_END`, silently ignoring trailing docs).
+    - **P2: unknown TOP-LEVEL config keys are rejected** (`flowss:`, `systm:` →
+      parse error via a new allow-list check); the `config.h` doc is corrected
+      to state that nested-mapping keys are still ignored (JSON schema is the
+      authoritative allow-list) rather than over-claiming full rejection.
+    - **P2: `l2.pcp` is range-checked 0..7** (802.1Q PCP is a 3-bit field; 8..255
+      slipped through before).
+    - **P2: background flows reject `measurements`** at validate (TX-only; loss/
+      latency/jitter can't be measured — was silently unmeasured at runtime).
+    - **P3: `pw_parse_mac` rejects trailing junk / extra octets** (`%n`-checked
+      full consumption), matching the earlier `pw_parse_u64` hardening.
+    - No P0. Build clean, sw test 452/452, e2e+proxyd 35, check-schema 20,
+      sim_all green.
   - **libpacketwyrm backend/DMA boundary hardening (part-review #1).** Seven
     defensive fixes at public-API boundaries (the daemon's compiler already
     constrains normal inputs; these stop a corrupt/hand-built input from

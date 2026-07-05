@@ -177,6 +177,16 @@ pw_status pw_config_validate(const struct pw_config *cfg, struct pw_diag *d) {
                 return PW_E_INVAL;
             }
         }
+        /* Background (load) flows are TX-only: the compiler emits no RX row /
+         * classifier and allocates no RX checker slot, so loss/latency/jitter
+         * cannot be measured. Reject the combination up front rather than
+         * silently returning zero/absent measurements at runtime. */
+        if (f->background && (f->meas.loss || f->meas.latency || f->meas.jitter)) {
+            char p[80]; snprintf(p, sizeof(p), "flows[%zu].measurements", i);
+            diag(d, PW_E_INVAL, p, "background flows are TX-only and cannot request "
+                 "measurements (loss/latency/jitter); remove measurements or background");
+            return PW_E_INVAL;
+        }
     }
 
     /* (Stage 2: per-flow lat_correction lifts the old stage-1 restriction --
