@@ -88,11 +88,21 @@ void pw_vfio_close(struct pw_vfio_handle *h) {
 pw_status pw_vfio_map_dma(struct pw_vfio_handle *h, void *vaddr, size_t len,
                           uint64_t *out_iova) {
     if (!h || h->container_fd < 0 || !vaddr || len == 0) return PW_E_INVAL;
+    /* VFIO TYPE1 requires page-aligned vaddr + size; the header documents this
+     * contract. Enforce it here so a misaligned caller gets a clear PW_E_INVAL
+     * rather than an opaque ioctl EINVAL flattened to PW_E_IO. */
+    long ps = sysconf(_SC_PAGESIZE);
+    if (ps > 0) {
+        uint64_t pg = (uint64_t)ps;
+        if ((uint64_t)(uintptr_t)vaddr % pg != 0 || (uint64_t)len % pg != 0)
+            return PW_E_INVAL;
+    }
     /* Allocate a fresh IOVA range from the bump allocator (page-aligned; the
      * caller posix_memalign's vaddr + rounds len up to the page size, so the
      * bump pointer stays page-aligned across calls). */
     if (h->iova_next == 0) h->iova_next = PW_VFIO_IOVA_BASE;
     uint64_t iova = h->iova_next;
+    if (iova > UINT64_MAX - (uint64_t)len) return PW_E_INVAL;   /* IOVA range wrap */
     struct vfio_iommu_type1_dma_map dm = {
         .argsz = sizeof(dm),
         .flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE,

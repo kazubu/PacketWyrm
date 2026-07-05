@@ -16,6 +16,7 @@
 #include "packetwyrm/pci.h"
 #include "packetwyrm/vfio.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,6 +64,7 @@ struct dma_state {
     uint32_t c2h_cmpl_base;   /* completed-desc-count at ring arm (C2H) */
     uint32_t rx_consumed;     /* C2H frames reaped since arm */
     uint64_t c2h_overrun;     /* punt frames dropped because the host fell behind */
+    uint64_t c2h_err;         /* C2H channel-status error events observed (latched) */
     int      c2h_armed;       /* the C2H ring is running */
 };
 
@@ -87,17 +89,28 @@ static volatile uint32_t *reg_at(struct bar_ctx *c, uint32_t off) {
     return (volatile uint32_t *)((volatile uint8_t *)c->base + c->csr_off + off);
 }
 
+/* True iff a [off, off+len) CSR access (relative to the CSR window) lies inside
+ * the mapped BAR, accounting for csr_off and guarding against integer wrap.
+ * `off` is taken as uint64_t so a wild row/lfid index computed as
+ * `window + id*stride` cannot wrap to a small value and alias a DIFFERENT
+ * (still in-BAR) window before the bound is checked -- every windowed accessor
+ * below routes its range check through here. */
+static bool csr_range_ok(const struct bar_ctx *c, uint64_t off, size_t len) {
+    uint64_t end = (uint64_t)c->csr_off + off + (uint64_t)len;
+    return end >= off && end <= (uint64_t)c->size;   /* no wrap && within map */
+}
+
 static pw_status bar_read32(void *vctx, uint32_t off, uint32_t *out) {
     struct bar_ctx *c = vctx;
     if (!out) return PW_E_INVAL;
-    if ((size_t)c->csr_off + off + 4 > c->size) return PW_E_OUT_OF_RANGE;
+    if (!csr_range_ok(c, off, 4)) return PW_E_OUT_OF_RANGE;
     *out = *reg_at(c, off);
     return PW_OK;
 }
 
 static pw_status bar_write32(void *vctx, uint32_t off, uint32_t v) {
     struct bar_ctx *c = vctx;
-    if ((size_t)c->csr_off + off + 4 > c->size) return PW_E_OUT_OF_RANGE;
+    if (!csr_range_ok(c, off, 4)) return PW_E_OUT_OF_RANGE;
     *reg_at(c, off) = v;
     return PW_OK;
 }
@@ -181,15 +194,15 @@ static pw_status bar_flow_write(void *vctx, uint32_t row,
                                 const struct pwfpga_flow_config *f) {
     struct bar_ctx *c = vctx;
     if (!f) return PW_E_INVAL;
-    uint32_t base = PWFPGA_WIN_FLOW_TABLE + row * PWFPGA_FLOW_STRIDE;
-    if ((size_t)base + PWFPGA_FLOW_STRIDE > c->size) return PW_E_OUT_OF_RANGE;
-    bar_copy_words(reg_at(c, base), f, sizeof(*f));
+    uint64_t base = (uint64_t)PWFPGA_WIN_FLOW_TABLE + (uint64_t)row * PWFPGA_FLOW_STRIDE;
+    if (!csr_range_ok(c, base, PWFPGA_FLOW_STRIDE)) return PW_E_OUT_OF_RANGE;
+    bar_copy_words(reg_at(c, (uint32_t)base), f, sizeof(*f));
     return PW_OK;
 }
 
 static pw_status bar_flow_commit(void *vctx) {
     struct bar_ctx *c = vctx;
-    if (PWFPGA_REG_FLOW_COMMIT + 4 > c->size) return PW_E_OUT_OF_RANGE;
+    if (!csr_range_ok(c, PWFPGA_REG_FLOW_COMMIT, 4)) return PW_E_OUT_OF_RANGE;
     *reg_at(c, PWFPGA_REG_FLOW_COMMIT) = 1u;
     /* Make commit SYNCHRONOUS w.r.t. the hardware commit walk. The BRAM-staged
      * flow table (pw_flow_table_bram) reads its staging one 32-bit word per
@@ -209,7 +222,7 @@ static pw_status bar_flow_commit(void *vctx) {
 
 static pw_status bar_stats_snapshot(void *vctx) {
     struct bar_ctx *c = vctx;
-    if (PWFPGA_REG_STATS_SNAPSHOT_TRIGGER + 4 > c->size) return PW_E_OUT_OF_RANGE;
+    if (!csr_range_ok(c, PWFPGA_REG_STATS_SNAPSHOT_TRIGGER, 4)) return PW_E_OUT_OF_RANGE;
     *reg_at(c, PWFPGA_REG_STATS_SNAPSHOT_TRIGGER) = 1u;
     return PW_OK;
 }
@@ -218,9 +231,10 @@ static pw_status bar_port_stats_read(void *vctx, uint8_t local_port,
                                      struct pw_port_stats *out) {
     struct bar_ctx *c = vctx;
     if (!out || local_port >= PW_PORTS_PER_CARD) return PW_E_INVAL;
-    uint32_t base = PWFPGA_WIN_STATS_SNAPSHOT + local_port * PWFPGA_PORT_STATS_STRIDE;
-    if ((size_t)base + sizeof(*out) > c->size) return PW_E_OUT_OF_RANGE;
-    bar_copy_words_out(out, reg_at(c, base), sizeof(*out));
+    uint64_t base = (uint64_t)PWFPGA_WIN_STATS_SNAPSHOT
+                  + (uint64_t)local_port * PWFPGA_PORT_STATS_STRIDE;
+    if (!csr_range_ok(c, base, sizeof(*out))) return PW_E_OUT_OF_RANGE;
+    bar_copy_words_out(out, reg_at(c, (uint32_t)base), sizeof(*out));
     return PW_OK;
 }
 
@@ -228,10 +242,10 @@ static pw_status bar_flow_stats_read(void *vctx, uint32_t lfid,
                                      struct pw_flow_stats *out) {
     struct bar_ctx *c = vctx;
     if (!out) return PW_E_INVAL;
-    uint32_t base = PWFPGA_WIN_STATS_SNAPSHOT + PWFPGA_FLOW_STATS_BASE
-                  + lfid * PWFPGA_FLOW_STATS_STRIDE;
-    if ((size_t)base + sizeof(*out) > c->size) return PW_E_OUT_OF_RANGE;
-    bar_copy_words_out(out, reg_at(c, base), sizeof(*out));
+    uint64_t base = (uint64_t)PWFPGA_WIN_STATS_SNAPSHOT + PWFPGA_FLOW_STATS_BASE
+                  + (uint64_t)lfid * PWFPGA_FLOW_STATS_STRIDE;
+    if (!csr_range_ok(c, base, sizeof(*out))) return PW_E_OUT_OF_RANGE;
+    bar_copy_words_out(out, reg_at(c, (uint32_t)base), sizeof(*out));
     return PW_OK;
 }
 
@@ -240,12 +254,12 @@ static pw_status bar_flow_hist_read(void *vctx, uint32_t lfid,
                                     size_t *n_buckets_out) {
     struct bar_ctx *c = vctx;
     if (!buckets || !n_buckets_out) return PW_E_INVAL;
-    uint32_t base = PWFPGA_WIN_HISTOGRAM + lfid * PWFPGA_FLOW_HIST_STRIDE;
+    uint64_t base = (uint64_t)PWFPGA_WIN_HISTOGRAM + (uint64_t)lfid * PWFPGA_FLOW_HIST_STRIDE;
     /* The window holds up to 64 buckets of 64 bits. */
     size_t cap = PWFPGA_FLOW_HIST_STRIDE / sizeof(uint64_t);
     if (n_buckets > cap) n_buckets = cap;
-    if ((size_t)base + n_buckets * sizeof(uint64_t) > c->size) return PW_E_OUT_OF_RANGE;
-    bar_copy_words_out(buckets, reg_at(c, base), n_buckets * sizeof(uint64_t));
+    if (!csr_range_ok(c, base, n_buckets * sizeof(uint64_t))) return PW_E_OUT_OF_RANGE;
+    bar_copy_words_out(buckets, reg_at(c, (uint32_t)base), n_buckets * sizeof(uint64_t));
     *n_buckets_out = n_buckets;
     return PW_OK;
 }
@@ -434,6 +448,25 @@ static int dma_slow_path_rx(struct bar_ctx *c, void *buf, size_t buflen,
     struct dma_state *d = c->dma;
     if (!buf) return PW_E_INVAL;
     if (!d->c2h_armed) dma_arm_c2h(c);
+
+    /* Observe the C2H channel status. Unlike H2C (which polls to completion and
+     * can time out), the C2H ring free-runs, so a channel error / halt would
+     * otherwise be INVISIBLE -- completed-count simply stops advancing and punt
+     * looks idle. Surface it: rate-limited warning + clear the latched error so
+     * a transient doesn't stick. We deliberately do NOT stop/re-arm here -- the
+     * continuously-armed ring's re-arm timing is fragile (see project history:
+     * inline stop->run wedges the channel), so recovery stays a manual restart;
+     * this is observability only. */
+    uint32_t c2h_st = xdma_rd(c, PWFPGA_XDMA_C2H_CHANNEL + PWFPGA_XDMA_CH_STATUS);
+    if (c2h_st & PWFPGA_XDMA_STAT_ERR) {
+        uint64_t before = d->c2h_err;
+        d->c2h_err++;
+        if (before / 16 != d->c2h_err / 16)
+            fprintf(stderr, "[dma rx] WARNING C2H channel status error=0x%08x "
+                    "(total %llu); punt may be stalled -- restart the daemon to "
+                    "re-arm\n", c2h_st, (unsigned long long)d->c2h_err);
+        (void)xdma_rd(c, PWFPGA_XDMA_C2H_CHANNEL + PWFPGA_XDMA_CH_STATUS_RC); /* clear latched */
+    }
 
     uint32_t cnt  = xdma_rd(c, PWFPGA_XDMA_C2H_CHANNEL + PWFPGA_XDMA_CH_COMPLETED_COUNT);
     uint32_t done = cnt - d->c2h_cmpl_base;    /* frames completed since arm (unsigned wrap ok) */

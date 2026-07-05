@@ -9,6 +9,45 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **libpacketwyrm backend/DMA boundary hardening (part-review #1).** Seven
+    defensive fixes at public-API boundaries (the daemon's compiler already
+    constrains normal inputs; these stop a corrupt/hand-built input from
+    mis-programming the FPGA):
+    - **P1: `pw_program_card_tables()` now validates the program up front.**
+      Rejects (`PW_E_INVAL`) counts over the CSR-window capacities
+      (`n_fc_cmps/udfs/rules`, `n_hash_entries`) and indices past their windows
+      (map `flow_id ≥ FLOWID_MAP_DEPTH`, hash `index ≥ HASH_DEPTH`), plus
+      non-zero-count/NULL-array pairs. Without this a wild index became a CSR
+      offset that could alias a *different* in-BAR window (the per-write size
+      check only catches offsets past the BAR end). Unit test asserts the
+      rejections.
+    - **P1: BAR row/lfid offsets computed in 64-bit.** `bar_flow_write` /
+      `bar_flow_stats_read` / `bar_flow_hist_read` / `bar_port_stats_read`
+      built `window + id*stride` in `uint32_t`, so a huge `row`/`lfid` could
+      wrap to a small value that passed the range check and aliased another
+      window. All windowed accessors now route through a new `csr_range_ok()`
+      helper that computes in 64-bit **and** accounts for `csr_off` (the actual
+      access is `csr_off + off`, which the old `base + len > size` checks
+      ignored — P2, harmless at today's `csr_off = 0` but wrong for the probed
+      `+0x10000` layout).
+    - **P2: C2H (punt) channel-status errors are now observed.** `dma_slow_path_rx`
+      reads `PWFPGA_XDMA_CH_STATUS`; on `STAT_ERR` it rate-limit-warns and clears
+      the latched error (so a stalled punt is visible in the log instead of
+      looking idle). It deliberately does **not** stop/re-arm — the
+      continuously-armed ring's re-arm timing is fragile (documented history),
+      so recovery stays a manual restart.
+    - **P2: `pw_stats_aggregate()` rejects sizes that would wrap** (`n_flow_meta
+      * 2`, `sizeof(*out) * n_flow_meta`) + NULL `flow_meta` guard, before the
+      capacity checks — closes an OOB read/write on a corrupt count.
+    - **P3: fake backend matches the real backend's input contract** —
+      `fake_flow_write` rejects NULL `f`; `fake_slow_path_tx` rejects
+      `frame==NULL && len>0` (no memcpy-from-NULL).
+    - **P3: `pw_vfio_map_dma()` enforces its documented page-alignment**
+      (`vaddr`/`len` vs `_SC_PAGESIZE`) and IOVA-range non-wrap, returning
+      `PW_E_INVAL` instead of flattening a misaligned request to an opaque
+      ioctl `PW_E_IO`.
+    - No P0 found; worker/main thread-safety in this layer (atomic host-plane
+      counters, mutex'd fake FIFO, worker-owned BAR DMA state) held up.
   - **`ipc_listen_connect` unit test honors `$TMPDIR` (review #11).** The test
     hard-coded `/tmp/pw-ipc-test-<pid>.sock`; in a sandbox / CI runner where
     `/tmp` is not bindable for `AF_UNIX` (`bind()` → `PW_E_IO`) the test failed

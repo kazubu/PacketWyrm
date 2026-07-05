@@ -25,6 +25,30 @@ pw_status pw_program_card_tables(const struct pw_card_backend_ops *ops, void *ct
                                  const struct pw_card_program *cp) {
     pw_status worst = PW_OK;
     if (!ops || !cp) return PW_E_INVAL;
+
+    /* Validate the program's counts/indices against the fixed CSR-window
+     * capacities BEFORE any write. The daemon's compiler already constrains
+     * these, but this is a public libpacketwyrm entry: a hand-built or corrupt
+     * pw_card_program must not turn an out-of-range count/index into a CSR
+     * offset that lands in a DIFFERENT (still in-BAR, so size-check-passing)
+     * window -- e.g. a wild map flow_id indexing out of the flow-id map into
+     * the classifier, or a hash index out of the hash window into the flow
+     * table. Reject the whole program up front rather than mis-program. */
+    if (cp->n_fc_cmps      > PWFPGA_NUM_CMP)          return PW_E_INVAL;
+    if (cp->n_fc_udfs      > PWFPGA_NUM_UDF)          return PW_E_INVAL;
+    if (cp->n_fc_rules     > PWFPGA_NUM_RULE)         return PW_E_INVAL;
+    if (cp->n_hash_entries > PWFPGA_HASH_DEPTH)       return PW_E_INVAL;
+    if (cp->n_flow_rows    && !cp->flow_rows)         return PW_E_INVAL;
+    if (cp->n_map_entries  && !cp->map_entries)       return PW_E_INVAL;
+    if (cp->n_fc_cmps      && !cp->fc_cmps)           return PW_E_INVAL;
+    if (cp->n_fc_udfs      && !cp->fc_udfs)           return PW_E_INVAL;
+    if (cp->n_fc_rules     && !cp->fc_rules)          return PW_E_INVAL;
+    if (cp->n_hash_entries && !cp->hash_entries)      return PW_E_INVAL;
+    for (size_t m = 0; m < cp->n_map_entries; m++)
+        if (cp->map_entries[m].flow_id >= PWFPGA_FLOWID_MAP_DEPTH) return PW_E_INVAL;
+    for (size_t i = 0; i < cp->n_hash_entries; i++)
+        if (cp->hash_entries[i].index >= PWFPGA_HASH_DEPTH)        return PW_E_INVAL;
+
     #define CHK(call) do { \
         pw_status _s = (call); \
         if (_s != PW_OK && _s != PW_E_NOT_IMPLEMENTED && worst == PW_OK) worst = _s; \

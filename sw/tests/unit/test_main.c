@@ -1455,6 +1455,35 @@ static void test_program_card_tables(void) {
     no_commit.flow_commit = NULL;
     PW_ASSERT_EQ(pw_program_card_tables(&no_commit, b.ctx, cp), PW_E_NOT_IMPLEMENTED);
 
+    /* Boundary hardening: a corrupt/hand-built program with out-of-range
+     * counts or indices must be REJECTED up front (PW_E_INVAL), not translated
+     * into a CSR offset that aliases a neighbouring window. Copy the valid
+     * program and perturb one field at a time. */
+    {
+        struct pw_card_program bad = *cp;
+        bad.n_fc_rules = PWFPGA_NUM_RULE + 1;   /* over comparator/rule capacity */
+        PW_ASSERT_EQ(pw_program_card_tables(b.ops, b.ctx, &bad), PW_E_INVAL);
+    }
+    {
+        struct pw_card_program bad = *cp;
+        bad.n_hash_entries = PWFPGA_HASH_DEPTH + 1;
+        PW_ASSERT_EQ(pw_program_card_tables(b.ops, b.ctx, &bad), PW_E_INVAL);
+    }
+    if (cp->n_map_entries >= 1) {
+        struct pw_flowid_map_entry me = cp->map_entries[0];
+        me.flow_id = PWFPGA_FLOWID_MAP_DEPTH;   /* one past the map window */
+        struct pw_card_program bad = *cp;
+        bad.map_entries = &me;
+        bad.n_map_entries = 1;
+        PW_ASSERT_EQ(pw_program_card_tables(b.ops, b.ctx, &bad), PW_E_INVAL);
+    }
+    {
+        struct pw_card_program bad = *cp;   /* non-NULL count with NULL array */
+        bad.n_map_entries = 1;
+        bad.map_entries = NULL;
+        PW_ASSERT_EQ(pw_program_card_tables(b.ops, b.ctx, &bad), PW_E_INVAL);
+    }
+
     pw_card_backend_close(&b);
     pw_program_free(prog);
     pw_config_free(cfg);
