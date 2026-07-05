@@ -43,6 +43,17 @@ For where work is going next, see `NEXT-STEPS.md`.
     a descriptor the drain can never advance (a stuck-descriptor wedge on the
     very reset meant to recover from a wedge). SAF unit test covers the
     zero-beat guard (bare keep drains nothing + the next frame still drains).
+    **Re-check #2 (1 follow-on P2):** if `dp_soft_rst` releases MID-frame the
+    delay line would feed the SAF the frame's TAIL beats (its head was dropped
+    during reset), and that frame's still-in-flight decision could then commit a
+    PARTIAL forward/punt frame (the 0-beat guard doesn't catch it — beats are
+    present). Added a per-port `rxd_armed` gate: after `dp_rst_n` the delay line
+    holds intake off until the raw stream goes idle once (a clean frame
+    boundary), then stays armed. With the 7-cycle delay + the 0-beat guard, the
+    straddling frame's decision reaches the empty SAF before the next frame's
+    beats propagate through the delay, so it drops cleanly and the next whole
+    frame forwards intact. New `tb_data_plane_axis` scenario asserts a whole
+    frame forwards after a `dp_soft_rst`. sim_all (30 PASS blocks) green, lint OK.
     **Pending: gated Vivado build + flash + HW re-validation** (LUT ~94.8%) —
     batched with any part-review #7 RTL change.
   - **CLI + gateway + GUI hardening (part-review #5).** Scope: `pktwyrm`,

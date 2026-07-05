@@ -514,15 +514,31 @@ module pw_data_plane_axis #(
             logic        rxd_tv [1:SAF_DLY];
             logic        rxd_tl [1:SAF_DLY];
             logic [63:0] rxd_ts [1:SAF_DLY];   // wire-ts pipelined alongside (for frame_ts)
+            // Arm the delay line only from a CLEAN frame boundary after a soft
+            // reset. If dp_soft_rst releases mid-frame, the frame's head was
+            // dropped during reset; without this gate the delay line would feed
+            // the emptied SAF the frame's TAIL beats, and that frame's (still
+            // in-flight, rst_n-domain) decision would then commit a PARTIAL
+            // frame. rxd_armed holds intake off until the raw stream goes idle
+            // once (a frame boundary); after that first idle it stays armed for
+            // normal operation. Combined with the 7-cycle delay + the SAF's
+            // 0-beat-commit guard, a mid-frame soft-reset boundary drops the
+            // straddling frame cleanly (its decision reaches the empty SAF before
+            // the next frame's beats propagate through the delay) and the next
+            // whole frame forwards intact.
+            logic rxd_armed;
             always_ff @(posedge clk or negedge dp_rst_n) begin
                 if (!dp_rst_n) begin
+                    rxd_armed <= 1'b0;
                     for (int s = 1; s <= SAF_DLY; s++) begin
                         rxd_td[s] <= '0; rxd_tk[s] <= '0; rxd_tv[s] <= 1'b0;
                         rxd_tl[s] <= 1'b0; rxd_ts[s] <= '0;
                     end
                 end else begin
+                    if (!s_axis_rx_tvalid[gp]) rxd_armed <= 1'b1;   // saw a frame boundary
                     rxd_td[1] <= s_axis_rx_tdata[gp];  rxd_tk[1] <= s_axis_rx_tkeep[gp];
-                    rxd_tv[1] <= s_axis_rx_tvalid[gp]; rxd_tl[1] <= s_axis_rx_tlast[gp];
+                    rxd_tv[1] <= rxd_armed && s_axis_rx_tvalid[gp];
+                    rxd_tl[1] <= s_axis_rx_tlast[gp];
                     rxd_ts[1] <= s_axis_rx_wire_ts[gp];
                     for (int s = 2; s <= SAF_DLY; s++) begin
                         rxd_td[s] <= rxd_td[s-1]; rxd_tk[s] <= rxd_tk[s-1];

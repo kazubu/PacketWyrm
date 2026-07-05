@@ -785,6 +785,23 @@ module tb_data_plane_axis;
                  (tx1_last.size() > 0 && tx1_last[tx1_last.size()-1]) ? 1 : 0, 1);
         check_eq("b2b not punted", pn_keep.size(), 0);
 
+        // -------- scenario 7c: FORWARD works after a data-plane soft reset --
+        // A dp_soft_rst flushes the SAF + its input delay line together (same
+        // reset domain). rxd_armed must re-arm from the next clean frame
+        // boundary so the forward path is not wedged and a whole frame still
+        // forwards intact. rule0 (udp_dst 60000 -> FORWARD egress1) still active.
+        scenario = "fwd_after_softrst";
+        tx1_data.delete(); tx1_keep.delete(); tx1_last.delete();
+        pn_data.delete();  pn_keep.delete();  pn_last.delete();
+        dp_soft_rst = 1'b1; @(posedge clk); dp_soft_rst = 1'b0;
+        repeat (16) @(posedge clk);          // ride out the internal reset + re-arm
+        build_plain_udp(16'd60000);
+        inject(0);
+        repeat (16) @(posedge clk);
+        check_eq("post-softrst forward bytes", qbytes(tx1_keep), 42);
+        check_eq("post-softrst forward saw last",
+                 (tx1_last.size() > 0 && tx1_last[tx1_last.size()-1]) ? 1 : 0, 1);
+
         // ---------------- scenario 8: PUNT_TO_HOST -----------------------
         scenario = "punt";
         tx1_data.delete(); tx1_keep.delete(); tx1_last.delete();
