@@ -461,8 +461,13 @@ static pw_status parse_flow(const pw_yaml_node *m, struct pw_flow *f,
             f->l2.vlan_set = true;
         }
         if ((r = get_scalar(l2, "pcp", l2p, false, &s, diag)) != PW_OK) return r;
-        if (s && !pw_parse_u8(s, &f->l2.pcp)) {
-            diag_set(diag, PW_E_PARSE, l2p, "pcp"); return PW_E_PARSE;
+        if (s) {
+            if (!pw_parse_u8(s, &f->l2.pcp)) {
+                diag_set(diag, PW_E_PARSE, l2p, "pcp"); return PW_E_PARSE;
+            }
+            if (f->l2.pcp > 7) {   /* 802.1Q PCP is a 3-bit field */
+                diag_set(diag, PW_E_OUT_OF_RANGE, l2p, "pcp must be 0..7"); return PW_E_OUT_OF_RANGE;
+            }
         }
         /* Ethertype override for the "eth" frame template (0 => IP-family
          * default). Ignored for other templates. */
@@ -806,11 +811,38 @@ static pw_status parse_forward(const pw_yaml_node *m, struct pw_forward_rule *fr
     return PW_OK;
 }
 
+/* Reject unknown keys in a mapping against an allow-list, so a top-level typo
+ * (`flowss:`, `systm:`) is a parse error instead of being silently ignored.
+ * Applied at the root; nested mappings are not yet strict (see config.h). */
+static pw_status reject_unknown_keys(const pw_yaml_node *m, const char *path,
+                                     const char *const *allowed, size_t n_allowed,
+                                     struct pw_diag *diag) {
+    if (!m || m->kind != PW_YAML_MAP) return PW_OK;
+    for (size_t i = 0; i < m->u.map.n; i++) {
+        const char *k = m->u.map.items[i].key;
+        bool ok = false;
+        for (size_t j = 0; j < n_allowed; j++)
+            if (strcmp(k, allowed[j]) == 0) { ok = true; break; }
+        if (!ok) {
+            diag_set(diag, PW_E_PARSE, path, "unknown key '%s'", k);
+            return PW_E_PARSE;
+        }
+    }
+    return PW_OK;
+}
+
 static pw_status parse_root(const pw_yaml_node *root, unsigned flags,
                             struct pw_config *cfg, struct pw_diag *diag) {
     REQ_MAP(root, "");
     bool test_only = (flags & PW_CFG_TEST_ONLY) != 0;
     pw_status r;
+
+    static const char *const root_keys[] = {
+        "system", "cards", "logical_interfaces", "flows", "forwards",
+    };
+    if ((r = reject_unknown_keys(root, "", root_keys,
+                                 sizeof(root_keys) / sizeof(root_keys[0]), diag)) != PW_OK)
+        return r;
 
     /* system + cards are required for an ENVIRONMENT config; optional (parsed if
      * present) for a TEST-only config. */

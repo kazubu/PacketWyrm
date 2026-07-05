@@ -17,6 +17,14 @@ struct pw_flow_meta {
                                           * sync (latency_method "gpio-corrected").
                                           * This flag now distinguishes the method,
                                           * not availability. */
+    bool     rx_slot_valid;              /* true = this flow has a real RX checker
+                                          * slot (rx_local_flow_id is meaningful).
+                                          * FALSE for background (load) flows: they
+                                          * are TX-only and allocate no RX row/slot,
+                                          * so rx_local_flow_id must NOT be read
+                                          * (stats) or written (lat_correction) --
+                                          * doing so would alias a real flow's
+                                          * slot on the RX card. */
 };
 
 /* TEST_RX flow-id map entry: a test flow's wire flow_id -> its local checker

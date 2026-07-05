@@ -146,10 +146,21 @@ static pw_yaml_node *build_mapping(ctx_t *c, yaml_event_t *start) {
             set_err(c->err, (int)kev.start_mark.line + 1, "non-scalar mapping key not supported");
             yaml_event_delete(&kev); pw_yaml_free(m); return NULL;
         }
+        int kline = (int)kev.start_mark.line + 1;
         char *key = pw_xstrdup_n((const char *)kev.data.scalar.value,
                                  kev.data.scalar.length);
         yaml_event_delete(&kev);
         if (!key) { pw_yaml_free(m); return NULL; }
+
+        /* Reject duplicate keys in the same mapping. map_append + first-wins
+         * pw_yaml_map_get would otherwise SILENTLY drop a re-specified key
+         * (e.g. a flow with two `id:` or `traffic:` lines), hiding a config
+         * mistake from the validation layer. */
+        for (size_t i = 0; i < m->u.map.n; i++)
+            if (strcmp(m->u.map.items[i].key, key) == 0) {
+                set_err(c->err, kline, "duplicate mapping key '%s'", key);
+                free(key); pw_yaml_free(m); c->failed = 1; return NULL;
+            }
 
         yaml_event_t vev;
         if (!next_event(c, &vev)) { free(key); pw_yaml_free(m); return NULL; }
@@ -201,8 +212,23 @@ pw_yaml_node *pw_yaml_parse(const char *text, size_t len, pw_yaml_err *err) {
         if (!next_event(&c, &ev)) break;
         switch (ev.type) {
         case YAML_STREAM_START_EVENT: seen_stream = 1; yaml_event_delete(&ev); break;
-        case YAML_DOCUMENT_START_EVENT: seen_doc = 1; yaml_event_delete(&ev); break;
+        case YAML_DOCUMENT_START_EVENT:
+            /* A second document-start after one was already parsed = a multi-doc
+             * stream (`--- ... --- ...`). Reject it instead of silently ignoring
+             * the trailing document(s), whether or not they carry content. */
+            if (root) {
+                set_err(err, (int)ev.start_mark.line + 1,
+                        "multiple top-level YAML documents not supported");
+                c.failed = 1;
+            }
+            seen_doc = 1;
+            yaml_event_delete(&ev);
+            break;
         case YAML_DOCUMENT_END_EVENT:
+            /* End of a document -- keep reading; only STREAM_END stops the loop,
+             * so a following DOCUMENT_START is caught above. */
+            yaml_event_delete(&ev);
+            break;
         case YAML_STREAM_END_EVENT:
             yaml_event_delete(&ev);
             goto done;

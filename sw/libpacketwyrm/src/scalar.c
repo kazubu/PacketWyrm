@@ -70,8 +70,13 @@ bool pw_parse_u8(const char *s, uint8_t *out) {
 bool pw_parse_mac(const char *s, uint8_t out[6]) {
     if (!s) return false;
     unsigned o[6];
-    int n = sscanf(s, "%x:%x:%x:%x:%x:%x", &o[0], &o[1], &o[2], &o[3], &o[4], &o[5]);
-    if (n != 6) return false;
+    int end = -1;
+    /* %n captures the consumed length; requiring s[end]=='\0' rejects trailing
+     * junk ("...:01xx") and extra octets that sscanf's field count alone lets
+     * through. */
+    int n = sscanf(s, "%x:%x:%x:%x:%x:%x%n",
+                   &o[0], &o[1], &o[2], &o[3], &o[4], &o[5], &end);
+    if (n != 6 || end < 0 || s[end] != '\0') return false;
     for (int i = 0; i < 6; i++) {
         if (o[i] > 0xFF) return false;
         out[i] = (uint8_t)o[i];

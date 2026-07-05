@@ -301,9 +301,14 @@ struct pw_config *pw_config_new(void);
 void              pw_config_free(struct pw_config *cfg);
 
 /* Parse YAML. The Phase 0 parser supports the subset documented in
- * docs/design/yaml-schema.md; unknown keys are rejected. Returns
- * PW_OK on success and populates *cfg; on failure returns a negative
- * pw_status and fills *diag if non-NULL. */
+ * docs/design/yaml-schema.md. Unknown TOP-LEVEL keys are rejected (a typo like
+ * `flowss:` is a parse error); unknown keys inside nested mappings are
+ * currently IGNORED (strict per-mapping rejection is a planned improvement --
+ * the JSON schema in schema/packetwyrm.schema.json is the authoritative
+ * allow-list checked by scripts/check-schema.sh). Duplicate keys in any
+ * mapping are rejected by the YAML layer. Returns PW_OK on success and
+ * populates *cfg; on failure returns a negative pw_status and fills *diag if
+ * non-NULL. */
 pw_status pw_config_parse_file(const char *path, struct pw_config *cfg, struct pw_diag *diag);
 pw_status pw_config_parse_string(const char *yaml, size_t len, struct pw_config *cfg, struct pw_diag *diag);
 
