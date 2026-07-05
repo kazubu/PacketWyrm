@@ -122,12 +122,15 @@ pw_status pw_sfp_read(const struct pw_card_backend *be, int port,
     set_line(&b, b.scl, 1);
     set_line(&b, b.sda, 1);
 
-    /* Random read: START, [addr|W], offset, repeated START, [addr|R], data..., STOP */
+    /* Random read: START, [addr|W], offset, repeated START, [addr|R], data..., STOP.
+     * On a NAK-return, a latched CSR fault (b.err) OUTRANKS the apparent NAK ->
+     * PW_E_BACKEND (hard), so pw_sfp_probe can't mistake a backend fault whose
+     * ACK bit happened to read high for an empty cage (PW_E_IO). */
     i2c_start(&b);
-    if (i2c_write_byte(&b, (uint8_t)(i2c_addr << 1))) { i2c_stop(&b); return PW_E_IO; }
-    if (i2c_write_byte(&b, offset))                    { i2c_stop(&b); return PW_E_IO; }
+    if (i2c_write_byte(&b, (uint8_t)(i2c_addr << 1))) { i2c_stop(&b); return b.err ? PW_E_BACKEND : PW_E_IO; }
+    if (i2c_write_byte(&b, offset))                    { i2c_stop(&b); return b.err ? PW_E_BACKEND : PW_E_IO; }
     i2c_start(&b);
-    if (i2c_write_byte(&b, (uint8_t)((i2c_addr << 1) | 1))) { i2c_stop(&b); return PW_E_IO; }
+    if (i2c_write_byte(&b, (uint8_t)((i2c_addr << 1) | 1))) { i2c_stop(&b); return b.err ? PW_E_BACKEND : PW_E_IO; }
     for (size_t i = 0; i < len; i++)
         buf[i] = i2c_read_byte(&b, i + 1 < len);   /* ACK all but the last */
     i2c_stop(&b);
@@ -155,10 +158,13 @@ pw_status pw_sfp_write(const struct pw_card_backend *be, int port,
      * the device address until it ACKs again (internal write cycle complete).
      * Byte-at-a-time avoids page-size assumptions across module vendors. */
     for (size_t i = 0; i < len; i++) {
+        /* b.err (a latched CSR fault) OUTRANKS an apparent NAK at every early
+         * return -> PW_E_BACKEND, so a backend fault is never misread as an
+         * empty cage (PW_E_IO). */
         i2c_start(&b);
-        if (i2c_write_byte(&b, (uint8_t)(i2c_addr << 1)))     { i2c_stop(&b); return PW_E_IO; }
-        if (i2c_write_byte(&b, (uint8_t)(offset + i)))         { i2c_stop(&b); return PW_E_IO; }
-        if (i2c_write_byte(&b, buf[i]))                        { i2c_stop(&b); return PW_E_IO; }
+        if (i2c_write_byte(&b, (uint8_t)(i2c_addr << 1)))     { i2c_stop(&b); return b.err ? PW_E_BACKEND : PW_E_IO; }
+        if (i2c_write_byte(&b, (uint8_t)(offset + i)))         { i2c_stop(&b); return b.err ? PW_E_BACKEND : PW_E_IO; }
+        if (i2c_write_byte(&b, buf[i]))                        { i2c_stop(&b); return b.err ? PW_E_BACKEND : PW_E_IO; }
         i2c_stop(&b);
 
         /* ACK-poll the write cycle (each poll is ~100us of bus time; the SFP
@@ -168,10 +174,11 @@ pw_status pw_sfp_write(const struct pw_card_backend *be, int port,
             i2c_start(&b);
             int ack = i2c_write_byte(&b, (uint8_t)(i2c_addr << 1));
             i2c_stop(&b);
+            if (b.err) break;              /* CSR fault: stop polling, report below */
             if (ack == 0) { done = 1; break; }
         }
+        if (b.err) return PW_E_BACKEND;   /* CSR/backend fault OUTRANKS !done (NAK) */
         if (!done) return PW_E_IO;
-        if (b.err) return PW_E_BACKEND;   /* CSR/backend fault, not an I2C NAK */
     }
     return PW_OK;
 }
