@@ -34,6 +34,7 @@ pw_status pw_program_card_tables(const struct pw_card_backend_ops *ops, void *ct
      * window -- e.g. a wild map flow_id indexing out of the flow-id map into
      * the classifier, or a hash index out of the hash window into the flow
      * table. Reject the whole program up front rather than mis-program. */
+    if (cp->n_flow_rows    > PWFPGA_FLOW_TABLE_ROWS)  return PW_E_INVAL;
     if (cp->n_fc_cmps      > PWFPGA_NUM_CMP)          return PW_E_INVAL;
     if (cp->n_fc_udfs      > PWFPGA_NUM_UDF)          return PW_E_INVAL;
     if (cp->n_fc_rules     > PWFPGA_NUM_RULE)         return PW_E_INVAL;
@@ -73,6 +74,9 @@ pw_status pw_program_card_tables(const struct pw_card_backend_ops *ops, void *ct
         if (ops->card_info && ops->card_info(ctx, &info) == PW_OK &&
             info.num_local_flows > nflows)
             nflows = info.num_local_flows;
+        /* Never invalidate past the flow-table window even if a card misreports
+         * num_local_flows -- the disabled-row writes would alias the histogram. */
+        if (nflows > PWFPGA_FLOW_TABLE_ROWS) nflows = PWFPGA_FLOW_TABLE_ROWS;
         struct pwfpga_flow_config zf = {0};
         for (unsigned r = 0; r < nflows; r++)
             CHK(ops->flow_write(ctx, r,

@@ -651,6 +651,24 @@ struct pwfpga_xdma_poll_wb {
  * snapshot window. Two 128-byte port blocks = 0x100 bytes. */
 #define PWFPGA_FLOW_STATS_BASE         0x100u
 
+/* Per-window index capacities: how many rows/slots a windowed accessor may
+ * address before its stride would carry the access OUT of its own window and
+ * alias the neighbouring one (which is still inside the BAR, so a bare
+ * "within BAR" bound would not catch it). Derived from the window map above:
+ *  - flow-table rows end at the flow-commit register (window + 0x3FFC);
+ *  - histogram slots end where the stats-snapshot window begins (0xC000);
+ *  - flow-stats slots (inside the snapshot window, above the port blocks) end
+ *    at the window's control registers (DP_RESET at window + 0x3FF4).
+ * These are defensive ceilings; the operational count is card_info's
+ * num_local_flows (<= these). */
+#define PWFPGA_FLOW_TABLE_ROWS \
+    ((PWFPGA_REG_FLOW_COMMIT - PWFPGA_WIN_FLOW_TABLE) / PWFPGA_FLOW_STRIDE)
+#define PWFPGA_FLOW_HIST_SLOTS \
+    ((PWFPGA_WIN_STATS_SNAPSHOT - PWFPGA_WIN_HISTOGRAM) / PWFPGA_FLOW_HIST_STRIDE)
+#define PWFPGA_FLOW_STATS_SLOTS \
+    ((PWFPGA_REG_DP_RESET - (PWFPGA_WIN_STATS_SNAPSHOT + PWFPGA_FLOW_STATS_BASE)) \
+     / PWFPGA_FLOW_STATS_STRIDE)
+
 /* Commit/trigger/clear registers sit above each window's 8 KB data
  * region (64 rows * 128 B), at window + 0x3FFC / 0x3FF8. */
 #define PWFPGA_REG_CLASSIFIER_COMMIT       (PWFPGA_WIN_CLASSIFIER + 0x3FFCu)

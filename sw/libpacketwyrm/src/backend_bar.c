@@ -194,6 +194,10 @@ static pw_status bar_flow_write(void *vctx, uint32_t row,
                                 const struct pwfpga_flow_config *f) {
     struct bar_ctx *c = vctx;
     if (!f) return PW_E_INVAL;
+    /* Bound row to its OWN window first: past PWFPGA_FLOW_TABLE_ROWS the stride
+     * carries the write into the histogram window (still in-BAR, so the BAR
+     * bound alone would miss it). */
+    if (row >= PWFPGA_FLOW_TABLE_ROWS) return PW_E_OUT_OF_RANGE;
     uint64_t base = (uint64_t)PWFPGA_WIN_FLOW_TABLE + (uint64_t)row * PWFPGA_FLOW_STRIDE;
     if (!csr_range_ok(c, base, PWFPGA_FLOW_STRIDE)) return PW_E_OUT_OF_RANGE;
     bar_copy_words(reg_at(c, (uint32_t)base), f, sizeof(*f));
@@ -242,6 +246,7 @@ static pw_status bar_flow_stats_read(void *vctx, uint32_t lfid,
                                      struct pw_flow_stats *out) {
     struct bar_ctx *c = vctx;
     if (!out) return PW_E_INVAL;
+    if (lfid >= PWFPGA_FLOW_STATS_SLOTS) return PW_E_OUT_OF_RANGE;   /* stay below the window's control regs */
     uint64_t base = (uint64_t)PWFPGA_WIN_STATS_SNAPSHOT + PWFPGA_FLOW_STATS_BASE
                   + (uint64_t)lfid * PWFPGA_FLOW_STATS_STRIDE;
     if (!csr_range_ok(c, base, sizeof(*out))) return PW_E_OUT_OF_RANGE;
@@ -254,6 +259,7 @@ static pw_status bar_flow_hist_read(void *vctx, uint32_t lfid,
                                     size_t *n_buckets_out) {
     struct bar_ctx *c = vctx;
     if (!buckets || !n_buckets_out) return PW_E_INVAL;
+    if (lfid >= PWFPGA_FLOW_HIST_SLOTS) return PW_E_OUT_OF_RANGE;    /* past here aliases the stats window */
     uint64_t base = (uint64_t)PWFPGA_WIN_HISTOGRAM + (uint64_t)lfid * PWFPGA_FLOW_HIST_STRIDE;
     /* The window holds up to 64 buckets of 64 bits. */
     size_t cap = PWFPGA_FLOW_HIST_STRIDE / sizeof(uint64_t);

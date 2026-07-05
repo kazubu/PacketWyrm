@@ -1465,6 +1465,11 @@ static void test_program_card_tables(void) {
         PW_ASSERT_EQ(pw_program_card_tables(b.ops, b.ctx, &bad), PW_E_INVAL);
     }
     {
+        struct pw_card_program bad = *cp;       /* rows past the flow-table window */
+        bad.n_flow_rows = PWFPGA_FLOW_TABLE_ROWS + 1;
+        PW_ASSERT_EQ(pw_program_card_tables(b.ops, b.ctx, &bad), PW_E_INVAL);
+    }
+    {
         struct pw_card_program bad = *cp;
         bad.n_hash_entries = PWFPGA_HASH_DEPTH + 1;
         PW_ASSERT_EQ(pw_program_card_tables(b.ops, b.ctx, &bad), PW_E_INVAL);
