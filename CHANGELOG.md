@@ -15,8 +15,13 @@ For where work is going next, see `NEXT-STEPS.md`.
     even though the IPC code is correct. It now binds under `$TMPDIR` (falling
     back to `/tmp`) and quietly skips if the resulting path would exceed
     `sun_path` (~108 B) — a portability guard, not a code change. `make -C sw
-    test` no longer depends on `/tmp` being bindable. Review #11 otherwise found
-    no P0/P1 (this was the sole finding, a P2 test-portability nit).
+    test` no longer depends on `/tmp` being bindable. It also surfaces
+    `errno`/`strerror` + the path on a listen/connect failure, and — when
+    `bind()` is denied outright by the environment (`EPERM`/`EACCES`/`EROFS`,
+    e.g. a seccomp-restricted sandbox) — skips gracefully like the TAP test
+    does on missing `CAP_NET_ADMIN`, while any other errno still fails the
+    assert so a real bind regression is caught. Review #11 otherwise found no
+    P0/P1 (this was the sole finding, a P2 test-portability nit).
   - **Control-socket default path unified to `/run` (review #10).** The
     compile-time default (`PW_IPC_DEFAULT_PATH`), the `config.c` fallback, docs,
     README, and the example env config all wrote `/var/run/packetwyrm/packetwyrmd.sock`
