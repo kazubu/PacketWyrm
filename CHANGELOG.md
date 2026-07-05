@@ -46,6 +46,15 @@ For where work is going next, see `NEXT-STEPS.md`.
       (`vaddr`/`len` vs `_SC_PAGESIZE`) and IOVA-range non-wrap, returning
       `PW_E_INVAL` instead of flattening a misaligned request to an opaque
       ioctl `PW_E_IO`.
+    - **P1 (re-check): per-window index ceilings, not just the BAR.** The first
+      pass fixed 32-bit wrap + `csr_off`, but a valid in-BAR offset could still
+      alias the *adjacent* window (flow-table `row=64` → histogram window base;
+      a large histogram `lfid` → stats window). Added `PWFPGA_FLOW_TABLE_ROWS`
+      / `FLOW_HIST_SLOTS` / `FLOW_STATS_SLOTS` capacity macros (csr.h) and bound
+      each windowed accessor to its own window; `pw_program_card_tables` rejects
+      `n_flow_rows` over the flow-table capacity and clamps the
+      invalidate-to-capacity loop so a misreported `num_local_flows` can't
+      alias either. Unit test asserts the row-over-capacity rejection.
     - No P0 found; worker/main thread-safety in this layer (atomic host-plane
       counters, mutex'd fake FIFO, worker-owned BAR DMA state) held up.
   - **`ipc_listen_connect` unit test honors `$TMPDIR` (review #11).** The test
