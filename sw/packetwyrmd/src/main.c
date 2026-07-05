@@ -2034,8 +2034,11 @@ static void handle_client(int cfd,
         } else {
             resp = build_error("unknown rpc");
         }
-        json_object_put(req);
     }
+    /* Free the parsed request on EVERY non-NULL path (the "not an object" and
+     * "invalid JSON" early branches reach here too). json_object_put(NULL) is a
+     * no-op, but guard anyway for clarity. */
+    if (req) json_object_put(req);
 
     const char *out = json_object_to_json_string_ext(resp, JSON_C_TO_STRING_PLAIN);
     pw_ipc_write_frame(cfd, out, strlen(out));
