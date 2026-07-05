@@ -55,6 +55,16 @@ For where work is going next, see `NEXT-STEPS.md`.
       `n_flow_rows` over the flow-table capacity and clamps the
       invalidate-to-capacity loop so a misreported `num_local_flows` can't
       alias either. Unit test asserts the row-over-capacity rejection.
+    - **P1 (re-check #2): the last flow row stays usable.** The first ceiling
+      derived the row count from the flow-commit register and required the full
+      256-B *stride* to fit before it → 63, wrongly rejecting the 64th row on a
+      64-flow card. But the commit register sits in the unused tail of row 63's
+      slot (row 63's 244-B write ends at 0x9FF4, before commit at 0x9FFC), so
+      all 64 rows are valid. `PWFPGA_FLOW_TABLE_ROWS` is now derived from the
+      next window (0xA000) = 64, and `bar_flow_write` bounds by the *actual*
+      `sizeof(*f)` extent vs the commit register (keeps row 63, refuses row 64,
+      and catches a future struct-growth overrun). BAR-backend test asserts
+      row 63 accepted / row 64 rejected.
     - No P0 found; worker/main thread-safety in this layer (atomic host-plane
       counters, mutex'd fake FIFO, worker-owned BAR DMA state) held up.
   - **`ipc_listen_connect` unit test honors `$TMPDIR` (review #11).** The test

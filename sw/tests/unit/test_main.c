@@ -1540,6 +1540,14 @@ static void test_bar_backend_path(void) {
     struct pwfpga_flow_config f = {0};
     PW_ASSERT_EQ(b.ops->flow_write(b.ctx, 0, &f), PW_OK);
 
+    /* Flow-table window boundary: the LAST row (index ROWS-1 = 63) must be
+     * ACCEPTED -- its 244-B write ends before the flow-commit register in the
+     * slot's unused tail -- while one past it must be rejected as OUT_OF_RANGE
+     * (would alias the histogram window). Regression guard for the off-by-one
+     * where bounding by the commit register wrongly rejected the final row. */
+    PW_ASSERT_EQ(b.ops->flow_write(b.ctx, PWFPGA_FLOW_TABLE_ROWS - 1, &f), PW_OK);
+    PW_ASSERT_EQ(b.ops->flow_write(b.ctx, PWFPGA_FLOW_TABLE_ROWS, &f), PW_E_OUT_OF_RANGE);
+
     pw_card_backend_close(&b);
     unlink(path);
 }

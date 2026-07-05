@@ -194,12 +194,14 @@ static pw_status bar_flow_write(void *vctx, uint32_t row,
                                 const struct pwfpga_flow_config *f) {
     struct bar_ctx *c = vctx;
     if (!f) return PW_E_INVAL;
-    /* Bound row to its OWN window first: past PWFPGA_FLOW_TABLE_ROWS the stride
-     * carries the write into the histogram window (still in-BAR, so the BAR
-     * bound alone would miss it). */
-    if (row >= PWFPGA_FLOW_TABLE_ROWS) return PW_E_OUT_OF_RANGE;
     uint64_t base = (uint64_t)PWFPGA_WIN_FLOW_TABLE + (uint64_t)row * PWFPGA_FLOW_STRIDE;
-    if (!csr_range_ok(c, base, PWFPGA_FLOW_STRIDE)) return PW_E_OUT_OF_RANGE;
+    /* Keep the write inside the flow-table window: its actual extent (sizeof(*f),
+     * NOT the full stride) must not reach the flow-commit register -- which sits
+     * in the unused tail of the last row's slot -- nor spill into the histogram
+     * window past it. Checking the real size (not the stride) keeps the final
+     * row (63) usable while still refusing row 64 and any struct-growth overrun. */
+    if (base + sizeof(*f) > PWFPGA_REG_FLOW_COMMIT) return PW_E_OUT_OF_RANGE;
+    if (!csr_range_ok(c, base, sizeof(*f))) return PW_E_OUT_OF_RANGE;
     bar_copy_words(reg_at(c, (uint32_t)base), f, sizeof(*f));
     return PW_OK;
 }
