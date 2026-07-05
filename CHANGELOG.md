@@ -9,6 +9,36 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **CLI + gateway + GUI hardening (part-review #5).** Scope: `pktwyrm`,
+    `packetwyrm-proxyd`, GUI `index.html`. Six fixes:
+    - **P1: `pktwyrm --host` HTTPS request can't over-read the stack.**
+      `https_rpc_call` built the request with `snprintf` into a fixed buffer but
+      used the returned length (which is the *would-be* length) in the
+      `SSL_write` loop, so a near-`PW_IPC_FRAME_MAX` body could send stack bytes
+      past the buffer onto the wire. It now rejects a truncated `snprintf` and
+      an oversize body up front.
+    - **P2: `pktwyrm --host` validates the HTTP response.** It now requires a
+      `200` status, rejects a truncated (buffer-filling) response, and enforces
+      a declared `Content-Length` exactly — a 4xx/5xx gateway/relay error or a
+      short read is no longer handed up as a daemon reply.
+    - **P2: the GUI keeps the secret in `sessionStorage`, not `localStorage`.**
+      Per-tab, cleared when the tab/browser closes (and the old persistent
+      `localStorage` copy is removed on load) — it no longer lingers on disk to
+      widen a future XSS's blast radius.
+    - **P2: `packetwyrm-proxyd` frees the listen socket + TLS context on a
+      bind/listen failure** (was a leak on the error path).
+    - **P3: `parse_listen` rejects a trailing-junk port** (`8443abc`) via a
+      strict `strtol` parse instead of `atoi`.
+    - **P3: `pktwyrm --host` parses `HOST[:PORT]` without mangling IPv6** —
+      `[v6]:port` / bare `[v6]` are handled, a bare IPv6 literal isn't sliced by
+      `strrchr(':')`, and an over-length host is rejected (no silent truncation
+      to a different target).
+    - No P0; no direct DOM-XSS found (GUI renders responses via `textContent`).
+      **HW-validated on arran 07:00.0 (build 0x6a48854f):** loopback measured
+      flow `tx→DAC→rx` **loss=0** (tx/rx 485k, latency 30–31 ticks), and
+      `pktwyrm --host` over HTTPS through `packetwyrm-proxyd` returned live card
+      + flow stats; `--listen …:PORTabc` correctly refused. sw test 476/476,
+      e2e+proxyd 35, check-schema 20, sim_all green.
   - **`packetwyrmd` daemon hardening (part-review #4).** Scope:
     `sw/packetwyrmd/src/main.c`. Seven fixes:
     - **P1: `config.save` no longer follows a symlink at its temp path.** It

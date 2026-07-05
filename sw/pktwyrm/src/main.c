@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>   /* strncasecmp */
 #include <time.h>
 #include <unistd.h>
 #include <math.h>
@@ -335,10 +336,30 @@ static int cmd_flow_show(int argc, char **argv) {
  * a one-time warning is printed. Returns 0 on success, -1 on error. */
 static int https_rpc_call(const char *hostarg, const char *send,
                           char *resp, size_t resp_cap, size_t *out_len) {
+    /* The gateway relays at most PW_IPC_FRAME_MAX to the daemon; reject an
+     * oversize body here rather than build a request we can't send. */
+    size_t send_len = strlen(send);
+    if (send_len > PW_IPC_FRAME_MAX) return -1;
+
     char host[256]; const char *port = "8443";
-    snprintf(host, sizeof(host), "%s", hostarg);
-    char *colon = strrchr(host, ':');
-    if (colon) { *colon = '\0'; port = colon + 1; }
+    if ((size_t)snprintf(host, sizeof(host), "%s", hostarg) >= sizeof(host))
+        return -1;   /* over-length host would silently connect to a truncated name */
+    /* Split HOST[:PORT]. Support [ipv6]:port / [ipv6]; a BARE IPv6 literal
+     * (multiple colons, no brackets) is taken as host-only so strrchr(':')
+     * doesn't slice it mid-address. */
+    if (host[0] == '[') {
+        char *rb = strchr(host, ']');
+        if (!rb) return -1;
+        if (rb[1] == ':')      port = rb + 2;
+        else if (rb[1] != '\0') return -1;   /* junk after ']' */
+        *rb = '\0';
+        memmove(host, host + 1, strlen(host + 1) + 1);   /* drop leading '[' */
+    } else {
+        char *first = strchr(host, ':');
+        char *last  = strrchr(host, ':');
+        if (first && first == last) { *last = '\0'; port = last + 1; }
+        /* no colon (host only) or >1 colon (bare IPv6) -> no port split */
+    }
 
     static int warned = 0;
     if (!warned) {
@@ -375,9 +396,12 @@ static int https_rpc_call(const char *hostarg, const char *send,
                 "POST /api/rpc HTTP/1.1\r\nHost: %s\r\n"
                 "Content-Type: application/json\r\nContent-Length: %zu\r\n"
                 "Connection: close\r\n\r\n%s",
-                host, strlen(send), send);
+                host, send_len, send);
+            /* snprintf returns the length it WOULD have written: a truncated
+             * request must be rejected, or the SSL_write loop below (bounded by
+             * hn) would read past req and leak stack bytes onto the wire. */
+            int wok = (hn > 0 && (size_t)hn < sizeof(req));
             /* TLS allows partial writes -- loop until the whole request is sent. */
-            int wok = hn > 0;
             for (int off = 0; wok && off < hn; ) {
                 int w = SSL_write(ssl, req + off, hn - off);
                 if (w <= 0) wok = 0; else off += w;
@@ -391,15 +415,40 @@ static int https_rpc_call(const char *hostarg, const char *send,
                        (r = SSL_read(ssl, buf + have, (int)(sizeof(buf) - 1 - have))) > 0)
                     have += (size_t)r;
                 buf[have] = '\0';
-                /* Body starts after the header terminator. */
-                char *body = strstr(buf, "\r\n\r\n");
+                /* Validate the response line + framing before trusting the body:
+                 *  - require "HTTP/1.x 200" (a 4xx/5xx gateway/relay error must
+                 *    not be handed up as a daemon reply);
+                 *  - a filled buffer means the response was truncated -> fail;
+                 *  - if Content-Length is present, the body must be exactly that
+                 *    long (a short read = truncation). */
+                bool http_ok = (strncmp(buf, "HTTP/1.", 7) == 0);
+                char *sp = http_ok ? strchr(buf, ' ') : NULL;
+                bool is_200 = sp && strncmp(sp + 1, "200", 3) == 0 &&
+                              (sp[4] == ' ' || sp[4] == '\r');
+                bool truncated = (have >= sizeof(buf) - 1);
+                char *body = is_200 && !truncated ? strstr(buf, "\r\n\r\n") : NULL;
                 if (body) {
                     body += 4;
                     size_t blen = have - (size_t)(body - buf);
-                    if (blen > resp_cap) blen = resp_cap;
-                    memcpy(resp, body, blen);
-                    *out_len = blen;
-                    rc = 0;
+                    /* Enforce a declared Content-Length exactly (case-insensitive
+                     * header match); reject a short/over body. */
+                    long declared = -1;
+                    for (char *h = buf; h && h < body; ) {
+                        if (strncasecmp(h, "Content-Length:", 15) == 0) {
+                            char *e = NULL;
+                            declared = strtol(h + 15, &e, 10);
+                            break;
+                        }
+                        char *nl = strstr(h, "\r\n");
+                        h = nl ? nl + 2 : NULL;
+                    }
+                    if (declared >= 0 && (size_t)declared != blen) {
+                        /* framing mismatch (truncated / trailing garbage) */
+                    } else if (blen <= resp_cap) {
+                        memcpy(resp, body, blen);
+                        *out_len = blen;
+                        rc = 0;
+                    }
                 }
             }
         } else {
