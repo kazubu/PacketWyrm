@@ -266,6 +266,18 @@ Whole-tester orchestration. `arm` re-pushes the compiled
 program to every open backend (idempotent resync). `start` and
 `stop` toggle the enable bit of every flow.
 
+> **Not hitless.** `test.arm` (and `config.load` below) re-run
+> `program_backends`, which pulses the data-plane soft reset
+> (`PWFPGA_REG_DP_RESET`) before rewriting the tables — deliberately, so
+> reprogramming over a running data plane can't wedge it. That reset briefly
+> quiesces the generators / SAF / arbiters, so any frames in flight at that
+> instant (including slow-path punt / inject / forward traffic) are dropped, and
+> the card worker's DMA slow path is NOT paused around it. Measured: rapid
+> `config.load`/`test.arm` while a control-plane ping crossed the DUT showed
+> ~23 % transient loss during the reloads, recovering cleanly afterward (no
+> wedge, no error latch). Treat arm/reload as a disruptive operation — don't
+> expect a live control plane to survive it without a brief hiccup.
+
 ```json
 { "rpc": "test.start" }
 ```
