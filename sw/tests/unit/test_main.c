@@ -337,6 +337,17 @@ static void test_config_part2_hardening(void) {
     PW_ASSERT(pw_config_parse_string(multidoc, strlen(multidoc), cfg, &d) != PW_OK);
     pw_config_free(cfg);
 
+    /* Multi-doc where the FIRST document is EMPTY -> still rejected (the check
+     * counts document-starts, not root!=NULL). */
+    const char *emptyfirst =
+        "---\n"
+        "---\n"
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards: [ { id: 0, pci: \"0000:03:00.0\", ports: [ { local_port: 0, global_port: 0 } ] } ]\n";
+    cfg = pw_config_new(); d = (struct pw_diag){0};
+    PW_ASSERT(pw_config_parse_string(emptyfirst, strlen(emptyfirst), cfg, &d) != PW_OK);
+    pw_config_free(cfg);
+
     /* Unknown top-level key (typo) -> rejected. */
     const char *typo =
         "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
@@ -408,6 +419,23 @@ static void test_background_xcard_rx_slot(void) {
     /* The real flow's RX slot is 0 (first row appended on card 1); the
      * background flow did NOT consume it, so no daemon collision. */
     PW_ASSERT_EQ(prog->flow_meta[1].rx_local_flow_id, 0u);
+
+    /* pw_stats_aggregate must honor rx_slot_valid: even if the caller hands it
+     * bogus RX-side stats for the background flow, it reports latency invalid
+     * and zero RX-derived counters (rx_local_flow_id must not be trusted). */
+    struct pw_flow_stats per_card[4] = {0};   /* 2 slots (tx,rx) per flow */
+    per_card[1].rx_frames = 999; per_card[1].min_latency = 123;  /* bg flow rx side (bogus) */
+    per_card[3].rx_frames = 42;                                  /* real flow rx side */
+    struct pw_global_flow_stats gout[2] = {0};
+    PW_ASSERT_EQ(pw_stats_aggregate(prog, per_card, 4, gout, 2), PW_OK);
+    PW_ASSERT_EQ(gout[0].global_flow_id, 1u);   /* background */
+    PW_ASSERT(!gout[0].latency_valid);
+    PW_ASSERT(!gout[0].cross_card);
+    PW_ASSERT_EQ(gout[0].rx_frames, 0u);        /* bogus RX not surfaced */
+    PW_ASSERT_EQ(gout[1].global_flow_id, 2u);   /* real cross-card flow */
+    PW_ASSERT(gout[1].latency_valid);
+    PW_ASSERT_EQ(gout[1].rx_frames, 42u);
+
     pw_program_free(prog);
     pw_config_free(cfg);
 }

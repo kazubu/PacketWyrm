@@ -206,17 +206,19 @@ pw_yaml_node *pw_yaml_parse(const char *text, size_t len, pw_yaml_err *err) {
     pw_yaml_node *root = NULL;
 
     /* Walk stream-start, document-start, then a single value. */
-    int seen_stream = 0, seen_doc = 0;
+    int seen_stream = 0, seen_doc = 0, n_docs = 0;
     while (!c.failed) {
         yaml_event_t ev;
         if (!next_event(&c, &ev)) break;
         switch (ev.type) {
         case YAML_STREAM_START_EVENT: seen_stream = 1; yaml_event_delete(&ev); break;
         case YAML_DOCUMENT_START_EVENT:
-            /* A second document-start after one was already parsed = a multi-doc
-             * stream (`--- ... --- ...`). Reject it instead of silently ignoring
-             * the trailing document(s), whether or not they carry content. */
-            if (root) {
+            /* A SECOND document-start = a multi-doc stream (`--- ... --- ...`).
+             * Count documents (not `root != NULL`): an empty first document
+             * builds no root, so a root-based check would let `---\n---\nsystem:`
+             * through. Reject the 2nd document-start whether or not either
+             * document carries content. */
+            if (++n_docs > 1) {
                 set_err(err, (int)ev.start_mark.line + 1,
                         "multiple top-level YAML documents not supported");
                 c.failed = 1;
