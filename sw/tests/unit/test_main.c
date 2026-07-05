@@ -4,6 +4,7 @@
  * build dependency surface minimal. Each test is a void function that
  * asserts via PW_ASSERT macros and counts failures. */
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1823,12 +1824,23 @@ static void test_ipc_listen_connect(void) {
         return;
     }
 
+    /* On failure, surface errno + the offending path so a sandbox/perms
+     * problem (bind EACCES/EROFS, connect ECONNREFUSED) is triaged from the
+     * test log instead of just "PW_E_IO". */
     int srv = -1;
-    PW_ASSERT_EQ(pw_ipc_listen(path, 0600, &srv), PW_OK);
+    pw_status lr = pw_ipc_listen(path, 0600, &srv);
+    if (lr != PW_OK)
+        printf("    ipc_listen(%s) failed: %s (errno=%d %s)\n",
+               path, pw_strerror(lr), errno, strerror(errno));
+    PW_ASSERT_EQ(lr, PW_OK);
     PW_ASSERT(srv >= 0);
 
     int cli = -1;
-    PW_ASSERT_EQ(pw_ipc_connect(path, &cli), PW_OK);
+    pw_status cr = pw_ipc_connect(path, &cli);
+    if (cr != PW_OK)
+        printf("    ipc_connect(%s) failed: %s (errno=%d %s)\n",
+               path, pw_strerror(cr), errno, strerror(errno));
+    PW_ASSERT_EQ(cr, PW_OK);
 
     int conn = accept(srv, NULL, NULL);
     PW_ASSERT(conn >= 0);
