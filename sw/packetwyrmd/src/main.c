@@ -1356,14 +1356,19 @@ static struct json_object *build_flows(const struct pw_config *cfg,
         json_object_object_add(fl, "rx_global_port",json_object_new_int(f->rx_global_port));
         json_object_object_add(fl, "tx_card_id",    json_object_new_int(m->tx_card_id));
         json_object_object_add(fl, "rx_card_id",    json_object_new_int(m->rx_card_id));
-        /* Latency is now available for BOTH same-card (counter-direct) and
-         * cross-card (HW lat_correction + J5 sync) flows, so latency_valid is
-         * true for either; latency_method tells them apart (matches flow.stats).
-         * m->latency_valid alone means "same-card exact" -- kept as the method. */
+        /* Latency is available for BOTH same-card (counter-direct) and cross-card
+         * (HW lat_correction + J5 sync) flows, so latency_valid is true for
+         * either; latency_method tells them apart (matches flow.stats).
+         * EXCEPT background (load) flows: TX-only, no RX checker slot, so no
+         * latency at all -- report latency_valid:false + method "none" so this
+         * RPC agrees with flow.stats/flow.hist (which also refuse RX for them).
+         * `background` is surfaced so a client can label the flow. */
         bool xcard = (m->tx_card_id != m->rx_card_id);
-        json_object_object_add(fl, "latency_valid", json_object_new_boolean(true));
+        json_object_object_add(fl, "background", json_object_new_boolean(!m->rx_slot_valid));
+        json_object_object_add(fl, "latency_valid", json_object_new_boolean(m->rx_slot_valid));
         json_object_object_add(fl, "latency_method",
-            json_object_new_string(xcard ? "gpio-corrected" : "same-card"));
+            json_object_new_string(!m->rx_slot_valid ? "none"
+                                   : xcard ? "gpio-corrected" : "same-card"));
         json_object_object_add(fl, "enabled",
             json_object_new_boolean(flow_enabled(prog, (uint32_t)f->id)));
         json_object_array_add(arr, fl);

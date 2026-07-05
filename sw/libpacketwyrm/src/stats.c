@@ -34,6 +34,17 @@ pw_status pw_stats_aggregate(const struct pw_program *prog,
         out[i].global_flow_id = m->global_flow_id;
         out[i].tx_frames = tx_s->tx_frames;
         out[i].tx_bytes  = tx_s->tx_bytes;
+
+        /* Background (load) flows are TX-only: they have no RX checker slot, so
+         * rx_local_flow_id must NOT be read (it would alias a real flow's slot;
+         * same contract the daemon enforces). Report the TX side only and leave
+         * every RX-derived field (counts, loss, latency, jitter) zero, with
+         * latency invalid. */
+        if (!m->rx_slot_valid) {
+            out[i].latency_valid = false;
+            out[i].cross_card    = false;
+            continue;
+        }
         out[i].rx_frames = rx_s->rx_frames;
         out[i].rx_bytes  = rx_s->rx_bytes;
         out[i].lost_est  = rx_s->lost_packets_estimated;

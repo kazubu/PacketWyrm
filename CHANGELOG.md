@@ -42,7 +42,17 @@ For where work is going next, see `NEXT-STEPS.md`.
       latency/jitter can't be measured — was silently unmeasured at runtime).
     - **P3: `pw_parse_mac` rejects trailing junk / extra octets** (`%n`-checked
       full consumption), matching the earlier `pw_parse_u64` hardening.
-    - No P0. Build clean, sw test 452/452, e2e+proxyd 35, check-schema 20,
+    - **Re-check (3 follow-ons from the above):** (P2) `pw_stats_aggregate()`
+      now honors `rx_slot_valid` too — a background flow reports
+      `latency_valid=false` and zero RX-derived counters even if the caller
+      passes bogus RX stats (the library API matched to the daemon contract).
+      (P2) the `flows` RPC (`build_flows`) reports `latency_valid:false` +
+      `latency_method:"none"` + a new `background` boolean for background flows,
+      so it agrees with `flow.stats`/`flow.hist`. (P3) the multi-document
+      rejection now counts document-starts instead of `root != NULL`, so a
+      stream whose *first* document is empty (`---\n---\nsystem:…`) is still
+      rejected. Tests cover all three.
+    - No P0. Build clean, sw test 461/461, e2e+proxyd 35, check-schema 20,
       sim_all green.
   - **libpacketwyrm backend/DMA boundary hardening (part-review #1).** Seven
     defensive fixes at public-API boundaries (the daemon's compiler already
