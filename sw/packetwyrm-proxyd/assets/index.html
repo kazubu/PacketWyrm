@@ -194,8 +194,14 @@ const el = (t, props={}, kids=[]) => {
 };
 
 /* ---- transport ---- */
-$("#secret").value = localStorage.getItem("pw_secret") || "";
-$("#secret").addEventListener("change", e => localStorage.setItem("pw_secret", e.target.value));
+/* Hold the control secret in sessionStorage (per-tab, cleared when the tab/
+ * browser closes) rather than localStorage (persistent, readable by any
+ * same-origin script) -- it survives a reload within the session but doesn't
+ * linger on disk to widen the blast radius of a future XSS. Migrate away from
+ * (and clear) any previously-persisted localStorage copy. */
+try { localStorage.removeItem("pw_secret"); } catch (_) {}
+$("#secret").value = sessionStorage.getItem("pw_secret") || "";
+$("#secret").addEventListener("change", e => sessionStorage.setItem("pw_secret", e.target.value));
 function setConn(ok, txt) {
   const c = $("#conn"); c.className = ok ? "ok" : "err"; c.textContent = txt;
 }

@@ -405,6 +405,18 @@ static void usage(void) {
         stderr);
 }
 
+/* Strict decimal port parse: reject empty, trailing junk (e.g. "8443abc"),
+ * overflow, and out-of-range -- atoi() silently accepted all of those. */
+static int parse_port_strict(const char *s, int *out) {
+    if (!s || !*s) return -1;
+    char *e = NULL;
+    errno = 0;
+    long v = strtol(s, &e, 10);
+    if (errno != 0 || *e != '\0' || v <= 0 || v > 65535) return -1;
+    *out = (int)v;
+    return 0;
+}
+
 static int parse_listen(struct proxyd_opts *o, const char *s) {
     /* ADDR:PORT or just PORT. */
     const char *colon = strrchr(s, ':');
@@ -415,12 +427,9 @@ static int parse_listen(struct proxyd_opts *o, const char *s) {
         memcpy(abuf, s, alen);
         abuf[alen] = '\0';
         o->listen_addr = abuf;
-        o->listen_port = atoi(colon + 1);
-    } else {
-        o->listen_port = atoi(s);
+        return parse_port_strict(colon + 1, &o->listen_port);
     }
-    if (o->listen_port <= 0 || o->listen_port > 65535) return -1;
-    return 0;
+    return parse_port_strict(s, &o->listen_port);
 }
 
 int main(int argc, char **argv) {
@@ -524,9 +533,10 @@ int main(int argc, char **argv) {
         printf("  TLS: DISABLED (--no-tls, plaintext)\n");
     }
 
-    /* Listen socket. */
+    /* Listen socket. On a bind/listen failure, close the socket and free the
+     * TLS context before exiting (tidy even though the process is ending). */
     int lfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (lfd < 0) { perror("socket"); return 1; }
+    if (lfd < 0) { perror("socket"); if (g_ssl_ctx) SSL_CTX_free(g_ssl_ctx); return 1; }
     int one = 1;
     setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
     struct sockaddr_in sa = { .sin_family = AF_INET,
@@ -534,9 +544,14 @@ int main(int argc, char **argv) {
                               .sin_addr = listen_ia };
     if (bind(lfd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
         perror("bind");
+        close(lfd); if (g_ssl_ctx) SSL_CTX_free(g_ssl_ctx);
         return 1;
     }
-    if (listen(lfd, 16) < 0) { perror("listen"); return 1; }
+    if (listen(lfd, 16) < 0) {
+        perror("listen");
+        close(lfd); if (g_ssl_ctx) SSL_CTX_free(g_ssl_ctx);
+        return 1;
+    }
     printf("  listening on %s://%s:%d/\n", o.no_tls ? "http" : "https",
            o.listen_addr, o.listen_port);
     fflush(stdout);
