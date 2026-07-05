@@ -1808,9 +1808,20 @@ static void test_ipc_framing(void) {
 
 static void test_ipc_listen_connect(void) {
     /* Bind a socket via pw_ipc_listen, connect to it with
-     * pw_ipc_connect, round-trip a frame. */
-    char path[64];
-    snprintf(path, sizeof(path), "/tmp/pw-ipc-test-%d.sock", (int)getpid());
+     * pw_ipc_connect, round-trip a frame. Honor $TMPDIR so the test runs in
+     * sandboxes/CI where /tmp is not bindable; fall back to /tmp. If the
+     * resulting path would exceed sun_path, quietly skip (portability, not a
+     * code bug -- fill_sockaddr_un rejects over-length paths, covered by
+     * test_ipc_path_too_long). */
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp || !*tmp) tmp = "/tmp";
+    char path[108];
+    int n = snprintf(path, sizeof(path), "%s/pw-ipc-test-%d.sock",
+                     tmp, (int)getpid());
+    if (n < 0 || (size_t)n >= sizeof(path)) {
+        printf("    (ipc_listen_connect skipped: TMPDIR too long for sun_path)\n");
+        return;
+    }
 
     int srv = -1;
     PW_ASSERT_EQ(pw_ipc_listen(path, 0600, &srv), PW_OK);

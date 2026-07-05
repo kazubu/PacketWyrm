@@ -9,6 +9,14 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **`ipc_listen_connect` unit test honors `$TMPDIR` (review #11).** The test
+    hard-coded `/tmp/pw-ipc-test-<pid>.sock`; in a sandbox / CI runner where
+    `/tmp` is not bindable for `AF_UNIX` (`bind()` → `PW_E_IO`) the test failed
+    even though the IPC code is correct. It now binds under `$TMPDIR` (falling
+    back to `/tmp`) and quietly skips if the resulting path would exceed
+    `sun_path` (~108 B) — a portability guard, not a code change. `make -C sw
+    test` no longer depends on `/tmp` being bindable. Review #11 otherwise found
+    no P0/P1 (this was the sole finding, a P2 test-portability nit).
   - **Control-socket default path unified to `/run` (review #10).** The
     compile-time default (`PW_IPC_DEFAULT_PATH`), the `config.c` fallback, docs,
     README, and the example env config all wrote `/var/run/packetwyrm/packetwyrmd.sock`
