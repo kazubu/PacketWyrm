@@ -323,6 +323,12 @@ static pw_status failing_write32(void *ctx, uint32_t off, uint32_t v) {
 static pw_status failing_read32(void *ctx, uint32_t off, uint32_t *out) {
     (void)ctx; (void)off; if (out) *out = 0; return PW_E_IO;
 }
+/* write32 FAILS (latches the I2C error) but read32 SUCCEEDS returning all pad
+ * bits high -> the ACK bit reads as NAK. Exercises the early-NAK-return path:
+ * the latched CSR fault must still win (PW_E_BACKEND), not look like a NAK. */
+static pw_status ok_read32_high(void *ctx, uint32_t off, uint32_t *out) {
+    (void)ctx; (void)off; if (out) *out = 0xFFFFFFFFu; return PW_OK;
+}
 
 /* Part-review #3: device-driver / IO boundary hardening. These early-return
  * before any hardware access, so they run against the fake backend in CI. */
@@ -361,6 +367,16 @@ static void test_part3_driver_hardening(void) {
         pw_status ps = pw_sfp_probe(&fb, 0, &info);
         PW_ASSERT(ps != PW_OK);          /* NOT silently reported as empty cage */
         PW_ASSERT(!info.present);
+
+        /* Early-NAK path: write32 fails (latches err) but read32 returns SDA
+         * high (looks like a NAK). The latched fault must still win, so probe
+         * returns an error, not "empty cage". */
+        struct pw_card_backend_ops fops2 = {0};
+        fops2.write32 = failing_write32;
+        fops2.read32  = ok_read32_high;
+        struct pw_card_backend fb2 = { .ops = &fops2, .ctx = NULL };
+        struct pw_sfp_info info2;
+        PW_ASSERT(pw_sfp_probe(&fb2, 0, &info2) != PW_OK);
     }
 
     /* TAP open must reject an over-length interface name (silent truncation

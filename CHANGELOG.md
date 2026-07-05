@@ -55,7 +55,14 @@ For where work is going next, see `NEXT-STEPS.md`.
       I2C-error latch now yields `PW_E_BACKEND` (a hard error `probe` propagates)
       while an actual NAK stays `PW_E_IO` (empty cage). A failing-CSR-backend
       unit test asserts `pw_sfp_probe` does not return `PW_OK`.
-    - No P0. sw test 475/475, e2e+proxyd 35, check-schema 20, sim_all green.
+    - **Re-check #2 (same finding, remaining path):** the early NAK-returns in
+      `pw_sfp_read`/`pw_sfp_write` returned `PW_E_IO` *before* the final
+      `b.err` check, so a CSR fault coinciding with an apparent NAK (ACK bit
+      reads high) still mis-reported as an empty cage. Every early NAK-return
+      now prioritizes `b.err` (`return b.err ? PW_E_BACKEND : PW_E_IO`), and the
+      ACK-poll loop breaks + reports `PW_E_BACKEND` on a latched fault. A second
+      unit test (write32 fails, read32 returns SDA-high) covers the early path.
+    - No P0. sw test 476/476, e2e+proxyd 35, check-schema 20, sim_all green.
   - **libpacketwyrm config/flow-compiler hardening (part-review #2).** Eight
     fixes in the config/validate/compile layer:
     - **P1: a cross-card background (load) flow no longer aliases a real flow's
