@@ -9,6 +9,28 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Cross-cutting (whole-system) review — no P0.** A system-level pass
+    (end-to-end secret/auth/privilege, cross-thread concurrency, failure-mode
+    recovery, fd/mem/DMA lifecycle across module boundaries, generator↔consumer
+    contract consistency, adversarial data-plane timing) found the system
+    robust: production control socket fail-closes, proxyd is a stateless
+    secret-less relay with thread caps + timeouts, `config.load` rolls back and
+    reports out-of-sync honestly, `flow_meta` is 1:1 with the config,
+    the DMA in-band header/length contract matches host↔RTL, and tinet is
+    hardened. Two residual items, neither a code bug:
+    - The `pktwyrm --host` unverified-TLS MITM exposure is the **owner-accepted,
+      already-documented lab tradeoff** (see `docs/design/web-gui.md`) — no
+      change.
+    - **`test.arm` / `config.load` are not hitless** — `program_backends` pulses
+      the data-plane soft reset (intentional, to avoid wedging a reprogram over
+      a running plane) and the card worker's DMA slow path isn't paused around
+      it, so slow-path punt/inject/forward traffic takes a brief hit. Measured
+      on HW (07:00.0, build 0x6a4a18ad): rapid reloads during a control-plane
+      ping across the DUT gave ~23 % transient loss, recovering cleanly (no
+      wedge, no error latch). Documented in `docs/design/rpc-protocol.md` as a
+      by-design characteristic; a worker-quiesce to make reload closer to
+      hitless is a possible future improvement (not built — it only narrows the
+      inherent DP-reset window and there's no safety impact).
   - **Tooling / kernel / CI hardening (part-review #8).** Scope: pktwyrm-tinet,
     kernel skeleton, CI, docs. None touch the FPGA data path (validated by unit
     tests + the kernel build, not card HW). Three fixes:
