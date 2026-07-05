@@ -82,7 +82,18 @@ the gateway over HTTPS (`POST /api/rpc`) instead of the local Unix
 socket. Secret resolution is unchanged (`--secret` > `$PACKETWYRM_SECRET`
 > `--env` file). The gateway's cert is self-signed by default, so the
 client does not verify it (a one-time notice is printed); certificate
-verification (`--ca`) is a future addition.
+verification (`--ca` / fingerprint pinning) is a future addition.
+
+> **Security tradeoff (accepted, by design for the lab).** Because the
+> client does NOT verify the gateway certificate, the encrypted channel
+> is confidential but **not authenticated** — a man-in-the-middle on the
+> path could present its own cert and capture the `system.secret` (and
+> thus gain control). This is an accepted tradeoff for the lab use case
+> (`pktwyrm --host` over a **trusted network / SSH tunnel / VPN**). Do
+> NOT expose the gateway on an untrusted network without an authenticated
+> transport in front of it (e.g. an SSH tunnel, a VPN, or a reverse proxy
+> doing mTLS). Certificate/fingerprint pinning in `pktwyrm` would remove
+> this tradeoff and is tracked as a future addition.
 
 ## The GUI
 

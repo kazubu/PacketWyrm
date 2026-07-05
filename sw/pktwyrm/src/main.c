@@ -342,8 +342,13 @@ static int https_rpc_call(const char *hostarg, const char *send,
 
     static int warned = 0;
     if (!warned) {
-        fprintf(stderr, "pktwyrm: connecting to %s:%s over TLS without "
-                        "certificate verification (self-signed)\n", host, port);
+        /* The channel is encrypted but NOT authenticated (self-signed cert,
+         * unverified) -- a MITM could capture the secret. Accepted lab tradeoff:
+         * use only over a trusted network / SSH tunnel / VPN. See web-gui.md. */
+        fprintf(stderr, "pktwyrm: WARNING connecting to %s:%s over TLS WITHOUT "
+                        "certificate verification (self-signed) -- the secret is "
+                        "exposed to a man-in-the-middle; use only over a trusted "
+                        "network / SSH tunnel / VPN\n", host, port);
         warned = 1;
     }
 

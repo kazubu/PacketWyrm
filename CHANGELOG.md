@@ -9,6 +9,24 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Stats-counter data race + proxyd Content-Length + TLS-tradeoff docs
+    (review #8).** Three items:
+    - **P2: host-plane stats counters are now atomic.** The per-binding
+      punt/inject counters were plain `uint64_t` incremented by the card worker
+      thread while the main thread read them for the stats snapshot — a C data
+      race (UB / torn 64-bit reads). They are now `_Atomic uint64_t` (the `x++`
+      RMW and the stats read are well-defined); ordering is not relied on.
+    - **P3: proxyd parses `Content-Length` strictly.** It used `strtoul` at any
+      offset with no validation; it now matches only at a header-line start,
+      requires a purely-numeric value (digits then CR/LF), rejects overflow, and
+      rejects a duplicate `Content-Length` (a request-smuggling vector behind a
+      reverse proxy).
+    - **P1 (accepted tradeoff, documented): `pktwyrm --host` unverified TLS.**
+      The remote channel is encrypted but not authenticated (self-signed,
+      unverified), so a MITM could capture the secret. Kept as an accepted lab
+      tradeoff (use over a trusted network / SSH tunnel / VPN) — the one-time
+      warning now spells out the MITM risk, and `web-gui.md` documents it with
+      the mitigations; cert/fingerprint pinning is tracked as a future addition.
   - **First-install config seed + proxyd relay timeout + kernel CI (review #7).**
     "No serious issues"; three P2/P3 + CI-gap items:
     - **P2: the shipped unit's config file is now seeded on first install.**

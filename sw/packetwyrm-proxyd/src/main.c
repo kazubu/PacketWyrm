@@ -243,13 +243,30 @@ static ssize_t read_request(struct conn *c, char *buf, size_t cap,
         }
     }
 
-    /* Parse Content-Length (case-insensitive) within the header block. */
+    /* Parse Content-Length, strictly: only at a header-LINE start (not anywhere
+     * in the block), a purely-numeric value (digits then CR/LF), reject overflow
+     * and a DUPLICATE Content-Length (a conflicting/second value is a classic
+     * request-smuggling vector behind a reverse proxy). */
     size_t clen = 0;
-    for (size_t i = 0; i + 15 < header_end; i++) {
-        if (strncasecmp(buf + i, "Content-Length:", 15) == 0) {
-            clen = (size_t)strtoul(buf + i + 15, NULL, 10);
-            break;
-        }
+    int seen_cl = 0;
+    size_t line_start = 0;
+    for (size_t i = 0; i < header_end; i++) {
+        if (buf[i] == '\n') { line_start = i + 1; continue; }
+        if (i != line_start) continue;
+        if ((size_t)(header_end - i) <= 15 ||
+            strncasecmp(buf + i, "Content-Length:", 15) != 0) continue;
+        if (seen_cl) return -1;                 /* duplicate Content-Length */
+        seen_cl = 1;
+        const char *p = buf + i + 15;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p < '0' || *p > '9') return -1;    /* must have at least one digit */
+        errno = 0;
+        char *end = NULL;
+        unsigned long long v = strtoull(p, &end, 10);
+        while (*end == ' ' || *end == '\t') end++;
+        if (*end != '\r' && *end != '\n') return -1;   /* trailing junk */
+        if (errno == ERANGE) return -1;                /* overflow */
+        clen = (size_t)v;
     }
     if (clen > PW_IPC_FRAME_MAX) return -1;
     if (header_end + clen > cap) return -1;

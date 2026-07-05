@@ -18,6 +18,8 @@
 #include "packetwyrm/backend.h"
 #include "packetwyrm/types.h"
 
+#include <stdatomic.h>
+
 #define PW_HOST_PLANE_MAX_BINDINGS 32
 
 struct pw_host_binding {
@@ -31,14 +33,19 @@ struct pw_host_plane {
     struct pw_host_binding  bindings[PW_HOST_PLANE_MAX_BINDINGS];
     size_t                  n_bindings;
 
-    /* per-binding counters */
-    uint64_t punt_to_tap_ok      [PW_HOST_PLANE_MAX_BINDINGS];
-    uint64_t punt_to_tap_dropped [PW_HOST_PLANE_MAX_BINDINGS];
-    uint64_t tap_to_fpga_ok      [PW_HOST_PLANE_MAX_BINDINGS];
-    uint64_t tap_to_fpga_dropped [PW_HOST_PLANE_MAX_BINDINGS];
+    /* Per-binding counters. Atomic because the card worker thread increments
+     * them (`x++`, a well-defined atomic RMW on an _Atomic lvalue) while the
+     * main thread reads them for stats (an atomic load) -- a plain uint64_t
+     * would be a C data race (UB / torn 64-bit reads on some ABIs). Ordering
+     * isn't relied on: they are independent monotonic counters shown in a
+     * best-effort snapshot, not a synchronisation signal. */
+    _Atomic uint64_t punt_to_tap_ok      [PW_HOST_PLANE_MAX_BINDINGS];
+    _Atomic uint64_t punt_to_tap_dropped [PW_HOST_PLANE_MAX_BINDINGS];
+    _Atomic uint64_t tap_to_fpga_ok      [PW_HOST_PLANE_MAX_BINDINGS];
+    _Atomic uint64_t tap_to_fpga_dropped [PW_HOST_PLANE_MAX_BINDINGS];
 
     /* tracker for unrecognised punt logical_if_ids */
-    uint64_t punt_unknown_lif;
+    _Atomic uint64_t punt_unknown_lif;
 };
 
 pw_status pw_host_plane_init(struct pw_host_plane *hp,
