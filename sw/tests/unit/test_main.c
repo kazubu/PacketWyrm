@@ -315,6 +315,15 @@ static void test_parse_mac_hardening(void) {
     PW_ASSERT(!pw_parse_mac(NULL, m));
 }
 
+/* A backend whose CSR ops always FAIL -- proves pw_sfp_probe reports a
+ * CSR/backend fault as an error, not as an empty cage. */
+static pw_status failing_write32(void *ctx, uint32_t off, uint32_t v) {
+    (void)ctx; (void)off; (void)v; return PW_E_IO;
+}
+static pw_status failing_read32(void *ctx, uint32_t off, uint32_t *out) {
+    (void)ctx; (void)off; if (out) *out = 0; return PW_E_IO;
+}
+
 /* Part-review #3: device-driver / IO boundary hardening. These early-return
  * before any hardware access, so they run against the fake backend in CI. */
 static void test_part3_driver_hardening(void) {
@@ -339,6 +348,20 @@ static void test_part3_driver_hardening(void) {
     PW_ASSERT_EQ(pw_sfp_read(&b, 2, 0x50, 0, sbuf, 1), PW_E_INVAL);   /* bad port */
 
     pw_card_backend_close(&b);
+
+    /* pw_sfp_probe must report a CSR/backend fault as an ERROR, not as an empty
+     * cage (present=false + PW_OK). With a backend whose write32/read32 fail,
+     * the I2C error latch -> PW_E_BACKEND, which probe propagates. */
+    {
+        struct pw_card_backend_ops fops = {0};
+        fops.write32 = failing_write32;
+        fops.read32  = failing_read32;
+        struct pw_card_backend fb = { .ops = &fops, .ctx = NULL };
+        struct pw_sfp_info info;
+        pw_status ps = pw_sfp_probe(&fb, 0, &info);
+        PW_ASSERT(ps != PW_OK);          /* NOT silently reported as empty cage */
+        PW_ASSERT(!info.present);
+    }
 
     /* TAP open must reject an over-length interface name (silent truncation
      * would create a differently-named device). No CAP needed: the check is

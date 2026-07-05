@@ -16,9 +16,12 @@ struct i2c_bus {
     int      err;           /* latched: a CSR read/write failed mid-transaction.
                              * The bit-bang helpers can't each return status, so
                              * the first failure is latched here and the public
-                             * pw_sfp_read/write turn it into PW_E_IO -- otherwise
-                             * a BAR/VFIO fault reads as ACK=0/data=0 and looks
-                             * like a successful transfer of zeros. */
+                             * pw_sfp_read/write turn it into PW_E_BACKEND -- a
+                             * HARD error distinct from an I2C NAK (PW_E_IO =
+                             * empty cage), so pw_sfp_probe doesn't misreport a
+                             * BAR/VFIO fault as "no module". Otherwise the fault
+                             * reads as ACK=0/data=0 and looks like a successful
+                             * transfer of zeros. */
 };
 
 /* ~5 us half-bit; a BAR access is already ~1 us, so the bus runs well under
@@ -128,7 +131,11 @@ pw_status pw_sfp_read(const struct pw_card_backend *be, int port,
     for (size_t i = 0; i < len; i++)
         buf[i] = i2c_read_byte(&b, i + 1 < len);   /* ACK all but the last */
     i2c_stop(&b);
-    if (b.err) return PW_E_IO;   /* a CSR access failed mid-transaction: data is invalid */
+    /* Distinguish a CSR/backend fault from an I2C NAK: a NAK (empty cage) returns
+     * PW_E_IO above and pw_sfp_probe reads that as "no module". A CSR access
+     * failure must NOT be mistaken for an empty cage, so report it as
+     * PW_E_BACKEND (a hard error probe/callers propagate). */
+    if (b.err) return PW_E_BACKEND;
     return PW_OK;
 }
 
@@ -164,7 +171,7 @@ pw_status pw_sfp_write(const struct pw_card_backend *be, int port,
             if (ack == 0) { done = 1; break; }
         }
         if (!done) return PW_E_IO;
-        if (b.err) return PW_E_IO;   /* CSR access failed mid-transaction */
+        if (b.err) return PW_E_BACKEND;   /* CSR/backend fault, not an I2C NAK */
     }
     return PW_OK;
 }

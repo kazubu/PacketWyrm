@@ -48,7 +48,14 @@ For where work is going next, see `NEXT-STEPS.md`.
       daemon's single-threaded control loop — serializes per-card access; the
       card worker never touches those CSRs). A cross-process race is an operator
       hazard no in-process lock addresses.
-    - No P0. sw test 473/473, e2e+proxyd 35, check-schema 20, sim_all green.
+    - **Re-check (1 follow-on):** (P2) `pw_sfp_probe` now distinguishes a
+      CSR/backend fault from an empty cage. The SFP error-propagation fix above
+      made a CSR failure return `PW_E_IO` — the same code an I2C NAK (no module)
+      returns — so `probe` would report a BAR/VFIO fault as "no module". The
+      I2C-error latch now yields `PW_E_BACKEND` (a hard error `probe` propagates)
+      while an actual NAK stays `PW_E_IO` (empty cage). A failing-CSR-backend
+      unit test asserts `pw_sfp_probe` does not return `PW_OK`.
+    - No P0. sw test 475/475, e2e+proxyd 35, check-schema 20, sim_all green.
   - **libpacketwyrm config/flow-compiler hardening (part-review #2).** Eight
     fixes in the config/validate/compile layer:
     - **P1: a cross-card background (load) flow no longer aliases a real flow's
