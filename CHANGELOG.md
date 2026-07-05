@@ -37,6 +37,12 @@ For where work is going next, see `NEXT-STEPS.md`.
     - **P3: RPC dispatch rejects a non-object request and a non-string `rpc`.**
       A top-level array/scalar, or an `rpc` field that isn't a string, is
       refused rather than silently stringified into an unintended method name.
+    - **Re-check (1 follow-on): the new non-object branch leaked the request.**
+      `json_object_put(req)` sat inside the dispatch `else` block, so the
+      just-added "request must be a JSON object" branch never freed its
+      (non-NULL) `req` — a repeated `[]`/`"x"` frame slowly leaked daemon
+      memory. The free is now common post-processing (`if (req)
+      json_object_put(req)`), reached on every path.
     - No P0. sw test 476/476, e2e+proxyd 35, check-schema 20, sim_all green.
   - **libpacketwyrm device-driver / IO hardening (part-review #3).** Scope:
     pci/tap/sfp/spi_flash/gpio_sync/ipc. Eleven fixes:
