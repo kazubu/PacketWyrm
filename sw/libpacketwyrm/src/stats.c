@@ -2,6 +2,7 @@
 
 #include "packetwyrm/stats.h"
 
+#include <stdint.h>
 #include <string.h>
 
 pw_status pw_stats_aggregate(const struct pw_program *prog,
@@ -10,6 +11,13 @@ pw_status pw_stats_aggregate(const struct pw_program *prog,
                              struct pw_global_flow_stats *out,
                              size_t n_out) {
     if (!prog || !out || !per_card_flow_stats) return PW_E_INVAL;
+    if (prog->n_flow_meta && !prog->flow_meta) return PW_E_INVAL;
+    /* Reject sizes that would wrap the derived byte/element counts below
+     * (per_card_flow_stats is 2 per flow; out/memset is sizeof(*out) per flow),
+     * so a corrupt n_flow_meta can't slip past the capacity checks into an OOB
+     * read/write. Normal daemon inputs are tiny; this guards the API boundary. */
+    if (prog->n_flow_meta > SIZE_MAX / 2) return PW_E_INVAL;
+    if (prog->n_flow_meta > SIZE_MAX / sizeof(*out)) return PW_E_INVAL;
     if (n_out < prog->n_flow_meta) return PW_E_INVAL;
     if (n_flow_stats < prog->n_flow_meta * 2) return PW_E_INVAL;
 

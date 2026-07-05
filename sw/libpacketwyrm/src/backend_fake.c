@@ -195,6 +195,7 @@ static pw_status fake_card_info(void *vctx, struct pw_card_info *out) {
 static pw_status fake_flow_write(void *vctx, uint32_t row,
                                  const struct pwfpga_flow_config *f) {
     struct fake_ctx *c = vctx;
+    if (!f) return PW_E_INVAL;                 /* match bar_flow_write's contract */
     if (row >= FAKE_NUM_FLOWS) return PW_E_OUT_OF_RANGE;
     c->flow_staged[row] = *f;
     return PW_OK;
@@ -257,6 +258,7 @@ static pw_status fake_slow_path_tx(void *vctx, const void *frame, size_t len,
                                    uint32_t logical_if_id,
                                    uint8_t  egress_local_port) {
     struct fake_ctx *c = vctx;
+    if (!frame && len) return PW_E_INVAL;      /* don't memcpy from NULL in slow_push */
     if (slow_push(&c->tx_inject, frame, len, logical_if_id, egress_local_port) < 0)
         return PW_E_NO_RESOURCES;
     return PW_OK;
