@@ -9,6 +9,32 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **RTL data-plane SAF timing-contract fix (part-review #6).** Scope: RTL
+    data-plane / DMA. **P1 (bitstream rebuild required):** `pw_frame_saf`'s
+    store-and-forward buffer takes its keep/drop decision one cycle after the
+    frame's `tlast` and holds only a SINGLE speculative frame. But
+    `pw_data_plane_axis` fed it the RAW ingress stream while the classifier
+    decision (`rx_kv_d`) lands `tlast + 8` cycles later (parser is 4-stage —
+    `eof_q`→`validA`→`validA2`→`key_valid` — plus the +4 hash-classifier
+    realignment). So back-to-back frames (line-rate min IFG ≪ 8 cycles) stream
+    into the SAF before the prior frame's decision, and a prior DROP's rollback
+    (`wr_spec ← wr_commit`) discards the FOLLOWING FORWARD/PUNT frame's already
+    buffered beats → forward/punt frame corruption, loss, or a drain stall. It
+    was latent because the loss=0 line-rate test is pure TEST_RX (SAF output
+    unused) and cRPD forward/punt is sparse (gaps ≫ 8 cycles); a line-rate
+    forwarding workload (or forward/punt interleaved with drop/test on one
+    ingress) would hit it. **Fix:** delay the stream into the SAF by 7 cycles so
+    its `tlast` lands at `+7` and the decision at `+8 = tlast+1`, restoring the
+    module's contract (`pw_frame_saf` itself is unchanged and correct). A
+    constant delay preserves inter-frame gaps, so the MAC's "≥1 idle cycle
+    between frames" invariant still holds; `frame_ts` is snapshotted from the
+    delayed stream so punt metadata stays frame-aligned. The extra registers are
+    FFs (not LUTs), negligible for fit. Reproduced + verified in sim: a new
+    `tb_data_plane_axis` scenario sends a DROP frame immediately followed by a
+    FORWARD frame and asserts the FORWARD frame emerges intact (fails at delay 4,
+    passes at 7). sim_all green, Verilator lint (phase1 + phase3 core) OK.
+    **Pending: gated Vivado build + flash + HW re-validation** (LUT ~94.8%) —
+    batched with any part-review #7 RTL change.
   - **CLI + gateway + GUI hardening (part-review #5).** Scope: `pktwyrm`,
     `packetwyrm-proxyd`, GUI `index.html`. Six fixes:
     - **P1: `pktwyrm --host` HTTPS request can't over-read the stack.**

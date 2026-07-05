@@ -482,22 +482,62 @@ module pw_data_plane_axis #(
             wire act_punt = (rx_eff[gp].action == PW_ACT_PUNT_TO_HOST) ||
                             (rx_eff[gp].action == PW_ACT_MIRROR_TO_HOST);
 
+            // The SAF's timing contract is "the decision lands EXACTLY one cycle
+            // after the frame's tlast, with no next-frame beat in that cycle".
+            // The decision fed here is rx_kv_d = rx_kv + 4 (the hash-classifier
+            // realignment), and the parser emits rx_kv FOUR cycles after tlast
+            // (eof_q +1 -> validA +2 -> validA2 +3 -> key_valid +4), so the
+            // decision actually lands rx_kv_d = tlast + 8. Feeding the SAF the RAW
+            // stream while the decision lands +8 VIOLATES the contract by 7
+            // cycles: back-to-back frames (line-rate min IFG << 8 cycles) stream
+            // into the SAF before the prior frame's decision, so a prior DROP's
+            // rollback discards the following FORWARD/PUNT frame's beats (data
+            // corruption / drain stall). (This latent bug predates the +4
+            // realignment -- the parser was already 4-stage -- and hid because
+            // the loss=0 line-rate test is pure TEST_RX (SAF output unused) and
+            // cRPD forward/punt is sparse.) Restore the contract by delaying the
+            // stream into the SAF by 7 cycles so its tlast lands at +7 and the
+            // decision at +8 = SAF tlast + 1. A constant delay preserves the
+            // inter-frame gap, so the ">=1 idle cycle between frames" invariant
+            // the MAC guarantees (min IFG ~2.5 beats) still holds. The extra
+            // registers are FFs, not LUTs -- negligible for fit.
+            localparam int SAF_DLY = 7;
+            logic [63:0] rxd_td [1:SAF_DLY];
+            logic [7:0]  rxd_tk [1:SAF_DLY];
+            logic        rxd_tv [1:SAF_DLY];
+            logic        rxd_tl [1:SAF_DLY];
+            logic [63:0] rxd_ts [1:SAF_DLY];   // wire-ts pipelined alongside (for frame_ts)
+            always_ff @(posedge clk or negedge rst_n) begin
+                if (!rst_n) begin
+                    for (int s = 1; s <= SAF_DLY; s++) begin
+                        rxd_td[s] <= '0; rxd_tk[s] <= '0; rxd_tv[s] <= 1'b0;
+                        rxd_tl[s] <= 1'b0; rxd_ts[s] <= '0;
+                    end
+                end else begin
+                    rxd_td[1] <= s_axis_rx_tdata[gp];  rxd_tk[1] <= s_axis_rx_tkeep[gp];
+                    rxd_tv[1] <= s_axis_rx_tvalid[gp]; rxd_tl[1] <= s_axis_rx_tlast[gp];
+                    rxd_ts[1] <= s_axis_rx_wire_ts[gp];
+                    for (int s = 2; s <= SAF_DLY; s++) begin
+                        rxd_td[s] <= rxd_td[s-1]; rxd_tk[s] <= rxd_tk[s-1];
+                        rxd_tv[s] <= rxd_tv[s-1]; rxd_tl[s] <= rxd_tl[s-1];
+                        rxd_ts[s] <= rxd_ts[s-1];
+                    end
+                end
+            end
+
             // RX wire timestamp (servo-facing): the wire-arrival time of this
-            // frame (sampled in the MAC RX clock domain, board top) rides on
-            // s_axis_rx_wire_ts, held constant across the frame. Snapshot it at
-            // EOF into frame_ts and carry it in the punt metadata to the host --
-            // a true wire stamp, not a post-FIFO dp_clk sample. frame_ts holds
-            // until the next frame's EOF (>> the classifier decision latency),
-            // so it is still valid when the SAF decision lands.
+            // frame, held constant across the frame. Snapshot it at EOF of the
+            // DELAYED stream so frame_ts is aligned with the (delayed) SAF frame
+            // and still holds the right frame's value when its decision lands.
             logic        in_frame;
             logic [63:0] sof_ts, frame_ts;
             always_ff @(posedge clk or negedge rst_n) begin
                 if (!rst_n) begin in_frame <= 1'b0; sof_ts <= '0; frame_ts <= '0; end
-                else if (s_axis_rx_tvalid[gp]) begin
-                    if (!in_frame) sof_ts <= s_axis_rx_wire_ts[gp];
-                    in_frame <= !s_axis_rx_tlast[gp];
-                    if (s_axis_rx_tlast[gp])
-                        frame_ts <= in_frame ? sof_ts : s_axis_rx_wire_ts[gp];  // single-beat -> this beat
+                else if (rxd_tv[SAF_DLY]) begin
+                    if (!in_frame) sof_ts <= rxd_ts[SAF_DLY];
+                    in_frame <= !rxd_tl[SAF_DLY];
+                    if (rxd_tl[SAF_DLY])
+                        frame_ts <= in_frame ? sof_ts : rxd_ts[SAF_DLY];  // single-beat -> this beat
                 end
             end
 
@@ -509,10 +549,10 @@ module pw_data_plane_axis #(
             ) u_saf (
                 .clk             (clk),
                 .rst_n           (dp_rst_n),   // soft-reset clears wedged FIFO
-                .s_tdata         (s_axis_rx_tdata[gp]),
-                .s_tkeep         (s_axis_rx_tkeep[gp]),
-                .s_tvalid        (s_axis_rx_tvalid[gp]),
-                .s_tlast         (s_axis_rx_tlast[gp]),
+                .s_tdata         (rxd_td[SAF_DLY]),
+                .s_tkeep         (rxd_tk[SAF_DLY]),
+                .s_tvalid        (rxd_tv[SAF_DLY]),
+                .s_tlast         (rxd_tl[SAF_DLY]),
                 .dec_valid_i     (rx_kv_d[gp]),
                 .dec_keep_i      (rx_kv_d[gp] && rx_eff[gp].hit && (act_fwd || act_punt)),
                 .dec_route_i     (act_punt ? {1'b1, 4'd0}

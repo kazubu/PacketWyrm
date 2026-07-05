@@ -761,6 +761,30 @@ module tb_data_plane_axis;
             check_eq("forward dst-mac byte0", tx1_data[0][7:0], 8'h02);
         check_eq("forward not punted", pn_keep.size(), 0);
 
+        // -------- scenario 7b: back-to-back DROP then FORWARD ------------
+        // Regression for the SAF timing-contract bug: the classifier decision
+        // lands ~5 cycles after tlast, so a DROP frame immediately followed by
+        // a FORWARD frame (gap < decision latency) used to have the DROP's
+        // rollback discard the FORWARD frame's already-buffered beats. rule0
+        // (udp_dst==60000 -> FORWARD egress1) is still programmed; frame A
+        // (udp_dst 12345, no match -> DROP) is sent, then frame B (udp_dst
+        // 60000 -> FORWARD) back-to-back. B must forward intact.
+        scenario = "b2b_drop_fwd";
+        tx1_data.delete(); tx1_keep.delete(); tx1_last.delete();
+        pn_data.delete();  pn_keep.delete();  pn_last.delete();
+        build_plain_udp(16'd12345);   // frame A: no rule matches -> DROP
+        inject(0);
+        repeat (3) @(posedge clk);    // realistic inter-frame gap (>= MAC min IFG,
+                                      // < the classifier decision latency) so this
+                                      // exercises the prior-frame-decision window
+        build_plain_udp(16'd60000);   // frame B: rule0 -> FORWARD egress1
+        inject(0);
+        repeat (24) @(posedge clk);
+        check_eq("b2b forward frame B bytes", qbytes(tx1_keep), 42);
+        check_eq("b2b forward saw last",
+                 (tx1_last.size() > 0 && tx1_last[tx1_last.size()-1]) ? 1 : 0, 1);
+        check_eq("b2b not punted", pn_keep.size(), 0);
+
         // ---------------- scenario 8: PUNT_TO_HOST -----------------------
         scenario = "punt";
         tx1_data.delete(); tx1_keep.delete(); tx1_last.delete();
