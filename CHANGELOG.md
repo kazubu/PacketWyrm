@@ -9,6 +9,35 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **`packetwyrmd` daemon hardening (part-review #4).** Scope:
+    `sw/packetwyrmd/src/main.c`. Seven fixes:
+    - **P1: `config.save` no longer follows a symlink at its temp path.** It
+      wrote a fixed `<env>.tmp` with `open(O_CREAT|O_TRUNC)`, which follows a
+      symlink — a local user with write access to the config directory could
+      pre-plant one and make the root daemon truncate/write an arbitrary file.
+      It now `mkstemp`s a uniquely-named temp in the same directory (`O_EXCL`,
+      0600, no symlink follow), applies the preserved mode/owner, then renames.
+    - **P1: `setup_taps` can't overflow the TAP table.** `taps[]` is a fixed
+      `PW_HOST_PLANE_MAX_BINDINGS` (32) array, but the per-card bind limit
+      doesn't bound the *global* count (N cards × per-card can exceed 32), so a
+      config with enough logical interfaces overran the stack array. `setup_taps`
+      now takes a `max_taps` and refuses to exceed it.
+    - **P2: OOM is handled, not dereferenced.** `setup_taps` checks the
+      `calloc`/`pw_host_plane_init` result (frees + fails cleanly); `config.load`
+      NULL-checks `pw_program_new()`/`pw_config_new()` and returns
+      `out of memory`.
+    - **P2: `setup_taps` rewinds on a fatal failure** (closes the TAP fds it
+      opened + frees the host-planes) via a `goto fail` cleanup, rather than
+      relying on process exit to reclaim them.
+    - **P2: `test.arm` doesn't clear counters when re-programming hard-fails.**
+      A failed `program_backends` (card drop / BAR error / partial apply) used
+      to still `STATS_CLEAR` every card and report only a `failed` count — a
+      failed arm looked armed. It now skips the clear and returns
+      `programmed:false`.
+    - **P3: RPC dispatch rejects a non-object request and a non-string `rpc`.**
+      A top-level array/scalar, or an `rpc` field that isn't a string, is
+      refused rather than silently stringified into an unintended method name.
+    - No P0. sw test 476/476, e2e+proxyd 35, check-schema 20, sim_all green.
   - **libpacketwyrm device-driver / IO hardening (part-review #3).** Scope:
     pci/tap/sfp/spi_flash/gpio_sync/ipc. Eleven fixes:
     - **P1: SPI flash — 24-bit address range validated.** `pw_flash_program`

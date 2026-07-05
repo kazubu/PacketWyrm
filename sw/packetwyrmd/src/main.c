@@ -194,16 +194,25 @@ struct tap_handle {
 static int setup_taps(const struct pw_config *cfg,
                       struct card_runtime cards[],
                       struct pw_host_plane *hps[MAX_CARDS],
-                      struct tap_handle    *taps,
+                      struct tap_handle    *taps, int max_taps,
                       bool verbose, bool allow_fake) {
     int n_taps = 0;
     for (size_t i = 0; i < cfg->n_logical_if; i++) {
         const struct pw_logical_if *lif = &cfg->logical_if[i];
+        /* taps[] is a fixed max_taps-element array; per-card bind limits don't
+         * bound the GLOBAL count (N cards * per-card limit can exceed it), so
+         * guard here to avoid overrunning the array. */
+        if (n_taps >= max_taps) {
+            fprintf(stderr, "logical_if %s: TAP table full (max %d); "
+                    "ignoring further logical_ifs\n", lif->name, max_taps);
+            if (!allow_fake) goto fail;
+            break;
+        }
         uint8_t egress_lp = 0;
         struct pw_card_backend *b = backend_for_lif(cfg, cards, lif, &egress_lp);
         if (!b) {
             fprintf(stderr, "logical_if %s: no backend (port unresolved)\n", lif->name);
-            if (!allow_fake) return -1;
+            if (!allow_fake) goto fail;
             continue;
         }
         int fd = -1;
@@ -212,7 +221,7 @@ static int setup_taps(const struct pw_config *cfg,
         if (r != PW_OK) {
             fprintf(stderr, "logical_if %s: pw_tap_open failed: %s\n",
                     lif->name, pw_strerror(r));
-            if (!allow_fake) return -1;
+            if (!allow_fake) goto fail;
             continue;
         }
         /* MAC/MTU/up are part of "the TAP is usable"; a failure here is a
@@ -225,7 +234,7 @@ static int setup_taps(const struct pw_config *cfg,
                     "(mac=%s mtu=%s up=%s)\n", lif->name,
                     pw_strerror(mr), pw_strerror(tr), pw_strerror(ur));
             pw_tap_close(fd);
-            return -1;
+            goto fail;
         }
 
         /* Find the host_plane belonging to this lif's card. */
@@ -236,14 +245,22 @@ static int setup_taps(const struct pw_config *cfg,
 
         if (!hps[card_index]) {
             hps[card_index] = calloc(1, sizeof(*hps[card_index]));
-            pw_host_plane_init(hps[card_index], b);
+            if (!hps[card_index] ||
+                pw_host_plane_init(hps[card_index], b) != PW_OK) {
+                fprintf(stderr, "logical_if %s: host-plane init failed "
+                        "(out of memory?)\n", lif->name);
+                free(hps[card_index]); hps[card_index] = NULL;
+                pw_tap_close(fd);
+                if (!allow_fake) goto fail;
+                continue;
+            }
         }
         pw_status br = pw_host_plane_bind(hps[card_index], lif->id, fd, egress_lp);
         if (br != PW_OK) {
             fprintf(stderr, "logical_if %s: bind failed: %s\n",
                     lif->name, pw_strerror(br));
             pw_tap_close(fd);
-            if (!allow_fake) return -1;
+            if (!allow_fake) goto fail;
             continue;
         }
         taps[n_taps] = (struct tap_handle){ .fd = fd, .lif_id = lif->id };
@@ -255,6 +272,16 @@ static int setup_taps(const struct pw_config *cfg,
         n_taps++;
     }
     return n_taps;
+fail:
+    /* Production fatal path: rewind everything opened so far so the caller can
+     * exit cleanly (the fds/host-planes are otherwise only reclaimed by process
+     * exit). taps[] own the TAP fds; the host-planes only reference them (bind
+     * does not dup), so close the fds once and free the host-plane structs. */
+    for (int t = 0; t < n_taps; t++) pw_tap_close(taps[t].fd);
+    for (size_t k = 0; k < cfg->n_cards && k < MAX_CARDS; k++) {
+        if (hps[k]) { free(hps[k]); hps[k] = NULL; }
+    }
+    return -1;
 }
 
 static uint64_t now_ms(void) {
@@ -597,6 +624,7 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
     struct pw_program *new_prog = pw_program_new();
     struct pw_diag     diag = {0};
     struct json_object *resp = NULL;
+    if (!new_prog) { resp = build_error("out of memory"); goto fail; }
 
     /* Parse the payload as a TEST config (system/cards optional). config.load
      * ONLY swaps flows/forwards -- the environment (cards / logical_ifs /
@@ -607,6 +635,7 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
      * (checked below) -- they are otherwise ignored, never swapped in (which
      * would zero system.secret and the rest of the environment). */
     struct pw_config *payload = pw_config_new();
+    if (!payload) { resp = build_error("out of memory"); goto fail; }
     pw_status r = pw_config_parse_string_ex(yaml, yaml_len, PW_CFG_TEST_ONLY, payload, &diag);
     if (r != PW_OK) {
         char msg[600];
@@ -911,12 +940,23 @@ static struct json_object *do_config_save(struct pw_config **cfg_pp,
         mode = st.st_mode & 07777;
         uid = st.st_uid; gid = st.st_gid;
     }
-    char tmp[1024];
-    if ((size_t)snprintf(tmp, sizeof(tmp), "%s.tmp", g_env_path) >= sizeof(tmp)) {
+    /* Create a UNIQUELY-named temp file in the same directory via mkstemp
+     * (O_CREAT|O_EXCL, mode 0600, does not follow symlinks) then rename over the
+     * target. A fixed "<path>.tmp" opened O_CREAT|O_TRUNC would follow a
+     * pre-planted symlink and let a local user with write access to the config
+     * directory trick the root daemon into truncating/writing an arbitrary
+     * file. */
+    char dirbuf[1024];
+    if ((size_t)snprintf(dirbuf, sizeof(dirbuf), "%s", g_env_path) >= sizeof(dirbuf)) {
         free(rewritten); return build_error("env path too long");
     }
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, mode);
-    if (fd < 0) { free(rewritten); return build_error("cannot open env config for writing"); }
+    char tmp[1088];
+    if ((size_t)snprintf(tmp, sizeof(tmp), "%s/.packetwyrmd-save.XXXXXX",
+                         dirname(dirbuf)) >= sizeof(tmp)) {
+        free(rewritten); return build_error("env path too long");
+    }
+    int fd = mkstemp(tmp);
+    if (fd < 0) { free(rewritten); return build_error("cannot create temp env config"); }
     /* Enforce mode + owner explicitly (open() mode is masked by umask; a
      * preserved non-root owner needs an explicit fchown by the root daemon).
      * The mode is the security-critical part (this file holds system.secret), so
@@ -1776,10 +1816,17 @@ static void handle_client(int cfd,
     struct json_object *resp = NULL;
     if (!req) {
         resp = build_error("invalid JSON");
+    } else if (json_object_get_type(req) != json_type_object) {
+        /* A top-level array/scalar isn't a request envelope; reject it rather
+         * than letting object-field lookups silently no-op into "unknown rpc". */
+        resp = build_error("request must be a JSON object");
     } else {
         struct json_object *rpc;
         const char *name = NULL;
-        if (json_object_object_get_ex(req, "rpc", &rpc)) {
+        /* `rpc` must be a STRING -- json_object_get_string() would otherwise
+         * stringify a number/bool/object and match an unintended method name. */
+        if (json_object_object_get_ex(req, "rpc", &rpc) &&
+            json_object_get_type(rpc) == json_type_string) {
             name = json_object_get_string(rpc);
         }
         /* Access control: when the environment config sets a secret, every
@@ -1844,14 +1891,24 @@ static void handle_client(int cfd,
              * card so a measurement run starts from zero (the data plane
              * has no auto-reset; only this CSR write or rst_n). test.start
              * / test.stop walk every flow and flip the enable bit. */
+            bool arm_programmed = true;
             if (!strcmp(name, "test.arm")) {
-                if (program_backends(prog, cfg, cards) != PW_OK) failed++;
-                for (size_t ci = 0; ci < cfg->n_cards; ci++) {
-                    if (cards[ci].open && cards[ci].backend.ops->write32) {
-                        pw_status s = cards[ci].backend.ops->write32(
-                            cards[ci].backend.ctx, PWFPGA_REG_STATS_CLEAR, 1u);
-                        if (s == PW_OK) changed++;
-                        else            failed++;
+                /* Re-push the compiled program first. If it HARD-fails the FPGA
+                 * may be only partially programmed -- do NOT clear the RX
+                 * counters then (a clear would wipe measurement state and make a
+                 * failed arm look armed). Report programmed:false so the operator
+                 * re-arms / restarts instead of trusting zeroed counters. */
+                if (program_backends(prog, cfg, cards) != PW_OK) {
+                    failed++;
+                    arm_programmed = false;
+                } else {
+                    for (size_t ci = 0; ci < cfg->n_cards; ci++) {
+                        if (cards[ci].open && cards[ci].backend.ops->write32) {
+                            pw_status s = cards[ci].backend.ops->write32(
+                                cards[ci].backend.ctx, PWFPGA_REG_STATS_CLEAR, 1u);
+                            if (s == PW_OK) changed++;
+                            else            failed++;
+                        }
                     }
                 }
             } else {
@@ -1867,6 +1924,9 @@ static void handle_client(int cfd,
             json_object_object_add(resp, "action", json_object_new_string(name));
             json_object_object_add(resp, "changed", json_object_new_int(changed));
             json_object_object_add(resp, "failed",  json_object_new_int(failed));
+            if (!strcmp(name, "test.arm"))   /* false => re-program hard-failed, counters NOT cleared */
+                json_object_object_add(resp, "programmed",
+                                       json_object_new_boolean(arm_programmed));
         } else if (!strcmp(name, "stats.clear")) {
             /* Soft-clear all RX checker + per-port counters + histogram on
              * every card (same CSR as test.arm's clear) without re-pushing the
@@ -2217,7 +2277,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "warning: initial FPGA programming hard-failed -- "
                 "device may not match config (check the card / BAR)\n");
     }
-    int n_taps = setup_taps(cfg, cards, hps, taps, true, allow_fake);
+    int n_taps = setup_taps(cfg, cards, hps, taps, PW_HOST_PLANE_MAX_BINDINGS,
+                            true, allow_fake);
     if (n_taps < 0) {
         fprintf(stderr, "fatal: a configured logical_if could not get a working "
                 "TAP; the control-plane path would blackhole "
