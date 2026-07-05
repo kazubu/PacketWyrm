@@ -1054,6 +1054,14 @@ static void test_background_and_match_mask(void) {
     PW_ASSERT_EQ(prog->per_card[0].map_entries[0].local_flow_id, 0);
     PW_ASSERT_EQ(prog->per_card[0].map_entries[1].flow_id, 2);
     PW_ASSERT_EQ(prog->per_card[0].map_entries[1].local_flow_id, 1);
+    /* flow_meta must be 1:1 with cfg->flows even for the background flow (index
+     * 2, id 3) -- the daemon indexes flow.stats / test.start-stop / quiesce by
+     * flow_index, so a zero-initialized meta there reads flow_id 0 / card 0 /
+     * slot 0. It is TX-only, so its TX row is the 3rd (local slot 2) and latency
+     * is not valid. */
+    PW_ASSERT_EQ(prog->flow_meta[2].global_flow_id, 3);
+    PW_ASSERT_EQ(prog->flow_meta[2].tx_local_flow_id, 2);
+    PW_ASSERT(!prog->flow_meta[2].latency_valid);
     pw_program_free(prog);
     pw_config_free(cfg);
 }

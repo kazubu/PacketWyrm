@@ -9,6 +9,20 @@ For where work is going next, see `NEXT-STEPS.md`.
 ## Unreleased
 
 ### Added
+  - **Background-flow `flow_meta` fix + proxyd loopback default (review #9).**
+    - **P1: a background (load) flow left its `flow_meta` zero-initialized.** The
+      flow compiler filled `prog->flow_meta[i]` *after* the background flow's
+      early return, but the daemon requires `cfg->flows[i]` ↔ `flow_meta[i]` to
+      be 1:1 — so `flows`/`flow.stats` RPCs, `test.start`/`test.stop`, and the
+      `config.load` quiesce all read flow_id 0 / card 0 / slot 0 for a background
+      flow (wrong card/enabled, wrong stats slot, un-quiesceable). `flow_meta` is
+      now populated before the early return (`latency_valid=false`, TX-only);
+      unit test asserts the background flow's meta id/slot.
+    - **P3: the shipped `packetwyrm-proxyd` unit binds `127.0.0.1:8443` by
+      default.** It bound `0.0.0.0`, which correctly fail-closes without a
+      `system.secret` — but the first-install seeded config has none, so proxyd
+      failed to start out of the box. Loopback is a clean default; exposing it is
+      a deliberate opt-in (set a secret + `--listen 0.0.0.0:8443`).
   - **Stats-counter data race + proxyd Content-Length + TLS-tradeoff docs
     (review #8).** Three items:
     - **P2: host-plane stats counters are now atomic.** The per-binding

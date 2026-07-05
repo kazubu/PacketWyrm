@@ -9,8 +9,12 @@ Type=simple
 # TLS-terminating relay to the daemon's Unix control socket. Serves the
 # embedded Web GUI and POST /api/rpc. Self-signed cert by default; pass
 # --tls-cert/--tls-key for a real certificate. See docs/design/web-gui.md.
+# Binds 127.0.0.1 by default so a fresh install starts cleanly (a public
+# 0.0.0.0 bind fail-closes unless system.secret is set -- which the seeded
+# example config isn't). To expose it, set system.secret in the env config
+# and change --listen to 0.0.0.0:8443 (deliberate opt-in).
 ExecStart=/usr/local/sbin/packetwyrm-proxyd \
-    --listen 0.0.0.0:8443 \
+    --listen 127.0.0.1:8443 \
     --socket /run/packetwyrm/packetwyrmd.sock
 Restart=on-failure
 RestartSec=2s

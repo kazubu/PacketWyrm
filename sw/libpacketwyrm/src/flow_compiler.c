@@ -436,6 +436,21 @@ static pw_status compile_one_flow(struct pw_program *out,
     tx_row.rx_check_enable = (same_card && !f->background) ? 1 : 0;
     if ((r = append_flow(tx_cp, &tx_row)) != PW_OK) return r;
 
+    /* Populate flow_meta HERE (before the background early-return): the daemon
+     * requires cfg->flows[i] and prog->flow_meta[i] to be 1:1 -- the flows /
+     * flow.stats RPCs, test.start/stop, and the config.load quiesce all index by
+     * flow_index. A background (TX-only) flow left this zero-initialized, so those
+     * paths read flow_id 0 / card 0 / slot 0 for it. latency_valid is false for
+     * background (no RX check); otherwise same_card. */
+    out->flow_meta[flow_index] = (struct pw_flow_meta){
+        .global_flow_id = f->id,
+        .tx_card_id = tx.card_id,
+        .rx_card_id = rx.card_id,
+        .tx_local_flow_id = tx_lfid,
+        .rx_local_flow_id = rx_lfid,
+        .latency_valid = same_card && !f->background,
+    };
+
     if (f->background)
         return PW_OK;   /* no RX flow row, no classifier entry (frees a slot) */
 
@@ -479,14 +494,7 @@ static pw_status compile_one_flow(struct pw_program *out,
         if ((r = append_map(rx_cp, f->id, rx_lfid)) != PW_OK) return r;
     }
 
-    out->flow_meta[flow_index] = (struct pw_flow_meta){
-        .global_flow_id = f->id,
-        .tx_card_id = tx.card_id,
-        .rx_card_id = rx.card_id,
-        .tx_local_flow_id = tx_lfid,
-        .rx_local_flow_id = rx_lfid,
-        .latency_valid = same_card,
-    };
+    /* flow_meta was populated above (before the background early-return). */
     return PW_OK;
 }
 
