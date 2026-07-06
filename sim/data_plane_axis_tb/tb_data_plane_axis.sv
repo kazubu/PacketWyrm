@@ -169,11 +169,14 @@ module tb_data_plane_axis;
     logic [31:0] flow_jit_max   [FLOWS];
     logic [63:0] flow_jit_sum   [FLOWS];
     logic [47:0] flow_tx_d      [FLOWS];
+    logic [63:0] flow_tx_bytes_d [FLOWS];
+    logic [63:0] flow_rx_bytes_d [FLOWS];
     // scalar dut read port (merged record for flow_rd_addr).
     logic [$clog2(FLOWS)-1:0] flow_rd_addr = '0;
     logic [63:0] dp_rx, dp_lost, dp_dup, dp_ooo, dp_lseq, dp_minl, dp_maxl, dp_suml, dp_samp, dp_jsum;
     logic [31:0] dp_jmin, dp_jmax;
     logic [47:0] dp_tx;
+    logic [63:0] dp_txb, dp_rxb;
     logic [15:0] hist_rd_addr = 16'h0;
     logic [63:0] hist_rd_data;
     logic [31:0] port_drops         [PORTS];
@@ -304,6 +307,8 @@ module tb_data_plane_axis;
         .flow_jit_max     (dp_jmax),
         .flow_jit_sum     (dp_jsum),
         .flow_tx          (dp_tx),
+        .flow_tx_bytes    (dp_txb),
+        .flow_rx_bytes    (dp_rxb),
         .hist_rd_addr_i   (hist_rd_addr),
         .hist_rd_data_o   (hist_rd_data),
         .port_drops_o          (port_drops),
@@ -370,7 +375,7 @@ module tb_data_plane_axis;
             flow_last_seq[f]=dp_lseq; flow_min_lat[f]=dp_minl; flow_max_lat[f]=dp_maxl;
             flow_sum_lat[f]=dp_suml; flow_samples[f]=dp_samp;
             flow_jit_min[f]=dp_jmin; flow_jit_max[f]=dp_jmax; flow_jit_sum[f]=dp_jsum;
-            flow_tx_d[f]=dp_tx;
+            flow_tx_d[f]=dp_tx; flow_tx_bytes_d[f]=dp_txb; flow_rx_bytes_d[f]=dp_rxb;
         end
     endtask
 
@@ -626,6 +631,15 @@ module tb_data_plane_axis;
         // per-flow TX counter (gen slot 0) -> true loss = tx - rx >= 0.
         check_eq("flow0 tx_frames > 0",   (flow_tx_d[0] > 0) ? 1 : 0, 1);
         check_eq("flow0 tx >= rx (loss)", (flow_tx_d[0] >= flow_rx[0]) ? 1 : 0, 1);
+        // per-flow byte counters track frames*len (>= 60B/frame), rx bytes match
+        // rx frames on a clean loopback.
+        check_eq("flow0 tx_bytes >= 60*frames",
+                 (flow_tx_bytes_d[0] >= 60*flow_tx_d[0]) ? 1 : 0, 1);
+        check_eq("flow0 rx_bytes >= 60*rx_frames",
+                 (flow_rx_bytes_d[0] >= 60*flow_rx[0]) ? 1 : 0, 1);
+        check_eq("flow0 rx_bytes/rx == tx_bytes/tx (same len)",
+                 (flow_rx[0] > 0 && flow_tx_d[0] > 0 &&
+                  (flow_rx_bytes_d[0]/flow_rx[0]) == (flow_tx_bytes_d[0]/flow_tx_d[0])) ? 1 : 0, 1);
         check_eq("loopback ooo  ", flow_ooo[0], 0);
         check_eq("loopback samples == rx", flow_samples[0], flow_rx[0]);
         check_eq("loopback min <= max",

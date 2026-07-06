@@ -40,8 +40,19 @@ module tb_parser_axis;
         .ingress_port_i(4'd3),
         .rx_wire_ts_i(ts),
         .key_o(key), .key_valid_o(key_valid), .rx_wire_ts_o(rx_wire_ts),
+        .frame_len_o(frame_len),
         .window_o(), .base_o()
     );
+    logic [15:0] frame_len;   // parser frame_len output (aligned with key_valid)
+    // Ground-truth emitted length: sum tkeep bits over the frame's beats, latched
+    // at tlast, so frame_len_o (aligned 4 cyc later with key_valid) can be checked.
+    int          run_len, eof_len;
+    always_ff @(posedge clk) begin
+        if (tv) begin
+            if (tl) begin eof_len <= run_len + $countones(tk); run_len <= 0; end
+            else          run_len <= run_len + $countones(tk);
+        end
+    end
 
     int seen = 0;
     logic [63:0] last_seq;
@@ -53,6 +64,7 @@ module tb_parser_axis;
         ts <= ts + 1;
         if (rst_n && key_valid && key.is_test) begin
             chk($sformatf("rx_wire_ts == eof_ts #%0d", seen), rx_wire_ts == eof_ts);
+            chk($sformatf("frame_len == eof_len #%0d", seen), frame_len == 16'(eof_len));
             if (seen == 0) begin
                 chk("is_ipv4",       key.is_ipv4);
                 chk("is_udp",        key.is_udp);

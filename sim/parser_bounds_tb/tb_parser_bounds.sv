@@ -29,7 +29,7 @@ module tb_parser_bounds;
         .s_tdata(td), .s_tkeep(tk), .s_tvalid(tv), .s_tready(), .s_tlast(tl),
         .ingress_port_i(4'd1),
         .rx_wire_ts_i(64'd0),
-        .key_o(key), .key_valid_o(key_valid), .rx_wire_ts_o(), .window_o(), .base_o()
+        .key_o(key), .key_valid_o(key_valid), .rx_wire_ts_o(), .frame_len_o(), .window_o(), .base_o()
     );
 
     // frame byte buffer + builder helpers

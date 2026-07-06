@@ -56,6 +56,10 @@ module pw_test_rx_checker_bram #(
     input  pw_match_key_t        key_i,
     input  pw_class_result_t     result_i,
     input  wire                  event_valid_i,
+    // Received L2 frame byte length for THIS event, aligned with the event like
+    // timestamp_i. Accumulated per flow into rx_bytes (every classified frame,
+    // test or not -- same gating as rx_frames) so a client can compute rx bps.
+    input  wire [15:0]           byte_len_i,
 
     // Registered histogram event (always driven), as in pw_test_rx_checker.
     output logic                 hist_ev_o,
@@ -73,6 +77,7 @@ module pw_test_rx_checker_bram #(
     input  wire                  rd_en_i,
     output logic                 rd_valid_o,
     output logic [63:0]          rd_rx_frames_o,
+    output logic [63:0]          rd_rx_bytes_o,
     output logic [63:0]          rd_lost_o,
     output logic [63:0]          rd_duplicate_o,
     output logic [63:0]          rd_out_of_order_o,
@@ -102,7 +107,8 @@ module pw_test_rx_checker_bram #(
     localparam int OFF_JMAX  = 672;   // jitter_max     (32)
     localparam int OFF_PREVL = 704;   // prev_latency   (32)
     localparam int OFF_SEEN  = 736;   // flow_seen      (1)
-    localparam int REC_W     = 737;
+    localparam int OFF_RXB   = 737;   // rx_bytes       (64)
+    localparam int REC_W     = 801;
     localparam int AW        = $clog2(NUM_FLOWS);
 
     // A freshly-cleared record: latency/jitter min seeded to all-ones, the
@@ -155,6 +161,7 @@ module pw_test_rx_checker_bram #(
     logic [AW-1:0]                 s1_idx;
     logic [63:0]                   s1_seq;
     logic [63:0]                   s1_lat;
+    logic [15:0]                   s1_bytelen;
     logic [$clog2(NUM_BUCKETS)-1:0] s1_bucket;
 
     // bypass register: the record just written by the previous RMW.
@@ -201,6 +208,7 @@ module pw_test_rx_checker_bram #(
             s1_idx    <= result_i.local_flow_id[AW-1:0];
             s1_seq    <= key_i.test_sequence;
             s1_lat    <= lat;
+            s1_bytelen<= byte_len_i;
             s1_bucket <= ($clog2(NUM_BUCKETS))'(b);
         end
     end
@@ -236,8 +244,9 @@ module pw_test_rx_checker_bram #(
             jmax   = rec[OFF_JMAX +: 32];
             nr     = rec;
 
-            // rx_frames counts every classified frame (test or not).
+            // rx_frames + rx_bytes count every classified frame (test or not).
             nr[OFF_RXF  +: 64] = rec[OFF_RXF  +: 64] + 64'd1;
+            nr[OFF_RXB  +: 64] = rec[OFF_RXB  +: 64] + 64'(s1_bytelen);
 
             // Sequence + latency + jitter need the test header; only update them
             // for is_test frames. Header-defined flows with no test header count
@@ -311,6 +320,7 @@ module pw_test_rx_checker_bram #(
     // ---- snapshot read outputs (port B, registered) ----
     always_comb begin
         rd_rx_frames_o    = b_rd_q[OFF_RXF  +: 64];
+        rd_rx_bytes_o     = b_rd_q[OFF_RXB  +: 64];
         rd_lost_o         = b_rd_q[OFF_LOST +: 64];
         rd_duplicate_o    = b_rd_q[OFF_DUP  +: 64];
         rd_out_of_order_o = b_rd_q[OFF_OOO  +: 64];

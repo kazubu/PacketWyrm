@@ -27,18 +27,20 @@ module tb_test_rx_checker_bram;
     logic [AW-1:0] rd_addr_i;
     logic rd_en_i;
     logic rd_valid_o;
-    logic [63:0] rd_rx, rd_lost, rd_dup, rd_ooo, rd_lseq;
+    logic [63:0] rd_rx, rd_rxb, rd_lost, rd_dup, rd_ooo, rd_lseq;
     logic [63:0] rd_minl, rd_maxl, rd_suml, rd_samp;
     logic [63:0] rd_jmin, rd_jmax, rd_jsum;
+    logic [15:0] byte_len_i;
+    logic [15:0] ev_bytelen = 16'd64;   // frame length fed by ev(); tests can override
 
     pw_test_rx_checker_bram #(.NUM_FLOWS(NUM_FLOWS), .NUM_BUCKETS(16)) dut (
         .clk(clk), .rst_n(rst_n), .clear_i(clear_i),
         .timestamp_i(timestamp_i), .lat_correction_i(lat_correction_i),
         .key_i(key_i), .result_i(result_i),
-        .event_valid_i(event_valid_i),
+        .event_valid_i(event_valid_i), .byte_len_i(byte_len_i),
         .hist_ev_o(), .hist_flow_o(), .hist_bucket_o(), .lost_event_o(),
         .rd_addr_i(rd_addr_i), .rd_en_i(rd_en_i), .rd_valid_o(rd_valid_o),
-        .rd_rx_frames_o(rd_rx), .rd_lost_o(rd_lost), .rd_duplicate_o(rd_dup),
+        .rd_rx_frames_o(rd_rx), .rd_rx_bytes_o(rd_rxb), .rd_lost_o(rd_lost), .rd_duplicate_o(rd_dup),
         .rd_out_of_order_o(rd_ooo), .rd_last_seq_o(rd_lseq),
         .rd_min_latency_o(rd_minl), .rd_max_latency_o(rd_maxl),
         .rd_sum_latency_o(rd_suml), .rd_sample_count_o(rd_samp),
@@ -66,6 +68,7 @@ module tb_test_rx_checker_bram;
         key_i.test_sequence = 64'(seq);
         key_i.test_tx_timestamp = 64'd1000;
         timestamp_i        = 64'd1000 + 64'(lat);  // latency = lat
+        byte_len_i         = ev_bytelen;            // frame byte length for this event
         @(negedge clk);
         event_valid_i = 1'b0;
         if (gap) @(negedge clk);
@@ -100,6 +103,7 @@ module tb_test_rx_checker_bram;
 
         rd(1);
         chk("f1 rx",      rd_rx,   3);
+        chk("f1 rx_bytes",rd_rxb,  3*64);   // 3 frames x default 64B
         chk("f1 lost",    rd_lost, 0);
         chk("f1 last",    rd_lseq, 2);
         chk("f1 min_lat", rd_minl, 100);
@@ -161,6 +165,17 @@ module tb_test_rx_checker_bram;
         chk("f6 sum_lat (0+0+50)",         rd_suml, 50);
         chk("f6 samples",                  rd_samp, 3);
         lat_correction_i = '0;                 // restore
+
+        // f7: rx_bytes accumulates the per-event byte length (varying), counting
+        // EVERY classified frame. 100 + 200 + 300 = 600 bytes over 3 frames.
+        ev_bytelen = 16'd100; ev(7, 0, 100, 1);
+        ev_bytelen = 16'd200; ev(7, 1, 100, 1);
+        ev_bytelen = 16'd300; ev(7, 2, 100, 1);
+        ev_bytelen = 16'd64;                   // restore default
+        repeat (4) @(negedge clk);
+        rd(7);
+        chk("f7 rx",             rd_rx,  3);
+        chk("f7 rx_bytes (sum)", rd_rxb, 600);
 
         if (errors == 0) $display("ALL CHECKER_BRAM SCENARIOS PASS");
         else begin $display("FAILED with %0d errors", errors); $fatal; end

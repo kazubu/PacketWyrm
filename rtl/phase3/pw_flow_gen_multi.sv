@@ -46,6 +46,9 @@ module pw_flow_gen_multi #(
     // re-baselined by stats_clear_i alongside the RX checkers.
     input  wire            stats_clear_i,
     output logic [47:0]    tx_count_o [NUM_SLOTS],
+    // Per-slot TX byte counter (emitted L2 frame bytes), same clear semantics as
+    // tx_count_o. Feeds per-flow tx_bytes so a client can compute tx bps.
+    output logic [63:0]    tx_bytes_o [NUM_SLOTS],
 
     // 64-bit AXIS egress
     output logic [63:0]   m_tdata,
@@ -95,9 +98,11 @@ module pw_flow_gen_multi #(
     logic [63:0] sequence_q [NUM_SLOTS];
     logic [31:0] tokens_q   [NUM_SLOTS];   // Q16.16
     logic [47:0] tx_count   [NUM_SLOTS];   // emitted frames (clearable, for tx-rx loss)
+    logic [63:0] tx_bytes_count [NUM_SLOTS]; // emitted L2 bytes (clearable, for tx bps)
     logic [15:0] cur_len    [NUM_SLOTS];   // current swept total frame length (0 -> use min)
 
     always_comb for (int s = 0; s < NUM_SLOTS; s++) tx_count_o[s] = tx_count[s];
+    always_comb for (int s = 0; s < NUM_SLOTS; s++) tx_bytes_o[s] = tx_bytes_count[s];
 
     // In-flight frame (built from the selected slot at frame start).
     logic [HDR_MAX_BYTES-1:0][7:0] fb;
@@ -763,13 +768,17 @@ module pw_flow_gen_multi #(
                 sequence_q[s] <= '0;
                 tokens_q[s]   <= '0;
                 tx_count[s]   <= '0;
+                tx_bytes_count[s] <= '0;
                 cur_len[s]    <= '0;
             end
         end else begin
             // Re-baseline the TX frame counters on a stats clear (the on-wire
             // sequence_q is NOT cleared -- that would break RX sequence tracking).
             if (stats_clear_i)
-                for (int s = 0; s < NUM_SLOTS; s++) tx_count[s] <= '0;
+                for (int s = 0; s < NUM_SLOTS; s++) begin
+                    tx_count[s]       <= '0;
+                    tx_bytes_count[s] <= '0;
+                end
             // Token buckets: accumulate per active slot, clamp to cap.
             for (int s = 0; s < NUM_SLOTS; s++) begin
                 automatic logic [32:0] sum;
@@ -833,8 +842,12 @@ module pw_flow_gen_multi #(
                     sequence_q[sel] <= sequence_q[sel] + 64'd1;
                     // Advance the frame-length sweep for the slot just emitted.
                     cur_len[sel]    <= next_len_q;
-                    // TX frame count for tx-rx loss (clear wins over increment).
-                    if (!stats_clear_i) tx_count[sel] <= tx_count[sel] + 48'd1;
+                    // TX frame + byte count for tx-rx loss / tx bps (clear wins
+                    // over increment). frame_len = this frame's emitted L2 bytes.
+                    if (!stats_clear_i) begin
+                        tx_count[sel]       <= tx_count[sel] + 48'd1;
+                        tx_bytes_count[sel] <= tx_bytes_count[sel] + 64'(frame_len);
+                    end
                 end else begin
                     byte_off <= byte_off + 12'd8;
                 end
