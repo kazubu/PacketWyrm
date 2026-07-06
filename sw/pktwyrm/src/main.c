@@ -556,28 +556,29 @@ static void pretty_print_latency(const char *json, size_t len) {
         json_object_get_type(arr) != json_type_array) {
         printf("%.*s\n", (int)len, json); json_object_put(root); return;
     }
-    printf("%-5s %-7s %10s %10s %8s %8s  %s\n",
-           "flow", "path", "min(ns)", "max(ns)", "jit(ns)", "samples", "method");
+    printf("%-5s %-19s %10s %10s %8s %8s  %s\n",
+           "flow", "path (tx->rx)", "min(ns)", "max(ns)", "jit(ns)", "samples", "method");
     size_t n = json_object_array_length(arr);
     for (size_t i = 0; i < n; i++) {
         struct json_object *f = json_object_array_get_idx(arr, i), *v;
-        int id=0, txc=0, rxc=0; int valid=0;
+        int id=0; int valid=0;
         long mn=0, mx=0, jmx=0, samp=0; const char *meth="?";
+        const char *txp="?", *rxp="?";
         if (json_object_object_get_ex(f,"id",&v))            id=json_object_get_int(v);
-        if (json_object_object_get_ex(f,"tx_card_id",&v))    txc=json_object_get_int(v);
-        if (json_object_object_get_ex(f,"rx_card_id",&v))    rxc=json_object_get_int(v);
+        if (json_object_object_get_ex(f,"tx_port",&v))       txp=json_object_get_string(v);
+        if (json_object_object_get_ex(f,"rx_port",&v))       rxp=json_object_get_string(v);
         if (json_object_object_get_ex(f,"latency_valid",&v)) valid=json_object_get_boolean(v);
         if (json_object_object_get_ex(f,"min_latency",&v))   mn=json_object_get_int64(v);
         if (json_object_object_get_ex(f,"max_latency",&v))   mx=json_object_get_int64(v);
         if (json_object_object_get_ex(f,"jitter_max",&v))    jmx=json_object_get_int64(v);
         if (json_object_object_get_ex(f,"sample_count",&v))  samp=json_object_get_int64(v);
         if (json_object_object_get_ex(f,"latency_method",&v))meth=json_object_get_string(v);
-        char path[16]; snprintf(path, sizeof(path), "c%d->c%d", txc, rxc);
+        char path[4*PW_NAME_MAX+4]; snprintf(path, sizeof(path), "%s->%s", txp, rxp);
         if (valid)
-            printf("%-5d %-7s %10.1f %10.1f %8.1f %8ld  %s\n",
+            printf("%-5d %-19s %10.1f %10.1f %8.1f %8ld  %s\n",
                    id, path, mn*6.4, mx*6.4, jmx*6.4, samp, meth);
         else
-            printf("%-5d %-7s %10s %10s %8s %8ld  %s\n",
+            printf("%-5d %-19s %10s %10s %8s %8ld  %s\n",
                    id, path, "-", "-", "-", samp, "no latency");
     }
     json_object_put(root);
@@ -1113,21 +1114,23 @@ int main(int argc, char **argv) {
                         fwrite(resp, 1, got, stdout); fputc('\n', stdout);
                         if (root) json_object_put(root);
                     } else {
-                        printf("%-4s %-5s %-5s %10s %10s %8s %8s %8s %10s %10s %10s %s\n",
-                               "id", "tx_c", "rx_c", "tx_frames", "rx_frames",
+                        printf("%-4s %-19s %10s %10s %8s %8s %8s %10s %10s %10s %s\n",
+                               "id", "path (tx->rx)", "tx_frames", "rx_frames",
                                "lost", "dup", "reord",
                                "min_ns", "avg_ns", "max_ns", "lat_valid");
                         size_t n = json_object_array_length(arr);
                         for (size_t i = 0; i < n; i++) {
                             struct json_object *f = json_object_array_get_idx(arr, i);
                             struct json_object *v;
-                            int64_t fid=0,tc=0,rc=0,tx=0,rx=0,lost=0,dup=0,reord=0;
+                            int64_t fid=0,tx=0,rx=0,lost=0,dup=0,reord=0;
                             int64_t mn=0,mx=0,avg=0; bool lv=false;
+                            const char *txp="?", *rxp="?";
                             #define GETI(k, dst) do { if (json_object_object_get_ex(f, k, &v)) dst = json_object_get_int64(v); } while(0)
                             #define GETB(k, dst) do { if (json_object_object_get_ex(f, k, &v)) dst = json_object_get_boolean(v); } while(0)
+                            #define GETS(k, dst) do { if (json_object_object_get_ex(f, k, &v)) dst = json_object_get_string(v); } while(0)
                             GETI("id", fid);
-                            GETI("tx_card_id", tc);
-                            GETI("rx_card_id", rc);
+                            GETS("tx_port", txp);
+                            GETS("rx_port", rxp);
                             GETI("tx_frames", tx);
                             GETI("rx_frames", rx);
                             GETI("lost", lost);
@@ -1139,8 +1142,11 @@ int main(int argc, char **argv) {
                             GETB("latency_valid", lv);
                             #undef GETI
                             #undef GETB
-                            printf("%-4ld %-5ld %-5ld %10ld %10ld %8ld %8ld %8ld %10ld %10ld %10ld %s\n",
-                                   (long)fid, (long)tc, (long)rc,
+                            #undef GETS
+                            char path[4*PW_NAME_MAX+4];
+                            snprintf(path, sizeof path, "%s->%s", txp, rxp);
+                            printf("%-4ld %-19s %10ld %10ld %8ld %8ld %8ld %10ld %10ld %10ld %s\n",
+                                   (long)fid, path,
                                    (long)tx, (long)rx,
                                    (long)lost, (long)dup, (long)reord,
                                    lv ? (long)pw_ticks_to_ns((unsigned long long)mn) : 0,

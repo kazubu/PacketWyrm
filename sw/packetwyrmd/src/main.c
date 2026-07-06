@@ -1656,6 +1656,21 @@ static struct json_object *build_flow_hist(const struct pw_config *cfg,
     return r;
 }
 
+/* Human-readable "cardName.portName" label for a global_port (e.g. "card0.p0"),
+ * so flow.stats can report the physical tx->rx path without the client having to
+ * cross-reference the topology. Falls back to "gpN" if the port is unknown. */
+static void port_label(const struct pw_config *cfg, uint16_t gp,
+                       char *buf, size_t n) {
+    for (size_t i = 0; i < cfg->n_cards; i++)
+        for (size_t p = 0; p < cfg->cards[i].n_ports; p++)
+            if (cfg->cards[i].ports[p].global_port == gp) {
+                snprintf(buf, n, "%s.%s", cfg->cards[i].name,
+                         cfg->cards[i].ports[p].name);
+                return;
+            }
+    snprintf(buf, n, "gp%u", (unsigned)gp);
+}
+
 /* Per-flow stats: looks up each flow's RX card, asks for a
  * snapshot, and packs the resulting counters into JSON. */
 static struct json_object *build_flow_stats(const struct pw_config *cfg,
@@ -1733,6 +1748,22 @@ static struct json_object *build_flow_stats(const struct pw_config *cfg,
         json_object_object_add(f, "id", json_object_new_int64(m->global_flow_id));
         json_object_object_add(f, "tx_card_id", json_object_new_int(m->tx_card_id));
         json_object_object_add(f, "rx_card_id", json_object_new_int(m->rx_card_id));
+        /* Physical tx->rx path: global ports + "cardName.portName" labels, so a
+         * client (CLI / GUI dashboard) can show "card0.p0 -> card1.p2" from the
+         * live stats alone without joining against the topology. */
+        {
+            const struct pw_flow *cf = pw_config_flow_by_id(cfg, m->global_flow_id);
+            uint16_t txgp = cf ? cf->tx_global_port : 0;
+            uint16_t rxgp = cf ? cf->rx_global_port : 0;
+            char txl[PW_NAME_MAX * 2 + 2], rxl[PW_NAME_MAX * 2 + 2];
+            port_label(cfg, txgp, txl, sizeof txl);
+            port_label(cfg, rxgp, rxl, sizeof rxl);
+            json_object_object_add(f, "name", json_object_new_string(cf ? cf->name : ""));
+            json_object_object_add(f, "tx_global_port", json_object_new_int(txgp));
+            json_object_object_add(f, "rx_global_port", json_object_new_int(rxgp));
+            json_object_object_add(f, "tx_port", json_object_new_string(txl));
+            json_object_object_add(f, "rx_port", json_object_new_string(rxl));
+        }
         json_object_object_add(f, "enabled",
             json_object_new_boolean(flow_enabled(prog, m->global_flow_id)));
         /* read_ok=false => a snapshot/stats CSR read failed; the counters below
