@@ -801,7 +801,7 @@ function renderHealth(cards, stats, fstats, metaById, portstats) {
 const lat = (f, k) =>
   (f.latency_valid && f[k] != null) ? fmtTime(f[k] * TICK_NS) : "—";
 function renderFlowStatsTable(fstats, rates) {
-  const cols = ["id","state","path (tx→rx)","tx frm","tx pps","rx frm","rx pps","rx bps","lost","dup","reorder","min","avg","max"];
+  const cols = ["id","state","path (tx→rx)","tx frm","tx pps","tx bps","rx frm","rx pps","rx bps","lost","dup","reorder","min","avg","max"];
   const t = el("table");
   t.append(el("tr",{}, cols.map(h => el("th",{class:/frm|pps|bps|lost|dup|reorder|min|avg|max/.test(h)?"num":"",text:h}))));
   fstats.forEach(f => {
@@ -812,6 +812,7 @@ function renderFlowStatsTable(fstats, rates) {
       el("td",{class:"path",text:`${f.tx_port||"?"} → ${f.rx_port||"?"}`}),
       el("td",{class:"num",text:f.tx_frames}),
       el("td",{class:"num",text:fmtRate(rt.tx)}),
+      el("td",{class:"num",text:rt.txb!=null?fmtRate(rt.txb).replace("/s","bps"):"—"}),
       el("td",{class:"num",text:f.rx_frames}),
       el("td",{class:"num",text:fmtRate(rt.rx)}),
       el("td",{class:"num",text:rt.rxb!=null?fmtRate(rt.rxb).replace("/s","bps"):"—"}),
