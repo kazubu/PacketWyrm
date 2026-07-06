@@ -160,7 +160,10 @@ ns/tick) so a client can compute exact per-flow frame/byte rates as
   "flows": [
     {
       "id": 1,
+      "name": "flow-1",
       "tx_card_id": 0, "rx_card_id": 0,
+      "tx_global_port": 0, "rx_global_port": 1,
+      "tx_port": "card0.p0", "rx_port": "card0.p1",
       "tx_frames": 0, "tx_bytes": 0,
       "rx_frames": 0, "rx_bytes": 0,
       "lost": 0, "duplicate": 0, "out_of_order": 0,
@@ -173,6 +176,12 @@ ns/tick) so a client can compute exact per-flow frame/byte rates as
   ]
 }
 ```
+
+`name` and the physical tx&rarr;rx path are echoed per flow so a client (CLI
+`pktwyrm flow stats` / `latency`, GUI dashboard) can show `card0.p0 &rarr;
+card1.p2` from the live stats alone: `tx_global_port`/`rx_global_port` are the
+numeric global ports and `tx_port`/`rx_port` are the resolved
+`cardName.portName` labels (falling back to `gpN` if a port is unknown).
 
 Cross-card flows are supported via the J5 GPIO time-sync, **corrected in
 hardware per sample, per flow**: the daemon servo writes each cross-card flow's

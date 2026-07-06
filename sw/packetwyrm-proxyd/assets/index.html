@@ -35,6 +35,7 @@
   th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); }
   th { color: var(--dim); font-weight: 600; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.path { white-space: nowrap; font-variant-numeric: tabular-nums; }
   label { display:block; margin: 8px 0 3px; color: var(--dim); font-size: 12px; }
   input, select, textarea, button { font: inherit; }
   input, select, textarea { width: 100%; padding: 6px 8px; background: var(--input);
@@ -800,7 +801,7 @@ function renderHealth(cards, stats, fstats, metaById, portstats) {
 const lat = (f, k) =>
   (f.latency_valid && f[k] != null) ? fmtTime(f[k] * TICK_NS) : "—";
 function renderFlowStatsTable(fstats, rates) {
-  const cols = ["id","state","tx frm","tx pps","rx frm","rx pps","rx bps","lost","dup","reorder","min","avg","max"];
+  const cols = ["id","state","path (tx→rx)","tx frm","tx pps","rx frm","rx pps","rx bps","lost","dup","reorder","min","avg","max"];
   const t = el("table");
   t.append(el("tr",{}, cols.map(h => el("th",{class:/frm|pps|bps|lost|dup|reorder|min|avg|max/.test(h)?"num":"",text:h}))));
   fstats.forEach(f => {
@@ -808,6 +809,7 @@ function renderFlowStatsTable(fstats, rates) {
     t.append(el("tr",{},[
       el("td",{class:"num",text:f.id}),
       el("td",{},[statePill(!!f.enabled)]),
+      el("td",{class:"path",text:`${f.tx_port||"?"} → ${f.rx_port||"?"}`}),
       el("td",{class:"num",text:f.tx_frames}),
       el("td",{class:"num",text:fmtRate(rt.tx)}),
       el("td",{class:"num",text:f.rx_frames}),
