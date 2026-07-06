@@ -5,9 +5,13 @@
  * with Secure Boot / kernel lockdown enabled, where setpci and direct
  * sysfs resource mmap are blocked but IOMMU-mediated VFIO is permitted.
  *
- * The device must be bound to vfio-pci and be the only device in its
- * IOMMU group (pw_vfio_bind() handles the bind; a udev driver_override
- * rule or systemd unit can do it at boot instead). */
+ * The device must be bound to vfio-pci (pw_vfio_bind() handles the bind; a udev
+ * driver_override rule or systemd unit can do it at boot instead). Multiple
+ * cards MAY share one IOMMU group (e.g. two FPGAs behind non-ACS CPU root
+ * ports): pw_vfio_open_bar shares a single group+container fd across all cards
+ * in the same group via a process-wide registry, so each card still opens
+ * cleanly (VFIO forbids opening a group fd twice). Card opens/closes must be
+ * serialized (the daemon does them single-threaded at startup). */
 #ifndef PACKETWYRM_VFIO_H
 #define PACKETWYRM_VFIO_H
 
@@ -16,12 +20,19 @@
 #include <stdint.h>
 
 struct pw_vfio_handle {
-    int      container_fd;
-    int      group_fd;
-    int      device_fd;
+    int      container_fd; /* shared across same-group cards (copy of the
+                            * registry slot's fd; owned by the registry) */
+    int      group_fd;     /* shared across same-group cards (copy) */
+    int      device_fd;    /* per-device (this card) */
     void    *base;      /* mmap of the requested BAR, or NULL */
     size_t   size;      /* BAR size in bytes */
-    uint64_t iova_next; /* bump allocator for device DMA IOVAs (0 = uninit) */
+    /* Was the per-handle DMA IOVA bump pointer; DMA IOVA allocation now lives
+     * per group/container in vfio.c's registry (so same-group cards can't
+     * collide). This field is REPURPOSED to hold (shared-group registry index
+     * + 1); 0 = not opened (keeps the old "0 = uninit" default). Reusing the
+     * field keeps struct pw_vfio_handle's size/layout unchanged (no ABI break
+     * vs adding a new member). */
+    uint64_t grp_slot; /* (registry index + 1), 0 = none */
 };
 
 /* Map BAR `bar_index` (0..5) of the vfio-pci-bound device `bdf`
