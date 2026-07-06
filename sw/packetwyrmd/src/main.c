@@ -85,7 +85,7 @@ static void *card_worker_main(void *arg) {
 
 static void usage(const char *prog) {
     fprintf(stderr,
-        "usage: %s [-e ENV] [-t TEST] [-n] [-v] [-s INTERVAL_MS] [-S SERVO_MS] [-p PROMETHEUS_PORT] [-F]\n"
+        "usage: %s [-e ENV] [-t TEST] [-n] [-v] [-s INTERVAL_MS] [-S SERVO_MS] [-C CAL_TICKS] [-p PROMETHEUS_PORT] [-F]\n"
         "  -e ENV            environment config: system/cards/logical_interfaces/secret\n"
         "                    (default /etc/packetwyrm/packetwyrm.yaml; may also carry\n"
         "                    flows for a combined single-file setup). -c is an alias.\n"
@@ -97,6 +97,12 @@ static void usage(const char *prog) {
         "                    smaller = less ~ppm-skew residual between updates --\n"
         "                    1.6 ppm x period; 10 ms ~= 16 ns, 1 ms ~= 1.6 ns. The\n"
         "                    J5 edge updates every ~210 us so below that is moot)\n"
+        "  -C CAL_TICKS      cross-card one-way latency calibration (signed ticks,\n"
+        "                    6.4 ns each; default 0). Added to the servo correction\n"
+        "                    antisymmetrically by card-id order (tx<rx:+, tx>rx:-)\n"
+        "                    to cancel the direction-asymmetric TX/RX capture bias\n"
+        "                    so both directions read the true one-way latency. Set\n"
+        "                    to ~half the measured inter-direction gap (2-card rig)\n"
         "  -p [ADDR:]PORT    bind a Prometheus /metrics exporter; ADDR defaults\n"
         "                    to 127.0.0.1 (loopback). Use 0.0.0.0:PORT to expose\n"
         "                    it on all interfaces (unauthenticated -- opt in\n"
@@ -331,6 +337,24 @@ static int card_idx_by_id(const struct pw_config *cfg, uint16_t card_id) {
     return -1;
 }
 
+/* Cross-card one-way latency calibration (Phase 2). The GPIO sync offset is
+ * measured in the dp_clk (core) domain, but the TX frame stamp (MAC-TX domain,
+ * pw_ts_insert) and RX wire-stamp (MAC-RX domain) capture points carry a small
+ * DIRECTION-ASYMMETRIC bias the offset can't see, so the two directions of a
+ * card pair read ~2*bias apart (e.g. 63 vs 19 ticks; true ~= midpoint). This is
+ * a signed per-rig constant (ticks, 1 tick = 6.4 ns) set with -C: it is ADDED to
+ * the servo/prime correction, antisymmetrically by card-id order (tx<rx: +cal,
+ * tx>rx: -cal), so both directions converge to the true one-way latency. 0
+ * disables (default). NOTE: the antisymmetric-by-id model is exact for a 2-card
+ * pair; a >2-card rig with per-card capture skews would need a per-card table. */
+static int g_xcard_lat_cal_ticks = 0;
+
+static int64_t xcard_cal_bias(const struct pw_flow_meta *m) {
+    if (g_xcard_lat_cal_ticks == 0 || m->tx_card_id == m->rx_card_id) return 0;
+    return (m->tx_card_id < m->rx_card_id) ? (int64_t)g_xcard_lat_cal_ticks
+                                           : -(int64_t)g_xcard_lat_cal_ticks;
+}
+
 /* Cross-card latency servo (PER FLOW). For each cross-card flow, write the
  * current inter-card offset (tx_cnt - rx_cnt) to that flow's slot
  * (rx_local_flow_id) in the RX card's correction table, so the checker
@@ -353,7 +377,8 @@ static void servo_lat_correction(const struct pw_config *cfg,
         /* Only write an EDGE-COHERENT offset; on an incoherent read skip this
          * tick (keep the current correction) rather than briefly corrupt it. */
         if (pw_gpio_sync_offset_coherent(&cards[tx_ci].backend, &cards[rx_ci].backend, &corr))
-            pw_gpio_sync_write_correction(&cards[rx_ci].backend, m->rx_local_flow_id, corr);
+            pw_gpio_sync_write_correction(&cards[rx_ci].backend, m->rx_local_flow_id,
+                                          corr + xcard_cal_bias(m));
     }
 }
 
@@ -399,7 +424,8 @@ static void prime_lat_correction(const struct pw_config *cfg,
         for (int tries = 0; tries < 200 && !wrote; tries++) {
             int64_t corr;
             if (pw_gpio_sync_offset_coherent(&cards[tx_ci].backend, &cards[rx_ci].backend, &corr)) {
-                pw_gpio_sync_write_correction(&cards[rx_ci].backend, slot, corr);
+                pw_gpio_sync_write_correction(&cards[rx_ci].backend, slot,
+                                              corr + xcard_cal_bias(m));
                 wrote = true;
                 break;
             }
@@ -2227,7 +2253,7 @@ int main(int argc, char **argv) {
     const char *prom_addr = "127.0.0.1";   /* -p default: loopback only */
 
     int opt;
-    while ((opt = getopt(argc, argv, "c:e:t:nvs:S:p:Fh")) != -1) {
+    while ((opt = getopt(argc, argv, "c:e:t:nvs:S:C:p:Fh")) != -1) {
         switch (opt) {
         case 'c': case 'e': env_path = optarg; g_env_path = optarg; break;
         case 't': test_path = optarg; break;
@@ -2235,6 +2261,7 @@ int main(int argc, char **argv) {
         case 'v': verbose = true; break;
         case 's': stats_interval = atoi(optarg); break;
         case 'S': servo_interval = atoi(optarg); if (servo_interval < 1) servo_interval = 1; break;
+        case 'C': g_xcard_lat_cal_ticks = atoi(optarg); break;   /* xcard lat calibration (signed ticks) */
         case 'p': {   /* -p [ADDR:]PORT ; ADDR defaults to 127.0.0.1 */
             char *colon = strrchr(optarg, ':');
             if (colon) { *colon = '\0'; prom_addr = optarg; prom_port = atoi(colon + 1); }
