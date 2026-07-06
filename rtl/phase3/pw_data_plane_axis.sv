@@ -211,6 +211,8 @@ module pw_data_plane_axis #(
     output logic [31:0]           flow_jit_max,
     output logic [63:0]           flow_jit_sum,
     output logic [47:0]           flow_tx,        // emitted frames (tx-rx loss)
+    output logic [63:0]           flow_tx_bytes,  // emitted L2 bytes (tx bps)
+    output logic [63:0]           flow_rx_bytes,  // received L2 bytes (rx bps)
 
     // Live latency-histogram read port (BRAM-backed pw_lat_histogram):
     // flat address (flow*PW_NUM_BUCKETS + bucket) in, 64-bit count out
@@ -329,12 +331,18 @@ module pw_data_plane_axis #(
     // checker. Fed to the checker as its "now" -> latency = wire-to-wire.
     logic [63:0] rx_wts [PW_PORTS];
     logic [63:0] rx_wts_d1 [PW_PORTS], rx_wts_d2 [PW_PORTS], rx_wts_d3 [PW_PORTS], rx_wts_d [PW_PORTS];
+    // Per-port RX frame byte length from the parser (aligned with rx_kv); delayed
+    // the same four cycles as rx_wts so it reaches the checker aligned with the
+    // event -> accumulates rx_bytes per flow.
+    logic [15:0] rx_flen [PW_PORTS];
+    logic [15:0] rx_flen_d1 [PW_PORTS], rx_flen_d2 [PW_PORTS], rx_flen_d3 [PW_PORTS], rx_flen_d [PW_PORTS];
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             rx_kv_d1  <= '0; rx_kv_d2  <= '0; rx_kv_d3  <= '0; rx_kv_d  <= '0;
             rx_key_d1 <= '0; rx_key_d2 <= '0; rx_key_d3 <= '0; rx_key_d <= '0;
             for (int p = 0; p < PW_PORTS; p++) begin
                 rx_wts_d1[p] <= '0; rx_wts_d2[p] <= '0; rx_wts_d3[p] <= '0; rx_wts_d[p] <= '0;
+                rx_flen_d1[p] <= '0; rx_flen_d2[p] <= '0; rx_flen_d3[p] <= '0; rx_flen_d[p] <= '0;
             end
         end else begin
             rx_kv_d1  <= rx_kv;   rx_kv_d2  <= rx_kv_d1;  rx_kv_d3  <= rx_kv_d2;  rx_kv_d  <= rx_kv_d3;
@@ -342,6 +350,8 @@ module pw_data_plane_axis #(
             for (int p = 0; p < PW_PORTS; p++) begin
                 rx_wts_d1[p] <= rx_wts[p];   rx_wts_d2[p] <= rx_wts_d1[p];
                 rx_wts_d3[p] <= rx_wts_d2[p]; rx_wts_d[p] <= rx_wts_d3[p];
+                rx_flen_d1[p] <= rx_flen[p];   rx_flen_d2[p] <= rx_flen_d1[p];
+                rx_flen_d3[p] <= rx_flen_d2[p]; rx_flen_d[p] <= rx_flen_d3[p];
             end
         end
     end
@@ -375,6 +385,7 @@ module pw_data_plane_axis #(
                 .key_o          (rx_key[gp]),
                 .key_valid_o    (rx_kv[gp]),
                 .rx_wire_ts_o   (rx_wts[gp]),
+                .frame_len_o    (rx_flen[gp]),
                 .window_o       (rx_win[gp]),
                 .base_o         (rx_base[gp])
             );
@@ -609,6 +620,7 @@ module pw_data_plane_axis #(
     // blank (identity for the merge). We drive the same flow_rd_addr_i to every
     // port and merge the read records (registered) below.
     logic [63:0] prx   [PW_PORTS], plost [PW_PORTS], pdup  [PW_PORTS], pooo [PW_PORTS];
+    logic [63:0] prxb  [PW_PORTS];   // per-port rx_bytes snapshot read
     logic [63:0] plseq [PW_PORTS], pminl [PW_PORTS], pmaxl [PW_PORTS];
     logic [63:0] psuml [PW_PORTS], psamp [PW_PORTS], pjsum [PW_PORTS];
     logic [63:0] pjmin [PW_PORTS], pjmax [PW_PORTS];
@@ -651,16 +663,18 @@ module pw_data_plane_axis #(
             logic             chk_kv_q;
             pw_match_key_t    chk_key_q;
             logic [63:0]      chk_wts_q;
+            logic [15:0]      chk_flen_q;
             pw_class_result_t chk_eff_q;
             always_ff @(posedge clk or negedge rst_n) begin
                 if (!rst_n) begin
                     corr_sel_q <= '0; chk_kv_q <= 1'b0; chk_key_q <= '0;
-                    chk_wts_q  <= '0; chk_eff_q <= '0;
+                    chk_wts_q  <= '0; chk_flen_q <= '0; chk_eff_q <= '0;
                 end else begin
                     corr_sel_q <= lat_corr_table[rx_eff[gp].local_flow_id[$clog2(PW_NUM_FLOWS)-1:0]];
                     chk_kv_q   <= rx_kv_d[gp];
                     chk_key_q  <= rx_key_d[gp];
                     chk_wts_q  <= rx_wts_d[gp];
+                    chk_flen_q <= rx_flen_d[gp];
                     chk_eff_q  <= rx_eff[gp];
                 end
             end
@@ -682,6 +696,7 @@ module pw_data_plane_axis #(
                 .key_i           (chk_key_q),
                 .result_i        (chk_eff_q),
                 .event_valid_i   (chk_ev),
+                .byte_len_i      (chk_flen_q),
                 .hist_ev_o       (hev_v[gp]),
                 .hist_flow_o     (hev_fl[gp]),
                 .hist_bucket_o   (hev_bk[gp]),
@@ -690,6 +705,7 @@ module pw_data_plane_axis #(
                 .rd_en_i         (1'b1),
                 .rd_valid_o      (),
                 .rd_rx_frames_o  (prx[gp]),
+                .rd_rx_bytes_o   (prxb[gp]),
                 .rd_lost_o       (plost[gp]),
                 .rd_duplicate_o  (pdup[gp]),
                 .rd_out_of_order_o(pooo[gp]),
@@ -735,29 +751,33 @@ module pw_data_plane_axis #(
             flow_last_seq <= '0; flow_sum_lat <= '0; flow_samples <= '0;
             flow_min_lat <= '0; flow_max_lat <= '0;
             flow_jit_min <= '0; flow_jit_max <= '0; flow_jit_sum <= '0;
-            flow_tx <= '0;
+            flow_tx <= '0; flow_rx_bytes <= '0; flow_tx_bytes <= '0;
         end else begin
             logic [63:0] rx, lost, dup, ooo, lseq, sum, samp, jsum, mn, mx;
+            logic [63:0] rxb, txbacc;
             logic [31:0] jmn, jmx;
             logic [47:0] txacc;
             rx='0; lost='0; dup='0; ooo='0; lseq='0; sum='0; samp='0; jsum='0;
             mn={64{1'b1}}; mx='0; jmn={32{1'b1}}; jmx='0; txacc='0;
+            rxb='0; txbacc='0;
             for (int p = 0; p < PW_PORTS; p++) begin
                 rx   += prx[p];   lost += plost[p]; dup += pdup[p]; ooo += pooo[p];
                 sum  += psuml[p]; samp += psamp[p]; jsum += pjsum[p];
+                rxb  += prxb[p];                         // per-flow rx_bytes
                 lseq |= plseq[p];                        // one active port per flow
                 if (pminl[p] < mn) mn = pminl[p];
                 if (pmaxl[p] > mx) mx = pmaxl[p];
                 if (pjmin[p][31:0] < jmn) jmn = pjmin[p][31:0];
                 if (pjmax[p][31:0] > jmx) jmx = pjmax[p][31:0];
-                txacc += gen_tx_count[p][flow_rd_addr_d1];
+                txacc  += gen_tx_count[p][flow_rd_addr_d1];
+                txbacc += gen_tx_bytes[p][flow_rd_addr_d1];   // per-flow tx_bytes
             end
             flow_rd_addr_d1 <= flow_rd_addr_i;
             flow_rx <= rx; flow_lost <= lost; flow_dup <= dup; flow_ooo <= ooo;
             flow_last_seq <= lseq; flow_sum_lat <= sum; flow_samples <= samp;
             flow_min_lat <= mn; flow_max_lat <= mx;
             flow_jit_min <= jmn; flow_jit_max <= jmx; flow_jit_sum <= jsum;
-            flow_tx <= txacc;
+            flow_tx <= txacc; flow_rx_bytes <= rxb; flow_tx_bytes <= txbacc;
         end
     end
 
@@ -961,6 +981,7 @@ module pw_data_plane_axis #(
     logic [$clog2(PW_NUM_FLOWS)-1:0] gen_rd_addr [PW_PORTS];
     pw_flow_row_t                    gen_rd_row  [PW_PORTS];
     logic [47:0]                     gen_tx_count [PW_PORTS][PW_NUM_FLOWS];
+    logic [63:0]                     gen_tx_bytes [PW_PORTS][PW_NUM_FLOWS];
 
     pw_flow_table_bram #(
         .ADDR_W           (FLOW_ADDR_W),
@@ -1010,6 +1031,7 @@ module pw_data_plane_axis #(
                 .rd_row_i    (gen_rd_row[gp]),
                 .stats_clear_i(stats_clear_i),
                 .tx_count_o  (gen_tx_count[gp]),
+                .tx_bytes_o  (gen_tx_bytes[gp]),
                 .m_tdata     (gen_td[gp]),
                 .m_tkeep     (gen_tk[gp]),
                 .m_tvalid    (gen_tv[gp]),

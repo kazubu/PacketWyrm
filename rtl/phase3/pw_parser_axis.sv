@@ -41,6 +41,7 @@ module pw_parser_axis #(
     output pw_match_key_t key_o,
     output logic          key_valid_o,
     output logic [63:0]   rx_wire_ts_o,  // aligned with key_valid_o
+    output logic [15:0]   frame_len_o,   // this frame's L2 byte length, aligned with key_valid_o
 
     // Captured header byte-window + inner-frame base offset, aligned with
     // key_valid_o, for the generic slice classifier (pw_slice_classifier).
@@ -227,6 +228,7 @@ module pw_parser_axis #(
     logic [15:0]               eff_offA2;   // inner base carried to Stage B
     logic [HDR_BYTES-1:0][7:0] hdrA2;
     logic [63:0]               wtsA2;       // RX wire-ts carried to Stage B
+    logic [15:0]               flenA2;      // frame_len carried to Stage B
 
     always_ff @(posedge clk or negedge rst_n) begin
         automatic pw_match_key_t k;
@@ -234,7 +236,7 @@ module pw_parser_axis #(
         automatic logic          telig, ok;
         if (!rst_n) begin
             keyA2 <= '0; validA2 <= 1'b0; test_eligA2 <= 1'b0; pay_offA2 <= '0; eff_offA2 <= '0;
-            wtsA2 <= '0;
+            wtsA2 <= '0; flenA2 <= '0;
         end else begin
             k = keyA; ok = 1'b0; telig = 1'b0; ip_hlen = 20; udp_off = 0; pay_off = 0;
             eff = int'(eff_offA); flen = int'(flenA);
@@ -291,6 +293,7 @@ module pw_parser_axis #(
             eff_offA2   <= eff_offA;
             hdrA2       <= hdrA;
             wtsA2       <= wtsA;
+            flenA2      <= flenA;
         end
     end
 
@@ -298,16 +301,18 @@ module pw_parser_axis #(
     pw_match_key_t key_q;
     logic          key_valid_q;
     logic [63:0]   wts_out_q;
+    logic [15:0]   flen_out_q;
     assign key_o        = key_q;
     assign key_valid_o  = key_valid_q;
     assign rx_wire_ts_o = wts_out_q;
+    assign frame_len_o  = flen_out_q;
 
     always_ff @(posedge clk or negedge rst_n) begin
         automatic pw_match_key_t k;
         automatic int            po;
         if (!rst_n) begin
             key_q <= '0; key_valid_q <= 1'b0; window_o <= '0; base_o <= '0;
-            wts_out_q <= '0;
+            wts_out_q <= '0; flen_out_q <= '0;
         end else begin
             k  = keyA2;
             po = int'(pay_offA2);
@@ -325,6 +330,7 @@ module pw_parser_axis #(
             key_q       <= k;
             key_valid_q <= validA2;
             wts_out_q   <= wtsA2;
+            flen_out_q  <= flenA2;
         end
     end
 

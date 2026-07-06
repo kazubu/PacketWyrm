@@ -42,12 +42,13 @@ module tb_flow_gen_multi;
     logic [$clog2(SLOTS)-1:0] rd_addr;
     pw_flow_row_t             rd_row;
     logic [47:0]              gtxc [SLOTS];
+    logic [63:0]              gtxb [SLOTS];
     always_ff @(posedge clk) rd_row <= f_rows[rd_addr];
 
     pw_flow_gen_multi #(.EGRESS_PORT(0), .NUM_SLOTS(SLOTS), .FRAME_LEN_PAYLOAD(32)) gen (
         .clk(clk), .rst_n(rst_n), .timestamp_i(ts),
         .flow_sched_i(f_sched), .rd_addr_o(rd_addr), .rd_row_i(rd_row),
-        .stats_clear_i(1'b0), .tx_count_o(gtxc),
+        .stats_clear_i(1'b0), .tx_count_o(gtxc), .tx_bytes_o(gtxb),
         .m_tdata(td), .m_tkeep(tk), .m_tvalid(tv), .m_tready(1'b1), .m_tlast(tl),
         .m_tstampable(tstamp)
     );
@@ -57,7 +58,7 @@ module tb_flow_gen_multi;
         .clk(clk), .rst_n(rst_n),
         .s_tdata(td), .s_tkeep(tk), .s_tvalid(tv), .s_tready(), .s_tlast(tl),
         .ingress_port_i(4'd0), .rx_wire_ts_i(64'd0),
-        .key_o(key), .key_valid_o(key_valid), .rx_wire_ts_o(), .window_o(), .base_o()
+        .key_o(key), .key_valid_o(key_valid), .rx_wire_ts_o(), .frame_len_o(), .window_o(), .base_o()
     );
 
     int  g_pass = 0, g_fail = 0;
@@ -401,6 +402,15 @@ module tb_flow_gen_multi;
 
         chk("flow_id 1 seen (>=20)", seen_a >= 20);
         chk("flow_id 3 seen (>=20)", seen_b >= 20);
+        // tx_bytes: slot 0 (flow_id 1) is fixed-length, so tx_bytes == frames *
+        // fixed_len -> bytes divides evenly by frames and the quotient is a sane
+        // L2 frame length. Proves the per-slot byte counter tracks emitted bytes.
+        begin
+            automatic longint L0 = (gtxc[0] != 0) ? (gtxb[0] / gtxc[0]) : 0;
+            chk("tx_bytes[0] = frames * fixed_len",
+                gtxc[0] != 0 && (gtxb[0] % gtxc[0] == 0) && L0 >= 60 && L0 <= 1600);
+            chk("tx_bytes[0] nonzero", gtxb[0] > 0);
+        end
         chk("flow_id 1 sequence monotonic", ok_a);
         chk("flow_id 3 sequence monotonic", ok_b);
         // round-robin fairness: counts within 2x of each other

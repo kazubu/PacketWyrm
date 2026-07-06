@@ -217,6 +217,8 @@ module tb_csr_full;
         .flow_jit_max_i      (32'd0),
         .flow_jit_sum_i      (64'd0),
         .flow_tx_i           (48'd0),
+        .flow_tx_bytes_i     (64'd0),
+        .flow_rx_bytes_i     (64'd0),
         .hist_rd_addr_o      (hist_rd_addr_w),
         .hist_rd_data_i      (hist_rd_data_w),
         .flow_wr_en_o        (),

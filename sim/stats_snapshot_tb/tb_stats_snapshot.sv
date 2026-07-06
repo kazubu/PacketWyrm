@@ -17,7 +17,9 @@ module tb_stats_snapshot;
 
     // pw_flow_stats wire offsets (little-endian)
     localparam int OFF_TX_FRAMES   = 0;
+    localparam int OFF_TX_BYTES    = 8;
     localparam int OFF_RX_FRAMES   = 16;
+    localparam int OFF_RX_BYTES    = 24;
     localparam int OFF_EXPECTED_SEQ= 32;
     localparam int OFF_LOST        = 48;
     localparam int OFF_DUP         = 56;
@@ -74,6 +76,8 @@ module tb_stats_snapshot;
     logic [31:0] flow_jit_max   [NUM_FLOWS];
     logic [63:0] flow_jit_sum   [NUM_FLOWS];
     logic [47:0] flow_tx_s     [NUM_FLOWS];
+    logic [63:0] flow_tx_bytes_s [NUM_FLOWS];
+    logic [63:0] flow_rx_bytes_s [NUM_FLOWS];
 
     logic [15:0] rd_addr;
     logic [31:0] rd_data;
@@ -96,6 +100,8 @@ module tb_stats_snapshot;
     wire [31:0] flow_jmax_r = flow_jit_max[ad2];
     wire [63:0] flow_jsum_r = flow_jit_sum[ad2];
     wire [47:0] flow_tx_r   = flow_tx_s[ad2];
+    wire [63:0] flow_txb_r  = flow_tx_bytes_s[ad2];
+    wire [63:0] flow_rxb_r  = flow_rx_bytes_s[ad2];
 
     pw_stats_snapshot #(
         .PORTS      (PORTS),
@@ -133,6 +139,8 @@ module tb_stats_snapshot;
         .flow_jit_max_i (flow_jmax_r),
         .flow_jit_sum_i (flow_jsum_r),
         .flow_tx_i      (flow_tx_r),
+        .flow_tx_bytes_i(flow_txb_r),
+        .flow_rx_bytes_i(flow_rxb_r),
         .rd_addr_i      (rd_addr),
         .rd_data_o      (rd_data)
     );
@@ -231,6 +239,8 @@ module tb_stats_snapshot;
         flow_sum_lat[2]  = 64'd10000;
         flow_samples[2]  = 64'd80;
         flow_tx_s[2]     = 48'd1240;
+        flow_tx_bytes_s[2] = 64'd158720;   // 1240 * 128
+        flow_rx_bytes_s[2] = 64'd157952;   // 1234 * 128
         flow_jit_min[2]  = 64'd2;
         flow_jit_max[2]  = 64'd40;
         flow_jit_sum[2]  = 64'd790;
@@ -268,8 +278,12 @@ module tb_stats_snapshot;
 
             // Flow 2 (base = FLOW_BASE + 2*128 = 0x100 + 0x100 = 0x200)
             read_u64(FLOW_BASE + 2 * FLOW_STRIDE, OFF_TX_FRAMES, v); check_eq("flow2 tx_frames", v, 1240);
+            read_u64(FLOW_BASE + 2 * FLOW_STRIDE, OFF_TX_BYTES, v);
+            check_eq("flow2 tx_bytes", v, 158720);
             read_u64(FLOW_BASE + 2 * FLOW_STRIDE, OFF_RX_FRAMES, v);
             check_eq("flow2 rx_frames", v, 1234);
+            read_u64(FLOW_BASE + 2 * FLOW_STRIDE, OFF_RX_BYTES, v);
+            check_eq("flow2 rx_bytes", v, 157952);
             read_u64(FLOW_BASE + 2 * FLOW_STRIDE, OFF_EXPECTED_SEQ, v);
             check_eq("flow2 expected_seq", v, 5000);
             read_u64(FLOW_BASE + 2 * FLOW_STRIDE, OFF_LOST, v);

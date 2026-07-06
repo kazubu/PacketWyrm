@@ -136,6 +136,8 @@ module pw_csr_full #(
     input  wire [31:0]       flow_jit_max_i,
     input  wire [63:0]       flow_jit_sum_i,
     input  wire [47:0]       flow_tx_i,
+    input  wire [63:0]       flow_tx_bytes_i,
+    input  wire [63:0]       flow_rx_bytes_i,
 
     // Decoded CSR write strobe for the BRAM-backed flow table (now in
     // pw_data_plane_axis). The flow window range is filtered there.
@@ -694,6 +696,8 @@ module pw_csr_full #(
         .flow_jit_max_i (flow_jit_max_i),
         .flow_jit_sum_i (flow_jit_sum_i),
         .flow_tx_i      (flow_tx_i),
+        .flow_tx_bytes_i(flow_tx_bytes_i),
+        .flow_rx_bytes_i(flow_rx_bytes_i),
         .rd_addr_i      (s_axi_araddr[15:0] - WIN_STATS_BASE),
         .rd_data_o      (stats_rdata)
     );

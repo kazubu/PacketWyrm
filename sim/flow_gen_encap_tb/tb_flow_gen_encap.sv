@@ -37,7 +37,7 @@ module tb_flow_gen_encap;
     pw_flow_gen_multi #(.EGRESS_PORT(0), .NUM_SLOTS(SLOTS), .FRAME_LEN_PAYLOAD(32)) gen (
         .clk(clk), .rst_n(rst_n), .timestamp_i(ts),
         .flow_sched_i(f_sched), .rd_addr_o(rd_addr), .rd_row_i(rd_row),
-        .stats_clear_i(1'b0), .tx_count_o(gtxc),
+        .stats_clear_i(1'b0), .tx_count_o(gtxc), .tx_bytes_o(),
         .m_tdata(td), .m_tkeep(tk), .m_tvalid(tv), .m_tready(1'b1), .m_tlast(tl),
         .m_tstampable()
     );
@@ -49,7 +49,7 @@ module tb_flow_gen_encap;
         .clk(clk), .rst_n(rst_n),
         .s_tdata(td), .s_tkeep(tk), .s_tvalid(tv), .s_tready(), .s_tlast(tl),
         .ingress_port_i(4'd0), .rx_wire_ts_i(64'd0),
-        .key_o(key), .key_valid_o(key_valid), .rx_wire_ts_o(), .window_o(), .base_o()
+        .key_o(key), .key_valid_o(key_valid), .rx_wire_ts_o(), .frame_len_o(), .window_o(), .base_o()
     );
     // Track which inner flow_ids the parser recovered as test frames.
     logic seen10 = 0, seen11 = 0, seen12 = 0, seen13 = 0;
