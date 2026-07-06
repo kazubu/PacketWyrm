@@ -146,6 +146,22 @@ module tb_test_rx_checker_bram;
         chk("f5 samples",             rd_samp, 2);
         lat_correction_i = '0;                 // restore (same-card default)
 
+        // f6: OVER-correction -> corrected latency goes NEGATIVE. The checker
+        // must CLAMP to 0 (not let the signed value wrap to ~0xFFFFFFFF in the
+        // unsigned low-32 truncation and pin max/jitter to 0xFFFFFFFF). Then a
+        // positive sample follows: min stays 0, max is the positive value.
+        lat_correction_i = -64'sd100;          // over-correct
+        ev(6, 0, 40,  1);                      // raw 40  -> -60  => clamp 0
+        ev(6, 1, 30,  1);                      // raw 30  -> -70  => clamp 0
+        ev(6, 2, 150, 1);                      // raw 150 -> 50   (positive)
+        repeat (4) @(negedge clk);
+        rd(6);
+        chk("f6 min_lat (neg->clamp 0)", rd_minl, 0);
+        chk("f6 max_lat (not 0xFFFFFFFF)", rd_maxl, 50);
+        chk("f6 sum_lat (0+0+50)",         rd_suml, 50);
+        chk("f6 samples",                  rd_samp, 3);
+        lat_correction_i = '0;                 // restore
+
         if (errors == 0) $display("ALL CHECKER_BRAM SCENARIOS PASS");
         else begin $display("FAILED with %0d errors", errors); $fatal; end
         $finish;

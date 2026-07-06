@@ -8,6 +8,30 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ## Unreleased
 
+### Fixed
+  - **Cross-card latency showed garbage (0xFFFFFFFF) in one direction (Phase 1
+    clamp).** On two cards whose free-running timestamp counters differ, the
+    corrected one-way latency `(rx_now + lat_correction) − tx_stamp` can go
+    slightly negative when the inter-card sync residual over-corrects; the BRAM
+    checker truncated it as UNSIGNED (`lat32 = s1_lat[31:0]`), so a negative
+    sample read as ~0xFFFF_FFxx and pinned max/jitter to 0xFFFFFFFF (and the
+    histogram top bucket). `pw_test_rx_checker_bram` now treats the result as
+    signed and clamps to `[0, 0xFFFFFFFF]` before it feeds min/max/sum/jitter/
+    histogram; in-range latencies (incl. same-card, correction=0) are
+    bit-identical. HW-validated on pwhost1 (build_id 0x6a4bc32d): the 16
+    card0→card1 flows went from all-0xFFFFFFFF to min=0/avg=19/max=31, loss=0.
+    The residual ~2× direction asymmetry (true one-way ≈63 vs ≈19 ticks) is a
+    calibration issue tracked as Phase 2 in
+    `docs/design/xcard-latency-wrap-fix-plan.md`.
+  - **Two FPGAs in one IOMMU group: second card failed to open.** Behind
+    non-ACS CPU root ports both cards share one VFIO group, and VFIO forbids
+    opening a group fd twice. `pw_vfio_open_bar` now shares one group+container
+    fd across same-group cards via a process-wide registry (refcounted; DMA IOVA
+    bump-allocated per container). Done ABI-preserving: the now-dead per-handle
+    `iova_next` field is repurposed in place as `grp_slot` (same offset/size),
+    so `struct pw_vfio_handle`'s layout is unchanged. HW-validated on pwhost1:
+    cards_open = 2/2, loss=0.
+
 ### Added
   - **Cross-cutting (whole-system) review — no P0.** A system-level pass
     (end-to-end secret/auth/privilege, cross-thread concurrency, failure-mode

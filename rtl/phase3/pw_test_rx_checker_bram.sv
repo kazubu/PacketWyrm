@@ -48,6 +48,10 @@ module pw_test_rx_checker_bram #(
     // corrected -> no SW post-hoc skew smear). 0 for same-card flows (default) ->
     // bit-identical to the uncorrected path. The free-running counter itself is
     // NEVER disciplined (Gray-CDC safe); only this computation is corrected.
+    // The corrected result is clamped to [0, 2^32-1] before it feeds the 32-bit
+    // min/max/jitter/histogram: a residual over-correction can make it slightly
+    // negative, which would otherwise wrap to ~0xFFFFFFFF in the unsigned low-32
+    // truncation. (A negative sample thus reads as 0 latency, not garbage.)
     input  wire [63:0]           lat_correction_i,
     input  pw_match_key_t        key_i,
     input  pw_class_result_t     result_i,
@@ -178,7 +182,18 @@ module pw_test_rx_checker_bram #(
             if (clear_idx == NUM_FLOWS[AW:0]) clearing <= 1'b0;
             else clear_idx <= clear_idx + 1'b1;
         end else begin
-            automatic logic [63:0] lat = (timestamp_i + lat_correction_i) - key_i.test_tx_timestamp;
+            // Corrected cross-card latency can go slightly NEGATIVE (over-
+            // correction within the inter-card sync residual) or, on a misconfig,
+            // exceed 32 bits. Treat the raw result as SIGNED and clamp to
+            // [0, 0xFFFFFFFF] before it feeds the 32-bit min/max/jitter and the
+            // histogram: a raw negative value's low 32 bits (lat32 = s1_lat[31:0])
+            // would otherwise read as a huge UNSIGNED number and pin max/jitter to
+            // 0xFFFFFFFF (and log2_bucket to the top bucket). MSB set = negative.
+            automatic logic [63:0] lat_raw = (timestamp_i + lat_correction_i)
+                                             - key_i.test_tx_timestamp;
+            automatic logic [63:0] lat = lat_raw[63]      ? 64'd0            // negative -> 0
+                                       : (|lat_raw[63:32]) ? 64'hFFFF_FFFF   // >32-bit -> saturate
+                                                           : lat_raw;
             automatic int          b   = log2_bucket(lat);
             if (b >= NUM_BUCKETS) b = NUM_BUCKETS - 1;
             s1_valid  <= event_take;

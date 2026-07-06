@@ -12,6 +12,37 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+/* --- shared IOMMU-group registry --------------------------------------------
+ * Two (or more) cards can land in ONE IOMMU group when they sit behind non-ACS
+ * CPU root ports. VFIO forbids opening a group fd twice, and a group's DMA
+ * container is shared by all its devices, so we open the group + container ONCE
+ * per group and hand each card a device fd from it. The DMA IOVA bump allocator
+ * lives here too (per container), so cards sharing a container get disjoint
+ * IOVAs. Opens/closes run single-threaded at daemon startup (see vfio.h), so no
+ * lock is needed. */
+#define PW_VFIO_MAX_GROUPS 16
+static struct vfio_group_slot {
+    int      group_no;      /* iommu group number; -1 = free slot */
+    int      group_fd;
+    int      container_fd;
+    uint64_t iova_next;     /* shared DMA IOVA bump allocator for this container */
+    int      refcount;      /* device fds handed out from this group */
+} g_vfio_groups[PW_VFIO_MAX_GROUPS] = {
+    [0 ... PW_VFIO_MAX_GROUPS - 1] = { .group_no = -1 }
+};
+
+static int vfio_group_find(int group_no) {
+    for (int i = 0; i < PW_VFIO_MAX_GROUPS; i++)
+        if (g_vfio_groups[i].refcount > 0 && g_vfio_groups[i].group_no == group_no)
+            return i;
+    return -1;
+}
+static int vfio_group_free_slot(void) {
+    for (int i = 0; i < PW_VFIO_MAX_GROUPS; i++)
+        if (g_vfio_groups[i].refcount == 0) return i;
+    return -1;
+}
+
 /* Resolve the IOMMU group number for a PCI BDF via
  * /sys/bus/pci/devices/<bdf>/iommu_group -> .../iommu_groups/<N>. */
 static int iommu_group_of(const char *bdf) {
@@ -67,12 +98,23 @@ void pw_vfio_prep_device(const char *bdf) {
 void pw_vfio_close(struct pw_vfio_handle *h) {
     if (!h) return;
     if (h->base && h->base != MAP_FAILED) munmap(h->base, h->size);
-    if (h->device_fd >= 0)    close(h->device_fd);
-    if (h->group_fd >= 0)     close(h->group_fd);
-    if (h->container_fd >= 0) close(h->container_fd);
+    if (h->device_fd >= 0) close(h->device_fd);   /* per-device: always ours */
+    /* The group + container fds are owned by the shared registry slot; only
+     * close them when the LAST card in the group is released. grp_slot holds
+     * (registry index + 1), 0 = none (see vfio.h). */
+    if (h->grp_slot != 0 && h->grp_slot <= PW_VFIO_MAX_GROUPS) {
+        struct vfio_group_slot *g = &g_vfio_groups[h->grp_slot - 1];
+        if (g->refcount > 0 && --g->refcount == 0) {
+            if (g->group_fd >= 0)     close(g->group_fd);
+            if (g->container_fd >= 0) close(g->container_fd);
+            g->group_no = -1; g->group_fd = -1; g->container_fd = -1;
+            g->iova_next = 0;
+        }
+    }
     h->base = NULL;
     h->size = 0;
     h->device_fd = h->group_fd = h->container_fd = -1;
+    h->grp_slot = 0;
 }
 
 /* --- bus-master DMA buffer mapping (IOMMU) ----------------------------- */
@@ -97,11 +139,15 @@ pw_status pw_vfio_map_dma(struct pw_vfio_handle *h, void *vaddr, size_t len,
         if ((uint64_t)(uintptr_t)vaddr % pg != 0 || (uint64_t)len % pg != 0)
             return PW_E_INVAL;
     }
-    /* Allocate a fresh IOVA range from the bump allocator (page-aligned; the
-     * caller posix_memalign's vaddr + rounds len up to the page size, so the
-     * bump pointer stays page-aligned across calls). */
-    if (h->iova_next == 0) h->iova_next = PW_VFIO_IOVA_BASE;
-    uint64_t iova = h->iova_next;
+    /* Allocate from the PER-CONTAINER bump allocator (in the shared group
+     * registry), so two cards sharing one IOMMU group/container get disjoint
+     * IOVAs (a per-handle allocator would hand both the same base and the second
+     * MAP_DMA would EEXIST-collide). Page-aligned: the caller posix_memalign's
+     * vaddr + rounds len up, so the bump pointer stays page-aligned. */
+    if (h->grp_slot == 0 || h->grp_slot > PW_VFIO_MAX_GROUPS) return PW_E_INVAL;
+    struct vfio_group_slot *g = &g_vfio_groups[h->grp_slot - 1];
+    if (g->iova_next == 0) g->iova_next = PW_VFIO_IOVA_BASE;
+    uint64_t iova = g->iova_next;
     if (iova > UINT64_MAX - (uint64_t)len) return PW_E_INVAL;   /* IOVA range wrap */
     struct vfio_iommu_type1_dma_map dm = {
         .argsz = sizeof(dm),
@@ -111,7 +157,7 @@ pw_status pw_vfio_map_dma(struct pw_vfio_handle *h, void *vaddr, size_t len,
         .size  = len,
     };
     if (ioctl(h->container_fd, VFIO_IOMMU_MAP_DMA, &dm) < 0) return PW_E_IO;
-    h->iova_next = iova + len;
+    g->iova_next = iova + len;
     if (out_iova) *out_iova = iova;
     return PW_OK;
 }
@@ -155,46 +201,55 @@ pw_status pw_vfio_open_bar(const char *bdf, int bar_index,
     h->container_fd = h->group_fd = h->device_fd = -1;
     h->base = NULL;
     h->size = 0;
-    h->iova_next = 0;
+    h->grp_slot = 0;
 
     int grp = iommu_group_of(bdf);
     if (grp < 0) return PW_E_IO;
 
-    h->container_fd = open("/dev/vfio/vfio", O_RDWR);
-    if (h->container_fd < 0) return PW_E_IO;
-
-    if (ioctl(h->container_fd, VFIO_GET_API_VERSION) != VFIO_API_VERSION) {
-        pw_vfio_close(h);
-        return PW_E_BACKEND;
+    /* Reuse an already-open group+container (another card in the same IOMMU
+     * group), or open one fresh into a free registry slot. */
+    int gi = vfio_group_find(grp);
+    if (gi < 0) {
+        gi = vfio_group_free_slot();
+        if (gi < 0) return PW_E_NO_RESOURCES;   /* too many distinct groups */
+        int cfd = open("/dev/vfio/vfio", O_RDWR);
+        if (cfd < 0) return PW_E_IO;
+        if (ioctl(cfd, VFIO_GET_API_VERSION) != VFIO_API_VERSION) {
+            close(cfd); return PW_E_BACKEND;
+        }
+        char gpath[64];
+        snprintf(gpath, sizeof(gpath), "/dev/vfio/%d", grp);
+        int gfd = open(gpath, O_RDWR);
+        if (gfd < 0) { close(cfd); return PW_E_IO; }  /* device not bound to vfio-pci? */
+        struct vfio_group_status gs = { .argsz = sizeof(gs) };
+        if (ioctl(gfd, VFIO_GROUP_GET_STATUS, &gs) < 0 ||
+            !(gs.flags & VFIO_GROUP_FLAGS_VIABLE)) {
+            close(gfd); close(cfd); return PW_E_IO;
+        }
+        if (ioctl(gfd, VFIO_GROUP_SET_CONTAINER, &cfd) < 0 ||
+            ioctl(cfd, VFIO_SET_IOMMU, VFIO_TYPE1_IOMMU) < 0) {
+            close(gfd); close(cfd); return PW_E_IO;
+        }
+        g_vfio_groups[gi] = (struct vfio_group_slot){
+            .group_no = grp, .group_fd = gfd, .container_fd = cfd,
+            .iova_next = 0, .refcount = 0
+        };
     }
 
-    char gpath[64];
-    snprintf(gpath, sizeof(gpath), "/dev/vfio/%d", grp);
-    h->group_fd = open(gpath, O_RDWR);
-    if (h->group_fd < 0) {
-        /* Most common cause: device not bound to vfio-pci. */
-        pw_vfio_close(h);
-        return PW_E_IO;
-    }
-
-    struct vfio_group_status gs = { .argsz = sizeof(gs) };
-    if (ioctl(h->group_fd, VFIO_GROUP_GET_STATUS, &gs) < 0 ||
-        !(gs.flags & VFIO_GROUP_FLAGS_VIABLE)) {
-        pw_vfio_close(h);
-        return PW_E_IO;
-    }
-
-    if (ioctl(h->group_fd, VFIO_GROUP_SET_CONTAINER, &h->container_fd) < 0 ||
-        ioctl(h->container_fd, VFIO_SET_IOMMU, VFIO_TYPE1_IOMMU) < 0) {
-        pw_vfio_close(h);
-        return PW_E_IO;
-    }
-
-    h->device_fd = ioctl(h->group_fd, VFIO_GROUP_GET_DEVICE_FD, bdf);
+    h->device_fd = ioctl(g_vfio_groups[gi].group_fd, VFIO_GROUP_GET_DEVICE_FD, bdf);
     if (h->device_fd < 0) {
-        pw_vfio_close(h);
+        /* If we just opened this group and no card is using it, tear it back down. */
+        if (g_vfio_groups[gi].refcount == 0) {
+            close(g_vfio_groups[gi].group_fd);
+            close(g_vfio_groups[gi].container_fd);
+            g_vfio_groups[gi].group_no = -1;
+        }
         return PW_E_IO;
     }
+    g_vfio_groups[gi].refcount++;
+    h->grp_slot     = (uint64_t)(gi + 1);              /* index + 1; 0 = none */
+    h->group_fd     = g_vfio_groups[gi].group_fd;      /* copies for reference */
+    h->container_fd = g_vfio_groups[gi].container_fd;
 
     struct vfio_region_info ri = {
         .argsz = sizeof(ri),
