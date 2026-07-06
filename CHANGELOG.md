@@ -8,6 +8,27 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ## Unreleased
 
+### Added
+  - **Per-flow tx/rx byte counters (real HW) + tx/rx bps.** The RTL had no
+    per-flow byte counters, so `flow.stats` tx_bytes/rx_bytes were always 0 and
+    the dashboard's bps read blank. Added true byte accumulators: the generator
+    (`pw_flow_gen_multi`) sums the emitted L2 length per slot; the parser
+    (`pw_parser_axis`) exports `frame_len` aligned with the key, threaded through
+    the same 4-stage RX delay as the wire-stamp to the checker
+    (`pw_test_rx_checker_bram`), which accumulates rx_bytes per flow (record
+    737→801 bits); `pw_stats_snapshot` packs them at the struct's byte offsets
+    8/24. GUI dashboard gains a "tx bps" column (rx bps now populates too).
+    HW-validated on pwhost1 (build_id 0x6a4bd931, WNS +0.086, LUT 96.81%):
+    tx_bytes/rx_bytes = frames×128 on all 32 flows, loss=0.
+  - **Cross-card one-way latency calibration (`-C CAL_TICKS`, Phase 2).** The
+    GPIO-sync offset can't see the direction-asymmetric TX-stamp/RX-wire-stamp
+    capture bias, so a card pair's two directions read a few ticks apart. The
+    daemon now folds a signed calibration into the servo/prime correction,
+    antisymmetric by card-id order. HW-validated: with the measured 8-tick gap
+    (card0→card1 28 vs card1→card0 36), `-C 4` centered both directions at the
+    true 32 ticks. (Arm AFTER the servo converges — an arm during the startup
+    transient captures a large un-settled offset.)
+
 ### Fixed
   - **Cross-card latency showed garbage (0xFFFFFFFF) in one direction (Phase 1
     clamp).** On two cards whose free-running timestamp counters differ, the
