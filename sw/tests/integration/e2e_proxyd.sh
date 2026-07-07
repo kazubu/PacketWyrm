@@ -21,8 +21,18 @@ command -v curl >/dev/null || { echo "curl required"; exit 2; }
 WORK=$(mktemp -d)
 SOCK=$WORK/pw.sock
 CFG=$WORK/pw.yaml
-PLAIN_PORT=18080
-TLS_PORT=18443
+# Pick free ports: a fixed port collides with long-running dev/lab proxyds
+# on shared hosts (e.g. one was parked on 18443); the old code then silently
+# talked to the STALE instance and failed with "daemon unreachable".
+pick_port() {  # base
+    local p
+    for p in $(seq "$1" "$(($1 + 20))"); do
+        if ! ss -tln 2>/dev/null | grep -q ":$p "; then echo "$p"; return 0; fi
+    done
+    return 1
+}
+PLAIN_PORT=$(pick_port 18080) || { echo "no free plain port"; exit 2; }
+TLS_PORT=$(pick_port 18445)   || { echo "no free TLS port"; exit 2; }
 
 # Inject a control_socket + a secret into the env config so we exercise
 # the secret-forwarding path too.
@@ -55,6 +65,10 @@ wait_proxyd() {  # scheme port
     return 1
 }
 
+# proxyd requires this custom header on POST /api/rpc (CSRF defence); every
+# RPC below must send it. Missing header / bad Host => 403 (tested below).
+PWH='X-PW-Request: 1'
+
 pass=0; fail=0
 check() {
     local name=$1 expected=$2 got=$3
@@ -84,7 +98,9 @@ rc=0; "$PROXYD" --listen 0.0.0.0:9 --socket /no/such.sock --no-tls >/dev/null 2>
 check_exit "fail-closed non-loopback + unreachable daemon" 1 "$rc"
 
 # --- plaintext gateway (loopback) ---
+# --allowed-host: extra Host values accepted on /api/rpc (tested below).
 "$PROXYD" --listen 127.0.0.1:$PLAIN_PORT --socket "$SOCK" --no-tls \
+    --allowed-host pw.example.test \
     > "$WORK/px_plain.log" 2>&1 &
 PXP=$!
 wait_proxyd http $PLAIN_PORT || { echo "plaintext proxyd not ready"; cat "$WORK/px_plain.log"; exit 1; }
@@ -95,16 +111,45 @@ check "404 unknown path" '404' \
     "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PLAIN_PORT/nope)"
 # secret required: without it we get unauthorized, with it we get version.
 check "rpc without secret -> unauthorized" 'unauthorized' \
-    "$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"version"}')"
+    "$(curl -s -H "$PWH" http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"version"}')"
 check "rpc with secret -> version" '"version"' \
-    "$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc \
+    "$(curl -s -H "$PWH" http://127.0.0.1:$PLAIN_PORT/api/rpc \
         -d '{"rpc":"version","secret":"e2e-secret"}')"
 check "rpc cards relayed" '"backend":"fake"' \
-    "$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc \
+    "$(curl -s -H "$PWH" http://127.0.0.1:$PLAIN_PORT/api/rpc \
         -d '{"rpc":"cards","secret":"e2e-secret"}')"
 
+# --- CSRF defences on /api/rpc ---
+# missing X-PW-Request header -> 403 (a cross-origin "simple" POST from a
+# web page carries no custom header; a DNS-rebound one carries a bad Host).
+check "rpc without X-PW-Request -> 403" '^403$' \
+    "$(curl -s -o /dev/null -w '%{http_code}' \
+        http://127.0.0.1:$PLAIN_PORT/api/rpc \
+        -d '{"rpc":"version","secret":"e2e-secret"}')"
+check "rpc without X-PW-Request error body" 'X-PW-Request' \
+    "$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc \
+        -d '{"rpc":"version","secret":"e2e-secret"}')"
+check "rpc with bad Host -> 403" '^403$' \
+    "$(curl -s -o /dev/null -w '%{http_code}' -H "$PWH" \
+        -H 'Host: evil.example.com' \
+        http://127.0.0.1:$PLAIN_PORT/api/rpc \
+        -d '{"rpc":"version","secret":"e2e-secret"}')"
+# Host values that must be accepted: localhost (builtin, any port) and the
+# --allowed-host name.
+check "rpc with Host localhost ok" '"version"' \
+    "$(curl -s -H "$PWH" -H 'Host: localhost:9999' \
+        http://127.0.0.1:$PLAIN_PORT/api/rpc \
+        -d '{"rpc":"version","secret":"e2e-secret"}')"
+check "rpc with --allowed-host name ok" '"version"' \
+    "$(curl -s -H "$PWH" -H 'Host: pw.example.test' \
+        http://127.0.0.1:$PLAIN_PORT/api/rpc \
+        -d '{"rpc":"version","secret":"e2e-secret"}')"
+# GET / (GUI asset) must NOT require the header (bare browser navigation).
+check "GET / needs no header" 'PacketWyrm' \
+    "$(curl -s http://127.0.0.1:$PLAIN_PORT/)"
+
 # config.get_raw: returns the env file text with the secret value redacted.
-graw=$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc \
+graw=$(curl -s -H "$PWH" http://127.0.0.1:$PLAIN_PORT/api/rpc \
         -d '{"rpc":"config.get_raw","secret":"e2e-secret"}')
 check "config.get_raw secret_set" '"secret_set":true' "$graw"
 check "config.get_raw redacts secret" '\*\*\*' "$graw"
@@ -121,7 +166,9 @@ import json, sys, urllib.request
 port, cfg = sys.argv[1], sys.argv[2]
 body = json.dumps({"rpc": "config.save", "secret": "e2e-secret",
                    "yaml": open(cfg).read()}).encode()
-r = urllib.request.urlopen("http://127.0.0.1:%s/api/rpc" % port, data=body)
+r = urllib.request.urlopen(urllib.request.Request(
+    "http://127.0.0.1:%s/api/rpc" % port, data=body,
+    headers={"X-PW-Request": "1"}))
 print(r.read().decode())
 PY
 )
@@ -135,7 +182,9 @@ python3 - "$PLAIN_PORT" <<PY >/dev/null
 import json, sys, urllib.request
 body = json.dumps({"rpc":"config.save","secret":"e2e-secret",
                    "yaml":$(python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' <<<"$redacted")}).encode()
-urllib.request.urlopen("http://127.0.0.1:%s/api/rpc" % sys.argv[1], data=body).read()
+urllib.request.urlopen(urllib.request.Request(
+    "http://127.0.0.1:%s/api/rpc" % sys.argv[1], data=body,
+    headers={"X-PW-Request": "1"})).read()
 PY
 if grep -q 'secret: "e2e-secret"' "$CFG"; then
     echo "[ ok ] config.save preserves secret on redacted save"; pass=$((pass+1))
@@ -148,7 +197,7 @@ check "proxyd version endpoint" '"version"' \
     "$(curl -s http://127.0.0.1:$PLAIN_PORT/proxyd/version)"
 # ports.stats (per-port MAC counters for pps/bps + FCS)
 check "ports.stats per-port counters" '"rx_frames"' \
-    "$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"ports.stats","secret":"e2e-secret"}')"
+    "$(curl -s -H "$PWH" http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"ports.stats","secret":"e2e-secret"}')"
 
 # config.load with a GUI-shaped test config (mirrors the Flows-editor YAML
 # emitter: v4/udp + v6/tcp, vlan, measurements). Guards emitter/parser drift.
@@ -245,13 +294,15 @@ loaded=$(python3 - "$PLAIN_PORT" <<PY
 import json, sys, urllib.request
 body = json.dumps({"rpc":"config.load","secret":"e2e-secret",
                    "yaml":$(python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' <<<"$gui_yaml")}).encode()
-r = urllib.request.urlopen("http://127.0.0.1:%s/api/rpc" % sys.argv[1], data=body)
+r = urllib.request.urlopen(urllib.request.Request(
+    "http://127.0.0.1:%s/api/rpc" % sys.argv[1], data=body,
+    headers={"X-PW-Request": "1"}))
 print(r.read().decode())
 PY
 )
 check "config.load GUI YAML (v4/udp + v6/tcp + advanced encap/mod/match)" '"n_flows":3' "$loaded"
 # config.get_test returns the just-loaded test config so the GUI can edit it.
-gettest=$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc \
+gettest=$(curl -s -H "$PWH" http://127.0.0.1:$PLAIN_PORT/api/rpc \
     -d '{"rpc":"config.get_test","secret":"e2e-secret"}')
 check "config.get_test loaded" '"loaded":true' "$gettest"
 check "config.get_test has the loaded flow" 'v6tcp' "$gettest"
@@ -264,18 +315,18 @@ check "config.get_test modifier increment"  '"increment"' "$gettest"
 check "config.get_test encap type"  '"type":"ipip"' "$gettest"
 # per-flow enable state (for the GUI Started/Stopped indicator + toggle)
 check "flows enabled field" '"enabled"' \
-    "$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"flows","secret":"e2e-secret"}')"
+    "$(curl -s -H "$PWH" http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"flows","secret":"e2e-secret"}')"
 
 # rate_pps must round-trip as rate_mode/rate (not collapse to rate_bps:0, which
 # would make Load current -> Apply emit invalid YAML).
-curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"config.load","secret":"e2e-secret","yaml":"flows:\n  - id: 5\n    tx_global_port: 0\n    rx_global_port: 1\n    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n    ipv4: { src: \"192.0.2.1\", dst: \"192.0.2.2\" }\n    udp: { src_port: 1, dst_port: 2 }\n    traffic: { frame_len: 128, rate_pps: 148809 }\n    measurements: { loss: true }\n"}' >/dev/null
+curl -s -H "$PWH" http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"config.load","secret":"e2e-secret","yaml":"flows:\n  - id: 5\n    tx_global_port: 0\n    rx_global_port: 1\n    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n    ipv4: { src: \"192.0.2.1\", dst: \"192.0.2.2\" }\n    udp: { src_port: 1, dst_port: 2 }\n    traffic: { frame_len: 128, rate_pps: 148809 }\n    measurements: { loss: true }\n"}' >/dev/null
 check "config.get_test rate_pps round-trip" '"rate_mode":"pps"' \
-    "$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"config.get_test","secret":"e2e-secret"}')"
+    "$(curl -s -H "$PWH" http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"config.get_test","secret":"e2e-secret"}')"
 
 # Raw frame template (eth/L2RAW) round-trips: config.get_test reports the
 # frame_template + ethertype so the GUI form re-populates them.
-curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"config.load","secret":"e2e-secret","yaml":"flows:\n  - id: 6\n    classify: header\n    tx_global_port: 0\n    rx_global_port: 1\n    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\", ethertype: 0x88b5 }\n    ipv4: { src: \"192.0.2.1\", dst: \"192.0.2.2\" }\n    udp: { src_port: 1, dst_port: 2 }\n    traffic: { frame_len: 64, rate_bps: 1000000000, frame_template: eth }\n"}' >/dev/null
-gtmpl=$(curl -s http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"config.get_test","secret":"e2e-secret"}')
+curl -s -H "$PWH" http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"config.load","secret":"e2e-secret","yaml":"flows:\n  - id: 6\n    classify: header\n    tx_global_port: 0\n    rx_global_port: 1\n    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\", ethertype: 0x88b5 }\n    ipv4: { src: \"192.0.2.1\", dst: \"192.0.2.2\" }\n    udp: { src_port: 1, dst_port: 2 }\n    traffic: { frame_len: 64, rate_bps: 1000000000, frame_template: eth }\n"}' >/dev/null
+gtmpl=$(curl -s -H "$PWH" http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"config.get_test","secret":"e2e-secret"}')
 check "config.get_test frame_template round-trip" '"frame_template":"eth"' "$gtmpl"
 check "config.get_test ethertype round-trip" '"ethertype":"0x88b5"' "$gtmpl"
 kill "$PXP" 2>/dev/null || true; PXP=""
@@ -289,7 +340,7 @@ wait_proxyd https $TLS_PORT k || { echo "TLS proxyd not ready"; cat "$WORK/px_tl
 check "TLS self-signed startup" 'self-signed certificate' "$(cat "$WORK/px_tls.log")"
 check "TLS GET /" 'PacketWyrm' "$(curl -sk https://127.0.0.1:$TLS_PORT/)"
 check "TLS rpc version" '"version"' \
-    "$(curl -sk https://127.0.0.1:$TLS_PORT/api/rpc \
+    "$(curl -sk -H "$PWH" https://127.0.0.1:$TLS_PORT/api/rpc \
         -d '{"rpc":"version","secret":"e2e-secret"}')"
 
 # pktwyrm --host over HTTPS (remote CLI). 2>/dev/null drops the one-time

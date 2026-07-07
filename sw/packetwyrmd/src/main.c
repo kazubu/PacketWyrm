@@ -1422,10 +1422,14 @@ static struct json_object *build_flow_hist(const struct pw_config *cfg,
     }
     uint64_t buckets[64];
     size_t   n_buckets = 0;
-    pw_status ss = cards[rx_ci].backend.ops->stats_snapshot(cards[rx_ci].backend.ctx);
-    if (ss != PW_OK) {
-        json_object_object_add(r, "error", json_object_new_string(pw_strerror(ss)));
-        return r;
+    /* Optional op (same guard as build_port_stats/build_flow_stats): a
+     * backend without stats_snapshot just serves the live counters. */
+    if (cards[rx_ci].backend.ops->stats_snapshot) {
+        pw_status ss = cards[rx_ci].backend.ops->stats_snapshot(cards[rx_ci].backend.ctx);
+        if (ss != PW_OK) {
+            json_object_object_add(r, "error", json_object_new_string(pw_strerror(ss)));
+            return r;
+        }
     }
     pw_status s = cards[rx_ci].backend.ops->flow_hist_read(
         cards[rx_ci].backend.ctx, m->rx_local_flow_id,
@@ -1770,8 +1774,10 @@ static void handle_client(int cfd,
                     }
                     else {
                         uint8_t *img = malloc((size_t)sz);
-                        size_t rd = fread(img, 1, (size_t)sz, f); fclose(f);
-                        if (rd != (size_t)sz) { free(img); resp = build_error("file read failed"); }
+                        size_t rd = img ? fread(img, 1, (size_t)sz, f) : 0;
+                        fclose(f);
+                        if (!img) { resp = build_error("out of memory"); }
+                        else if (rd != (size_t)sz) { free(img); resp = build_error("file read failed"); }
                         else {
                             uint64_t mism = 0;
                             pw_status s = pw_flash_program(cards[ci].backend.ops,

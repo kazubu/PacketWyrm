@@ -201,8 +201,11 @@ function setConn(ok, txt) {
 async function rpc(obj) {
   const s = $("#secret").value;
   const body = s ? { ...obj, secret: s } : obj;
+  // X-PW-Request is required by proxyd (CSRF defence: forces a CORS
+  // preflight for cross-origin pages, which proxyd never answers).
   const r = await fetch("/api/rpc", { method:"POST",
-    headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body) });
+    headers:{ "Content-Type":"application/json", "X-PW-Request":"1" },
+    body: JSON.stringify(body) });
   const j = await r.json();
   if (j && j.error === "unauthorized") { setConn(false, "unauthorized"); }
   else setConn(true, "connected");
