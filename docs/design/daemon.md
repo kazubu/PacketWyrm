@@ -14,14 +14,31 @@ and stats are snapshotted on the main thread -- there is no separate `epoll`
 reactor or stats-aggregator thread yet):
 
 - **main thread** &mdash; `poll()` loop: control socket, CLI / IPC, config
-  reload, cross-card latency servo, stats print. (Target: an `epoll` reactor.)
+  reload, stats print. (Target: an `epoll` reactor.)
 - **card workers** &mdash; one thread per card, owning that card's TAP fds and
   running the host-plane bridge (slow-path punt/inject). No card-to-card
   sharing except through the main thread.
+- **cross-card servo thread** &mdash; runs `servo_lat_correction` every `-S` ms
+  (default 10). It is a SEPARATE thread (not the main loop) so a slow control
+  RPC can never starve it: a stalled servo lets the ~1.6&nbsp;ppm inter-card
+  skew drift the `lat_correction` stale and smears cross-card latency (min=0 /
+  huge tails). `g_servo_lock` serialises its read of the `cfg`/`prog` pointers
+  against `config.load`'s swap+free of them.
+- **SFP refresh thread** &mdash; probes each SFP module's identifier/DOM over the
+  slow I2C bit-bang bus (~0.3&nbsp;s/module) into a cache every few seconds; the
+  `sfp.info` RPC returns the cache and never does live I2C on the main loop.
+  (Before this, the GUI's ~1&nbsp;Hz `sfp.info` poll blocked the loop ~0.58&nbsp;s
+  and starved the servo — see CHANGELOG.)
 - **host packet plane** &mdash; bridges TAP fds to per-card slow-path rings;
   **today merged into the card worker** (a `pw_host_plane` per card).
 - **stats aggregator** &mdash; **today a main-thread snapshot** on the stats
   print / `stats` RPC path (target: a dedicated thread or timer).
+
+The servo and SFP threads share each card's BAR backend with the card worker and
+main thread; this is safe because BAR/MMIO word accesses go to DISJOINT register
+regions per role (servo: GPIO-sync + `lat_correction`; SFP: `REG_SFP_I2C`;
+workers: punt/inject rings) and there is no shared backend state to lock
+(`backend_bar.c`).
 
 Locking — **as implemented today:** each card's host-plane worker owns its TAP
 fds and runs independently; control RPCs (including `config.load`'s

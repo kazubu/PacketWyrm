@@ -1,5 +1,17 @@
 # RTL 修正プラン: cross-card レイテンシの符号なし切り詰め破壊
 
+> **★ 真因解決 (2026-07-07)**: min=0 / 広スプレッド / 見かけの ~20-tick 方向非対称の
+> **本当の原因は、単一スレッド daemon の servo 飢餓**だった。Web GUI ダッシュボードが
+> `sfp.info` を ~1Hz でポーリングし、その RPC が I2C bit-bang(~0.58s)を main ループ
+> 上で同期実行 → cross-card `lat_correction` servo を最大 565ms 飢餓 → ~1.6ppm skew で
+> correction が stale 化 → レイテンシが min=0/max~200 に散乱。**修正**: servo と SFP I2C
+> を各々専用スレッドに分離(daemon、`servo_thread_fn`/`sfp_refresh_thread_fn`、
+> `g_servo_lock`)。HW 検証で全 32 cross-card flow min>0・loss=0、真の非対称は ~3 ticks
+> (sync-path capture のみ)。**RTL 改修も per-session 校正も不要**。以下の Phase 1
+> (clamp)は防御的に有効(負サンプルのクランプ)なので維持。Phase 2 の -C は残すが、
+> 真の非対称 ~3 ticks では実質不要。詳細は CHANGELOG / daemon.md / メモリ
+> xcard-latency-wrap-bug。
+
 ## 症状（実機 pwhost1, 2枚 DAC cross-connect, 12h soak 2026-07-06）
 
 cross-card レイテンシが**片方向だけ**壊れる:

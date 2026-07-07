@@ -24,12 +24,34 @@ For where work is going next, see `NEXT-STEPS.md`.
     GPIO-sync offset can't see the direction-asymmetric TX-stamp/RX-wire-stamp
     capture bias, so a card pair's two directions read a few ticks apart. The
     daemon now folds a signed calibration into the servo/prime correction,
-    antisymmetric by card-id order. HW-validated: with the measured 8-tick gap
-    (card0→card1 28 vs card1→card0 36), `-C 4` centered both directions at the
-    true 32 ticks. (Arm AFTER the servo converges — an arm during the startup
-    transient captures a large un-settled offset.)
+    antisymmetric by card-id order. (Correction, 2026-07-07: the "8-tick gap"
+    originally reported here was inflated by the servo-starvation bug fixed
+    below — with the servo healthy the TRUE steady-state direction asymmetry is
+    only ~3 ticks (the J5 sync-path capture delay), so `-C` is essentially
+    unnecessary on this rig; it remains available as a manual per-rig tweak.)
+    Arm AFTER the servo converges — an arm during a startup transient captures a
+    large un-settled offset.
 
 ### Fixed
+  - **Cross-card latency smeared to min=0 / huge tails whenever the Web GUI was
+    open (servo starvation — the true root cause).** The dashboard polls
+    `sfp.info` at ~1 Hz, and that RPC did I2C bit-bang per SFP module
+    (~0.3 s/module, ~0.58 s total) INLINE on the daemon's single-threaded main
+    poll loop — the same loop that ran the cross-card `lat_correction` servo.
+    Each poll blocked the loop ~0.58 s, so the servo went stale and the
+    ~1.6 ppm inter-card skew drifted the correction ~140 ticks over the stall;
+    the corrected latency then scattered — one direction's low tail clamped to
+    min=0, the other's high tail to ~200 ticks. The apparent "~20-tick direction
+    asymmetry" was the same artifact. Fix: the cross-card servo and the SFP I2C
+    now each run in their OWN thread. `sfp.info` is served from a
+    background-refreshed cache (the RPC never blocks); the servo keeps its ~1 ms
+    cadence regardless of control-RPC load (`g_servo_lock` serialises its
+    cfg/prog use against a `config.load` swap). HW-validated on pwhost1 under a
+    1 Hz sfp.info poll: servo max-gap 565 ms → 2 ms, all 32 cross-card flows
+    min>0 (was min=0), latency tight (c0→c1 29–31, c1→c0 34–37 ticks; the TRUE
+    direction asymmetry is only ~3 ticks = the J5 sync-path capture delay),
+    loss=0. This was a SW concurrency bug, not the timestamp/GPIO datapath —
+    no RTL change, and no per-session calibration is needed.
   - **Cross-card latency showed garbage (0xFFFFFFFF) in one direction (Phase 1
     clamp).** On two cards whose free-running timestamp counters differ, the
     corrected one-way latency `(rx_now + lat_correction) − tx_stamp` can go

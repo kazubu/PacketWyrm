@@ -382,6 +382,32 @@ static void servo_lat_correction(const struct pw_config *cfg,
     }
 }
 
+/* The servo runs in its OWN thread so no slow control RPC (notably sfp.info's
+ * ~0.3 s/module I2C bit-bang, which the GUI polls at ~1 Hz) can starve it on the
+ * single-threaded main loop -- starvation let the ~1.6 ppm inter-card skew drift
+ * the correction stale (~140 ticks over a ~0.5 s stall) and smeared cross-card
+ * latency to min=0 / huge tails. g_servo_lock serialises the servo's use of
+ * cfg/prog against config.load's swap+free of them (see do_config_load). */
+static pthread_mutex_t g_servo_lock = PTHREAD_MUTEX_INITIALIZER;
+
+struct servo_args {
+    struct pw_config  **cfgp;   /* main's cfg/prog, swapped by config.load */
+    struct pw_program **progp;
+    struct card_runtime *cards;
+    int interval_ms;
+};
+
+static void *servo_thread_fn(void *arg) {
+    struct servo_args *a = arg;
+    while (!g_stop) {
+        pthread_mutex_lock(&g_servo_lock);
+        servo_lat_correction(*a->cfgp, *a->progp, a->cards);
+        pthread_mutex_unlock(&g_servo_lock);
+        usleep((useconds_t)a->interval_ms * 1000);
+    }
+    return NULL;
+}
+
 /* One-shot priming of the HW latency correction after (re)programming, to close
  * the window where cross-card flows would accumulate raw (correction-0) latency.
  * No cross-card flow -> nothing to do (correction stays 0; setup_gpio_sync also
@@ -700,6 +726,13 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
         goto fail;
     }
 
+    /* From here we mutate the cards and swap cfg/prog. Hold off the servo thread
+     * (which reads the cfg/prog pointers and would use-after-free across the
+     * swap) for this whole section. config.load is rare/manual, so the
+     * sub-second pause is fine; prime_lat_correction re-establishes the
+     * correction anyway. */
+    pthread_mutex_lock(&g_servo_lock);
+
     /* Stop running flows on the live program so we don't briefly
      * dual-program two distinct flow sets. Best-effort: failures here
      * don't block the swap; the new program's commit will override
@@ -720,6 +753,7 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
         fprintf(stderr, "load: stage failed (%s) -- rolling back to the previous "
                 "config\n", pw_strerror(prog_st));
         pw_status rb_st = program_backends(*prog_pp, *cfg_pp, cards);  /* restore */
+        pthread_mutex_unlock(&g_servo_lock);   /* cfg/prog unchanged; servo may resume */
         pw_program_free(new_prog);
         pw_config_free(new_cfg);
         char msg[240];
@@ -747,6 +781,7 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
     pw_config_free(*cfg_pp);
     *cfg_pp  = new_cfg;
     *prog_pp = new_prog;
+    pthread_mutex_unlock(&g_servo_lock);   /* new cfg/prog live; servo may resume */
 
     /* Stash the loaded test YAML so the GUI can read back / edit it. */
     set_test_yaml(yaml);
@@ -1338,24 +1373,75 @@ static struct json_object *build_cards(const struct pw_config *cfg,
     return r;
 }
 
-/* Per-SFP module identifier + DOM, read over the card's I2C management bus.
- * card_filter/port_filter = -1 means "all". Skips absent/closed cards. Needs
- * the REG_SFP_I2C bitstream on the card (older images just read no ACK). */
+/* ---- SFP cache + background refresh -----------------------------------------
+ * pw_sfp_probe() does I2C bit-bang (~0.3 s per module) -- doing it in the
+ * sfp.info RPC path would BLOCK the single-threaded main loop (and thus starve
+ * the cross-card lat_correction servo -> stale correction -> skew drift ->
+ * cross-card latency min=0 / huge tails: the exact bug the GUI's ~1 Hz sfp.info
+ * poll triggered). So a background thread does the slow I2C into a cache and the
+ * RPC returns the cache instantly. SFP DOM changes on a seconds timescale, so a
+ * few-second refresh is plenty. Indexed by cards[] index (topology is immutable
+ * at runtime -> stable), so it never touches the swappable cfg pointer. */
+struct sfp_cache_entry { bool valid; bool probe_ok; struct pw_sfp_info info; };
+static struct sfp_cache_entry g_sfp_cache[MAX_CARDS][2];
+static pthread_mutex_t g_sfp_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* One probe pass over all open ports into the cache (slow I2C; off the main loop). */
+static void sfp_refresh_once(struct card_runtime cards[], size_t n_cards) {
+    for (size_t i = 0; i < n_cards && i < MAX_CARDS; i++) {
+        if (!cards[i].open) continue;
+        for (int p = 0; p < 2; p++) {
+            struct pw_sfp_info s;
+            pw_status st = pw_sfp_probe(&cards[i].backend, p, &s);   /* SLOW I2C bit-bang */
+            pthread_mutex_lock(&g_sfp_lock);
+            g_sfp_cache[i][p].valid = true;
+            g_sfp_cache[i][p].probe_ok = (st == PW_OK);
+            if (st == PW_OK) g_sfp_cache[i][p].info = s;
+            pthread_mutex_unlock(&g_sfp_lock);
+        }
+    }
+}
+
+struct sfp_refresh_args { struct card_runtime *cards; size_t n_cards; };
+static void *sfp_refresh_thread_fn(void *arg) {
+    struct sfp_refresh_args *a = arg;
+    while (!g_stop) {
+        sfp_refresh_once(a->cards, a->n_cards);
+        for (int k = 0; k < 50 && !g_stop; k++) usleep(100 * 1000);  /* ~5 s, shutdown-responsive */
+    }
+    return NULL;
+}
+
+/* Per-SFP module identifier + DOM, served from the background-refreshed cache
+ * (never does live I2C on the RPC path). card_filter/port_filter = -1 = "all". */
 static struct json_object *build_sfp_info(const struct pw_config *cfg,
                                           struct card_runtime cards[],
                                           int card_filter, int port_filter) {
     struct json_object *r = json_object_new_object();
     struct json_object *arr = json_object_new_array();
-    for (size_t i = 0; i < cfg->n_cards; i++) {
+    for (size_t i = 0; i < cfg->n_cards && i < MAX_CARDS; i++) {
         if (card_filter >= 0 && cfg->cards[i].id != card_filter) continue;
         if (!cards[i].open) continue;
         for (int p = 0; p < 2; p++) {
             if (port_filter >= 0 && p != port_filter) continue;
             struct pw_sfp_info s;
+            bool valid, ok;
+            pthread_mutex_lock(&g_sfp_lock);
+            valid = g_sfp_cache[i][p].valid;
+            ok    = g_sfp_cache[i][p].probe_ok;
+            if (ok) s = g_sfp_cache[i][p].info;
+            pthread_mutex_unlock(&g_sfp_lock);
+
             struct json_object *o = json_object_new_object();
             json_object_object_add(o, "card_id", json_object_new_int(cfg->cards[i].id));
             json_object_object_add(o, "port", json_object_new_int(p));
-            if (pw_sfp_probe(&cards[i].backend, p, &s) != PW_OK) {
+            if (!valid) {
+                json_object_object_add(o, "present", json_object_new_boolean(false));
+                json_object_object_add(o, "pending", json_object_new_boolean(true));
+                json_object_array_add(arr, o);
+                continue;
+            }
+            if (!ok) {
                 json_object_object_add(o, "present", json_object_new_boolean(false));
                 json_object_object_add(o, "error", json_object_new_string("i2c error"));
                 json_object_array_add(arr, o);
@@ -2444,8 +2530,34 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* Run the cross-card servo and the SFP refresh in their OWN threads so no
+     * slow control RPC can block them on the main loop. Start the SERVO FIRST
+     * (so it tracks the offset immediately after prime, before the SFP thread's
+     * first ~0.3 s/module I2C pass), then the SFP thread -- whose first pass
+     * warms the cache in the background (sfp.info returns pending until then).
+     * Both threads touch cards[].backend concurrently with the host-plane worker
+     * threads; that is the existing design -- BAR/MMIO word accesses to DISJOINT
+     * register regions need no lock (backend_bar.c), and the servo (GPIO_SYNC +
+     * LAT_CORRECTION regs) and SFP refresh (REG_SFP_I2C only) touch disjoint
+     * registers from each other and from program_backends. */
+    struct servo_args srv_args = {
+        .cfgp = &cfg, .progp = &prog, .cards = cards, .interval_ms = servo_interval,
+    };
+    pthread_t servo_tid; bool servo_running = false;
+    if (pthread_create(&servo_tid, NULL, servo_thread_fn, &srv_args) == 0)
+        servo_running = true;
+    else
+        fprintf(stderr, "warning: servo thread failed to start; cross-card latency "
+                "correction will not track the inter-card offset\n");
+
+    struct sfp_refresh_args sfp_args = { .cards = cards, .n_cards = cfg->n_cards };
+    pthread_t sfp_tid; bool sfp_running = false;
+    if (pthread_create(&sfp_tid, NULL, sfp_refresh_thread_fn, &sfp_args) == 0)
+        sfp_running = true;
+    else
+        fprintf(stderr, "warning: SFP refresh thread failed to start; sfp.info will be stale\n");
+
     uint64_t last_stats = now_ms();
-    uint64_t last_servo = now_ms();
     while (!g_stop) {
         struct pollfd pfds[2];
         size_t np = 0;
@@ -2502,18 +2614,12 @@ int main(int argc, char **argv) {
             print_stats(cfg, cards, hps);
             last_stats = now_ms();
         }
-
-        /* Cross-card latency servo: track the inter-card offset into the HW
-         * lat_correction CSR every servo_interval ms (default 10 -> ~16 ns skew
-         * residual; -S tunes it). cfg/prog are owned by this thread (the
-         * config.load swap in handle_client runs here too), so no locking. */
-        if ((int)(now_ms() - last_servo) >= servo_interval) {
-            servo_lat_correction(cfg, prog, cards);
-            last_servo = now_ms();
-        }
     }
 
     fprintf(stderr, "shutting down ...\n");
+    /* servo + SFP threads poll g_stop (set by the signal handler); join them. */
+    if (servo_running) pthread_join(servo_tid, NULL);
+    if (sfp_running)   pthread_join(sfp_tid, NULL);
     for (size_t i = 0; i < MAX_CARDS; i++) {
         if (workers[i].running) {
             atomic_store_explicit(&workers[i].stop, true, memory_order_relaxed);
