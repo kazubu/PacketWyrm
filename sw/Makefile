@@ -61,7 +61,9 @@ CLI_BIN := $(BUILD_DIR)/pktwyrm
 
 PROXYD_SRC   := packetwyrm-proxyd/src/main.c
 PROXYD_BIN   := $(BUILD_DIR)/packetwyrm-proxyd
-PROXYD_ASSET := packetwyrm-proxyd/assets/index.html
+PROXYD_ASSET_DIR := packetwyrm-proxyd/assets
+PROXYD_ASSET_GEN := packetwyrm-proxyd/gen_assets.py
+PROXYD_ASSETS := $(shell find $(PROXYD_ASSET_DIR) -type f 2>/dev/null)
 PROXYD_ASSET_H := $(BUILD_DIR)/proxyd_assets.h
 
 TEST_SRC := tests/unit/test_main.c
@@ -116,10 +118,13 @@ $(CLI_BIN): $(CLI_SRC) $(LIBA) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ $(CLI_SRC) $(LIBA) $(EXTRA_LIBS) $(SSL_LIBS) $(LDFLAGS) -lm
 
 # packetwyrm-proxyd: HTTPS gateway for the Web GUI + remote CLI.
-# The GUI page is embedded via `xxd -i` (run inside the assets dir so the
-# generated symbols are the clean `index_html` / `index_html_len`).
-$(PROXYD_ASSET_H): $(PROXYD_ASSET) | $(BUILD_DIR)
-	cd $(dir $<) && xxd -i $(notdir $<) > $(CURDIR)/$@
+# The whole assets/ tree (index.html + css/ + js/ + vendor/) is embedded as a C
+# blob table by gen_assets.py; proxyd serves GET <path> by exact table lookup.
+# FORCE (run every build) so a DELETED/renamed asset is reflected too -- a
+# find-based prereq list can't see removals. gen_assets.py rewrites the header
+# only when its content actually changes, so this doesn't needlessly relink.
+$(PROXYD_ASSET_H): $(PROXYD_ASSETS) $(PROXYD_ASSET_GEN) FORCE | $(BUILD_DIR)
+	python3 $(PROXYD_ASSET_GEN) $(PROXYD_ASSET_DIR) $@
 
 proxyd: $(PROXYD_BIN)
 $(PROXYD_BIN): $(PROXYD_SRC) $(PROXYD_ASSET_H) $(LIBA) | $(BUILD_DIR)

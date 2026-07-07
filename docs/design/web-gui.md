@@ -19,8 +19,17 @@ stalled HTTP client.
 
 `packetwyrm-proxyd` (`sw/packetwyrm-proxyd/`) is a **stateless relay**:
 
-- `GET /` (and `/index.html`) → serves the embedded single-page GUI
-  (`assets/index.html`, compiled into the binary via `xxd -i`).
+- `GET /<path>` → serves a static GUI asset by **exact lookup** in an embedded
+  blob table. The whole `assets/` tree (`index.html` + `css/app.css` +
+  `js/*.mjs` ES modules + any `vendor/` libs) is compiled into the binary at
+  build time by `gen_assets.py` (replaces the old single-file `xxd -i`). `/`
+  maps to `/index.html`; a query string is stripped before lookup; unknown
+  paths 404. Because the match is exact against the in-binary table (no
+  filesystem access), path traversal is structurally impossible. Every response
+  carries a same-origin **Content-Security-Policy** (`default-src 'self';
+  script-src 'self'; style-src 'self' 'unsafe-inline'; …`) and
+  `X-Content-Type-Options: nosniff`. Adding an asset = drop it under `assets/`
+  and rebuild.
 - `POST /api/rpc` → the request body **is** a daemon control-socket
   request (`{"rpc":...}` JSON, including any `"secret"`). The gateway
   forwards it verbatim to `packetwyrmd` over the Unix socket
@@ -120,8 +129,11 @@ verification (`--ca` / fingerprint pinning) is a future addition.
 
 ## The GUI
 
-A single self-contained `index.html` (inline CSS/JS, no external/CDN
-dependencies). Tabs:
+Self-contained, no external/CDN dependencies — all served same-origin by proxyd:
+`index.html` is a thin shell that pulls `/css/app.css` and the ES-module app
+under `/js/` (`main.mjs` → `dom` / `rpc` / `format` / `state` / `yaml` / `ui` /
+`flows` / `forwards` / `control` / `dashboard` / `env`). No bundler (native ES
+modules); libraries, if any, are vendored under `assets/vendor/`. Tabs:
 
 - **Dashboard** — polls every ~1.5 s: a **Versions** panel (packetwyrmd via
   `version`, packetwyrm-proxyd via `GET /proxyd/version`, per-card FPGA
@@ -156,13 +168,16 @@ dependencies). Tabs:
   `rpc-protocol.md`); a banner warns when a topology change requires a
   daemon restart. The `secret` value is shown redacted.
 
-The secret is entered once in the header and kept in `localStorage`.
+The secret is entered once in the header and kept in `sessionStorage`
+(per-tab, cleared when the tab/browser closes; any legacy `localStorage`
+copy is migrated away on load).
 
 ## Build / deploy
 
 - `make -C sw proxyd` builds `build/packetwyrm-proxyd` (links OpenSSL +
-  `libpacketwyrm`; the GUI is embedded at build time). `make install`
-  installs it to `$(SBINDIR)` with its systemd unit.
-- CI (`.github/workflows/ci.yml`) installs `libssl-dev` + `xxd`, builds
-  it as part of `make`, and exercises the relay in `make e2e`
-  (`tests/integration/e2e_proxyd.sh`).
+  `libpacketwyrm`; the whole `assets/` tree is embedded at build time by
+  `gen_assets.py`, which needs `python3`). `make install` installs it to
+  `$(SBINDIR)` with its systemd unit.
+- CI (`.github/workflows/ci.yml`) installs `libssl-dev` (+ `python3` for the
+  asset generator), builds it as part of `make`, and exercises the relay +
+  multi-file serving in `make e2e` (`tests/integration/e2e_proxyd.sh`).

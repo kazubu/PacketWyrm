@@ -8,6 +8,23 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ## Unreleased
 
+### Changed
+  - **Web GUI: multi-file asset serving + ES-module refactor (foundation for UX
+    work).** `packetwyrm-proxyd` now serves a whole `assets/` tree (index.html +
+    `css/app.css` + `js/*.mjs` ES modules + future `vendor/` libs) instead of a
+    single `xxd`-embedded `index.html`: a build-time `gen_assets.py` embeds the
+    tree as a C blob table and `GET /<path>` is an exact table lookup ( `/`→
+    index, query stripped, unknown→404; exact match against the in-binary table
+    means no filesystem access and no path traversal). Responses now carry a
+    same-origin `Content-Security-Policy` (`script-src 'self'`, so no inline
+    script) + `X-Content-Type-Options: nosniff`; the response-header buffer is
+    enlarged and overflow-checked so adding headers can't truncate. The 986-line
+    inline GUI
+    was split (behaviour-preserving) into ES modules (dom/rpc/format/state/yaml/
+    ui/flows/forwards/control/dashboard/env/main) with the CSS extracted — no
+    functional change, just structure for the UX phases to build on. e2e extended
+    to cover multi-file serving + content-types + traversal (49/49).
+
 ### Added
   - **Per-flow tx/rx byte counters (real HW) + tx/rx bps.** The RTL had no
     per-flow byte counters, so `flow.stats` tx_bytes/rx_bytes were always 0 and
