@@ -139,6 +139,7 @@ module pw_parser_axis #(
         automatic logic [1:0]    enc;        // 0 none / 1 ipip / 2 gre / 3 etherip
         automatic int            o_hlen, enc_hlen, eff_off;
         automatic logic [15:0]   gre_pt, eip_et;
+        automatic logic          gre_flagged;
         automatic logic          proc;       // frame processed -> Stage A2 parses
 
         if (!rst_n) begin
@@ -149,6 +150,7 @@ module pw_parser_axis #(
             l3_off = 14; eff_off = 14; o_proto = '0; enc = 2'd0;
             o_hlen = 20; enc_hlen = 0; outer_v4 = 1'b0; outer_v6 = 1'b0;
             inner_v4 = 1'b0; inner_v6 = 1'b0; gre_pt = '0; eip_et = '0;
+            gre_flagged = 1'b0;
             flen = int'(frame_len_q);
 
             if (eof_q && flen >= 14) begin
@@ -194,15 +196,37 @@ module pw_parser_axis #(
                     default:     enc = 2'd0;
                 endcase
                 enc_hlen = (enc == 2'd2) ? 4 : (enc == 2'd3) ? 16 : 0;
-                if (enc != 2'd0 && (outer_v4 || outer_v6) && o_hlen >= 20) begin
-                    eff_off = l3_off + o_hlen + enc_hlen;
+                // Descend only when the whole tunnel header is inside THIS
+                // frame: flen >= inner start (the same l3_off+o_hlen+enc_hlen
+                // adder result as eff_off). All selector bytes read below
+                // (GRE protocol-type at +2..3, EtherIP inner ethertype at
+                // +14..15) lie within those enc_hlen bytes, so this one
+                // compare bounds every access. hdr[] is NOT cleared between
+                // frames, so an unguarded read on a truncated encap frame
+                // would pick up a PREVIOUS frame's residual bytes and set
+                // is_ipv4/is_ipv6 nondeterministically. Guard failed (or
+                // flagged GRE, below) -> treat as non-encap: eff_off stays
+                // l3_off and the key carries the outer family only.
+                if (enc != 2'd0 && (outer_v4 || outer_v6) && o_hlen >= 20
+                        && flen >= l3_off + o_hlen + enc_hlen) begin
                     gre_pt  = {hdr[l3_off + o_hlen + 2],  hdr[l3_off + o_hlen + 3]};
                     eip_et  = {hdr[l3_off + o_hlen + 14], hdr[l3_off + o_hlen + 15]};
-                    unique case (enc)
-                        2'd1:    begin inner_v6 = (o_proto == 8'd41); inner_v4 = (o_proto == 8'd4); end
-                        2'd2:    begin inner_v4 = (gre_pt == ETHERTYPE_IPV4); inner_v6 = (gre_pt == ETHERTYPE_IPV6); end
-                        default: begin inner_v4 = (eip_et == ETHERTYPE_IPV4); inner_v6 = (eip_et == ETHERTYPE_IPV6); end
-                    endcase
+                    // GRE with any of C/K/S set (byte0 top nibble) or version
+                    // != 0 (byte1[2:0]) carries optional fields we don't
+                    // parse; a fixed 4-byte descent would land mid-header and
+                    // parse garbage as the inner frame. Treat such frames as
+                    // non-encap (classify on the outer header only).
+                    gre_flagged = (enc == 2'd2) &&
+                                  (hdr[l3_off + o_hlen][7:4] != 4'h0 ||
+                                   hdr[l3_off + o_hlen + 1][2:0] != 3'b000);
+                    if (!gre_flagged) begin
+                        eff_off = l3_off + o_hlen + enc_hlen;
+                        unique case (enc)
+                            2'd1:    begin inner_v6 = (o_proto == 8'd41); inner_v4 = (o_proto == 8'd4); end
+                            2'd2:    begin inner_v4 = (gre_pt == ETHERTYPE_IPV4); inner_v6 = (gre_pt == ETHERTYPE_IPV6); end
+                            default: begin inner_v4 = (eip_et == ETHERTYPE_IPV4); inner_v6 = (eip_et == ETHERTYPE_IPV6); end
+                        endcase
+                    end
                 end
 
                 // Inner family decided; the inner L3/L4 parse runs in Stage A2.

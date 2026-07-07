@@ -1,8 +1,12 @@
 // Testbench for pw_ts_insert: egress tx_timestamp overwrite + IPv6 UDP
 // checksum fixup. Builds synthetic frames matching the generator layout:
-//   - IPv4 no-VLAN test packet -> bytes 62..69 overwritten (magic-gated);
-//   - IPv4 VLAN test packet    -> bytes 66..73 overwritten;
+//   - IPv4 no-VLAN test packet (tuser=1) -> bytes 62..69 overwritten
+//     (is_gen AND magic gated);
+//   - IPv4 VLAN test packet (tuser=1) -> bytes 66..73 overwritten;
 //   - IPv4 non-test packet (wrong magic) -> unchanged;
+//   - IPv4 FORWARDED test frame (magic ok, tuser=0) -> untouched: a test
+//     frame traversing this card's forward path must keep its original
+//     end-to-end tx_ts (and, for TCP, its checksum);
 //   - IPv6 generator frame (tuser=1) -> tx_ts@82 overwritten AND the partial
 //     UDP checksum@60 finalized so the wire frame's UDP checksum is valid;
 //   - IPv6 forwarded frame (tuser=0) -> untouched (csum + ts preserved).
@@ -229,7 +233,7 @@ module tb_ts_insert;
 
         // ---- 1: IPv4 no-VLAN test packet -> ts at 62..69 overwritten ----
         build_base(0, 32'hA5027E57);
-        run_frame(64'h1122_3344_5566_7788, 1'b0);   // IPv4 keys on magic, not tuser
+        run_frame(64'h1122_3344_5566_7788, 1'b1);   // IPv4 stamps on is_gen AND magic
         chk("nv ts[62]", fout[62], 8'h11); chk("nv ts[63]", fout[63], 8'h22);
         chk("nv ts[64]", fout[64], 8'h33); chk("nv ts[65]", fout[65], 8'h44);
         chk("nv ts[66]", fout[66], 8'h55); chk("nv ts[67]", fout[67], 8'h66);
@@ -238,15 +242,25 @@ module tb_ts_insert;
         chk("nv post [70] untouched", fout[70], fin[70]);
         chk("nv magic[42] untouched", fout[42], 8'hA5);
 
-        // ---- 2: IPv4 non-test packet (wrong magic) -> unchanged ----
+        // ---- 2: IPv4 non-test packet (wrong magic, marked gen) -> unchanged ----
         build_base(0, 32'hDEADBEEF);
-        run_frame(64'hAAAA_AAAA_AAAA_AAAA, 1'b0);
+        run_frame(64'hAAAA_AAAA_AAAA_AAAA, 1'b1);
         chk("non-test ts[62] kept", fout[62], 8'hEE);
         chk("non-test ts[69] kept", fout[69], 8'hEE);
 
+        // ---- 2b: IPv4 FORWARDED test frame (magic ok, tuser=0) -> unchanged.
+        // A v4 test frame traversing this card's FORWARD path must keep its
+        // original (end-to-end) tx_ts: the magic alone must not trigger a
+        // re-stamp, only generator-marked frames are stamped. ----
+        build_base(0, 32'hA5027E57);
+        run_frame(64'h1122_3344_5566_7788, 1'b0);
+        chk("fwd-v4 ts[62] kept", fout[62], 8'hEE);
+        chk("fwd-v4 ts[69] kept", fout[69], 8'hEE);
+        chk("fwd-v4 magic[42] kept", fout[42], 8'hA5);
+
         // ---- 3: IPv4 VLAN test packet -> ts at 66..73 overwritten ----
         build_base(1, 32'hA5027E57);
-        run_frame(64'hDEAD_BEEF_CAFE_F00D, 1'b0);
+        run_frame(64'hDEAD_BEEF_CAFE_F00D, 1'b1);
         chk("vl ts[66]", fout[66], 8'hDE); chk("vl ts[67]", fout[67], 8'hAD);
         chk("vl ts[68]", fout[68], 8'hBE); chk("vl ts[69]", fout[69], 8'hEF);
         chk("vl ts[70]", fout[70], 8'hCA); chk("vl ts[71]", fout[71], 8'hFE);
@@ -326,6 +340,17 @@ module tb_ts_insert;
         run_frame(64'hFFFF_FFFF_FFFF_FFFF, 1'b0);
         chk("fwd-v4tcp ts[74] kept", fout[74], 8'hEE);
         chk("fwd-v4tcp csum[50] kept", fout[50], fin[50]);
+
+        // ---- 12: FORWARDED v4 TCP TEST frame (magic ok, tuser=0) -> untouched.
+        // The dangerous case: magic matches but the frame is on the forward
+        // path. Stamping it would rewrite the ts bytes with NO checksum fixup
+        // (fix_csum is is_gen-gated) -> a corrupted forwarded TCP frame. ----
+        build_v4_tcp();
+        run_frame(64'h3132_3334_3536_3738, 1'b0);
+        chk("fwd-v4tcp-test ts[74] kept", fout[74], 8'hEE);
+        chk("fwd-v4tcp-test ts[81] kept", fout[81], 8'hEE);
+        chk("fwd-v4tcp-test csum[50] kept", fout[50], fin[50]);
+        chk("fwd-v4tcp-test csum[51] kept", fout[51], fin[51]);
 
         if (errors == 0) $display("ALL TS_INSERT SCENARIOS PASS");
         else             $display("TS_INSERT FAILURES: %0d", errors);
