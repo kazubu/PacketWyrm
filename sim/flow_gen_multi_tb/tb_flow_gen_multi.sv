@@ -267,6 +267,66 @@ module tb_flow_gen_multi;
         end
     end
 
+    // Sequence continuity during br_phase (regression for the stale-seq_qq
+    // dup/skip bug): with pipeline-primed back-to-back launches the emitted
+    // sequence must still be strictly consecutive. The precompute pipeline
+    // samples sequence_q 3 cycles before a launch, so seq/cur_len commit at
+    // launch (not at last beat) -- a commit-at-end regression shows up here
+    // as one duplicate at the first primed launch and a skip after it.
+    // Test frames here are v4/UDP TEST template: seq bytes at 54..61 (BE).
+    // sq_phase is raised at reset release (frame-aligned by construction) and
+    // BEFORE the warm-up, because the dup lands on the very first primed
+    // launch (frames 1 and 2 after reset carry the same seq with the bug) --
+    // a monitor that starts in steady state never sees it (lag-1 is
+    // self-consistent mid-run).
+    logic        sq_phase = 1'b0;
+    logic [7:0]  br_buf [0:127];
+    int          br_bn = 0;
+    logic [63:0] br_seq_last;
+    int          br_seq_n = 0;
+    logic        br_seq_ok = 1'b1;
+    always_ff @(posedge clk) begin
+        if (sq_phase && tv) begin
+            for (int k = 0; k < 8; k++) if (tk[k]) begin
+                if (br_bn < 128) br_buf[br_bn] = td[k*8 +: 8];
+                br_bn++;
+            end
+            if (tl) begin
+                automatic logic [63:0] s;
+                s = {br_buf[54], br_buf[55], br_buf[56], br_buf[57],
+                     br_buf[58], br_buf[59], br_buf[60], br_buf[61]};
+                if (br_seq_n > 0 && s != br_seq_last + 64'd1) br_seq_ok = 1'b0;
+                br_seq_last = s;
+                br_seq_n++;
+                br_bn = 0;
+            end
+        end
+    end
+
+    // Frame-length sweep continuity at back-to-back rate (regression for the
+    // stale-cur_len bug: commit-at-end made each swept size emit twice under
+    // primed launches). During swp_phase every consecutive frame must step by
+    // len_step, wrapping max -> min.
+    logic swp_phase = 1'b0;
+    int   swp_len = 0, swp_prev = -1, swp_n = 0;
+    logic swp_ok = 1'b1;
+    always_ff @(posedge clk) begin
+        if (swp_phase && tv) begin
+            for (int k = 0; k < 8; k++) if (tk[k]) swp_len++;
+            if (tl) begin
+                if (swp_prev >= 0) begin
+                    automatic int exp_len = (swp_prev == 112) ? 80 : swp_prev + 16;
+                    if (swp_len != exp_len) swp_ok = 1'b0;
+                end
+                swp_prev = swp_len;
+                swp_len  = 0;
+                swp_n++;
+            end
+        end else if (!swp_phase) begin
+            swp_len = 0; swp_prev = -1;
+        end
+    end
+
     // --- raw frame-template capture (final scenario) --------------------------
     // During raw_phase, accumulate each frame and file the first of each template
     // by a discriminator: L2RAW by ethertype 0x88B5, L3RAW/L4RAW by src IP byte
@@ -518,10 +578,12 @@ module tb_flow_gen_multi;
             f_rows[0].tokens_fp=32'h0040_0000;        // 64 B/cyc -- far above line
             f_rows[0].frame_len_min=16'd74; f_rows[0].frame_len_max=16'd74; f_rows[0].frame_len_step=16'd1;
             rst_n=0; repeat (4) @(posedge clk); rst_n=1;
+            sq_phase = 1'b1;                          // seq check incl. FIRST frames
             repeat (200) @(posedge clk);              // warm to steady state
             br_phase = 1'b1;
             repeat (400) @(posedge clk);
             br_phase = 1'b0;
+            sq_phase = 1'b0;
             chk("cap=1: back-to-back gaps measured", br_n >= 5);
             // 74 B = 10 emit beats, so a real SOF-to-SOF gap is >= 10 (sanity).
             chk("cap=1 gap >= emit beats (sanity)", br_min >= 10);
@@ -531,6 +593,39 @@ module tb_flow_gen_multi;
                 (br_sum / br_n) <= 12);
             $display("flow_gen_multi: cap=1 SOF-to-SOF gap min=%0d max=%0d avg=%0d (n=%0d)",
                      br_min, br_max, br_sum / br_n, br_n);
+            // Regression (stale seq_qq at primed launches): back-to-back frames
+            // must carry strictly consecutive sequence numbers -- the old
+            // commit-at-last-beat emitted a duplicate at the first primed
+            // launch and skipped one number after the run.
+            chk("cap=1: back-to-back sequence strictly consecutive", br_seq_ok);
+            chk("cap=1: sequence check saw frames", br_seq_n >= 5);
+            $display("flow_gen_multi: cap=1 seq frames checked=%0d ok=%0d",
+                     br_seq_n, br_seq_ok);
+        end
+
+        // ---- length sweep at back-to-back rate ----
+        // One TEST flow sweeping 80 -> 112 by 16 with a deep bucket and a
+        // far-above-line refill: launches stay pipeline-primed, and every
+        // consecutive frame must still step the sweep (the stale-cur_len bug
+        // emitted each size twice under primed launches).
+        begin
+            for (int s = 0; s < SLOTS; s++) f_rows[s] = '0;
+            f_rows[0].valid=1; f_rows[0].egress=0; f_rows[0].flow_id=32'd9;
+            f_rows[0].src_mac=48'h02_00_00_00_00_01; f_rows[0].dst_mac=48'hFF_FF_FF_FF_FF_FF;
+            f_rows[0].src_ipv4=32'h0A000001; f_rows[0].dst_ipv4=32'h0A000002;
+            f_rows[0].udp_sp=16'd4000; f_rows[0].udp_dp=16'd4001; f_rows[0].ttl=8'd64;
+            f_rows[0].burst=16'd4096;                 // deep bucket: stay primed
+            f_rows[0].tokens_fp=32'h0040_0000;        // 64 B/cyc -- far above line
+            f_rows[0].frame_len_min=16'd80; f_rows[0].frame_len_max=16'd112;
+            f_rows[0].frame_len_step=16'd16;
+            rst_n=0; repeat (4) @(posedge clk); rst_n=1;
+            swp_phase = 1'b1;
+            repeat (600) @(posedge clk);
+            swp_phase = 1'b0;
+            chk("sweep@line-rate: frames observed", swp_n >= 10);
+            chk("sweep@line-rate: every frame steps the sweep (no doubled sizes)",
+                swp_ok);
+            $display("flow_gen_multi: sweep frames=%0d ok=%0d", swp_n, swp_ok);
         end
 
         // ---- frame templates: raw payload + true 64-byte frames ----
