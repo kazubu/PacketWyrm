@@ -109,6 +109,23 @@ check "GET / serves GUI" 'PacketWyrm' \
     "$(curl -s http://127.0.0.1:$PLAIN_PORT/)"
 check "404 unknown path" '404' \
     "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PLAIN_PORT/nope)"
+# Multi-file asset tree (index.html + css/ + js/*.mjs, served same-origin).
+check "GET / loads the JS module" '/js/main.mjs' \
+    "$(curl -s http://127.0.0.1:$PLAIN_PORT/)"
+check "GET /css/app.css served" '200' \
+    "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PLAIN_PORT/css/app.css)"
+check "css has correct content-type" 'text/css' \
+    "$(curl -s -D - -o /dev/null http://127.0.0.1:$PLAIN_PORT/css/app.css)"
+check "GET /js/main.mjs served" '200' \
+    "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PLAIN_PORT/js/main.mjs)"
+check "js module has js content-type" 'text/javascript' \
+    "$(curl -s -D - -o /dev/null http://127.0.0.1:$PLAIN_PORT/js/main.mjs)"
+check "query string stripped before lookup" '200' \
+    "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PLAIN_PORT/js/main.mjs?v=1")"
+check "response carries CSP header" 'script-src' \
+    "$(curl -s -D - -o /dev/null http://127.0.0.1:$PLAIN_PORT/)"
+check "path traversal 404 (no filesystem)" '404' \
+    "$(curl -s -o /dev/null -w '%{http_code}' --path-as-is "http://127.0.0.1:$PLAIN_PORT/../etc/passwd")"
 # secret required: without it we get unauthorized, with it we get version.
 check "rpc without secret -> unauthorized" 'unauthorized' \
     "$(curl -s -H "$PWH" http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"version"}')"
