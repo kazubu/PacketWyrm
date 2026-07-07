@@ -193,6 +193,11 @@ The earlier compact map (classifier 0x1000 / flow 0x2000 / stats 0x3000
 / histogram 0x4000, 4 KB each) was replaced by the wide map above when
 the design scaled past 8 flows. The histogram is BRAM-backed and read
 live (no snapshot latch); its stride dropped 512 B -> 128 B (16 bins).
+Each 64-bit bucket must be read LOW dword then HIGH dword: the +0 read
+latches bits [63:32] into a shadow that the +4 read returns, so a count
+carrying across 2^32 between the two reads cannot tear (same protocol
+as `timestamp_low/high`). Reading the window in ascending word order
+(as `bar_flow_hist_read` does) satisfies this naturally.
 The former SLOW_RX/TX placeholders (0x8000 / 0x9000) were reclaimed.
 
 `capabilities` bits:

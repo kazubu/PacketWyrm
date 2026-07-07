@@ -73,7 +73,30 @@ packetwyrm-proxyd [--listen ADDR:PORT] [--socket DAEMON_SOCK]
   and the listen address is **not** loopback, the gateway *refuses to
   start* — otherwise anyone reaching the port would have full control.
   Override with `--insecure-no-auth` (or bind `127.0.0.1`, or set a
-  secret).
+  secret). Non-loopback binds also **re-confirm** the daemon still
+  requires a secret at most every 60 s (lazy, on request arrival) and
+  fail closed with 403 — a daemon restarted without its secret behind a
+  long-running public gateway is caught, not silently exposed.
+- **CSRF / DNS-rebinding defence on `POST /api/rpc`.** Two independent
+  gates, both required:
+  1. the custom header `X-PW-Request: 1` — genuinely cross-origin pages
+     trigger a CORS preflight for it, and the gateway never answers
+     `OPTIONS`, so browser-borne cross-site POSTs die at the preflight;
+  2. an allow-listed `Host` header (`localhost`, `127.0.0.1`, `[::1]`,
+     the `--listen` address, or names given via
+     `--allowed-host NAME[,NAME...]`) — this is the half that stops DNS
+     rebinding, where the attacker's page is *same-origin* by the
+     browser's lights (custom headers flow freely) but carries the
+     attacker's hostname in `Host`.
+  Violations get `403` with a JSON error. The GUI's `rpc()` helper and
+  `pktwyrm --host` both send the header; plain `curl` callers must add
+  `-H 'X-PW-Request: 1'`. Without these gates, the *sanctioned*
+  secretless-loopback deployment was drivable by any web page in a local
+  browser (`config.save` writes `/etc/packetwyrm/` as root).
+- **Whole-request deadline.** Each request (headers + body) must
+  complete within 30 s (`408` otherwise). The per-read socket timeout
+  alone let a Slowloris client (1 byte every ~14 s) pin all 32 workers
+  indefinitely.
 
 ## Remote CLI: `pktwyrm --host`
 
