@@ -3,6 +3,7 @@
 
 #include "packetwyrm/flow_compiler.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -416,7 +417,15 @@ static pw_status compile_one_flow(struct pw_program *out,
                                                            : f->traffic.frame_len_min;
             uint32_t minf = pw_flow_min_legal_frame(f);     /* RTL clamps up to this */
             if (flen < minf) flen = minf;
-            eff_rate_bps = f->traffic.rate_pps * (uint64_t)flen * 8u;
+            /* Widen like the rate_bps math below: pps x flen x 8 can overflow
+             * 64 bits (a wrapped product yields a tiny token rate -> the flow
+             * crawls instead of saturating). Saturate to UINT64_MAX; the
+             * Q16.16 conversion below then clamps it to the same 0xFFFFFFFF
+             * tokens_per_tick maximum the rate_bps path clamps to. */
+            unsigned __int128 pr = (unsigned __int128)f->traffic.rate_pps
+                                 * (unsigned __int128)flen * 8u;
+            eff_rate_bps = (pr > (unsigned __int128)UINT64_MAX)
+                         ? UINT64_MAX : (uint64_t)pr;
         }
         unsigned __int128 num = (unsigned __int128)eff_rate_bps * 65536u;
         unsigned __int128 den = (unsigned __int128)PWFPGA_DATA_PLANE_CLOCK_HZ * 8u;

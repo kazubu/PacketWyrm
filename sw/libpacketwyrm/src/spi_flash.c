@@ -4,6 +4,7 @@
  * verified by read-back. */
 #include "packetwyrm/spi_flash.h"
 #include "packetwyrm/csr.h"
+#include <stdlib.h>
 #include <string.h>
 
 #define SECTOR   0x10000u   /* 64 KB sector erase (0xD8) */
@@ -97,6 +98,50 @@ static pw_status flash_read(const struct pw_card_backend_ops *o, void *ctx,
     return PW_OK;
 }
 
+/* Read an arbitrary [a, a+len) range in <=256-byte transactions (the SPI
+ * engine's buffer bound; 0x03 reads have no page-alignment constraint). */
+static pw_status flash_read_range(const struct pw_card_backend_ops *o, void *ctx,
+                                  uint32_t a, uint8_t *buf, uint32_t len) {
+    for (uint32_t p = 0; p < len; p += 256) {
+        int n = (len - p < 256) ? (int)(len - p) : 256;
+        pw_status s = flash_read(o, ctx, a + p, buf + p, n);
+        if (s != PW_OK) return s;
+    }
+    return PW_OK;
+}
+
+/* Program an arbitrary [a, a+len) range in chunks that never cross a physical
+ * page boundary: a page-program command that overruns the 256-B page wraps to
+ * the page START on most SPI NOR, corrupting the beginning of the page. When
+ * `a` is not page-aligned the first chunk is only the bytes left in that page. */
+static pw_status program_range(const struct pw_card_backend_ops *o, void *ctx,
+                               uint32_t a, const uint8_t *data, size_t len) {
+    for (size_t p = 0; p < len; ) {
+        uint32_t addr = a + (uint32_t)p;
+        size_t page_left = PAGE - (addr & (PAGE - 1));   /* bytes to end of this page */
+        size_t n = len - p;
+        if (n > page_left) n = page_left;
+        pw_status s = page_program(o, ctx, addr, &data[p], (int)n);
+        if (s != PW_OK) return s;
+        p += n;
+    }
+    return PW_OK;
+}
+
+/* Read back [a, a+len) and count bytes that differ from `expect` into *mism. */
+static pw_status flash_verify_range(const struct pw_card_backend_ops *o, void *ctx,
+                                    uint32_t a, const uint8_t *expect,
+                                    uint32_t len, uint64_t *mism) {
+    for (uint32_t p = 0; p < len; p += 256) {
+        int n = (len - p < 256) ? (int)(len - p) : 256;
+        uint8_t rb[256];
+        pw_status s = flash_read(o, ctx, a + p, rb, n);
+        if (s != PW_OK) return s;
+        for (int i = 0; i < n; i++) if (rb[i] != expect[p + i]) (*mism)++;
+    }
+    return PW_OK;
+}
+
 pw_status pw_flash_read_id(const struct pw_card_backend_ops *o, void *ctx, uint8_t id[3]) {
     if (!o || !o->write32 || !o->read32 || !id) return PW_E_INVAL;
     pw_status s = warmup(o, ctx);
@@ -121,31 +166,43 @@ pw_status pw_flash_program(const struct pw_card_backend_ops *o, void *ctx,
     uint32_t end = offset + (uint32_t)len;   /* <= FLASH_SZ, no wrap (validated) */
     pw_status ws = warmup(o, ctx);
     if (ws != PW_OK) return ws;
-    for (uint32_t a = offset & ~(SECTOR - 1); a < end; a += SECTOR) {
-        pw_status s = sector_erase(o, ctx, a);
-        if (s != PW_OK) return s;
-    }
-    /* Program in chunks that never cross a physical page boundary: a page-program
-     * command that overruns the 256-B page wraps to the page START on most SPI
-     * NOR, corrupting the beginning of the page. When offset is not page-aligned
-     * the first chunk is only the bytes left in that page. */
-    for (size_t p = 0; p < len; ) {
-        uint32_t a = offset + (uint32_t)p;
-        size_t page_left = PAGE - (a & (PAGE - 1));   /* bytes to end of this page */
-        size_t n = len - p;
-        if (n > page_left) n = page_left;
-        pw_status s = page_program(o, ctx, a, &data[p], (int)n);
-        if (s != PW_OK) return s;
-        p += n;
-    }
     uint64_t mism = 0;
-    for (size_t p = 0; p < len; p += 256) {
-        int n = (len - p < 256) ? (int)(len - p) : 256;
-        uint8_t rb[256];
-        pw_status s = flash_read(o, ctx, offset + (uint32_t)p, rb, n);
+    /* Erase every 64 KB sector the range overlaps. A sector the range only
+     * PARTIALLY covers (the head and/or tail sector) holds bytes the caller
+     * did not ask to change -- erasing it outright would wipe them (e.g. a
+     * config block sharing the sector with the bitstream tail). Preserve them
+     * with a read-modify-write: read the sector's non-target bytes, erase,
+     * program them back. The caller's own range is programmed once, below.
+     * Fully-covered (middle) sectors keep the fast erase-only path. */
+    for (uint32_t a = offset & ~(SECTOR - 1); a < end; a += SECTOR) {
+        uint32_t head = (a < offset) ? offset - a : 0;              /* preserved bytes before the range */
+        uint32_t tail = (a + SECTOR > end) ? a + SECTOR - end : 0;  /* preserved bytes after it */
+        if (head == 0 && tail == 0) {
+            pw_status s = sector_erase(o, ctx, a);
+            if (s != PW_OK) return s;
+            continue;
+        }
+        /* head+tail < SECTOR (the range overlaps this sector by >=1 byte), so
+         * one sector-sized scratch holds both preserved regions back-to-back. */
+        uint8_t *keep = malloc(SECTOR);
+        if (!keep) return PW_E_NO_RESOURCES;
+        pw_status s = flash_read_range(o, ctx, a, keep, head);
+        if (s == PW_OK && tail)
+            s = flash_read_range(o, ctx, end, keep + head, tail);
+        if (s == PW_OK) s = sector_erase(o, ctx, a);
+        if (s == PW_OK && head) s = program_range(o, ctx, a, keep, head);
+        if (s == PW_OK && tail) s = program_range(o, ctx, end, keep + head, tail);
+        /* Verify the preserved bytes too -- a corrupted neighbour region is as
+         * fatal as a corrupted target (it may be the golden bitstream). */
+        if (s == PW_OK && head) s = flash_verify_range(o, ctx, a, keep, head, &mism);
+        if (s == PW_OK && tail) s = flash_verify_range(o, ctx, end, keep + head, tail, &mism);
+        free(keep);
         if (s != PW_OK) return s;
-        for (int i = 0; i < n; i++) if (rb[i] != data[p + i]) mism++;
     }
+    pw_status s = program_range(o, ctx, offset, data, len);
+    if (s != PW_OK) return s;
+    s = flash_verify_range(o, ctx, offset, data, (uint32_t)len, &mism);
+    if (s != PW_OK) return s;
     if (mismatch_out) *mismatch_out = mism;
     return PW_OK;
 }

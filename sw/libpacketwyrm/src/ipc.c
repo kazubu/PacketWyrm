@@ -135,7 +135,15 @@ pw_status pw_ipc_listen(const char *path, mode_t mode, int *out_fd) {
     }
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return PW_E_IO;
-    if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+    /* Create the socket file owner-only (umask 0077 -> 0700) and only widen it
+     * to the requested mode AFTER listen(): the file mode IS the access ACL
+     * when no secret is configured, and a chmod applied after bind()+listen()
+     * left a window where a raced connect could slip in under a permissive
+     * umask default. Restrict-then-widen closes it. */
+    mode_t old_umask = umask(0077);
+    int bind_rc = bind(fd, (struct sockaddr *)&sa, sizeof(sa));
+    umask(old_umask);
+    if (bind_rc < 0) {
         close(fd);
         return PW_E_IO;
     }
