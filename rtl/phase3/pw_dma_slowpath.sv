@@ -34,7 +34,12 @@ module pw_dma_slowpath #(
     parameter int XD_DATA_W  = 256,
     // Async-FIFO depth (in DP_DATA_W words). 2048 words * 8 B = 16 KB per
     // direction -> a couple of jumbo (9 KB) frames in flight. BRAM is ample.
-    parameter int FIFO_DEPTH = 2048
+    parameter int FIFO_DEPTH = 2048,
+    // Number of data-plane egress ports. An inject header whose egress id is
+    // >= PORT_COUNT would never be drained by any TX arbiter (tvalid would
+    // stay high forever and wedge the whole H2C channel), so such frames are
+    // swallowed here instead of being presented on m_inj.
+    parameter int PORT_COUNT = 2
 ) (
     // ---- XDMA domain (axi_aclk, ~250 MHz; axi_rst active-high) ----
     input  wire                        axi_clk,
@@ -101,9 +106,20 @@ module pw_dma_slowpath #(
 
     // Header-strip FSM (dp domain): the first 64 b beat of each frame is the
     // inject header; latch egress and drop it, then forward the payload beats.
-    localparam logic S_HDR = 1'b0, S_PAY = 1'b1;
-    logic       inj_state;
+    // S_DROP swallows the payload of a frame whose header carried an
+    // out-of-range egress id (>= PORT_COUNT): no TX arbiter would ever match
+    // such an id, so presenting the frame on m_inj would leave tvalid high
+    // forever, back up the inject FIFO, and wedge the XDMA H2C channel until
+    // an operator-issued reset. Dropped frames are not counted -- the module
+    // exposes no debug/stats counters today; if one is ever added, count
+    // invalid-egress drops there.
+    localparam logic [1:0] S_HDR = 2'd0, S_PAY = 2'd1, S_DROP = 2'd2;
+    logic [1:0] inj_state;
     logic [3:0] inj_egress_q;
+
+    // Validate the full header egress byte (byte 0), not just the 4 bits we
+    // latch: a host bug that writes e.g. 0x10 must not alias to port 0.
+    wire inj_hdr_egress_bad = (inj_dp.tdata[7:0] >= 8'(PORT_COUNT));
 
     always_ff @(posedge dp_clk) begin
         if (dp_rst) begin
@@ -112,28 +128,35 @@ module pw_dma_slowpath #(
         end else begin
             // advance on accepted beats of the dp-side stream
             if (inj_dp.tvalid && inj_dp.tready) begin
-                if (inj_state == S_HDR) begin
-                    inj_egress_q <= inj_dp.tdata[3:0];   // header: egress in byte 0
-                    // A header-only frame (tlast on the header beat) is a
-                    // malformed/empty inject with no payload -- stay in S_HDR so
-                    // the header is swallowed and dropped, and the NEXT frame's
-                    // header is still parsed as a header (not mis-read as payload).
-                    inj_state    <= inj_dp.tlast ? S_HDR : S_PAY;
-                end else if (inj_dp.tlast) begin
-                    inj_state    <= S_HDR;               // next frame starts with a header
-                end
+                case (inj_state)
+                    S_HDR: begin
+                        inj_egress_q <= inj_dp.tdata[3:0];   // header: egress in byte 0
+                        // A header-only frame (tlast on the header beat) is a
+                        // malformed/empty inject with no payload -- stay in S_HDR so
+                        // the header is swallowed and dropped, and the NEXT frame's
+                        // header is still parsed as a header (not mis-read as payload).
+                        if (inj_dp.tlast)             inj_state <= S_HDR;
+                        else if (inj_hdr_egress_bad)  inj_state <= S_DROP;
+                        else                          inj_state <= S_PAY;
+                    end
+                    S_PAY:  if (inj_dp.tlast) inj_state <= S_HDR;
+                    // invalid egress: consume payload beats without presenting them
+                    S_DROP: if (inj_dp.tlast) inj_state <= S_HDR;
+                    default: inj_state <= S_HDR;
+                endcase
             end
         end
     end
 
-    // In S_HDR: consume (ready) but do NOT present to m_inj. In S_PAY: pass through.
+    // In S_HDR/S_DROP: consume (ready) but do NOT present to m_inj.
+    // In S_PAY: pass through.
     wire inj_is_pay = (inj_state == S_PAY);
     assign m_inj_tdata   = inj_dp.tdata;
     assign m_inj_tkeep   = inj_dp.tkeep[DP_KEEP_W-1:0];
     assign m_inj_tlast   = inj_dp.tlast;
     assign m_inj_egress  = inj_egress_q;
     assign m_inj_tvalid  = inj_dp.tvalid & inj_is_pay;
-    // ready back to the FIFO: always ready in S_HDR (swallow header), else follow m_inj
+    // ready back to the FIFO: always ready in S_HDR/S_DROP (swallow), else follow m_inj
     assign inj_dp.tready = inj_is_pay ? m_inj_tready : 1'b1;
 
     // ================================================================
@@ -145,7 +168,8 @@ module pw_dma_slowpath #(
     // Header-insert FSM (dp domain): on each frame, emit one header beat built
     // from s_punt_tuser, then the frame beats. tuser = {rx_ts[63:0],
     // ingress[3:0], lif_id[31:0]}.
-    logic        punt_state;   // S_HDR: emit header; S_PAY: pass frame
+    localparam logic P_HDR = 1'b0, P_PAY = 1'b1;
+    logic        punt_state;   // P_HDR: emit header; P_PAY: pass frame
     wire  [31:0] punt_lif      = s_punt_tuser[31:0];
     wire  [3:0]  punt_ingress  = s_punt_tuser[35:32];
     // header beat: byte0..3 = lif_id[31:0] (LE), byte4 = {4'b0, ingress[3:0]}
@@ -153,16 +177,16 @@ module pw_dma_slowpath #(
 
     always_ff @(posedge dp_clk) begin
         if (dp_rst) begin
-            punt_state <= S_HDR;
+            punt_state <= P_HDR;
         end else begin
             if (punt_dp.tvalid && punt_dp.tready) begin
-                if (punt_state == S_HDR) punt_state <= S_PAY;
-                else if (punt_dp.tlast)  punt_state <= S_HDR;
+                if (punt_state == P_HDR) punt_state <= P_PAY;
+                else if (punt_dp.tlast)  punt_state <= P_HDR;
             end
         end
     end
 
-    wire punt_hdr_beat = (punt_state == S_HDR);
+    wire punt_hdr_beat = (punt_state == P_HDR);
     // Present either the header beat (from tuser, don't consume s_punt yet) or the
     // frame beats (pass-through from s_punt).
     assign punt_dp.tdata  = punt_hdr_beat ? punt_hdr        : s_punt_tdata;

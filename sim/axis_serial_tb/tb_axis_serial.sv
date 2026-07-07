@@ -4,6 +4,13 @@
 // the resulting AXIS beats into pw_axis_deserializer, and checks
 // that the reconstructed pw_frame_t is byte-for-byte identical to
 // the original.
+//
+// Additionally checks the on-the-wire lane convention DIRECTLY (a
+// round-trip alone would pass under any self-consistent packing):
+// wire byte k must ride in tdata[k*8 +: 8] qualified by tkeep[k]
+// (the production convention, cf. pw_flow_gen_multi / pw_ts_insert),
+// and tkeep on a partial last beat must qualify the LOW lanes that
+// actually hold data.
 
 `default_nettype none
 
@@ -58,6 +65,28 @@ module tb_axis_serial;
 
     int errors = 0;
 
+    // Beat monitor: extract wire bytes from the AXIS bus using the
+    // production lane convention (byte k = tdata[k*8 +: 8], gated by
+    // tkeep[k]); also require tkeep to be contiguous from lane 0.
+    logic [7:0] wire_bytes [$];
+    always @(posedge clk) begin
+        if (axis_tvalid && axis_tready) begin
+            logic seen_gap = 1'b0;
+            for (int k = 0; k < 8; k++) begin
+                if (axis_tkeep[k]) begin
+                    if (seen_gap) begin
+                        $display("[FAIL] tkeep not contiguous from lane 0: %b",
+                                 axis_tkeep);
+                        errors++;
+                    end
+                    wire_bytes.push_back(axis_tdata[k*8 +: 8]);
+                end else begin
+                    seen_gap = 1'b1;
+                end
+            end
+        end
+    end
+
     task automatic check_eq(string what, longint got, longint exp);
         if (got != exp) begin
             $display("[FAIL %s] got=%0d exp=%0d", what, got, exp);
@@ -97,6 +126,7 @@ module tb_axis_serial;
         for (int idx = 0; idx < 4; idx++) begin
             target_len = lens[idx];
             exp_frame  = make_payload(target_len);
+            wire_bytes = {};
 
             // submit
             tx_frame = exp_frame;
@@ -125,6 +155,19 @@ module tb_axis_serial;
                 if (rx_frame.data[j] !== exp_frame.data[j]) mismatch++;
             end
             check_eq($sformatf("len=%0d body match (mismatch count)",
+                               target_len),
+                     mismatch, 0);
+
+            // direct lane-convention check: the bytes seen on the AXIS
+            // bus (via tdata[k*8 +: 8] / tkeep[k]) must be the wire
+            // bytes, in order.
+            check_eq($sformatf("len=%0d wire byte count", target_len),
+                     wire_bytes.size(), target_len);
+            mismatch = 0;
+            for (int j = 0; j < target_len && j < wire_bytes.size(); j++) begin
+                if (wire_bytes[j] !== exp_frame.data[j]) mismatch++;
+            end
+            check_eq($sformatf("len=%0d wire lane convention (mismatch count)",
                                target_len),
                      mismatch, 0);
             @(posedge clk);   // let rx_valid drop

@@ -28,7 +28,9 @@ module tb_dma_slowpath;
     logic [DP-1:0] s_punt_tdata; logic [DP/8-1:0] s_punt_tkeep;
     logic s_punt_tvalid, s_punt_tlast; wire s_punt_tready; logic [99:0] s_punt_tuser;
 
-    pw_dma_slowpath dut (
+    // PORT_COUNT=8: existing scenarios use egress ids 2/3/5 (valid), the
+    // invalid-egress scenario uses ids >= 8.
+    pw_dma_slowpath #(.PORT_COUNT(8)) dut (
         .axi_clk(axi_clk), .axi_rst(axi_rst),
         .s_h2c_tdata(s_h2c_tdata), .s_h2c_tkeep(s_h2c_tkeep),
         .s_h2c_tvalid(s_h2c_tvalid), .s_h2c_tready(s_h2c_tready), .s_h2c_tlast(s_h2c_tlast),
@@ -170,6 +172,104 @@ module tb_dma_slowpath;
             logic ok = 1;
             for (int i = 0; i < 16; i++) if (inj_bytes[i] != 8'(8'hA0 + i)) ok = 0;
             check("inject hdr-only: next payload correct", ok);
+        end
+
+        // ---- Test 4: out-of-range egress id must be swallowed, no wedge ----
+        // An inject header with egress >= PORT_COUNT would never be drained by
+        // any TX arbiter: without the in-module drop, m_inj_tvalid would stay
+        // high forever and wedge the whole H2C channel. Push two bad frames
+        // (one plainly out of range, one whose LOW 4 bits alias to a valid
+        // port -- the full header byte must be validated, not the truncation),
+        // then a valid frame; only the valid one may appear on m_inj.
+        inj_bytes = {}; inj_frames = 0;
+        begin
+            logic [XD-1:0] d;
+            // (a) bad egress = 0x0C (>= PORT_COUNT=8), 16 payload bytes
+            @(posedge axi_clk);
+            d = '0; d[7:0] = 8'h0C;
+            for (int i = 0; i < 16; i++) d[(8+i)*8 +: 8] = 8'(8'h30 + i);
+            s_h2c_tdata = d; s_h2c_tkeep = {8'h0, 24'hFFFFFF};
+            s_h2c_tvalid = 1; s_h2c_tlast = 1;
+            do @(posedge axi_clk); while (!s_h2c_tready);
+            s_h2c_tvalid = 0; s_h2c_tlast = 0; s_h2c_tkeep='0;
+            // (b) bad egress = 0x11: low nibble (1) is a valid port, but the
+            // full byte is out of range and must NOT alias to port 1.
+            @(posedge axi_clk);
+            d = '0; d[7:0] = 8'h11;
+            for (int i = 0; i < 16; i++) d[(8+i)*8 +: 8] = 8'(8'h50 + i);
+            s_h2c_tdata = d; s_h2c_tkeep = {8'h0, 24'hFFFFFF};
+            s_h2c_tvalid = 1; s_h2c_tlast = 1;
+            do @(posedge axi_clk); while (!s_h2c_tready);
+            s_h2c_tvalid = 0; s_h2c_tlast = 0; s_h2c_tkeep='0;
+            // (c) valid frame right after: egress=4, 16 payload bytes 0xC0..
+            @(posedge axi_clk);
+            d = '0; d[7:0] = 8'd4;
+            for (int i = 0; i < 16; i++) d[(8+i)*8 +: 8] = 8'(8'hC0 + i);
+            s_h2c_tdata = d; s_h2c_tkeep = {8'h0, 24'hFFFFFF};
+            s_h2c_tvalid = 1; s_h2c_tlast = 1;
+            do @(posedge axi_clk); while (!s_h2c_tready);
+            s_h2c_tvalid = 0; s_h2c_tlast = 0; s_h2c_tkeep='0;
+        end
+        repeat (400) @(posedge dp_clk);
+        check("inject bad-egress: exactly one frame (bad ones swallowed)", inj_frames == 1);
+        check("inject bad-egress: egress = 4 (no alias to low nibble)", inj_egr_seen == 4'd4);
+        check("inject bad-egress: 16 payload bytes", inj_bytes.size() == 16);
+        if (inj_bytes.size() == 16) begin
+            logic ok = 1;
+            for (int i = 0; i < 16; i++) if (inj_bytes[i] != 8'(8'hC0 + i)) ok = 0;
+            check("inject bad-egress: payload is the valid frame's", ok);
+        end
+
+        // ---- Test 5: dp-side soft reset mid-frame, bridge must recover ----
+        // The top level now folds the CSR dp_soft_rst into this module's
+        // dp_rst (the data plane it feeds resets on it too). The taxi async
+        // FIFO synchronizes a one-side reset into the other domain and drops
+        // partial frames, so a dp-only pulse mid-frame must flush cleanly and
+        // the next frame must flow with no desync. Model it: stall m_inj
+        // mid-payload, pulse dp_rst (axi_rst stays low), then verify a fresh
+        // frame passes intact.
+        begin
+            logic [XD-1:0] d;
+            // frame with 32 payload bytes = header + 4 dp beats, stalled
+            m_inj_tready = 0;
+            @(posedge axi_clk);
+            d = '0; d[7:0] = 8'd1;
+            for (int i = 0; i < 24; i++) d[(8+i)*8 +: 8] = 8'(8'h70 + i);
+            s_h2c_tdata = d; s_h2c_tkeep = {32{1'b1}};
+            s_h2c_tvalid = 1; s_h2c_tlast = 0;
+            do @(posedge axi_clk); while (!s_h2c_tready);
+            d = '0;
+            for (int i = 0; i < 8; i++) d[i*8 +: 8] = 8'(8'h88 + i);
+            s_h2c_tdata = d; s_h2c_tkeep = {24'h0, 8'hFF};
+            s_h2c_tvalid = 1; s_h2c_tlast = 1;
+            do @(posedge axi_clk); while (!s_h2c_tready);
+            s_h2c_tvalid = 0; s_h2c_tlast = 0; s_h2c_tkeep='0;
+            // let the header + first payload beats reach the (stalled) dp side
+            repeat (100) @(posedge dp_clk);
+            // dp-side soft-reset pulse mid-frame
+            @(posedge dp_clk); dp_rst = 1;
+            repeat (2) @(posedge dp_clk); dp_rst = 0;
+            m_inj_tready = 1;
+            // settle: reset must propagate into the axi domain and back
+            repeat (200) @(posedge dp_clk);
+            inj_bytes = {}; inj_frames = 0;
+            // fresh frame after the reset: egress=6, 16 payload bytes 0xE0..
+            @(posedge axi_clk);
+            d = '0; d[7:0] = 8'd6;
+            for (int i = 0; i < 16; i++) d[(8+i)*8 +: 8] = 8'(8'hE0 + i);
+            s_h2c_tdata = d; s_h2c_tkeep = {8'h0, 24'hFFFFFF};
+            s_h2c_tvalid = 1; s_h2c_tlast = 1;
+            do @(posedge axi_clk); while (!s_h2c_tready);
+            s_h2c_tvalid = 0; s_h2c_tlast = 0; s_h2c_tkeep='0;
+        end
+        repeat (400) @(posedge dp_clk);
+        check("dp reset mid-frame: exactly one clean frame after reset", inj_frames == 1);
+        check("dp reset mid-frame: egress = 6 (header re-sync)", inj_egr_seen == 4'd6);
+        check("dp reset mid-frame: 16 payload bytes", inj_bytes.size() == 16);
+        if (inj_bytes.size() == 16) begin
+            logic ok = 1;
+            for (int i = 0; i < 16; i++) if (inj_bytes[i] != 8'(8'hE0 + i)) ok = 0;
+            check("dp reset mid-frame: payload correct", ok);
         end
 
         if (errors == 0) $display("ALL DMA SLOWPATH SCENARIOS PASS");

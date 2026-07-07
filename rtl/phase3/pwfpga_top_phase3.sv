@@ -367,8 +367,11 @@ module pwfpga_top_phase3 #(
     //   H2C (host->FPGA) -> inject: drives inj_*_w into the data plane.
     //   punt (data plane m_axis_punt) -> C2H (FPGA->host).
     pw_dma_slowpath #(
-        .DP_DATA_W (64),
-        .XD_DATA_W (256)
+        .DP_DATA_W  (64),
+        .XD_DATA_W  (256),
+        // Lets the header-strip FSM swallow inject frames whose egress id no
+        // TX arbiter would ever drain (they would wedge the H2C channel).
+        .PORT_COUNT (NUM_PORTS)
     ) u_dma (
         .axi_clk       (axi_clk),
         .axi_rst       (axi_rst),
@@ -383,7 +386,15 @@ module pwfpga_top_phase3 #(
         .m_c2h_tready  (m_c2h_tready),
         .m_c2h_tlast   (m_c2h_tlast),
         .dp_clk        (clk),
-        .dp_rst        (~rst_n),
+        // Include the CSR data-plane soft reset: the arbiters/SAFs this
+        // bridge feeds reset on dp_soft_rst too, so the bridge must flush
+        // with them (a stale in-flight inject frame would otherwise desync
+        // against a freshly reset data plane). Safe with a dp-side-only
+        // pulse: the taxi async FIFO synchronizes each side's reset into the
+        // other domain internally (taxi_sync_reset, N=4) and drops any
+        // partial frame, so both FIFO halves flush coherently and the XDMA
+        // side never sees corrupted pointers.
+        .dp_rst        (~rst_n | dp_soft_rst_w),
         // inject out -> data-plane inject AXIS (egress selected per-frame)
         .m_inj_tdata   (inj_td_w),
         .m_inj_tkeep   (inj_tk_w),

@@ -252,6 +252,37 @@ For where work is going next, see `NEXT-STEPS.md`.
     dBm). HW-validated on the dev card (both Finisar 10G-LR read via the daemon).
 
 ### Fixed
+  - **Invalid inject egress id can no longer wedge the DMA slow path.**
+    `pw_dma_slowpath` latched the H2C inject header's egress id unvalidated; an
+    id `>= PORT_COUNT` matches no TX arbiter, so `m_inj_tvalid` stayed high
+    forever, the inject FIFO backed up and the whole XDMA H2C channel wedged
+    with no recovery. The header-strip FSM now validates the FULL egress byte
+    (0x11 must not alias to port 1) and swallows out-of-range frames (consumed
+    to `tlast`, never presented). New `PORT_COUNT` parameter wired from
+    `NUM_PORTS` at the top level; `sim_dma` gained bad-egress (plain + aliasing)
+    + follow-up-valid-frame scenarios.
+  - **`pw_dma_slowpath` now resets with the data-plane soft reset.** Its dp-side
+    reset was `~rst_n` only, while the arbiters/SAFs it feeds also reset on the
+    CSR `DP_RESET`; a soft reset could leave a stale half-frame in the bridge,
+    desynced against the freshly reset plane. Now `~rst_n | dp_soft_rst`. Safe
+    one-sided: the taxi async FIFO synchronizes each side's reset into the other
+    domain (`taxi_sync_reset`) and drops partial frames, so both FIFO halves
+    flush coherently (pointer corruption impossible by design). `sim_dma` gained
+    a dp-reset-mid-frame recovery scenario.
+  - **`pw_flow_gen_axis` token deduct wrapped at 32 bits** near bucket cap
+    (`tokens_q + tokens_per_tick_fp_i` overflowed and zeroed the bucket). Now
+    the 33-bit compare/deduct, same pattern as `pw_flow_gen`/`pw_flow_gen_multi`.
+    (Sim-only module today — not in the production plane.)
+  - **`pw_flow_gen` (sim-only skeleton) charged untagged flows 4 VLAN bytes**
+    in the token-bucket cost; the cost now includes the tag only when
+    `vlan_enable_i`, matching what `build_frame` emits.
+  - **`pw_axis_serial` (sim-only) tkeep qualified the wrong lanes.** The
+    serializer packed wire byte k big-endian into `tdata[(7-k)*8 +: 8]` while
+    `tkeep[n-1:0]` qualified the LOW lanes — per AXI-Stream, the empty ones on a
+    partial beat — and the reverse of the production convention. Serializer +
+    deserializer now use the standard convention (byte k at `tdata[k*8 +: 8]`,
+    `tkeep[k]`); the tb now checks the wire lane convention directly, not just
+    the round-trip.
   - **Deep-encap UDF classifier matching.** A UDF slice comparator reads inner
     byte `base_i(eff) + offset` out of the captured window, but the window was
     truncated to the low `SLICE_WIN`(48) bytes, so for `eff + offset ≥ 48` (deep

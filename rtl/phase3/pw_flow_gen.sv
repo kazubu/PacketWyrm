@@ -67,7 +67,10 @@ module pw_flow_gen #(
      * skeleton frame length is constant; Phase 3 production RTL
      * derives this from the configured frame_len_min/max/step. */
     function automatic int frame_bytes();
-        return 14 /*ETH*/ + (4) + 20 /*IP*/ + 8 /*UDP*/ + FRAME_LEN_PAYLOAD;
+        // VLAN tag bytes only when the frame actually carries one
+        // (build_frame inserts the tag only when vlan_enable_i).
+        return 14 /*ETH*/ + (vlan_enable_i ? 4 : 0) + 20 /*IP*/ + 8 /*UDP*/
+             + FRAME_LEN_PAYLOAD;
     endfunction
 
     logic [63:0]   sequence_q;
