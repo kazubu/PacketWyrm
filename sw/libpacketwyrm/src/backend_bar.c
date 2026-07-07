@@ -480,20 +480,25 @@ static int dma_slow_path_rx(struct bar_ctx *c, void *buf, size_t buflen,
     uint32_t done = cnt - d->c2h_cmpl_base;    /* frames completed since arm (unsigned wrap ok) */
     if (d->rx_consumed >= done) return 0;      /* no new punt frame */
 
-    /* If we fell more than a ring behind, the engine wrapped and overwrote the
-     * oldest buffers; skip to the freshest N to avoid reading stale data. This is
-     * punt loss (shows up as BGP/OSPF/ND flaps), so count it and warn -- sparsely
-     * (once per 16 dropped) so a storm can't flood the daemon log. Without this,
-     * the overrun was silent and the loss un-attributable. */
-    if (done - d->rx_consumed > PW_DMA_RX_RING) {
-        uint32_t skipped = (done - d->rx_consumed) - PW_DMA_RX_RING;
+    /* If the backlog reaches the ring depth, the engine wrapped and overwrote
+     * (or is overwriting) the oldest buffers; skip forward to avoid reading
+     * stale/torn data. The safe backlog is RING-1, not RING: the engine's
+     * in-flight descriptor for completion `done` fills buffer done % RING ==
+     * (done - RING) % RING, i.e. exactly the oldest unread buffer of a
+     * full-RING backlog -- so both the == RING and the > RING cases must skip,
+     * and the skip target is done - (RING-1). This is punt loss (shows up as
+     * BGP/OSPF/ND flaps), so count it and warn -- sparsely (once per 16
+     * dropped) so a storm can't flood the daemon log. Without this, the
+     * overrun was silent and the loss un-attributable. */
+    if (done - d->rx_consumed >= PW_DMA_RX_RING) {
+        uint32_t skipped = (done - d->rx_consumed) - (PW_DMA_RX_RING - 1u);
         uint64_t before  = d->c2h_overrun;
         d->c2h_overrun += skipped;
         if (before / 16 != d->c2h_overrun / 16)
             fprintf(stderr, "[dma rx] WARNING C2H overrun: dropped %u punt frame(s) "
                     "(total %llu); host behind the %u-desc ring\n",
                     skipped, (unsigned long long)d->c2h_overrun, PW_DMA_RX_RING);
-        d->rx_consumed = done - PW_DMA_RX_RING;
+        d->rx_consumed = done - (PW_DMA_RX_RING - 1u);
     }
 
     uint32_t idx = d->rx_consumed % PW_DMA_RX_RING;
@@ -531,7 +536,12 @@ static int bar_slow_path_rx(void *vctx, void *buf, size_t buflen,
     struct bar_ctx *c = vctx;
     if (c->dma) return dma_slow_path_rx(c, buf, buflen, out_lif_id, out_rx_ts);
     if (!buf) return PW_E_INVAL;
-    if ((size_t)PWFPGA_PUNT_DATA > c->size) return PW_E_OUT_OF_RANGE;
+    /* The whole legacy punt window must lie inside the map: STATUS/INFO/LIF/TS
+     * regs plus the data window, which is read up to PWFPGA_PUNT_MAX_FRAME (2 KB)
+     * past PWFPGA_PUNT_DATA. The old check validated only the base offset. */
+    if (!csr_range_ok(c, PWFPGA_WIN_PUNT_RX,
+                      (PWFPGA_PUNT_DATA - PWFPGA_WIN_PUNT_RX) + PWFPGA_PUNT_MAX_FRAME))
+        return PW_E_OUT_OF_RANGE;
 
     uint32_t st = *reg_at(c, PWFPGA_REG_PUNT_STATUS);
     if (!(st & PWFPGA_PUNT_STATUS_VALID)) return 0;   /* no frame waiting */
@@ -651,6 +661,17 @@ static pw_status bar_backend_attach(void *base, size_t sz,
         uint32_t athi = b[(PWFPGA_CSR_DMA_OFFSET + PWFPGA_REG_DEVICE_ID) / 4];
         if ((athi >> 16) == 0xA502u && (at0 >> 16) != 0xA502u)
             c->csr_off = PWFPGA_CSR_DMA_OFFSET;
+    }
+
+    /* Never dereference the mapping before checking it covers what we read: a
+     * truncated BAR image (path-backed test file) or an undersized BAR must
+     * fail the attach cleanly, not SIGBUS. The identity block (device_id ..
+     * num_hist_bins) is everything this probe and bar_card_info() touch. */
+    if (!csr_range_ok(c, 0, PWFPGA_REG_NUM_HIST_BINS + 4)) {
+        if (vfio) pw_vfio_close(vfio);
+        else      pw_pci_close_bar0(base, sz);
+        free(c);
+        return PW_E_OUT_OF_RANGE;
     }
 
     /* Bring up the XDMA slow path when the bitstream advertises HAS_DMA. It needs

@@ -297,6 +297,12 @@ static void test_parse_u64_hardening(void) {
     PW_ASSERT(pw_parse_u64("1000", &v) && v == 1000);
     PW_ASSERT(pw_parse_u64("1_000_000", &v) && v == 1000000);
     PW_ASSERT(pw_parse_u64("0x10", &v) && v == 16);
+    PW_ASSERT(pw_parse_u64("0X1f", &v) && v == 31);  /* upper-case prefix, hex digits */
+    /* Leading-zero literals are DECIMAL, not octal: strtoull's base-0 parsed
+     * "010" as 8, and "09" failed as trailing junk (9 is not an octal digit). */
+    PW_ASSERT(pw_parse_u64("010", &v) && v == 10);
+    PW_ASSERT(pw_parse_u64("09", &v) && v == 9);
+    PW_ASSERT(!pw_parse_u64("0xzz", &v));    /* hex prefix but no hex digits */
     PW_ASSERT(!pw_parse_u64("-1", &v));      /* negative -> reject (no silent wrap) */
     PW_ASSERT(!pw_parse_u64("+5", &v));      /* leading + -> reject */
     PW_ASSERT(!pw_parse_u64("", &v));        /* empty -> reject */
@@ -347,6 +353,19 @@ static void test_part3_driver_hardening(void) {
     PW_ASSERT_EQ(pw_flash_program(b.ops, b.ctx, 0, NULL, 4, &mism), PW_E_INVAL);
     /* pw_flash_read_id must NULL-check the output. */
     PW_ASSERT_EQ(pw_flash_read_id(b.ops, b.ctx, NULL), PW_E_INVAL);
+    /* Partial-sector program exercises the read-modify-write path (the head
+     * and tail of the 64 KB sector are read back, the sector erased, and the
+     * preserved bytes re-programmed). The fake backend's SPI engine reads all
+     * zeros, so programming ZEROS across an unaligned, sector-crossing range
+     * must succeed and verify clean (mism == 0) -- covering the RMW sequencing
+     * without real flash. */
+    {
+        static const uint8_t zeros[0x300] = {0};
+        mism = 0xdead;
+        PW_ASSERT_EQ(pw_flash_program(b.ops, b.ctx, 0xFF80u, zeros, sizeof(zeros), &mism),
+                     PW_OK);
+        PW_ASSERT_EQ(mism, 0);
+    }
 
     /* SFP read must reject a range past the 256-B page (matches write). */
     uint8_t sbuf[100];
@@ -692,6 +711,32 @@ static void test_rate_pps_compiles_nonzero(void) {
     /* TX row 0 must have a non-zero token rate (pps x frame bytes). */
     PW_ASSERT(prog->per_card[0].n_flow_rows > 0);
     PW_ASSERT(prog->per_card[0].flow_rows[0].tokens_per_tick_fp != 0);
+    pw_program_free(prog);
+    pw_config_free(cfg);
+}
+
+/* An absurd rate_pps must SATURATE the token rate, not wrap it. The old
+ * 64-bit realization (pps x flen x 8) overflowed: 2^61 pps x 512 B x 8 =
+ * 2^73 = 0 mod 2^64 -> tokens_per_tick_fp 0 and the flow never transmitted.
+ * The widened math must clamp to the Q16.16 max, same as the rate_bps path. */
+static void test_rate_pps_overflow_clamps(void) {
+    const char *yaml =
+        "system: { name: pw, mode: multi-card, default_speed: 10g }\n"
+        "cards:\n  - id: 0\n    pci: \"0000:03:00.0\"\n"
+        "    ports: [ { local_port: 0, global_port: 0 }, { local_port: 1, global_port: 1 } ]\n"
+        "flows:\n  - id: 1\n    tx_global_port: 0\n    rx_global_port: 1\n"
+        "    l2: { src_mac: \"02:a5:02:00:00:01\", dst_mac: \"02:a5:02:00:00:02\" }\n"
+        "    ipv4: { src: \"192.0.2.1\", dst: \"192.0.2.2\" }\n"
+        "    udp:  { src_port: 1, dst_port: 2 }\n"
+        "    traffic: { frame_len: 512, rate_pps: 2305843009213693952 }\n";  /* 2^61 */
+    struct pw_config *cfg = pw_config_new();
+    struct pw_diag d = {0};
+    PW_ASSERT_EQ(pw_config_parse_string(yaml, strlen(yaml), cfg, &d), PW_OK);
+    PW_ASSERT_EQ(pw_config_validate(cfg, &d), PW_OK);
+    struct pw_program *prog = pw_program_new();
+    PW_ASSERT_EQ(pw_flow_compile(cfg, prog, &d), PW_OK);
+    PW_ASSERT(prog->per_card[0].n_flow_rows > 0);
+    PW_ASSERT_EQ(prog->per_card[0].flow_rows[0].tokens_per_tick_fp, 0xFFFFFFFFu);
     pw_program_free(prog);
     pw_config_free(cfg);
 }
@@ -1721,6 +1766,64 @@ static void test_program_card_tables(void) {
     pw_config_free(cfg);
 }
 
+/* card_info overrides for test_program_capacity_reject: same fake backend ctx,
+ * but the card reports a tiny (or zero/legacy) REAL flow capacity. */
+static pw_status tiny_card_info(void *ctx, struct pw_card_info *out) {
+    (void)ctx;
+    if (!out) return PW_E_INVAL;
+    memset(out, 0, sizeof(*out));
+    out->num_local_ports = PW_PORTS_PER_CARD;
+    out->num_local_flows = 2;
+    return PW_OK;
+}
+static pw_status zero_flows_card_info(void *ctx, struct pw_card_info *out) {
+    (void)ctx;
+    if (!out) return PW_E_INVAL;
+    memset(out, 0, sizeof(*out));
+    out->num_local_ports = PW_PORTS_PER_CARD;
+    return PW_OK;                 /* num_local_flows = 0: register absent/legacy */
+}
+
+/* Flow rows beyond the card's REAL capacity (num_local_flows) must be rejected
+ * up front with PW_E_NO_RESOURCES: the CSR window accepts up to
+ * PWFPGA_FLOW_TABLE_ROWS writes, but the RTL has no generator/checker behind
+ * rows past num_local_flows, so they would be silently dead. A card that does
+ * not report a capacity (no card_info / num_local_flows 0) keeps the
+ * window-only behavior. */
+static void test_program_capacity_reject(void) {
+    struct pw_card_backend b;
+    PW_ASSERT_EQ(pw_fake_backend_open("0000:03:00.0", &b), PW_OK);
+
+    struct pwfpga_flow_config rows[3];
+    memset(rows, 0, sizeof(rows));
+    struct pw_card_program cp = {0};
+    cp.flow_rows   = rows;
+    cp.n_flow_rows = 3;
+
+    /* The stock fake reports num_local_flows=256: 3 rows fit. */
+    PW_ASSERT_EQ(pw_program_card_tables(b.ops, b.ctx, &cp), PW_OK);
+
+    /* A card with only 2 real slots rejects 3 rows... */
+    struct pw_card_backend_ops tiny = *b.ops;
+    tiny.card_info = tiny_card_info;
+    PW_ASSERT_EQ(pw_program_card_tables(&tiny, b.ctx, &cp), PW_E_NO_RESOURCES);
+    /* ...but accepts a program that fits exactly. */
+    cp.n_flow_rows = 2;
+    PW_ASSERT_EQ(pw_program_card_tables(&tiny, b.ctx, &cp), PW_OK);
+
+    /* num_local_flows = 0 (legacy bitstream) or no card_info at all: keep the
+     * historical window-only check -- do not reject a possibly-valid program. */
+    cp.n_flow_rows = 3;
+    struct pw_card_backend_ops legacy = *b.ops;
+    legacy.card_info = zero_flows_card_info;
+    PW_ASSERT_EQ(pw_program_card_tables(&legacy, b.ctx, &cp), PW_OK);
+    struct pw_card_backend_ops noinfo = *b.ops;
+    noinfo.card_info = NULL;
+    PW_ASSERT_EQ(pw_program_card_tables(&noinfo, b.ctx, &cp), PW_OK);
+
+    pw_card_backend_close(&b);
+}
+
 static void test_bar_backend_path(void) {
     /* Stage a 64K "BAR image" with the identity registers populated
      * exactly as the FPGA would. The path-variant BAR backend mmaps
@@ -1777,6 +1880,22 @@ static void test_bar_backend_path(void) {
 
     pw_card_backend_close(&b);
     unlink(path);
+
+    /* A truncated / empty BAR image must fail the open cleanly, not SIGBUS on
+     * the first register access: an EMPTY regular file is rejected by the
+     * mmap layer (the 64 K default only applies to size-0 device/sysfs nodes),
+     * and a too-small one by the attach's identity-block bound check. */
+    char tpath[] = "/tmp/pw_bar_trunc_XXXXXX";
+    int tfd = mkstemp(tpath);
+    PW_ASSERT(tfd >= 0);
+    if (tfd >= 0) {
+        struct pw_card_backend tb;
+        PW_ASSERT(pw_bar_backend_open_path(tpath, &tb) != PW_OK);   /* empty file */
+        PW_ASSERT_EQ(ftruncate(tfd, 16), 0);                        /* < identity block */
+        PW_ASSERT_EQ(pw_bar_backend_open_path(tpath, &tb), PW_E_OUT_OF_RANGE);
+        close(tfd);
+        unlink(tpath);
+    }
 }
 
 static void test_pci_discover_no_match(void) {
@@ -1961,11 +2080,17 @@ static void test_host_plane_socketpair(void) {
     PW_ASSERT_EQ(pw_host_plane_bind(&hp, /*lif=*/42, sp[0], /*egress=*/0),
                  PW_OK);
 
-    /* Duplicate bind rejected. */
-    int dup = -1;
-    PW_ASSERT_EQ(pw_host_plane_bind(&hp, 42, dup, 0), PW_E_INVAL);
-    /* Same lif on a different fd is also rejected. */
+    /* An invalid fd is rejected outright (before any duplicate lookup). */
+    PW_ASSERT_EQ(pw_host_plane_bind(&hp, 42, -1, 0), PW_E_INVAL);
+    /* Duplicate bind: host_plane keys bindings by lif, so re-binding the same
+     * lif is rejected regardless of fd -- both with the ORIGINAL fd and with a
+     * genuinely different, valid one. */
     PW_ASSERT_EQ(pw_host_plane_bind(&hp, 42, sp[0], 0), PW_E_DUP_LOGICAL_IF);
+    int sp2[2];
+    PW_ASSERT(socketpair(AF_UNIX, SOCK_DGRAM, 0, sp2) == 0);
+    PW_ASSERT_EQ(pw_host_plane_bind(&hp, 42, sp2[0], 0), PW_E_DUP_LOGICAL_IF);
+    close(sp2[0]);
+    close(sp2[1]);
 
     /* punt: backend -> host plane -> sp[0] -> sp[1] */
     const uint8_t punt_frame[] = "PUNT FRAME";
@@ -2256,6 +2381,7 @@ int main(void) {
         { "accept_xcard_two_tx_sources", test_accept_xcard_two_tx_sources },
         { "traffic_validation", test_traffic_validation },
         { "rate_pps_compiles_nonzero", test_rate_pps_compiles_nonzero },
+        { "rate_pps_overflow_clamps", test_rate_pps_overflow_clamps },
         { "min_legal_frame_clamp", test_min_legal_frame_clamp },
         { "punt_narrowing", test_punt_narrowing },
         { "punt_ipv6", test_punt_ipv6 },
@@ -2283,6 +2409,7 @@ int main(void) {
         { "fake_backend", test_fake_backend },
         { "fake_csr_window_recording", test_fake_csr_window_recording },
         { "program_card_tables", test_program_card_tables },
+        { "program_capacity_reject", test_program_capacity_reject },
         { "bar_backend_path", test_bar_backend_path },
         { "bar_backend_window_writes", test_bar_backend_window_writes },
         { "bar_backend_stats_reads", test_bar_backend_stats_reads },
