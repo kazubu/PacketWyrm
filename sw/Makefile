@@ -93,6 +93,12 @@ FORCE:
 # with a mismatched struct layout -> crashes. -MMD emits these .d files.
 -include $(LIB_OBJ:.o=.d)
 
+# Same for the direct-compile binaries (daemon/cli/proxyd/tests): they pass
+# -MMD too, so cc drops $(BUILD_DIR)/<name>.d next to each binary. Including
+# them makes e.g. a tests/pw_tool_fc.h edit rebuild every pw_phase3_* tool
+# instead of leaving stale binaries.
+-include $(wildcard $(BUILD_DIR)/*.d)
+
 lib: $(LIBA) $(LIBSO)
 
 $(LIBA): $(LIB_OBJ) | $(BUILD_DIR)
@@ -103,11 +109,11 @@ $(LIBSO): $(LIB_OBJ) | $(BUILD_DIR)
 
 daemon: $(DAEMON_BIN)
 $(DAEMON_BIN): $(DAEMON_SRC) $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(DAEMON_SRC) $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ $(DAEMON_SRC) $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 cli: $(CLI_BIN)
 $(CLI_BIN): $(CLI_SRC) $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(CLI_SRC) $(LIBA) $(EXTRA_LIBS) $(SSL_LIBS) $(LDFLAGS) -lm
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ $(CLI_SRC) $(LIBA) $(EXTRA_LIBS) $(SSL_LIBS) $(LDFLAGS) -lm
 
 # packetwyrm-proxyd: HTTPS gateway for the Web GUI + remote CLI.
 # The GUI page is embedded via `xxd -i` (run inside the assets dir so the
@@ -117,94 +123,94 @@ $(PROXYD_ASSET_H): $(PROXYD_ASSET) | $(BUILD_DIR)
 
 proxyd: $(PROXYD_BIN)
 $(PROXYD_BIN): $(PROXYD_SRC) $(PROXYD_ASSET_H) $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -I$(BUILD_DIR) -o $@ $(PROXYD_SRC) $(LIBA) \
+	$(CC) $(CFLAGS) $(INCLUDES) -I$(BUILD_DIR) -MMD -MP -o $@ $(PROXYD_SRC) $(LIBA) \
 	    $(EXTRA_LIBS) $(SSL_LIBS) $(LDFLAGS)
 
 test: $(TEST_BIN)
 	$(TEST_BIN)
 
 $(TEST_BIN): $(TEST_SRC) $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $(TEST_SRC) $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ $(TEST_SRC) $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 gen_bar_vectors: $(BUILD_DIR)/gen_bar_vectors
 $(BUILD_DIR)/gen_bar_vectors: tests/gen_bar_vectors.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/gen_bar_vectors.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/gen_bar_vectors.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_sfp_test: $(BUILD_DIR)/pw_sfp_test
 $(BUILD_DIR)/pw_sfp_test: tests/pw_sfp_test.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_sfp_test.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_sfp_test.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_card_probe: $(BUILD_DIR)/pw_card_probe
 $(BUILD_DIR)/pw_card_probe: tests/pw_card_probe.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_card_probe.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_card_probe.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_phase3_loopback: $(BUILD_DIR)/pw_phase3_loopback
 $(BUILD_DIR)/pw_phase3_loopback: tests/pw_phase3_loopback.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_phase3_loopback.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_phase3_loopback.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_phase3_forward: $(BUILD_DIR)/pw_phase3_forward
 $(BUILD_DIR)/pw_phase3_forward: tests/pw_phase3_forward.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_phase3_forward.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_phase3_forward.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_phase3_punt: $(BUILD_DIR)/pw_phase3_punt
 $(BUILD_DIR)/pw_phase3_punt: tests/pw_phase3_punt.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_phase3_punt.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_phase3_punt.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_rfc2544: $(BUILD_DIR)/pw_rfc2544
 $(BUILD_DIR)/pw_rfc2544: tests/pw_rfc2544.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_rfc2544.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_rfc2544.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_tcp_syn: $(BUILD_DIR)/pw_tcp_syn
 $(BUILD_DIR)/pw_tcp_syn: tests/pw_tcp_syn.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_tcp_syn.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_tcp_syn.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_phase3_modgen: $(BUILD_DIR)/pw_phase3_modgen pw_phase3_ipv6gen
 $(BUILD_DIR)/pw_phase3_modgen: tests/pw_phase3_modgen.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_phase3_modgen.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_phase3_modgen.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_phase3_ipv6gen: $(BUILD_DIR)/pw_phase3_ipv6gen
 $(BUILD_DIR)/pw_phase3_ipv6gen: tests/pw_phase3_ipv6gen.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_phase3_ipv6gen.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_phase3_ipv6gen.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_phase3_inject: $(BUILD_DIR)/pw_phase3_inject
 $(BUILD_DIR)/pw_phase3_inject: tests/pw_phase3_inject.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_phase3_inject.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_phase3_inject.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_flash: $(BUILD_DIR)/pw_flash
 $(BUILD_DIR)/pw_flash: tests/pw_flash.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_flash.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_flash.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_reboot: $(BUILD_DIR)/pw_reboot
 $(BUILD_DIR)/pw_reboot: tests/pw_reboot.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_reboot.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_reboot.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_dp_reset_recover: $(BUILD_DIR)/pw_dp_reset_recover
 $(BUILD_DIR)/pw_dp_reset_recover: tests/pw_dp_reset_recover.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_dp_reset_recover.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_dp_reset_recover.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_soak: $(BUILD_DIR)/pw_soak
 $(BUILD_DIR)/pw_soak: tests/pw_soak.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_soak.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_soak.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_gpio_sync: $(BUILD_DIR)/pw_gpio_sync
 $(BUILD_DIR)/pw_gpio_sync: tests/pw_gpio_sync.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_gpio_sync.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_gpio_sync.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_gpio_offset: $(BUILD_DIR)/pw_gpio_offset
 $(BUILD_DIR)/pw_gpio_offset: tests/pw_gpio_offset.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_gpio_offset.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_gpio_offset.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_sfp: $(BUILD_DIR)/pw_sfp
 $(BUILD_DIR)/pw_sfp: tests/pw_sfp.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_sfp.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS) -lm
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_sfp.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS) -lm
 
 pw_xcard_latency: $(BUILD_DIR)/pw_xcard_latency
 $(BUILD_DIR)/pw_xcard_latency: tests/pw_xcard_latency.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_xcard_latency.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_xcard_latency.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 pw_port_latency: $(BUILD_DIR)/pw_port_latency
 $(BUILD_DIR)/pw_port_latency: tests/pw_port_latency.c $(LIBA) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ tests/pw_port_latency.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -o $@ tests/pw_port_latency.c $(LIBA) $(EXTRA_LIBS) $(LDFLAGS)
 
 .PHONY: e2e gen_bar_vectors pw_card_probe pw_sfp_test pw_phase3_loopback pw_phase3_forward pw_phase3_punt pw_phase3_inject pw_phase3_modgen pw_phase3_ipv6gen pw_dp_reset_recover pw_soak pw_gpio_sync pw_gpio_offset pw_xcard_latency pw_port_latency pw_sfp
 e2e: $(DAEMON_BIN) $(CLI_BIN) $(PROXYD_BIN)

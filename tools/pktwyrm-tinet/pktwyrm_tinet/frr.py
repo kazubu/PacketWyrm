@@ -10,6 +10,8 @@ Both are bind-mounted into the FRR container at /etc/frr/.
 """
 from __future__ import annotations
 
+import ipaddress
+
 from .schema import Router
 
 
@@ -29,9 +31,28 @@ def frr_conf(router: Router) -> str:
         # default behaviour is fine for directly-connected eBGP.
         for nb in bgp.neighbors:
             lines.append(f" neighbor {nb.peer} remote-as {nb.remote_as}")
-        if bgp.networks:
+        # Split announcements by family: bgpd only accepts a `network` under
+        # the matching address-family (a v6 network under ipv4 unicast is
+        # rejected, so it would silently never be advertised).
+        v4_nets = [n for n in bgp.networks
+                   if ipaddress.ip_network(n, strict=False).version == 4]
+        v6_nets = [n for n in bgp.networks
+                   if ipaddress.ip_network(n, strict=False).version == 6]
+        v6_peers = [nb.peer for nb in bgp.neighbors
+                    if ipaddress.ip_address(nb.peer).version == 6]
+        if v4_nets:
             lines.append(" address-family ipv4 unicast")
-            for net in bgp.networks:
+            for net in v4_nets:
+                lines.append(f"  network {net}")
+            lines.append(" exit-address-family")
+        if v6_nets or v6_peers:
+            # FRR activates neighbors under ipv4 unicast only by default
+            # (`bgp default ipv4-unicast`); IPv6 peers must be explicitly
+            # activated here or no v6 routes are exchanged.
+            lines.append(" address-family ipv6 unicast")
+            for peer in v6_peers:
+                lines.append(f"  neighbor {peer} activate")
+            for net in v6_nets:
                 lines.append(f"  network {net}")
             lines.append(" exit-address-family")
         lines.append("exit")

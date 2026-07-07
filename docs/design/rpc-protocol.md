@@ -167,7 +167,7 @@ ns/tick) so a client can compute exact per-flow frame/byte rates as
       "tx_frames": 0, "tx_bytes": 0,
       "rx_frames": 0, "rx_bytes": 0,
       "lost": 0, "duplicate": 0, "out_of_order": 0,
-      "seq_gap": 0, "expected_seq": 0,
+      "seq_gap": 0, "last_seq": 0,
       "latency_valid": true,
       "min_latency": 0, "max_latency": 0,
       "avg_latency": 0, "sample_count": 0,
@@ -427,8 +427,10 @@ protocol directly. `packetwyrm-proxyd` terminates HTTPS and relays
 `POST /api/rpc` bodies verbatim onto this control socket, so **the JSON
 request/response schema above is identical** whether it arrives over the
 Unix socket, `pktwyrm --host` (HTTPS), or the browser. The gateway is a
-stateless relay and the daemon remains the sole auth authority. See
-`web-gui.md`.
+stateless relay and the daemon remains the sole auth authority. HTTP
+callers must send the `X-PW-Request: 1` header and a loopback/allowed
+`Host` (CSRF/rebinding gates enforced by the gateway, `403` otherwise) —
+see `web-gui.md` → *Security model*.
 
 ## Access control (secret)
 

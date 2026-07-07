@@ -32,6 +32,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <openssl/err.h>
@@ -51,6 +52,14 @@
 #define PROXYD_DEFAULT_PORT   8443
 #define PROXYD_MAX_THREADS     32
 #define PROXYD_REQ_MAX         (PW_IPC_FRAME_MAX + 8192) /* headers + body */
+/* Wall-clock budget for reading ONE request (headers + body). SO_RCVTIMEO
+ * only bounds a single read(); without this a Slowloris client trickling
+ * one byte per <15 s holds a worker forever, and 32 of them exhaust
+ * PROXYD_MAX_THREADS. */
+#define PROXYD_REQ_DEADLINE_S  30
+/* How long a successful daemon-secret probe stays fresh on a non-loopback
+ * bind before /api/rpc re-confirms it (see auth_probe_current()). */
+#define PROXYD_PROBE_PERIOD_S  60
 
 struct proxyd_opts {
     const char *listen_addr;   /* IPv4 dotted address to bind */
@@ -60,12 +69,21 @@ struct proxyd_opts {
     const char *tls_key;
     bool        no_tls;        /* plaintext HTTP (localhost / SSH tunnel) */
     bool        insecure_no_auth;
+    const char *allowed_hosts; /* extra Host header values, comma-separated */
 };
 
 /* Shared, read-only after startup: safe to touch from worker threads. */
 static SSL_CTX          *g_ssl_ctx;      /* NULL when --no-tls */
 static const char       *g_daemon_sock;
+static const char       *g_listen_addr;    /* bound address (numeric IPv4) */
+static char            **g_allowed_hosts;  /* NULL-terminated, may be NULL */
 static _Atomic int       g_active_threads;
+
+/* Auth re-probe state (non-loopback binds only), see auth_probe_current(). */
+static bool             g_probe_enforce;   /* non-loopback && !--insecure-no-auth */
+static pthread_mutex_t  g_probe_mu = PTHREAD_MUTEX_INITIALIZER;
+static bool             g_probe_ok_valid;  /* g_probe_ok_ts holds a pass */
+static struct timespec  g_probe_ok_ts;     /* CLOCK_MONOTONIC of last pass */
 
 /* ------------------------------------------------------------------ */
 /* TLS setup                                                          */
@@ -219,18 +237,34 @@ static int daemon_relay(const char *body, size_t blen,
 /* Per-connection handler                                             */
 /* ------------------------------------------------------------------ */
 
+/* Seconds of CLOCK_MONOTONIC elapsed since *t0 (sub-second part ignored;
+ * accurate enough for whole-request deadlines). */
+static long mono_elapsed_s(const struct timespec *t0) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (long)(now.tv_sec - t0->tv_sec);
+}
+
 /* Read the full HTTP request (headers + Content-Length body) into buf.
- * Returns total bytes, or -1 on error. Sets *body_off / *body_len. */
+ * Returns total bytes, -1 on error, or -2 when the whole-request deadline
+ * (PROXYD_REQ_DEADLINE_S) expires. Sets *body_off / *body_len.
+ *
+ * SO_RCVTIMEO bounds each individual read; the deadline check between reads
+ * bounds the request as a whole so a client trickling bytes can't pin a
+ * worker thread indefinitely (Slowloris). */
 static ssize_t read_request(struct conn *c, char *buf, size_t cap,
                             size_t *body_off, size_t *body_len) {
     size_t have = 0;
     size_t header_end = 0; /* index just past "\r\n\r\n" */
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
 
     /* Read until we have the full header block. */
     while (header_end == 0) {
         if (have >= cap) return -1;
         ssize_t r = conn_read(c, buf + have, cap - have);
         if (r <= 0) return -1;
+        if (mono_elapsed_s(&t0) >= PROXYD_REQ_DEADLINE_S) return -2;
         have += (size_t)r;
         /* search for CRLFCRLF (only need to scan the fresh tail + 3) */
         for (size_t i = (have >= (size_t)r + 3 ? have - (size_t)r - 3 : 0);
@@ -275,12 +309,107 @@ static ssize_t read_request(struct conn *c, char *buf, size_t cap,
     while (have < header_end + clen) {
         ssize_t r = conn_read(c, buf + have, cap - have);
         if (r <= 0) return -1;
+        if (mono_elapsed_s(&t0) >= PROXYD_REQ_DEADLINE_S) return -2;
         have += (size_t)r;
     }
 
     *body_off = header_end;
     *body_len = clen;
     return (ssize_t)have;
+}
+
+/* Extract the value of HTTP header `name` (must include the trailing ':',
+ * e.g. "Host:") from the header block buf[0..hdr_end). Case-insensitive
+ * name match at line start; value is whitespace-trimmed and NUL-terminated
+ * into out. Returns 0 when found, -1 otherwise. */
+static int find_header(const char *buf, size_t hdr_end, const char *name,
+                       char *out, size_t outcap) {
+    size_t nlen = strlen(name);
+    for (size_t i = 0; i + nlen < hdr_end; i++) {
+        if (i > 0 && buf[i - 1] != '\n') continue;   /* line starts only */
+        if (strncasecmp(buf + i, name, nlen) != 0) continue;
+        size_t v = i + nlen;
+        while (v < hdr_end && (buf[v] == ' ' || buf[v] == '\t')) v++;
+        size_t e = v;
+        while (e < hdr_end && buf[e] != '\r' && buf[e] != '\n') e++;
+        while (e > v && (buf[e - 1] == ' ' || buf[e - 1] == '\t')) e--;
+        if (e - v >= outcap) return -1;
+        memcpy(out, buf + v, e - v);
+        out[e - v] = '\0';
+        return 0;
+    }
+    return -1;
+}
+
+/* One Host candidate vs one allowed name; an IPv6 bracket literal also
+ * matches its unbracketed form ("[::1]" == "::1"). */
+static bool host_matches(const char *host, const char *want) {
+    if (strcasecmp(host, want) == 0) return true;
+    size_t hl = strlen(host);
+    if (hl >= 2 && host[0] == '[' && host[hl - 1] == ']' &&
+        strlen(want) == hl - 2 && strncasecmp(host + 1, want, hl - 2) == 0)
+        return true;
+    return false;
+}
+
+/* Host-header allow-list check for /api/rpc (anti DNS-rebinding: a page on
+ * attacker.example that rebinds its name to us would send
+ * "Host: attacker.example", which no allowed name matches). Accepts
+ * loopback names, the bound address, and any --allowed-host entries;
+ * an optional ":port" suffix is ignored. */
+static bool host_allowed(const char *raw) {
+    char host[300];
+    snprintf(host, sizeof(host), "%s", raw);
+
+    /* Strip the port: "[v6]:port" after the bracket, "name:port"/"v4:port"
+     * at the single colon. A bare-IPv6 Host (multiple colons, no brackets)
+     * is left untouched. */
+    if (host[0] == '[') {
+        char *rb = strchr(host, ']');
+        if (rb && rb[1] == ':') rb[1] = '\0';
+    } else {
+        char *colon = strchr(host, ':');
+        if (colon && strchr(colon + 1, ':') == NULL) *colon = '\0';
+    }
+    if (host[0] == '\0') return false;
+
+    static const char *builtin[] = { "localhost", "127.0.0.1", "::1" };
+    for (size_t i = 0; i < sizeof(builtin) / sizeof(builtin[0]); i++)
+        if (host_matches(host, builtin[i])) return true;
+    if (g_listen_addr && host_matches(host, g_listen_addr)) return true;
+    if (g_allowed_hosts)
+        for (char **p = g_allowed_hosts; *p; p++)
+            if (host_matches(host, *p)) return true;
+    return false;
+}
+
+static int probe_daemon_secret(void); /* defined below (startup safeguard) */
+
+/* Non-loopback binds only relay while the daemon is KNOWN to require a
+ * secret. The startup probe alone is TOCTOU: a daemon restarted later
+ * without a secret would be exposed through an already-running public
+ * proxyd. Re-confirm lazily, at most every PROXYD_PROBE_PERIOD_S; fail
+ * CLOSED on a failed/unreachable probe (matching the startup policy) and
+ * re-probe on the next request so recovery is immediate. Loopback binds
+ * and --insecure-no-auth are exempt, matching startup. */
+static bool auth_probe_current(void) {
+    if (!g_probe_enforce) return true;
+    bool ok = false;
+    pthread_mutex_lock(&g_probe_mu);   /* also serialises concurrent probes */
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (g_probe_ok_valid &&
+        now.tv_sec - g_probe_ok_ts.tv_sec < PROXYD_PROBE_PERIOD_S) {
+        ok = true;
+    } else if (probe_daemon_secret() == 1) {
+        g_probe_ok_ts = now;
+        g_probe_ok_valid = true;
+        ok = true;
+    } else {
+        g_probe_ok_valid = false;
+    }
+    pthread_mutex_unlock(&g_probe_mu);
+    return ok;
 }
 
 static void serve(struct conn *c) {
@@ -292,6 +421,7 @@ static void serve(struct conn *c) {
 
     size_t body_off = 0, body_len = 0;
     ssize_t total = read_request(c, buf, PROXYD_REQ_MAX, &body_off, &body_len);
+    if (total == -2) { http_error(c, 408, "request timeout"); free(buf); return; }
     if (total < 0) { free(buf); return; }
     buf[total] = '\0';   /* bound the string parse below (total <= PROXYD_REQ_MAX) */
 
@@ -308,20 +438,40 @@ static void serve(struct conn *c) {
         http_reply(c, 200, "OK", "text/html; charset=utf-8",
                    index_html, index_html_len);
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/rpc") == 0) {
-        /* Per-connection response buffer: worker threads must NOT share it. */
-        char *resp = malloc(PW_IPC_FRAME_MAX);
-        size_t rlen = 0;
-        if (!resp) {
-            http_error(c, 500, "out of memory");
-        } else if (body_len == 0) {
-            http_error(c, 400, "empty body");
-        } else if (daemon_relay(buf + body_off, body_len,
-                                resp, PW_IPC_FRAME_MAX, &rlen) == 0) {
-            http_reply(c, 200, "OK", "application/json", resp, rlen);
+        /* CSRF defence for the sanctioned loopback + secretless-daemon
+         * deployment (and defence-in-depth elsewhere), two halves:
+         *  - X-PW-Request: a custom header makes a genuinely cross-origin
+         *    browser POST trigger a CORS preflight, and we never answer
+         *    OPTIONS, so it fails. (Header-free "simple" POSTs from any web
+         *    page would otherwise reach us without any preflight.)
+         *  - Host allow-list: DNS rebinding makes the attacker's page
+         *    SAME-origin, so custom headers alone don't help -- but the
+         *    rebound request carries the attacker's name in Host. */
+        char hv[300];
+        if (find_header(buf, body_off, "X-PW-Request:", hv, sizeof(hv)) != 0 ||
+            strcmp(hv, "1") != 0) {
+            http_error(c, 403, "missing X-PW-Request header");
+        } else if (find_header(buf, body_off, "Host:", hv, sizeof(hv)) != 0 ||
+                   !host_allowed(hv)) {
+            http_error(c, 403, "host not allowed");
+        } else if (!auth_probe_current()) {
+            http_error(c, 403, "daemon auth not confirmed");
         } else {
-            http_error(c, 502, "daemon unreachable");
+            /* Per-connection response buffer: workers must NOT share it. */
+            char *resp = malloc(PW_IPC_FRAME_MAX);
+            size_t rlen = 0;
+            if (!resp) {
+                http_error(c, 500, "out of memory");
+            } else if (body_len == 0) {
+                http_error(c, 400, "empty body");
+            } else if (daemon_relay(buf + body_off, body_len,
+                                    resp, PW_IPC_FRAME_MAX, &rlen) == 0) {
+                http_reply(c, 200, "OK", "application/json", resp, rlen);
+            } else {
+                http_error(c, 502, "daemon unreachable");
+            }
+            free(resp);
         }
-        free(resp);
     } else if (strcmp(method, "GET") == 0 && strcmp(path, "/proxyd/version") == 0) {
         char b[128];
         int n = snprintf(b, sizeof b, "{\"version\":\"%s\"}", pw_version_string());
@@ -401,6 +551,11 @@ static void usage(void) {
         "  --no-tls             serve plain HTTP (localhost / SSH tunnel only)\n"
         "  --insecure-no-auth   allow non-loopback bind even if the daemon\n"
         "                       has no secret configured\n"
+        "  --allowed-host NAME[,NAME...]\n"
+        "                       additional Host header values accepted on\n"
+        "                       POST /api/rpc (anti DNS-rebinding; localhost,\n"
+        "                       127.0.0.1, [::1] and the --listen address are\n"
+        "                       always accepted)\n"
         "  -h, --help           this help\n",
         stderr);
 }
@@ -456,6 +611,8 @@ int main(int argc, char **argv) {
             o.no_tls = true;
         } else if (!strcmp(a, "--insecure-no-auth")) {
             o.insecure_no_auth = true;
+        } else if (!strcmp(a, "--allowed-host") && i + 1 < argc) {
+            o.allowed_hosts = argv[++i];
         } else if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
             usage();
             return 0;
@@ -473,6 +630,24 @@ int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
     g_daemon_sock = o.daemon_sock;
 
+    /* Split --allowed-host into a NULL-terminated array (read-only once the
+     * worker threads start). */
+    if (o.allowed_hosts && o.allowed_hosts[0]) {
+        char *dup = strdup(o.allowed_hosts);
+        if (!dup) { fprintf(stderr, "proxyd: out of memory\n"); return 1; }
+        size_t n = 1;
+        for (const char *p = dup; *p; p++) n += (*p == ',');
+        g_allowed_hosts = calloc(n + 1, sizeof(*g_allowed_hosts));
+        if (!g_allowed_hosts) {
+            fprintf(stderr, "proxyd: out of memory\n");
+            return 1;
+        }
+        size_t k = 0;
+        for (char *tok = strtok(dup, ","); tok; tok = strtok(NULL, ","))
+            if (tok[0]) g_allowed_hosts[k++] = tok;
+        g_allowed_hosts[k] = NULL;
+    }
+
     /* Resolve the listen address to a numeric IPv4 up front. We only bind
      * AF_INET, so reject anything inet_pton can't parse (e.g. an IPv6 literal
      * or a hostname) rather than silently falling back to 0.0.0.0 -- that
@@ -485,6 +660,7 @@ int main(int argc, char **argv) {
         return 2;
     }
     bool loopback = (ntohl(listen_ia.s_addr) >> 24) == 127; /* 127.0.0.0/8 */
+    g_listen_addr = o.listen_addr;
 
     printf("packetwyrm-proxyd starting\n");
     printf("  daemon socket: %s\n", o.daemon_sock);
@@ -523,6 +699,15 @@ int main(int argc, char **argv) {
             "tunnel), or pass --insecure-no-auth to override.\n",
             o.listen_addr, o.listen_port);
         return 1;
+    }
+
+    /* Arm the lazy re-probe (see auth_probe_current). Reaching this point
+     * non-loopback without the override means the startup probe passed;
+     * seed the freshness window from it. */
+    g_probe_enforce = !loopback && !o.insecure_no_auth;
+    if (g_probe_enforce && sec == 1) {
+        clock_gettime(CLOCK_MONOTONIC, &g_probe_ok_ts);
+        g_probe_ok_valid = true;
     }
 
     /* TLS. */

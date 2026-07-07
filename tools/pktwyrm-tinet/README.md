@@ -52,8 +52,14 @@ routers:
         neighbors:
           - { peer: "192.0.2.2", remote_as: 65002 }
         networks:
-          - "10.0.1.0/24"                  # advertised prefixes
+          - "10.0.1.0/24"                  # advertised prefixes (v4 and/or v6)
 ```
+
+`addr` must be an IPv4 address with prefix length and `addr6` an IPv6
+address with prefix length (they are fed to `ip addr add` verbatim);
+addresses must be unique across routers. BGP `networks` are emitted
+under the matching FRR address-family (`ipv4 unicast` / `ipv6 unicast`),
+and IPv6 neighbors are activated under `ipv6 unicast` automatically.
 
 OSPF / IS-IS are intentionally not in v1 -- add them when you need
 them, following the same shape under `routing:`.

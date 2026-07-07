@@ -144,8 +144,13 @@ module pw_flow_gen_axis #(
                     build(sequence_q, timestamp_i);
                     active   <= 1'b1;
                     byte_off <= '0;
-                    if (tokens_q + tokens_per_tick_fp_i >= cost_q)
-                        tokens_q <= (tokens_q + tokens_per_tick_fp_i) - cost_q;
+                    // Deduct the frame cost from this cycle's (cap-clamped)
+                    // accrual. 33-bit `sum` (same pattern as pw_flow_gen /
+                    // pw_flow_gen_multi): a plain 32-bit tokens_q +
+                    // tokens_per_tick_fp_i wraps when the bucket is near cap
+                    // and would zero the bucket instead of deducting.
+                    if (sum >= {1'b0, cost_q})
+                        tokens_q <= 32'(sum - {1'b0, cost_q});
                     else
                         tokens_q <= '0;
                 end

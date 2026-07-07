@@ -98,7 +98,21 @@ pw_status pw_pci_open_bar0_path(const char *path, void **out_addr, size_t *out_s
     struct stat st;
     if (fstat(fd, &st) < 0) { close(fd); return PW_E_IO; }
     size_t sz = (size_t)st.st_size;
-    if (sz == 0) sz = 65536;  /* sysfs resource files may report size 0; default to 64 K */
+    if (sz == 0) {
+        /* sysfs resource files / device nodes may report st_size 0 while the
+         * PCIe BAR behind them is real -- default the map length for those.
+         * A REGULAR file though genuinely is empty: mmap'ing 64 K of it would
+         * succeed and then SIGBUS on the first register access, so fail it
+         * with a clear error instead. (A short-but-nonempty regular file maps
+         * at its true size; the backend range-checks accesses against that.) */
+        if (S_ISREG(st.st_mode)) {
+            fprintf(stderr, "packetwyrm: BAR image %s is empty -- cannot map "
+                    "a zero-length regular file as a BAR\n", path);
+            close(fd);
+            return PW_E_OUT_OF_RANGE;
+        }
+        sz = 65536;
+    }
 
     void *p = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);

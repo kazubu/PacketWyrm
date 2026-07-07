@@ -111,6 +111,15 @@ module tb_csr_full;
     logic        h_ev   [1];
     logic [15:0] h_flow [1];
     logic [15:0] h_bkt  [1];
+    // TB override of the live 64-bit count: lets the test change the count
+    // BETWEEN the lo and hi dword reads (as a live incrementing bucket would)
+    // to prove the lo-read latches a hi shadow and the pair cannot tear.
+    logic        hist_ov_en  = 1'b0;
+    logic [63:0] hist_ov_val = '0;
+    wire  [63:0] hist_rd_data_mux = hist_ov_en ? hist_ov_val : hist_rd_data_w;
+
+    // Sticky-error set stimulus (external producers' W1S input).
+    logic [31:0] err_set = '0;
 
     // Field-classifier programming outputs captured from the CSR.
     localparam int NCMP = 12, NUDF = 2, NRULE = 32, NTOTAL = NCMP + NUDF;
@@ -176,7 +185,7 @@ module tb_csr_full;
         .s_axi_rready   (rready),
         .timestamp_i    (ts),
         .global_control_o    (),
-        .error_status_set_i  (32'h0),
+        .error_status_set_i  (err_set),
         .status_err_i        (1'b0),
         .status_activity_i   (1'b0),
         .sysmon_temp_i       (16'h0),
@@ -220,7 +229,7 @@ module tb_csr_full;
         .flow_tx_bytes_i     (64'd0),
         .flow_rx_bytes_i     (64'd0),
         .hist_rd_addr_o      (hist_rd_addr_w),
-        .hist_rd_data_i      (hist_rd_data_w),
+        .hist_rd_data_i      (hist_rd_data_mux),
         .flow_wr_en_o        (),
         .flow_wr_addr_o      (),
         .flow_wr_data_o      (),
@@ -403,6 +412,27 @@ module tb_csr_full;
             check_eq("num_flows", v, NUM_FLOWS);
         end
 
+        // ---- sticky error register: external set + W1C clear ----
+        // A W1C write must actually clear (single assignment point in the
+        // RTL: a separate `& ~wdata` NBA would be overwritten by the
+        // textually later sticky-set assignment and silently discarded).
+        scenario = "error_w1c";
+        begin
+            logic [31:0] v;
+            axi_read(16'h0110, v);
+            check_eq("error_status starts clear", v, 0);
+            @(negedge clk); err_set = 32'h0000_0025;   // pulse set bits 0,2,5
+            @(negedge clk); err_set = '0;
+            axi_read(16'h0110, v);
+            check_eq("error_status sticky after set_i", v, 32'h25);
+            axi_write(16'h0110, 32'h0000_0021);        // W1C bits 0+5
+            axi_read(16'h0110, v);
+            check_eq("error_status after W1C(0x21)", v, 32'h04);
+            axi_write(16'h0110, 32'hFFFF_FFFF);        // W1C everything
+            axi_read(16'h0110, v);
+            check_eq("error_status all cleared", v, 0);
+        end
+
         // ---- field-classifier programming through AXI ----
         // Comparator 3 = {src=0 (l4_dst), mask=0xFFFF, value=50001}; the entry
         // commits on the value (+8) write -> cmp_wr_en pulse with the fields.
@@ -509,6 +539,25 @@ module tb_csr_full;
             check_eq("hist flow3 bucket5 zero", lo, 0);
         end
 
+        // ---- histogram 64-bit read across a 2^32 carry (no tear) ----
+        // Protocol: read LO (+0) then HIGH (+4) per bucket. The LO read
+        // returns [31:0] and latches [63:32] into a shadow; the HIGH read
+        // returns the shadow. Override the live count between the two dword
+        // reads (as an incrementing bucket would) and check the pair is the
+        // coherent (0x1,0xFFFFFFFF), not the torn (0x2,0xFFFFFFFF).
+        scenario = "hist_carry";
+        begin
+            logic [31:0] lo, hi;
+            hist_ov_en  = 1'b1;
+            hist_ov_val = 64'h0000_0001_FFFF_FFFF;
+            axi_read(WIN_HIST_BASE + 0, lo);            // flow0 bucket0 LO
+            hist_ov_val = 64'h0000_0002_0000_0000;      // count carries between reads
+            axi_read(WIN_HIST_BASE + 4, hi);            // HIGH: must be the shadow
+            check_eq("hist lo pre-carry",           lo, 32'hFFFF_FFFF);
+            check_eq("hist hi shadowed (no tear)",  hi, 32'h0000_0001);
+            hist_ov_en = 1'b0;
+        end
+
         // ---- GPIO cross-card time-sync CSR ----
         begin
             logic [31:0] v, vlo, vhi;
@@ -565,6 +614,22 @@ module tb_csr_full;
                 check_eq("lat_corr slot5 data lo",  lc_data[31:0],  32'hAAAA_BBBB);
                 check_eq("lat_corr slot5 data hi",  lc_data[63:32], 32'h0000_0000);
             end
+        end
+
+        // ---- gpio_sync TS_HIGH latch must reset ----
+        // The gpio scenario above read TS_LOW, latching TS_HIGH=0xCAFE_1234.
+        // Reset the DUT: a TS_HIGH read BEFORE any TS_LOW read must return 0
+        // (gpio_sync_ts_high_latched is in the read-FSM reset list), not the
+        // stale pre-reset latch.
+        scenario = "gpio_latch_reset";
+        begin
+            logic [31:0] v;
+            rst_n = 1'b0;
+            repeat (4) @(posedge clk);
+            rst_n = 1'b1;
+            repeat (2) @(posedge clk);
+            axi_read(16'h0138, v);   // TS_HIGH first: no TS_LOW read since reset
+            check_eq("gpio_sync ts_high resets to 0", v, 0);
         end
 
         if (errors == 0) begin

@@ -39,7 +39,12 @@ bool pw_parse_u64(const char *s, uint64_t *out) {
     if (*q == '-' || *q == '+') return false;
     errno = 0;
     char *end = NULL;
-    unsigned long long v = strtoull(buf, &end, 0);
+    /* Base: an explicit 0x/0X prefix is hex; everything else is DECIMAL.
+     * strtoull's base-0 auto-detection would parse a leading-zero literal
+     * ("010") as OCTAL -- surprising in configs, where rates/ids/ports are
+     * decimal unless deliberately written as hex. */
+    int base = (q[0] == '0' && (q[1] == 'x' || q[1] == 'X')) ? 16 : 10;
+    unsigned long long v = strtoull(buf, &end, base);
     if (end == buf || !end || *end != '\0') return false;  /* no digits / trailing junk */
     if (errno == ERANGE) return false;                     /* overflow */
     *out = (uint64_t)v;

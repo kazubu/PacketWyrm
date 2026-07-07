@@ -395,6 +395,7 @@ static int https_rpc_call(const char *hostarg, const char *send,
             int hn = snprintf(req, sizeof(req),
                 "POST /api/rpc HTTP/1.1\r\nHost: %s\r\n"
                 "Content-Type: application/json\r\nContent-Length: %zu\r\n"
+                "X-PW-Request: 1\r\n" /* required by proxyd (CSRF defence) */
                 "Connection: close\r\n\r\n%s",
                 host, send_len, send);
             /* snprintf returns the length it WOULD have written: a truncated
@@ -988,8 +989,15 @@ int main(int argc, char **argv) {
             int j;
             for (j = 0; j < bar && j < 40; j++) line[j] = '#';
             line[j] = '\0';
-            printf("  [%2zu] (>= %lu ns) %10ld  %s\n",
-                   i, pw_ticks_to_ns(1ULL << i), (long)v, line);
+            /* RTL log2_bucket = highest set bit of the latency in ticks, so
+             * bucket i holds [2^i, 2^(i+1)) ticks -- except bucket 0, which
+             * holds [0, 2) ticks (values 0 and 1) and needs an upper bound. */
+            if (i == 0)
+                printf("  [%2zu] (<  %lu ns) %10ld  %s\n",
+                       i, pw_ticks_to_ns(2ULL), (long)v, line);
+            else
+                printf("  [%2zu] (>= %lu ns) %10ld  %s\n",
+                       i, pw_ticks_to_ns(1ULL << i), (long)v, line);
         }
         json_object_put(root);
         return 0;

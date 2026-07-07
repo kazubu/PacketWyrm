@@ -223,7 +223,12 @@ Enumerated the generated IP for the production AXI-Stream config:
 156.25 MHz (`dp_clk`)**. So the engine needs width conversion (256↔64) + async CDC
 each direction. Per-frame metadata rides an **in-band header** (§9) prepended on
 punt (FPGA writes lif_id/ingress/rx_ts ahead of the frame) and consumed on inject
-(host prepends egress port; engine strips it before the TX arbiter).
+(host prepends egress port; engine strips it before the TX arbiter). An inject
+header whose egress byte is **out of range (>= PORT_COUNT)** makes the engine
+**swallow the whole frame** (consumed, not presented): no TX arbiter would ever
+drain such a frame, so presenting it would back up the inject FIFO and wedge the
+H2C channel permanently. The full header byte is validated (0x11 does not alias
+to port 1). Swallowed frames are not counted (no debug counters in the bridge yet).
 
 ## 5b. P1 integration edit-list (turnkey; atomic — all land together before build)
 
@@ -243,7 +248,11 @@ H2C/C2H streams DOWN into the core as new ports; DMA drives `inj_*_w`, sinks
 3. `pwfpga_top_phase3.sv` (core): **DONE** — added ports {axi_clk, axi_rst,
    s_h2c_*, m_c2h_*}; instantiated `pw_dma_slowpath u_dma` (axi side ← new ports;
    dp side: `m_inj*`→`inj_*_w` incl. `inj_eg_w`, `s_punt*`←`punt_*_w`; dp_clk=clk,
-   dp_rst=~rst_n). `inj_*_w` now driven by `u_dma.m_inj` — the `pw_csr_full`
+   dp_rst=`~rst_n | dp_soft_rst` — the bridge flushes with the arbiters/SAFs it
+   feeds on the CSR data-plane soft reset; safe one-sided because the taxi async
+   FIFO synchronizes each side's reset into the other domain and drops partial
+   frames; `PORT_COUNT=NUM_PORTS` for the invalid-egress swallow, §5 above).
+   `inj_*_w` now driven by `u_dma.m_inj` — the `pw_csr_full`
    inject window outputs are left open and its `inj_m_tready` held low (the window
    stays instantiated inside csr_full; a later cleanup can delete it to recover
    LUTs). Removed `u_punt`; `pw_csr_full.punt_rd_data_i` tied 0.

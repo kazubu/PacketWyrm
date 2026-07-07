@@ -9,7 +9,9 @@
 //
 // Frame layout per flow matches pw_flow_gen_axis exactly: Ethernet [+VLAN]
 // / IPv4 / UDP / 32-byte PacketWyrm test header (magic / version / flow_id
-// / seq / timestamp). IP/UDP checksums left zero (MAC TX recomputes).
+// / seq / timestamp). IPv4 header checksums (inner + encap outer) are
+// computed here; v6 UDP and TCP carry a partial L4 checksum finalized by
+// pw_ts_insert at egress; v4 UDP checksum stays 0 (legal, no fixup path).
 //
 // Scheduling: a slot is eligible when its row is valid, targets this egress
 // port, and its bucket holds at least one frame's cost. A round-robin
@@ -109,7 +111,6 @@ module pw_flow_gen_multi #(
     logic [11:0]                   frame_len;   // total emitted bytes this frame
     logic [11:0]                   built_len;   // bytes actually laid into fb (header
                                                 // + 32B test region); rest is zero pad
-    logic [15:0]                   next_len_q;  // next sweep length for the active slot
     logic [SELW-1:0]               sel;
     logic                          active;
     logic                          frame_stampable; // TEST-template frame in flight
@@ -763,7 +764,6 @@ module pw_flow_gen_multi #(
             byte_off <= '0;
             rr_ptr   <= '0;
             sel      <= '0;
-            next_len_q <= '0;
             for (int s = 0; s < NUM_SLOTS; s++) begin
                 sequence_q[s] <= '0;
                 tokens_q[s]   <= '0;
@@ -822,10 +822,23 @@ module pw_flow_gen_multi #(
                     // Gate on the REGISTERED ready flag (tok_ready_q), not a fresh
                     // accrue+compare, to keep the arithmetic off the active path.
                     if (tok_ready_q[pick_qq]) begin
-                        // NEXT sweep length (length just consumed + step/max/min),
-                        // committed to cur_len[] at frame end.
-                        next_len_q <= (nl > {1'b0, flow_sched_i[pick_qq].len_max})
-                                      ? flow_sched_i[pick_qq].len_min : nl[15:0];
+                        // Commit the per-slot sequence/length state AT LAUNCH, not
+                        // at the frame's last beat: the precompute pipeline samples
+                        // sequence_q/cur_len 3 cycles before a launch, and a primed
+                        // back-to-back launch lands only 2-3 cycles after the
+                        // previous frame's last beat -- an end-of-frame commit is
+                        // still invisible to that sample, so the next frame would
+                        // reuse the previous seq (dup on the wire) and skip one at
+                        // the next fresh sample. Committing here keeps the writer
+                        // >= 8 beats (min frame) ahead of the 3-cycle sample window,
+                        // so the pipeline always reads post-commit state. seq_qq is
+                        // the value THIS frame emits (modifiers/L4 csum in psb_q were
+                        // derived from it), so counter := seq_qq + 1 keeps the wire
+                        // and the counter self-consistent by construction.
+                        sequence_q[pick_qq] <= seq_qq + 64'd1;
+                        // NEXT sweep length (length just consumed + step/max/min).
+                        cur_len[pick_qq] <= (nl > {1'b0, flow_sched_i[pick_qq].len_max})
+                                            ? flow_sched_i[pick_qq].len_min : nl[15:0];
                         sel      <= pick_qq;
                         active   <= 1'b1;
                         // TEST template (0) carries a stampable test header; raw
@@ -838,10 +851,9 @@ module pw_flow_gen_multi #(
                 end
             end else if (m_tready) begin
                 if (last) begin
+                    // seq/cur_len for this slot were already committed at launch
+                    // (see above) -- only the emit bookkeeping happens here.
                     active          <= 1'b0;
-                    sequence_q[sel] <= sequence_q[sel] + 64'd1;
-                    // Advance the frame-length sweep for the slot just emitted.
-                    cur_len[sel]    <= next_len_q;
                     // TX frame + byte count for tx-rx loss / tx bps (clear wins
                     // over increment). frame_len = this frame's emitted L2 bytes.
                     if (!stats_clear_i) begin

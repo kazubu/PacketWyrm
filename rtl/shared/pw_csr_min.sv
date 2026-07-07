@@ -108,6 +108,14 @@ module pw_csr_min #(
     assign global_control_o = global_control_q;
 
     always @(posedge s_axi_aclk or negedge s_axi_aresetn) begin
+        // W1C clear mask for ERROR_STATUS, valid this cycle only. The sticky
+        // register has a SINGLE assignment point (bottom of the else branch)
+        // merging this clear with the external set. A separate
+        // `error_status_q <= error_status_q & ~wdata` inside the write case
+        // would be dead code: the textually later sticky-set NBA would win
+        // and every W1C write would be silently discarded.
+        logic [31:0] err_w1c;
+        err_w1c = '0;
         if (!s_axi_aresetn) begin
             s_axi_awready    <= 1'b0;
             s_axi_wready     <= 1'b0;
@@ -135,7 +143,7 @@ module pw_csr_min #(
                 s_axi_bresp  <= 2'b00;
                 case (awaddr_q)
                     PW_REG_GLOBAL_CONTROL: global_control_q <= s_axi_wdata;
-                    PW_REG_ERROR_STATUS:   error_status_q   <= error_status_q & ~s_axi_wdata; // W1C
+                    PW_REG_ERROR_STATUS:   err_w1c          = s_axi_wdata; // W1C (applied below)
                     PW_REG_SFP_CONTROL:    sfp_control_q    <= s_axi_wdata;
                     default:               s_axi_bresp <= 2'b10; // SLVERR on unknown / RO reg
                 endcase
@@ -146,8 +154,11 @@ module pw_csr_min #(
 
             if (s_axi_bvalid && s_axi_bready) s_axi_bvalid <= 1'b0;
 
-            // sticky error set from external producers
-            error_status_q <= error_status_q | error_status_set_i;
+            // Single assignment point for the sticky error register: apply
+            // this cycle's W1C clear (if any) and OR in the external set. A
+            // bit both cleared and set in the same cycle stays set (the new
+            // event wins over the stale acknowledgement).
+            error_status_q <= (error_status_q & ~err_w1c) | error_status_set_i;
         end
     end
 

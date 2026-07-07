@@ -50,6 +50,22 @@ pw_status pw_program_card_tables(const struct pw_card_backend_ops *ops, void *ct
     for (size_t i = 0; i < cp->n_hash_entries; i++)
         if (cp->hash_entries[i].index >= PWFPGA_HASH_DEPTH)        return PW_E_INVAL;
 
+    /* Enforce the card's REAL flow capacity, not just the BAR-window ceiling
+     * checked above: PWFPGA_FLOW_TABLE_ROWS (64) is how many rows the CSR
+     * window can address, but the bitstream only implements num_local_flows
+     * (32 on the shipping build) generator/checker slots. A row programmed
+     * past that writes back fine yet drives nothing, so the flow would look
+     * "programmed" while being silently dead. Reject up front so the caller
+     * (daemon config.load / test.arm) surfaces the error instead. If
+     * card_info is unavailable or reports 0 flows (a legacy backend or a
+     * bitstream without the register), keep the historical window-only
+     * behavior rather than rejecting a possibly-valid program. */
+    struct pw_card_info info = {0};
+    int have_info = ops->card_info && ops->card_info(ctx, &info) == PW_OK;
+    if (have_info && info.num_local_flows != 0 &&
+        cp->n_flow_rows > (size_t)info.num_local_flows)
+        return PW_E_NO_RESOURCES;
+
     #define CHK(call) do { \
         pw_status _s = (call); \
         if (_s != PW_OK && _s != PW_E_NOT_IMPLEMENTED && worst == PW_OK) worst = _s; \
@@ -70,9 +86,7 @@ pw_status pw_program_card_tables(const struct pw_card_backend_ops *ops, void *ct
      * capacity so a shrunk config can't leave stale generators running. */
     if (ops->flow_write) {
         unsigned nflows = (unsigned)cp->n_flow_rows;
-        struct pw_card_info info = {0};
-        if (ops->card_info && ops->card_info(ctx, &info) == PW_OK &&
-            info.num_local_flows > nflows)
+        if (have_info && info.num_local_flows > nflows)
             nflows = info.num_local_flows;
         /* Never invalidate past the flow-table window even if a card misreports
          * num_local_flows -- the disabled-row writes would alias the histogram. */

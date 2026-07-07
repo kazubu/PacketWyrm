@@ -33,8 +33,13 @@
 // the SOF-latched marker so forwarded / injected frames -- including
 // genuine IPv6/UDP DUT traffic, whose checksum we must not corrupt and
 // which streams its csum field before any magic we could test -- are left
-// untouched. (The IPv4 tx_ts path additionally keys on the magic, as
-// before, since its field follows the magic and that path is unchanged.)
+// untouched. The IPv4 tx_ts path ADDITIONALLY keys on the magic (its
+// field follows the magic in the stream, so the verdict is ready in
+// time), but it too requires the marker: a v4 TEST frame merely
+// FORWARDED through this card (magic present, tuser=0) must not be
+// re-stamped -- that would silently replace the end-to-end tx_ts with a
+// last-hop one, and would corrupt a forwarded v4 TCP checksum since the
+// csum fixup is generator-only.
 // NOTE: s_tuser here is our marker, NOT the MAC's tx-error tuser; we drive
 // m_tuser=0 (what the MAC saw before this marker existed).
 
@@ -133,10 +138,14 @@ module pw_ts_insert #(
     wire [11:0] eip_pos   = enc_start + 12'd14;          // EtherIP inner ethertype hi
 
     wire [11:0] ts_off = ts_off_q;
-    // Stamp the tx_ts: v4 inner keys on the magic (its field follows the magic);
-    // v6 inner keys on the generator marker (the csum fixup must run before the
-    // magic streams, so it uses the SOF marker).
-    wire stamp_ok = inner_v6_q ? is_gen : magic_ok;
+    // Stamp the tx_ts: generator-marked frames only (is_gen). A v4 inner
+    // additionally keys on the magic (its field follows the magic in the
+    // stream, so the verdict settles before the ts bytes); a v6 inner relies
+    // on the marker alone (its csum fixup must run before the magic streams).
+    // is_gen is required for v4 too: a forwarded v4 test frame (magic ok,
+    // tuser=0) must keep its original end-to-end tx_ts, and stamping it would
+    // corrupt a forwarded v4 TCP checksum (fix_csum below is is_gen-gated).
+    wire stamp_ok = is_gen && (inner_v6_q | magic_ok);
     // L4 checksum fixup runs for marked generator frames whose checksum covers
     // tx_ts: v6 UDP, and TCP (v4 + v6). v4 UDP keeps csum 0 (no fixup). Gated on
     // is_gen because the csum field streams before the magic (esp. v4 TCP @L4+16).
