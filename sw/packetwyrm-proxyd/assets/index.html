@@ -959,8 +959,11 @@ async function renderHist() {
   const max = Math.max(1, ...r.buckets);
   r.buckets.forEach((c,i) => {
     if (c === 0 && i > 0 && i < r.buckets.length-1) return; // skip empty middle bins
-    const loT = i===0 ? 0 : Math.pow(2, i-1);  // bucket lower bound in ticks
-    const hiT = Math.pow(2, i);                 // (2**i, not 1<<i — avoids 32-bit overflow)
+    // RTL log2_bucket = index of the highest set bit of the latency in ticks,
+    // so bucket i holds latencies [2^i, 2^(i+1)) ticks (bucket 0 = [0, 2)).
+    // Must match 2^i, NOT 2^(i-1) -- the latter mislabelled every bin 2x low.
+    const loT = i===0 ? 0 : Math.pow(2, i);     // bucket lower bound in ticks
+    const hiT = Math.pow(2, i+1);               // (2**(i+1), not 1<< -- avoids 32-bit overflow)
     const label = i===0 ? `< ${fmtTime(hiT*TICK_NS)}` : `≥ ${fmtTime(loT*TICK_NS)}`;
     box.append(el("div",{class:"barrow"},[
       el("span",{class:"lbl",text:label}),
