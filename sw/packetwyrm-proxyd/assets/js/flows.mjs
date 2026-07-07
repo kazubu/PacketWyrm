@@ -1,6 +1,7 @@
 /* Test-flow list + form editor. */
 import { $, el } from "./dom.mjs";
 import { rpc, showMsg } from "./rpc.mjs";
+import { confirmDialog, withPending } from "./ui.mjs";
 import { state, newFlow, flowFromJson, fwdFromJson, MOD_FIELDS } from "./state.mjs";
 import { buildTestYaml } from "./yaml.mjs";
 import { renderFwdList, renderFwdEdit } from "./forwards.mjs";
@@ -20,7 +21,9 @@ function renderFlowList() {
       el("td", {}, [
         el("button", { class: "ghost", text: "edit", onclick: () => { state.selFlow = i; renderFlowEdit(); } }),
         " ",
-        el("button", { class: "danger", text: "del", onclick: () => { state.flows.splice(i, 1); state.selFlow = null; refreshFlows(); } })
+        el("button", { class: "danger", text: "del", onclick: async () => {
+          if (!await confirmDialog(`Delete flow ${f.id}${f.name ? ` (${f.name})` : ""}?`, { ok: "Delete", danger: true })) return;
+          state.flows.splice(i, 1); state.selFlow = null; refreshFlows(); } })
       ])]));
   });
   box.append(t);
@@ -126,7 +129,7 @@ export function refreshFlows(reEdit = true) {
 
 export function initFlows() {
   $("#flow-add").addEventListener("click", () => { state.flows.push(newFlow()); state.selFlow = state.flows.length - 1; refreshFlows(); });
-  $("#flow-load").addEventListener("click", async () => {
+  $("#flow-load").addEventListener("click", e => withPending(e.currentTarget, async () => {
     const r = await rpc({ rpc: "config.get_test" });
     if (r.error) { showMsg("#flow-msg", "err", r.error); return; }
     const jf = Array.isArray(r.flows) ? r.flows : [];
@@ -153,17 +156,19 @@ export function initFlows() {
     showMsg("#flow-msg", "ok",
       `Loaded ${state.flows.length} flow(s)${state.fwds.length ? ` + ${state.fwds.length} forward(s)` : ""} `
       + "into the form and the YAML editor. Edit above, then Apply.");
-  });
-  $("#flow-apply").addEventListener("click", async () => {
+  }));
+  $("#flow-apply").addEventListener("click", e => withPending(e.currentTarget, async () => {
+    if (!await confirmDialog("Apply this config? It replaces the running test config on the FPGA.", { ok: "Apply" })) return;
     const yaml = buildTestYaml();
     $("#flow-yaml").value = yaml;
     const r = await rpc({ rpc: "config.load", yaml });
     if (r.ok) showMsg("#flow-msg", "ok", `Loaded: ${r.n_flows} flows, ${r.n_classifier_rows} classifier rows`);
     else showMsg("#flow-msg", "err", r.error || JSON.stringify(r));
-  });
-  $("#flow-apply-raw").addEventListener("click", async () => {
+  }));
+  $("#flow-apply-raw").addEventListener("click", e => withPending(e.currentTarget, async () => {
+    if (!await confirmDialog("Apply the raw YAML? It replaces the running test config on the FPGA.", { ok: "Apply raw" })) return;
     const r = await rpc({ rpc: "config.load", yaml: $("#flow-yaml").value });
     if (r.ok) showMsg("#flow-msg", "ok", `Loaded (raw): ${r.n_flows} flows, ${r.n_classifier_rows} classifier rows`);
     else showMsg("#flow-msg", "err", r.error || JSON.stringify(r));
-  });
+  }));
 }

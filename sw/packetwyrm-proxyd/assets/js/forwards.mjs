@@ -1,6 +1,7 @@
 /* Forwards (store-and-forward rule) list + editor. */
 import { $, el } from "./dom.mjs";
 import { rpc, showMsg } from "./rpc.mjs";
+import { confirmDialog, withPending } from "./ui.mjs";
 import { state, newFwd } from "./state.mjs";
 import { buildTestYaml } from "./yaml.mjs";
 
@@ -12,7 +13,9 @@ export function renderFwdList() {
   state.fwds.forEach((r, i) => t.append(el("tr", {}, [el("td", { text: r.name || "—" }),
     el("td", { text: `${r.ingress}→${r.egress}` }), el("td", { text: r.priority }),
     el("td", {}, [el("button", { class: "ghost", text: "edit", onclick: () => { state.selFwd = i; renderFwdEdit(); } }), " ",
-      el("button", { class: "danger", text: "del", onclick: () => { state.fwds.splice(i, 1); state.selFwd = null; renderFwdList(); renderFwdEdit(); $("#flow-yaml").value = buildTestYaml(); } })])])));
+      el("button", { class: "danger", text: "del", onclick: async () => {
+        if (!await confirmDialog(`Delete forward rule ${r.name || `${r.ingress}→${r.egress}`}?`, { ok: "Delete", danger: true })) return;
+        state.fwds.splice(i, 1); state.selFwd = null; renderFwdList(); renderFwdEdit(); $("#flow-yaml").value = buildTestYaml(); } })])])));
   box.append(t);
 }
 
@@ -36,9 +39,10 @@ export function renderFwdEdit() {
 
 export function initForwards() {
   $("#fwd-add").addEventListener("click", () => { state.fwds.push(newFwd()); state.selFwd = state.fwds.length - 1; renderFwdList(); renderFwdEdit(); $("#flow-yaml").value = buildTestYaml(); });
-  $("#fwd-apply").addEventListener("click", async () => {
+  $("#fwd-apply").addEventListener("click", e => withPending(e.currentTarget, async () => {
+    if (!await confirmDialog("Apply this config? It replaces the running test config on the FPGA.", { ok: "Apply" })) return;
     const r = await rpc({ rpc: "config.load", yaml: buildTestYaml() });
     if (r.ok) showMsg("#fwd-msg", "ok", `Loaded: ${r.n_flows} flows, ${r.n_classifier_rows} classifier rows`);
     else showMsg("#fwd-msg", "err", r.error || JSON.stringify(r));
-  });
+  }));
 }
