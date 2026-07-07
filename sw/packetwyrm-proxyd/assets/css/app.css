@@ -60,3 +60,31 @@ button.start { background: transparent; border: 1px solid var(--ok); color: var(
 .led.grn { color: var(--ok); }
 .led.amber { color: #eab308; }
 .led.off { color: var(--dim); }
+
+/* async-button pending: dim + spinner, non-interactive */
+button.pending { position: relative; color: transparent !important; pointer-events: none; opacity: .85; }
+button.pending::after { content: ""; position: absolute; inset: 0; margin: auto;
+  width: 12px; height: 12px; border: 2px solid currentColor; border-top-color: transparent;
+  border-radius: 50%; color: var(--ink); animation: pw-spin .7s linear infinite; }
+@keyframes pw-spin { to { transform: rotate(360deg); } }
+
+/* toasts: stacked bottom-right, auto-dismissing action feedback */
+#toast-host { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column;
+  gap: 8px; z-index: 1000; max-width: min(90vw, 420px); }
+.toast { padding: 10px 14px; border-radius: 6px; font-size: 13px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  box-shadow: 0 4px 16px rgba(0,0,0,.4); white-space: pre-wrap; animation: pw-toast-in .18s ease; }
+.toast.ok  { border-color: var(--ok);  }
+.toast.err { border-color: var(--err); }
+.toast.warn{ border-color: #eab308; }
+.toast.leaving { opacity: 0; transition: opacity .2s ease; }
+@keyframes pw-toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* confirm modal */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex;
+  align-items: center; justify-content: center; z-index: 1100; }
+.modal-box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 18px; max-width: min(90vw, 460px); box-shadow: 0 8px 32px rgba(0,0,0,.5); }
+.modal-msg { white-space: pre-wrap; margin-bottom: 14px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.modal-actions button { margin-top: 0; }

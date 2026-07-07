@@ -27,4 +27,5 @@ initEnv();
 
 state.flows = [newFlow()]; refreshFlows();
 renderFwdList(); renderFwdEdit();
+$("#conn").textContent = "connecting…";   // neutral until the first poll resolves
 poll(); setInterval(poll, 1500);
