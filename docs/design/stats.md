@@ -52,7 +52,7 @@ produced and read back as zero.
 | `tx_bytes`               | u64  | yes       | yes        |
 | `rx_frames`              | u64  | yes       | yes        |
 | `rx_bytes`               | u64  | yes       | yes        |
-| `expected_sequence`      | u64  | yes       | yes        |
+| `last_sequence`          | u64  | yes       | yes        |
 | `sequence_gap_count`     | u64  | yes       | yes        |
 | `lost_packets_estimated` | u64  | yes       | yes        |
 | `duplicate_count`        | u64  | yes       | yes        |
@@ -99,7 +99,7 @@ The aggregator joins per-card snapshots into a global view keyed by
 - `tx_frames`, `tx_bytes` &larr; TX card's counters for that
   `local_flow_id`.
 - `rx_*`, `lost_est`, `duplicate`, `out_of_order`, `late`,
-  `expected_sequence`, `sequence_gap_count` &larr; RX card's counters.
+  `last_sequence`, `sequence_gap_count` &larr; RX card's counters.
 - `latency` / `jitter`: valid for BOTH same-card and cross-card. The RX card's
   counters already hold the HW-corrected one-way latency (cross-card via
   `lat_correction` + the J5 GPIO sync servo), so they are copied unconditionally;

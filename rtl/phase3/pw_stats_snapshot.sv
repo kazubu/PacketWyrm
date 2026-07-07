@@ -186,7 +186,7 @@ module pw_stats_snapshot #(
                 fr = put_u64(fr,   8, flow_tx_bytes_i);       // tx_bytes (emitted)
                 fr = put_u64(fr,  16, flow_rx_i);             // rx_frames
                 fr = put_u64(fr,  24, flow_rx_bytes_i);       // rx_bytes
-                fr = put_u64(fr,  32, flow_last_seq_i);       // expected_sequence
+                fr = put_u64(fr,  32, flow_last_seq_i);       // last_sequence (last received)
                 fr = put_u64(fr,  48, flow_lost_i);           // lost_packets_estimated
                 fr = put_u64(fr,  56, flow_dup_i);            // duplicate_count
                 fr = put_u64(fr,  64, flow_ooo_i);            // out_of_order_count

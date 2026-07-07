@@ -167,7 +167,7 @@ ns/tick) so a client can compute exact per-flow frame/byte rates as
       "tx_frames": 0, "tx_bytes": 0,
       "rx_frames": 0, "rx_bytes": 0,
       "lost": 0, "duplicate": 0, "out_of_order": 0,
-      "seq_gap": 0, "expected_seq": 0,
+      "seq_gap": 0, "last_seq": 0,
       "latency_valid": true,
       "min_latency": 0, "max_latency": 0,
       "avg_latency": 0, "sample_count": 0,

@@ -70,7 +70,7 @@ struct pw_flow_stats {
     uint64_t tx_bytes;
     uint64_t rx_frames;
     uint64_t rx_bytes;
-    uint64_t expected_sequence;
+    uint64_t last_sequence;     /* last received seq (HW snapshot exports last, not expected) */
     uint64_t sequence_gap_count;
     uint64_t lost_packets_estimated;
     uint64_t duplicate_count;

@@ -1889,7 +1889,7 @@ static struct json_object *build_flow_stats(const struct pw_config *cfg,
         json_object_object_add(f, "duplicate", json_object_new_int64((int64_t)rs.duplicate_count));
         json_object_object_add(f, "out_of_order", json_object_new_int64((int64_t)rs.out_of_order_count));
         json_object_object_add(f, "seq_gap",   json_object_new_int64((int64_t)rs.sequence_gap_count));
-        json_object_object_add(f, "expected_seq", json_object_new_int64((int64_t)rs.expected_sequence));
+        json_object_object_add(f, "last_seq",  json_object_new_int64((int64_t)rs.last_sequence));
 
         /* Cross-card latency is corrected PER FLOW in hardware: the daemon servo
          * writes each cross-card flow's slot in the lat_correction table, and the
