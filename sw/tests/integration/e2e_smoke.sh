@@ -42,6 +42,8 @@ export PW_FAKE_FAIL_FLAG="$WORK/failflag"
 export PW_FAKE_FAIL_FLAG_STICKY="$WORK/failflag_sticky"
 "$DAEMON" -s 0 -F -c "$CFG" > "$WORK/daemon.log" 2>&1 &
 DPID=$!
+# Best-effort safety net for early failures only; the happy path ends with an
+# explicit SIGINT + wait + exit-status assertion (see the end of this script).
 cleanup() { kill -INT "$DPID" 2>/dev/null || true; wait "$DPID" 2>/dev/null || true; }
 trap 'cleanup; rm -rf "$WORK"' EXIT
 
@@ -57,7 +59,9 @@ check() {
     shift 2
     local out
     out=$("$@" 2>&1) || { echo "[FAIL $name] command failed: $*"; cat "$WORK/daemon.log"; exit 1; }
-    if ! echo "$out" | grep -qE "$expected"; then
+    # Here-string, not `echo | grep -q`: grep -q exits on the first match and
+    # under pipefail the echo's SIGPIPE would flake the whole check.
+    if ! grep -qE "$expected" <<<"$out"; then
         echo "[FAIL $name] expected match /$expected/, got:"
         echo "$out"
         exit 1
@@ -82,7 +86,8 @@ check "test start"    '"changed":1'           "$CLI" test start --socket "$SOCK"
 check "test stop"     '"changed":1'           "$CLI" test stop  --socket "$SOCK"
 
 check "stats table"   '^card[[:space:]]+open' "$CLI" stats --socket "$SOCK"
-check "flow stats tbl" '^id[[:space:]]+tx_c'   "$CLI" flow stats --socket "$SOCK"
+# Header gained a `path (tx->rx)` column between id and tx_frames.
+check "flow stats tbl" '^id[[:space:]]+path.*tx_frames'   "$CLI" flow stats --socket "$SOCK"
 
 # Live config reload: ship the same YAML over the socket and verify
 # the daemon accepts it and re-publishes the program.
@@ -94,7 +99,7 @@ CFG2=$WORK/pw2.yaml
 sed -e '/^system:/a\  control_socket: "'"$SOCK"'"' \
     "$ROOT/configs/examples/multi-card.yaml" > "$CFG2"
 out2=$("$CLI" load "$CFG2" --socket "$SOCK" 2>&1 || true)
-if echo "$out2" | grep -q 'topology change'; then
+if grep -q 'topology change' <<<"$out2"; then
     echo "[ ok ] config.load topology rejected"
 else
     echo "[FAIL config.load topology rejected] expected 'topology change' in:"
@@ -108,18 +113,18 @@ fi
 # WITHOUT leaving flow 1 disabled.
 "$CLI" flow start 1 --socket "$SOCK" >/dev/null 2>&1
 before=$("$CLI" rpc flows --socket "$SOCK" 2>&1)
-if ! echo "$before" | grep -qE '"enabled":[[:space:]]*true'; then
+if ! grep -qE '"enabled":[[:space:]]*true' <<<"$before"; then
     echo "[FAIL rollback setup] flow 1 not enabled before reload:"; echo "$before"; exit 1
 fi
 touch "$WORK/failflag"
 rb=$("$CLI" load "$CFG" --socket "$SOCK" 2>&1 || true)
-if echo "$rb" | grep -q 'previous config still running'; then
+if grep -q 'previous config still running' <<<"$rb"; then
     echo "[ ok ] config.load stage-fail rolled back"
 else
     echo "[FAIL rollback msg] expected 'previous config still running', got:"; echo "$rb"; exit 1
 fi
 after=$("$CLI" rpc flows --socket "$SOCK" 2>&1)
-if echo "$after" | grep -qE '"enabled":[[:space:]]*true'; then
+if grep -qE '"enabled":[[:space:]]*true' <<<"$after"; then
     echo "[ ok ] config.load rollback kept the flow enabled"
 else
     echo "[FAIL rollback] flow disabled after a failed reload (rollback regressed):"
@@ -133,10 +138,17 @@ rm -f "$WORK/failflag"
 "$CLI" flow start 1 --socket "$SOCK" >/dev/null 2>&1
 touch "$WORK/failflag_sticky"
 rb2=$("$CLI" load "$CFG" --socket "$SOCK" 2>&1 || true)
-if echo "$rb2" | grep -qiE 'out of sync|rollback failed'; then
+if grep -qiE 'out of sync|rollback failed' <<<"$rb2"; then
     echo "[ ok ] config.load double-fault reports out-of-sync (not false success)"
 else
     echo "[FAIL rollback-fail msg] expected an out-of-sync error, got:"; echo "$rb2"; exit 1
+fi
+after2=$("$CLI" rpc flows --socket "$SOCK" 2>&1)
+if grep -qE '"enabled":[[:space:]]*true' <<<"$after2"; then
+    echo "[ ok ] config.load double-fault kept the flow view enabled"
+else
+    echo "[FAIL rollback-fail view] flow disabled after a double-fault reload (quiesce mutated the view):"
+    echo "$after2"; exit 1
 fi
 rm -f "$WORK/failflag_sticky"
 
@@ -194,7 +206,19 @@ if [ -n "$PROXU" ] && ! grep -qE "^u[[:space:]]+$PROXU([[:space:]]|\$)" "$SYSU";
 fi
 echo "[ ok ] packaging: proxyd User is created by sysusers"
 
-cleanup
+# Clean-shutdown check (the header advertises it): SIGINT the daemon, reap it,
+# and assert it exited 0 (packetwyrmd's on_signal sets g_stop and main returns
+# 0). A daemon that segfaults or errors out on shutdown must fail the test, so
+# don't route this through the best-effort cleanup().
+kill -INT "$DPID"
+dstatus=0
+wait "$DPID" || dstatus=$?
+if [ "$dstatus" -ne 0 ]; then
+    echo "[FAIL shutdown] daemon exit status $dstatus after SIGINT (want 0); daemon log:"
+    cat "$WORK/daemon.log"
+    exit 1
+fi
+echo "[ ok ] daemon clean SIGINT shutdown (exit 0)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "all e2e checks passed"

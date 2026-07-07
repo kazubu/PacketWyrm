@@ -76,8 +76,10 @@ class ShellQuotingSafety(unittest.TestCase):
         r = self._router(addr="1.2.3.4/30; rm -rf /")
         cmds = [c["cmd"] for c in _emit_node_config(r)["cmds"]]
         joined = "\n".join(cmds)
-        # The raw injection must not appear unquoted; shlex.quote wraps it.
-        self.assertNotIn("dev net0; rm -rf /", joined)
+        # The emitted form is `ip addr add <addr> dev <tap>` (addr BEFORE
+        # dev), so an unquoted injection would read `add 1.2.3.4/30; rm ...`.
+        # shlex.quote must break that shape by wrapping the whole value.
+        self.assertNotIn("ip addr add 1.2.3.4/30; rm -rf /", joined)
         self.assertIn("'1.2.3.4/30; rm -rf /'", joined)
 
     def test_malicious_tap_and_router_name_quoted(self):
@@ -199,6 +201,111 @@ routers:
             with self.assertRaises(LabError):
                 load_lab(lab_path)
 
+    def test_duplicate_addr_rejected(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            lab = """
+packetwyrm_config: ./two-router-bgp.packetwyrm.yaml
+routers:
+  - { name: r1, image: x, logical_if_id: 1000, addr: 192.0.2.1/30 }
+  - { name: r2, image: x, logical_if_id: 1001, addr: 192.0.2.1/30 }
+"""
+            lab_path = self._write_lab(td, lab)
+            with self.assertRaises(LabError) as cm:
+                load_lab(lab_path)
+            self.assertIn("duplicate address", str(cm.exception))
+
+    def test_duplicate_addr6_rejected(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            lab = """
+packetwyrm_config: ./two-router-bgp.packetwyrm.yaml
+routers:
+  - { name: r1, image: x, logical_if_id: 1000, addr: 192.0.2.1/30,
+      addr6: "2001:db8::1/64" }
+  - { name: r2, image: x, logical_if_id: 1001, addr: 192.0.2.2/30,
+      addr6: "2001:db8:0::1/64" }
+"""
+            lab_path = self._write_lab(td, lab)
+            with self.assertRaises(LabError) as cm:
+                load_lab(lab_path)
+            self.assertIn("duplicate address", str(cm.exception))
+
+    def test_bad_addr_rejected(self):
+        """addr goes verbatim into `ip addr add`; it must be a real IPv4
+        interface address WITH a prefix, of the v4 family."""
+        import tempfile
+        bad_addrs = [
+            "not-an-ip/24",          # garbage
+            "192.0.2.1",             # missing prefix
+            "2001:db8::1/64",        # wrong family for addr
+            "1.2.3.4/30; rm -rf /",  # shell injection shape
+        ]
+        for bad in bad_addrs:
+            with tempfile.TemporaryDirectory() as td:
+                lab = (
+                    "packetwyrm_config: ./two-router-bgp.packetwyrm.yaml\n"
+                    "routers:\n"
+                    f'  - {{ name: r1, image: x, logical_if_id: 1000, addr: "{bad}" }}\n'
+                )
+                lab_path = self._write_lab(td, lab)
+                with self.assertRaises(LabError, msg=bad):
+                    load_lab(lab_path)
+
+    def test_bad_addr6_rejected(self):
+        import tempfile
+        bad_addr6s = [
+            "192.0.2.1/30",     # wrong family for addr6
+            "2001:db8::1",      # missing prefix
+            "hello::/x",        # garbage
+        ]
+        for bad in bad_addr6s:
+            with tempfile.TemporaryDirectory() as td:
+                lab = (
+                    "packetwyrm_config: ./two-router-bgp.packetwyrm.yaml\n"
+                    "routers:\n"
+                    "  - { name: r1, image: x, logical_if_id: 1000,\n"
+                    f'      addr: 192.0.2.1/30, addr6: "{bad}" }}\n'
+                )
+                lab_path = self._write_lab(td, lab)
+                with self.assertRaises(LabError, msg=bad):
+                    load_lab(lab_path)
+
+    def test_non_numeric_scalars_raise_laberror(self):
+        """Bad numeric YAML values must surface as LabError (the cli.py
+        handler), not a raw ValueError/TypeError traceback."""
+        import tempfile
+        bad_labs = [
+            # non-numeric asn
+            'routers:\n  - { name: r1, image: x, logical_if_id: 1000,'
+            ' addr: 192.0.2.1/30, routing: { bgp: { asn: "sixty-five",'
+            ' router_id: 192.0.2.1 } } }\n',
+            # non-numeric remote_as
+            'routers:\n  - { name: r1, image: x, logical_if_id: 1000,'
+            ' addr: 192.0.2.1/30, routing: { bgp: { asn: 65001,'
+            ' router_id: 192.0.2.1,'
+            ' neighbors: [ { peer: 192.0.2.2, remote_as: "xx" } ] } } }\n',
+            # remote_as out of range
+            'routers:\n  - { name: r1, image: x, logical_if_id: 1000,'
+            ' addr: 192.0.2.1/30, routing: { bgp: { asn: 65001,'
+            ' router_id: 192.0.2.1,'
+            ' neighbors: [ { peer: 192.0.2.2, remote_as: 0 } ] } } }\n',
+            # non-numeric logical_if_id
+            'routers:\n  - { name: r1, image: x, logical_if_id: "one",'
+            ' addr: 192.0.2.1/30 }\n',
+            # routing.bgp is not a mapping
+            'routers:\n  - { name: r1, image: x, logical_if_id: 1000,'
+            ' addr: 192.0.2.1/30, routing: { bgp: [ 65001 ] } }\n',
+            # router entry is not a mapping
+            'routers:\n  - 42\n',
+        ]
+        for bad in bad_labs:
+            with tempfile.TemporaryDirectory() as td:
+                lab_path = self._write_lab(
+                    td, "packetwyrm_config: ./two-router-bgp.packetwyrm.yaml\n" + bad)
+                with self.assertRaises(LabError, msg=bad):
+                    load_lab(lab_path)
+
 
 class FrrEmission(unittest.TestCase):
     """Sanity checks that don't need a fixture."""
@@ -213,6 +320,53 @@ class FrrEmission(unittest.TestCase):
         # frr.conf should not contain a router bgp block
         conf = frr_conf(r)
         self.assertNotIn("router bgp", conf)
+
+    def _bgp_router(self, neighbors=(), networks=()):
+        from pktwyrm_tinet.schema import BgpConfig, BgpNeighbor, Router
+        bgp = BgpConfig(
+            asn=65001, router_id="192.0.2.1",
+            neighbors=[BgpNeighbor(peer=p, remote_as=a) for p, a in neighbors],
+            networks=list(networks),
+        )
+        return Router(
+            name="rx", image="x", logical_if_id=0, addr="10.0.0.1/30",
+            bgp=bgp, tap_name="tap-x", global_port=0, vlan=0,
+        )
+
+    def test_v6_networks_under_ipv6_unicast(self):
+        """IPv6 networks must land in `address-family ipv6 unicast` (bgpd
+        rejects them under ipv4 unicast, silently never advertising)."""
+        r = self._bgp_router(
+            neighbors=[("192.0.2.2", 65002)],
+            networks=["10.0.1.0/24", "2001:db8:1::/48"],
+        )
+        conf = frr_conf(r)
+        lines = conf.splitlines()
+        v4_at = lines.index(" address-family ipv4 unicast")
+        v4_end = lines.index(" exit-address-family", v4_at)
+        v6_at = lines.index(" address-family ipv6 unicast")
+        v6_end = lines.index(" exit-address-family", v6_at)
+        self.assertIn("  network 10.0.1.0/24", lines[v4_at:v4_end])
+        self.assertNotIn("  network 2001:db8:1::/48", lines[v4_at:v4_end])
+        self.assertIn("  network 2001:db8:1::/48", lines[v6_at:v6_end])
+
+    def test_v6_neighbor_activated_under_ipv6_unicast(self):
+        """An IPv6 peer needs `neighbor X activate` under ipv6 unicast (FRR
+        only auto-activates under ipv4 unicast)."""
+        r = self._bgp_router(neighbors=[("2001:db8::2", 65002)])
+        conf = frr_conf(r)
+        self.assertIn(" neighbor 2001:db8::2 remote-as 65002\n", conf)
+        self.assertIn(" address-family ipv6 unicast\n", conf)
+        self.assertIn("  neighbor 2001:db8::2 activate\n", conf)
+
+    def test_v4_only_config_has_no_ipv6_block(self):
+        r = self._bgp_router(
+            neighbors=[("192.0.2.2", 65002)], networks=["10.0.1.0/24"],
+        )
+        conf = frr_conf(r)
+        self.assertNotIn("address-family ipv6 unicast", conf)
+        # v4 neighbors are auto-activated; no stray activate lines.
+        self.assertNotIn("activate", conf)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@
  * master and the other(s) as slave, then `read` both: matching seq numbers across
  * cards give the inter-card counter offset at that shared edge.
  *
- *   sudo pw_gpio_sync <bdf> master  [period_log2=16] [out_pin=1]
+ *   sudo pw_gpio_sync <bdf> master  [period_log2=15] [out_pin=1]
  *   sudo pw_gpio_sync <bdf> slave   [in_pin=0]
  *   sudo pw_gpio_sync <bdf> repeater [in_pin=0] [out_pin=1]
  *   sudo pw_gpio_sync <bdf> read    [count=10] [interval_ms=200]
@@ -44,7 +44,7 @@ int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr,
             "usage: %s <bdf> <master|slave|repeater|read|off> [args]\n"
-            "  master  [period_log2=16] [out_pin=1]\n"
+            "  master  [period_log2=15] [out_pin=1]  (period_log2 range 0..15; <5 clamps to 5)\n"
             "  slave   [in_pin=0]\n"
             "  repeater [in_pin=0] [out_pin=1]\n"
             "  read    [count=10] [interval_ms=200]\n", argv[0]);
@@ -65,12 +65,22 @@ int main(int argc, char **argv) {
 
     int rc = 0;
     if (!strcmp(cmd, "master")) {
-        int per = (argc > 3) ? atoi(argv[3]) : 16;
+        /* The RTL period field is 4 bits (ctrl[19:16]); default to the widest
+         * period that actually fits. 16 would silently wrap to 0. */
+        int per = (argc > 3) ? atoi(argv[3]) : 15;
         int out = (argc > 4) ? atoi(argv[4]) : 1;
+        if (per < 0 || per > 15) {
+            fprintf(stderr, "usage: period_log2 must be 0..15 (got %d); the RTL field is 4 bits\n", per);
+            pw_card_backend_close(&be);
+            return 2;
+        }
+        /* The RTL floor-clamps per_log2 to 5 (pw_gpio_sync.sv: per_eff); report
+         * the EFFECTIVE period so the message matches the hardware. */
+        int per_eff = (per < 5) ? 5 : per;
         uint32_t c = mkctrl(1, 1, 0, 0, out, per);
         o->write32(be.ctx, PWFPGA_REG_GPIO_SYNC_CTRL, c);
-        printf("MASTER: ctrl=0x%08x (en master out_sel=%d period_log2=%d -> pulse every %d cyc)\n",
-               c, out, per, 1 << (per < 5 ? 5 : per));
+        printf("MASTER: ctrl=0x%08x (en master out_sel=%d period_log2=%d effective=%d -> pulse every %d cyc)\n",
+               c, out, per, per_eff, 1 << per_eff);
     } else if (!strcmp(cmd, "slave")) {
         int in = (argc > 3) ? atoi(argv[3]) : 0;
         uint32_t c = mkctrl(1, 0, 0, in, 1, 0);
