@@ -376,6 +376,14 @@ module pw_csr_full #(
     logic              snapshot_trigger;
 
     always_ff @(posedge s_axi_aclk or negedge s_axi_aresetn) begin
+        // W1C clear mask for ERROR_STATUS, valid this cycle only. The sticky
+        // register has a SINGLE assignment point (bottom of the else branch)
+        // merging this clear with the external set. A separate
+        // `error_status_q <= error_status_q & ~wdata` inside the write case
+        // would be dead code: the textually later sticky-set NBA would win
+        // and every W1C write would be silently discarded.
+        logic [31:0] err_w1c;
+        err_w1c = '0;
         if (!s_axi_aresetn) begin
             s_axi_awready    <= 1'b0;
             s_axi_wready     <= 1'b0;
@@ -436,7 +444,7 @@ module pw_csr_full #(
                     REG_GLOBAL_CONTROL: global_control_q <= s_axi_wdata;
                     REG_GPIO_SYNC_CTRL: gpio_sync_ctrl_q <= s_axi_wdata;
                     REG_SFP_I2C:        sfp_i2c_drive_low_q <= s_axi_wdata[3:0];
-                    REG_ERROR_STATUS:   error_status_q   <= error_status_q & ~s_axi_wdata;
+                    REG_ERROR_STATUS:   err_w1c          = s_axi_wdata;  // W1C (applied below)
                     default: /* defer to windows */ ;
                 endcase
                 // Per-flow lat correction window (0x0180 .. +NUM_FLOWS*8). LO
@@ -573,7 +581,11 @@ module pw_csr_full #(
             end
 
             if (s_axi_bvalid && s_axi_bready) s_axi_bvalid <= 1'b0;
-            error_status_q <= error_status_q | error_status_set_i;
+            // Single assignment point for the sticky error register: apply
+            // this cycle's W1C clear (if any) and OR in the external set.
+            // A bit both cleared and set in the same cycle stays set (the
+            // new event wins over the stale acknowledgement).
+            error_status_q <= (error_status_q & ~err_w1c) | error_status_set_i;
         end
     end
 
@@ -713,6 +725,11 @@ module pw_csr_full #(
     reg hist_pend;
     reg hist_half_q;
     reg hist_val_q;
+    // Histogram 64-bit live-read protocol: SW reads LOW (+0) then HIGH (+4)
+    // per bucket. The LOW read returns [31:0] and latches [63:32] here; the
+    // HIGH read returns this shadow (like REG_TIMESTAMP_LOW/HIGH), so a live
+    // count that carries across 2^32 between the two dword reads cannot tear.
+    reg [31:0] hist_hi_shadow;
     reg punt_pend;
     reg spi_pend;
 
@@ -723,9 +740,11 @@ module pw_csr_full #(
             s_axi_rdata            <= '0;
             s_axi_rresp            <= 2'b00;
             timestamp_high_latched <= '0;
+            gpio_sync_ts_high_latched <= '0;
             hist_pend              <= 1'b0;
             hist_half_q            <= 1'b0;
             hist_val_q             <= 1'b0;
+            hist_hi_shadow         <= '0;
             punt_pend              <= 1'b0;
             spi_pend               <= 1'b0;
         end else begin
@@ -802,12 +821,20 @@ module pw_csr_full #(
                 s_axi_arready <= 1'b0;
                 if (hist_pend) begin
                     // BRAM data valid now; complete the histogram read.
+                    // LOW-then-HIGH protocol (see hist_hi_shadow decl): the
+                    // lo-dword read latches [63:32] into the shadow, the
+                    // hi-dword read returns the shadow -- never the live
+                    // [63:32], which may have carried since the lo read.
                     hist_pend    <= 1'b0;
                     s_axi_rvalid <= 1'b1;
-                    s_axi_rdata  <= hist_val_q
-                                      ? (hist_half_q ? hist_rd_data_i[63:32]
-                                                     : hist_rd_data_i[31:0])
-                                      : 32'h0;
+                    if (!hist_val_q) begin
+                        s_axi_rdata <= 32'h0;
+                    end else if (hist_half_q) begin
+                        s_axi_rdata <= hist_hi_shadow;
+                    end else begin
+                        s_axi_rdata    <= hist_rd_data_i[31:0];
+                        hist_hi_shadow <= hist_rd_data_i[63:32];
+                    end
                 end else if (punt_pend) begin
                     // Punt window registered data valid now; complete read.
                     punt_pend    <= 1'b0;
