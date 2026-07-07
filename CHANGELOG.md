@@ -36,8 +36,18 @@ For where work is going next, see `NEXT-STEPS.md`.
   - **Full-codebase review sweep (2026-07-07): generator seq integrity, CSR
     correctness, parser robustness, SW hardening.** One coordinated fix pass
     over the whole tree; RTL items are sim-validated (all 30 suites green,
-    each fix mutation-checked against its new regression test) and PENDING
-    FPGA validation before merge to main.
+    each fix mutation-checked against its new regression test) and
+    HW-VALIDATED on build_id 0x6a4d2892 (post-route WNS +0.076): arran
+    07:00.0 — 10 generator-restart cycles at line rate (~37M frames each,
+    12.3 Mpps 74B), lost=0 dup=0 ooo=0 every cycle (the old RTL emitted
+    duplicate=1 per restart); 80..112 sweep at line rate clean, mean 96.000;
+    32-flow scale clean; 33-flow config rejected with out-of-resources and
+    rolled back; 7-min histogram soak read-coherent across the 2^32 carry
+    (210+ reads, 0 anomalies); CLI bucket 0 prints "< 12 ns" on HW.
+    pwhost1 both cards — bidirectional 32-flow cross-card: lost=0 dup=0,
+    gpio-corrected latency 27..37 ticks, no 0/0xFFFFFFFF wrap, 5 restart
+    cycles clean; live pw_flash of the 12.3 MB image exercised the new
+    partial-tail-sector RMW path (VERIFY OK on all three cards).
     - *Generator (HIGH)*: `pw_flow_gen_multi` committed a slot's sequence
       number and sweep length at the frame's LAST beat, but the precompute
       pipeline samples them 3 cycles before a launch — a pipeline-primed
