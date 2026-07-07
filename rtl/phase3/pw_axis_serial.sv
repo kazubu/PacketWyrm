@@ -72,13 +72,15 @@ module pw_axis_serializer (
             m_tvalid = 1'b1;
             m_tkeep  = keep_from_count(int'(valid_bytes));
             m_tlast  = last_beat;
-            // Pack 8 wire-order bytes into a 64-bit word.
-            // Byte k goes into bits [(7-k)*8 +: 8] (big-endian wire
-            // ordering, matches how the production MAC TX sees the
-            // wire).
+            // Pack 8 wire-order bytes into a 64-bit word using the
+            // standard AXI-Stream lane convention: wire byte k in
+            // tdata[k*8 +: 8], qualified by tkeep[k]. This matches the
+            // production data path (pw_flow_gen_multi / pw_ts_insert)
+            // and makes keep_from_count's low-lane tkeep correct on a
+            // partial last beat.
             for (int k = 0; k < 8; k++) begin
                 if (k < int'(valid_bytes))
-                    m_tdata[(7-k)*8 +: 8] = buf_q.data[off_q + k];
+                    m_tdata[k*8 +: 8] = buf_q.data[off_q + k];
             end
         end
     end
@@ -156,9 +158,12 @@ module pw_axis_deserializer (
             if (s_tvalid && s_tready) begin
                 int bytes_this_beat;
                 bytes_this_beat = popcount8(s_tkeep);
+                // Standard AXI-Stream lane convention: wire byte k rides
+                // in tdata[k*8 +: 8] and is qualified by tkeep[k]
+                // (mirrors the serializer above and the production path).
                 for (int k = 0; k < 8; k++) begin
-                    if (k < bytes_this_beat)
-                        buf_q.data[off_q + k] <= s_tdata[(7-k)*8 +: 8];
+                    if (s_tkeep[k])
+                        buf_q.data[off_q + k] <= s_tdata[k*8 +: 8];
                 end
                 if (s_tlast) begin
                     buf_q.len          <= PW_FRAME_LEN_W'(off_q + bytes_this_beat);

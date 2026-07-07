@@ -34,6 +34,11 @@ pwfpga_top_phase3_board           per-board top (fpga/as02mc04/src/)
     |                            (m_axis_punt, tuser lif/ingress/rx_ts) -> C2H.
     |                            Replaces the retired CSR-window punt/inject pair,
     |                            lifting the 512B/2048B frame ceiling to jumbo.
+    |                            Inject frames with an out-of-range egress id
+    |                            (>= PORT_COUNT) are swallowed (no arbiter would
+    |                            drain them -> would wedge H2C). dp side resets
+    |                            on ~rst_n | dp_soft_rst (taxi FIFO syncs a one-
+    |                            side reset into the other domain -> clean flush).
     |   (pw_punt_rx_window        RETIRED -- punt now leaves via pw_dma_slowpath C2H;
     |    pw_inject_tx_window       the inject window stays instantiated in csr_full
     |                             but is decommissioned: outputs open, ready held 0)
