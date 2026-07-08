@@ -39,6 +39,39 @@ export function confirmDialog(message, { ok = "OK", cancel = "Cancel", danger = 
   });
 }
 
+/* ---- clipboard + CLI-equivalence helpers (copy-as-CLI affordances) ---- */
+// Copy `text` to the clipboard with toast feedback. Falls back to a hidden
+// textarea + execCommand when the async Clipboard API is unavailable (plain
+// HTTP is not a secure context).
+export async function copyText(text, label = "copied") {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = el("textarea", { style: "position:fixed;opacity:0" });
+      ta.value = text;
+      document.body.append(ta); ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      if (!ok) throw new Error("execCommand copy refused");
+    }
+    toast("ok", label);
+    return true;
+  } catch (e) {
+    toast("err", "copy failed: " + (e && e.message || e));
+    return false;
+  }
+}
+
+// The pktwyrm invocation equivalent to this GUI session: plain `pktwyrm` when
+// the GUI is served from localhost (the CLI's default Unix socket applies),
+// else `pktwyrm --host <this gateway>` (the CLI relays through proxyd too).
+export function cliBase() {
+  const h = location.hostname;
+  const local = h === "" || h === "localhost" || h === "127.0.0.1" || h === "[::1]";
+  return local ? "pktwyrm" : `pktwyrm --host ${location.host}`;
+}
+
 /* ---- async-button: disable + spinner while fn() runs; guards double-submit.
  * Uses a CSS class (not textContent) so it's safe even if fn re-renders/replaces
  * the button. Returns fn()'s result (or undefined if a run was already pending). */

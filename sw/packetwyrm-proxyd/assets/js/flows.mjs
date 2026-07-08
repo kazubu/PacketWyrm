@@ -10,7 +10,7 @@
  * the serialised model. The list is only rebuilt on structural changes. */
 import { $, $$, el } from "./dom.mjs";
 import { rpc, showMsg } from "./rpc.mjs";
-import { confirmDialog, withPending } from "./ui.mjs";
+import { confirmDialog, withPending, copyText, cliBase } from "./ui.mjs";
 import { state, newFlow, flowFromJson, fwdFromJson, MOD_FIELDS } from "./state.mjs";
 import { buildTestYaml, validateYaml, fieldError, flowErrors, fwdErrors } from "./yaml.mjs";
 import { renderFwdList } from "./forwards.mjs";
@@ -264,6 +264,21 @@ export function initFlows() {
     if (!v.ok) showMsg("#flow-msg", "warn", `Loaded ${file.name}, but YAML syntax error${v.line ? ` (line ${v.line})` : ""}: ${v.msg}`);
     else showMsg("#flow-msg", "ok", `Loaded ${file.name} into the YAML editor. Review, then “Apply raw YAML” to write to the card.`);
   });
+  // Copy-as-CLI: put the test-config YAML on the clipboard and show the
+  // equivalent pktwyrm command sequence in a copyable snippet (the GUI's
+  // "Write to card + Arm + Start" expressed as CLI, for scripts/soak runs).
+  $("#flow-copy-cli").addEventListener("click", async () => {
+    // Same precedence as Write to card: manual raw-YAML edits win.
+    const yaml = isRawDirty() ? $("#flow-yaml").value : buildTestYaml();
+    const ok = await copyText(yaml, "test-config YAML copied to clipboard");
+    const c = cliBase();
+    $("#flow-cli-cmd").textContent = `${c} load packetwyrm-flows.yaml && ${c} test arm && ${c} test start`;
+    $("#flow-cli-snip").hidden = false;
+    if (ok) showMsg("#flow-msg", "ok", "YAML copied — save it as packetwyrm-flows.yaml "
+      + "(or use “Save to file” below), then run the command sequence shown.");
+  });
+  $("#flow-cli-copy").addEventListener("click",
+    () => copyText($("#flow-cli-cmd").textContent, "command sequence copied"));
   $("#flow-load").addEventListener("click", e => withPending(e.currentTarget, async () => {
     const r = await rpc({ rpc: "config.get_test" });
     if (r.error) { showMsg("#flow-msg", "err", r.error); return; }   // keep any manual edits

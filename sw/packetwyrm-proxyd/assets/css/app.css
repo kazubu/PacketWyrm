@@ -53,7 +53,15 @@ pre.out { background: var(--input); border:1px solid var(--line); border-radius:
 .bar { height: 14px; background: var(--accent); border-radius: 2px; }
 .barrow { display:flex; align-items:center; gap:8px; margin:2px 0; font-size:12px; }
 .barrow .lbl { width:120px; color: var(--dim); text-align:right; }
-.barrow .cnt { width:70px; text-align:right; font-variant-numeric: tabular-nums; }
+.barrow .cnt { min-width:70px; text-align:right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* histogram overlay: grouped bars (≤4 flows) + legend swatches */
+.bargroup { flex:1; display:flex; flex-direction:column; gap:1px; }
+.bar.thin { height: 5px; }
+.hleg { display:inline-flex; align-items:center; gap:5px; font-size:12px;
+        margin-right:12px; color: var(--dim); }
+.hleg .sw { width:10px; height:10px; border-radius:2px; display:inline-block; }
+#hist-compare { display:inline-flex; gap:10px; align-items:center; }
+#hist-compare .hcmp { margin:0; font-size:12px; color: var(--dim); }
 .muted { color: var(--dim); font-size: 12px; }
 .adv summary { cursor:pointer; color: var(--dim); margin: 8px 0; }
 .pill { padding: 1px 8px; border-radius: 10px; font-size: 11px; white-space: nowrap; }
@@ -135,6 +143,33 @@ details.flow-item[open] > summary { border-bottom: 1px solid var(--line); }
 .rate-hint { margin-top: 3px; font-size: 11px; }
 .flow-actions { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
 .flow-actions button { margin-top: 0; }
+
+/* per-flow health badge (flow-statistics table): colored dot + title tooltip */
+.hb { display:inline-block; width:10px; height:10px; border-radius:50%;
+      background: var(--dim); vertical-align:middle; }
+.hb.ok   { background: var(--ok); }
+.hb.warn { background: #eab308; }
+.hb.bad  { background: var(--err); }
+.hb.idle { background: var(--dim); opacity:.55; }
+
+/* event timeline (Dashboard "Events" card) */
+#d-events { max-height: 260px; overflow-y: auto; font-size: 12px; }
+.evt { display:flex; gap:10px; padding:2px 0; border-bottom:1px solid var(--line); }
+.evt-t { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.evt.bad { color: var(--err); }
+.evt.act { color: var(--accent); }
+
+/* copy-as-CLI: small icon buttons + the copyable command snippet */
+button.copy-cli { margin-top:10px; padding:4px 8px; background:transparent;
+  border:1px solid var(--line); color: var(--dim); border-radius:4px;
+  cursor:pointer; font-size:12px; width:auto; }
+button.copy-cli:hover { color: var(--ink); }
+.cli-snip { display:flex; gap:8px; align-items:center; margin-top:10px; }
+.cli-snip[hidden] { display:none; }
+.cli-snip code { flex:1; background: var(--input); border:1px solid var(--line);
+  border-radius:4px; padding:6px 10px; font-family: ui-monospace, monospace;
+  font-size:12px; overflow-x:auto; white-space:nowrap; }
+.cli-snip button { margin-top:0; }
 
 /* invalid form field (client-side validation) */
 input.invalid { border-color: var(--err); background: rgba(239,68,68,.08); }
