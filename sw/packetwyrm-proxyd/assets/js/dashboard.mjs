@@ -11,9 +11,12 @@ import { sparkline, makeRing } from "./chart.mjs";
 // Raw (un-smoothed) history for sparklines: per-flow rx pps + latency, per-port rx pps.
 const flowRxHist = makeRing(40), flowLatHist = makeRing(40), portRxHist = makeRing(40);
 
+// thousands separators for big counters (frames), leaving small ids untouched.
+const nfmt = v => (typeof v === "number" && Math.abs(v) >= 1000) ? v.toLocaleString() : v;
+
 function tableFrom(rows, cols) {
   const t = el("table");
-  t.append(el("tr", {}, cols.map(c => el("th", { class: c.num ? "num" : "", text: c.h }))));
+  t.append(el("tr", {}, cols.map(c => el("th", { class: c.num ? "num" : "", scope: "col", text: c.h }))));
   rows.forEach(row => t.append(el("tr", {}, cols.map(c => {
     if (c.node) return el("td", { class: c.num ? "num" : "" }, [c.node(row)]);   // DOM cell (e.g. sparkline)
     const v = c.get(row);
@@ -205,6 +208,9 @@ function renderHealth(cards, stats, fstats, metaById, portstats) {
 // latency cell: "—" unless the flow reports valid latency with the field present
 const lat = (f, k) =>
   (f.latency_valid && f[k] != null) ? fmtTime(f[k] * TICK_NS) : "—";
+// latency <td>: ns text for readability, raw ticks in the title on hover.
+const latTd = (f, k) => el("td", { class: "num", text: lat(f, k),
+  title: (f.latency_valid && f[k] != null) ? `${f[k]} ticks` : "" });
 function renderFlowStatsTable(fstats, rates) {
   const cols = ["id", "state", "path (tx→rx)", "tx frm", "tx pps", "tx bps", "rx frm", "rx pps", "rx ~", "rx bps", "lost", "dup", "reorder", "min", "avg", "avg ~", "max"];
   const t = el("table");
@@ -215,19 +221,20 @@ function renderFlowStatsTable(fstats, rates) {
       el("td", { class: "num", text: f.id }),
       el("td", {}, [statePill(!!f.enabled)]),
       el("td", { class: "path", text: `${f.tx_port || "?"} → ${f.rx_port || "?"}` }),
-      el("td", { class: "num", text: f.tx_frames }),
+      el("td", { class: "num", text: nfmt(f.tx_frames) }),
       el("td", { class: "num", text: fmtRate(rt.tx) }),
       el("td", { class: "num", text: rt.txb != null ? fmtRate(rt.txb).replace("/s", "bps") : "—" }),
-      el("td", { class: "num", text: f.rx_frames }),
+      el("td", { class: "num", text: nfmt(f.rx_frames) }),
       el("td", { class: "num", text: fmtRate(rt.rx) }),
       el("td", {}, [sparkline(flowRxHist.get(f.id))]),
       el("td", { class: "num", text: rt.rxb != null ? fmtRate(rt.rxb).replace("/s", "bps") : "—" }),
       errTd(f.lost), errTd(f.duplicate), errTd(f.out_of_order),
       // latency fields are absent when read_ok/latency_valid is false -> show —
-      el("td", { class: "num", text: lat(f, "min_latency") }),
-      el("td", { class: "num", text: lat(f, "avg_latency") }),
+      // (title shows the raw tick count; the cell text is ns for readability)
+      latTd(f, "min_latency"),
+      latTd(f, "avg_latency"),
       el("td", {}, [sparkline(flowLatHist.get(f.id), { color: "var(--ok)" })]),
-      el("td", { class: "num", text: lat(f, "max_latency") }),
+      latTd(f, "max_latency"),
     ]);
     if (f.lost > 0) row.style.background = "rgba(239,68,68,.08)";   // flag lossy flows
     t.append(row);
@@ -237,14 +244,15 @@ function renderFlowStatsTable(fstats, rates) {
 
 function renderAggregate(fstats, rates, metaById) {
   // group counters + rates by total / rx-card / rx-port
-  const groups = new Map();  // label -> {tx,rx,lost,dup,txr,rxr,order}
+  const groups = new Map();  // label -> {tx,rx,lost,dup,txr,rxr,txb,rxb,order}
   const bump = (label, f, order) => {
     let g = groups.get(label);
-    if (!g) { g = { tx: 0, rx: 0, lost: 0, dup: 0, txr: 0, rxr: 0, order }; groups.set(label, g); }
+    if (!g) { g = { tx: 0, rx: 0, lost: 0, dup: 0, txr: 0, rxr: 0, txb: 0, rxb: 0, order }; groups.set(label, g); }
     const rt = rates.get(f.id) || {};
     g.tx += f.tx_frames || 0; g.rx += f.rx_frames || 0;
     g.lost += f.lost || 0; g.dup += f.duplicate || 0;
     g.txr += rt.tx || 0; g.rxr += rt.rx || 0;
+    g.txb += rt.txb || 0; g.rxb += rt.rxb || 0;
   };
   fstats.forEach(f => {
     bump("Total", f, 0);
@@ -254,13 +262,16 @@ function renderAggregate(fstats, rates, metaById) {
   });
   const rows = [...groups.entries()].map(([label, g]) => ({ label, ...g }))
     .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+  const bps = v => fmtRate(v).replace("/s", "bps");
   const t = el("table");
-  t.append(el("tr", {}, ["scope", "tx frm", "tx/s", "rx frm", "rx/s", "lost", "dup"]
-    .map(h => el("th", { class: h === "scope" ? "" : "num", text: h }))));
+  t.append(el("tr", {}, ["scope", "tx frm", "tx pps", "tx bps", "rx frm", "rx pps", "rx bps", "lost", "dup"]
+    .map(h => el("th", { class: h === "scope" ? "" : "num", scope: "col", text: h }))));
   rows.forEach(r => t.append(el("tr", {}, [
     el("td", { text: r.label }),
-    el("td", { class: "num", text: r.tx }), el("td", { class: "num", text: fmtRate(r.txr) }),
-    el("td", { class: "num", text: r.rx }), el("td", { class: "num", text: fmtRate(r.rxr) }),
+    el("td", { class: "num", text: nfmt(r.tx) }), el("td", { class: "num", text: fmtRate(r.txr) }),
+    el("td", { class: "num", text: bps(r.txb) }),
+    el("td", { class: "num", text: nfmt(r.rx) }), el("td", { class: "num", text: fmtRate(r.rxr) }),
+    el("td", { class: "num", text: bps(r.rxb) }),
     errTd(r.lost), errTd(r.dup),
   ])));
   return t;
@@ -335,7 +346,7 @@ export async function poll() {
         { h: "tx pps", get: r => fmtRate(prates.get(`${r.card_id}:${r.local_port}`)?.txpps), num: 1 },
         { h: "tx bps", get: r => fmtRate(prates.get(`${r.card_id}:${r.local_port}`)?.txbps), num: 1 },
         { h: "rx ~", node: r => sparkline(portRxHist.get(`${r.card_id}:${r.local_port}`)) },
-        { h: "rx frm", get: r => r.rx_frames, num: 1 }, { h: "tx frm", get: r => r.tx_frames, num: 1 },
+        { h: "rx frm", get: r => nfmt(r.rx_frames), num: 1 }, { h: "tx frm", get: r => nfmt(r.tx_frames), num: 1 },
         { h: "FCS", get: r => r.rx_fcs_error, num: 1, bad: r => r.rx_fcs_error > 0 },
         { h: "drops", get: r => r.drops, num: 1, bad: r => r.drops > 0 },
         { h: "unmatched", get: r => r.rx_unmatched, num: 1 }]));
@@ -365,8 +376,14 @@ export async function poll() {
       setBox("#d-agg", renderAggregate(fstats.flows, rates, metaById));
       setBox("#d-flowstats", renderFlowStatsTable(fstats.flows, rates));
       const sel = $("#hist-flow"); const cur = sel.value;
-      sel.innerHTML = ""; fstats.flows.forEach(f => sel.append(el("option", { value: String(f.id), text: f.id })));
       const ids = fstats.flows.map(f => String(f.id));
+      // Rebuild the <option>s ONLY when the flow set actually changes — rebuilding
+      // every poll (1.5 s) collapses an open dropdown / disrupts selection in some
+      // browsers. A stable option list lets the user pick calmly.
+      const existing = [...sel.options].map(o => o.value);
+      if (existing.length !== ids.length || existing.some((v, i) => v !== ids[i])) {
+        sel.innerHTML = ""; fstats.flows.forEach(f => sel.append(el("option", { value: String(f.id), text: f.id })));
+      }
       if (cur && ids.includes(cur)) sel.value = cur;      // keep the user's choice
       else if (ids.length) sel.value = ids[0];            // auto-select the first flow
       if (sel.value) renderHist();                        // live-refresh the histogram each poll

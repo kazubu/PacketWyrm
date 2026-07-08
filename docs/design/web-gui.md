@@ -144,7 +144,12 @@ pending state; a sticky status bar + anomaly highlighting + sparklines make the
 dashboard scannable (rates are raw, deliberately not smoothed); the Flows raw-YAML
 editor tracks manual edits so a form change can't silently clobber them (with a
 "Regenerate from form" escape hatch), validates fields (MAC/port/range/hex) before
-Apply, and inserts spaces on Tab. Tabs:
+Apply, and inserts spaces on Tab. Accessibility/polish: an ARIA tablist
+(tab/tabpanel with `aria-selected`), `:focus-visible` rings, `<th scope>` and
+aria-labelled icon buttons; a persisted light/dark theme toggle (🌓 in the
+header; light is opt-in via `<html data-theme="light">`); and a responsive
+layout (header/nav wrap, cards scroll horizontally) so wide tables don't break
+narrow screens. Tabs:
 
 - **Dashboard** — polls every ~1.5 s: a **Versions** panel (packetwyrmd via
   `version`, packetwyrm-proxyd via `GET /proxyd/version`, per-card FPGA

@@ -10,12 +10,27 @@ import { initEnv } from "./env.mjs";
 
 /* ---- tabs ---- */
 $$("nav button").forEach(b => b.addEventListener("click", () => {
-  $$("nav button").forEach(x => x.classList.remove("active"));
-  b.classList.add("active");
+  $$("nav button").forEach(x => {
+    const on = x === b;
+    x.classList.toggle("active", on);
+    x.setAttribute("aria-selected", on ? "true" : "false");   // ARIA tablist state
+  });
   $$(".tab").forEach(t => t.classList.remove("active"));
   $("#tab-" + b.dataset.tab).classList.add("active");
   if (b.dataset.tab === "control") renderCtlFlows();
 }));
+
+/* ---- theme (dark default; light opt-in, persisted) ---- */
+function applyTheme(t) {
+  if (t === "light") document.documentElement.setAttribute("data-theme", "light");
+  else document.documentElement.removeAttribute("data-theme");
+}
+try { if (localStorage.getItem("pw_theme") === "light") applyTheme("light"); } catch (_) {}
+$("#theme").addEventListener("click", () => {
+  const next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+  applyTheme(next);
+  try { localStorage.setItem("pw_theme", next); } catch (_) {}
+});
 
 /* ---- boot ---- */
 initSecret();

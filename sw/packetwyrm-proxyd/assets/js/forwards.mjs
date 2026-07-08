@@ -12,8 +12,8 @@ export function renderFwdList() {
     el("th", { text: "prio" }), el("th", { text: "" })]));
   state.fwds.forEach((r, i) => t.append(el("tr", {}, [el("td", { text: r.name || "—" }),
     el("td", { text: `${r.ingress}→${r.egress}` }), el("td", { text: r.priority }),
-    el("td", {}, [el("button", { class: "ghost", text: "edit", onclick: () => { state.selFwd = i; renderFwdEdit(); } }), " ",
-      el("button", { class: "danger", text: "del", onclick: async () => {
+    el("td", {}, [el("button", { class: "ghost", text: "edit", "aria-label": `edit rule ${r.name || i}`, onclick: () => { state.selFwd = i; renderFwdEdit(); } }), " ",
+      el("button", { class: "danger", text: "del", "aria-label": `delete rule ${r.name || i}`, onclick: async () => {
         if (!await confirmDialog(`Delete forward rule ${r.name || `${r.ingress}→${r.egress}`}?`, { ok: "Delete", danger: true })) return;
         state.fwds.splice(i, 1); state.selFwd = null; renderFwdList(); renderFwdEdit(); $("#flow-yaml").value = buildTestYaml(); } })])])));
   box.append(t);
