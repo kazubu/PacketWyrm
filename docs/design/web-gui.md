@@ -151,32 +151,41 @@ header; light is opt-in via `<html data-theme="light">`); and a responsive
 layout (header/nav wrap, cards scroll horizontally) so wide tables don't break
 narrow screens. Tabs:
 
-- **Dashboard** — polls every ~1.5 s: a **Versions** panel (packetwyrmd via
-  `version`, packetwyrm-proxyd via `GET /proxyd/version`, per-card FPGA
-  device/version/build/git + SYSMON die-temp/VCCINT/VCCAUX from `cards`); a
-  **Health / LED** panel per card showing the FPGA's real `err_sticky` LED bit
-  (`cards.err_sticky` when the bitstream exposes it, else inferred from live
-  counters), with the causing counters incl. per-port FCS from `ports.stats`;
-  a **Ports** table with per-port pps/bps (`ports.stats` deltas over the FPGA
-  timestamp) + `sfp.info` (numbers capped to 3 decimals);
-  **Aggregate counters** (total / per rx-card / per rx-port, with frames/s
-  rates); **Flow statistics** with Started/Stopped state, tx/rx frames + pps + rx bps,
-  and error counters (lost/dup/reorder) highlighted red when non-zero; and a
-  per-flow **latency histogram** (`flow.hist`) with time-unit bucket labels
-  (ns/µs/ms, from the 6.4 ns/tick clock).
-- **Flows** — point-and-click editor for the full flow schema:
-  ports / L2 (incl. `ethertype`) / L3 v4|v6 / L4 udp|tcp / traffic (incl.
-  `frame_template` test|raw|ip|eth) / measurements / classify /
-  background, plus collapsible advanced sections for **match** (classifier
-  masks), **modifiers** (per-field static/increment/random + mask, incl.
-  128-bit IPv6 literal masks), and **encap** (IPIP / GRE / EtherIP outer
-  v4|v6 + EtherIP inner L2 + `rx_expect`). A live generated-YAML preview
-  shows exactly what **Apply** ships via `config.load`. **Load current**
-  pulls the running test config (`config.get_test`) into **both** the form
-  (from the structured `flows`/`forwards` JSON — match/modifiers/encap
-  included) **and** the raw-YAML editor (the exact text, for lossless bulk
-  edits via **Apply raw YAML**). The YAML the form emits is exactly what
-  `packetwyrmd` parses (see `yaml-schema.md`).
+- **Dashboard** — a sticky **status bar** across all tabs (test running/stopped,
+  aggregate tx/rx pps, total loss, health, max die-temp — chips go red/amber on
+  loss/error/high-temp; health mirrors the Health panel), then panels polled
+  ~1.5 s: **Versions** (packetwyrmd via `version`, packetwyrm-proxyd via
+  `GET /proxyd/version`, per-card FPGA device/version/build/git + SYSMON
+  die-temp/VCCINT/VCCAUX from `cards`); **Health / LED** per card (the FPGA's real
+  `err_sticky` bit when the bitstream exposes it, else inferred from live
+  counters, with the causing counters incl. per-port FCS from `ports.stats`);
+  a **Ports** table with per-port pps/bps + an rx-pps sparkline (FCS/drops red
+  when non-zero) + `sfp.info`; **Aggregate counters** (total / per rx-card /
+  per rx-port, with tx/rx frames + pps + bps, thousands-separated); **Flow
+  statistics** with Started/Stopped state, tx/rx frames + pps + bps, rx-pps and
+  latency sparklines, and lost/dup/reorder highlighted red (lossy rows tinted);
+  and a per-flow **latency histogram** (`flow.hist`) that auto-selects the first
+  flow and live-refreshes, with time-unit bucket labels (ns/µs/ms). Rates are
+  shown RAW (no smoothing) so momentary changes stay visible.
+- **Flows** — each flow is an expandable row (single-open accordion) whose editor
+  opens inline, covering the full schema: ports / L2 (incl. `ethertype`) / L3
+  v4|v6 / L4 udp|tcp / traffic (incl. `frame_template` test|raw|ip|eth; the rate
+  field shows a live SI-unit conversion) / measurements / classify / background,
+  plus collapsible advanced sections for **match** (classifier masks),
+  **modifiers** (static/increment/random + mask, incl. 128-bit IPv6 literal
+  masks), and **encap** (IPIP / GRE / EtherIP + `rx_expect`). Editing is **staged**
+  in a per-flow working copy: **Apply edit** commits it into the config + the raw
+  YAML preview (a "● modified" badge marks uncommitted edits; **Revert** discards
+  them) — this does NOT touch the card. The top **Write to card** button programs
+  the committed config onto the FPGA via `config.load` (it warns on uncommitted
+  editor edits and won't silently discard hand-edited raw YAML). Client-side field
+  validation (MAC/port/range/hex) blocks a write with a "fix these" list.
+  **Load current** pulls the running config (`config.get_test`) into both the form
+  and the raw-YAML editor; **Apply raw YAML** writes the raw text (js-yaml
+  syntax-checks it first, with a line number); **Regenerate from form** rebuilds
+  the YAML from the model; and the YAML can be **saved to / loaded from a local
+  file**. The YAML the form emits is exactly what `packetwyrmd` parses (see
+  `yaml-schema.md`).
 - **Forwards** — form editor for store-and-forward rules → `config.load`.
 - **Control** — `test.arm` / `test.start` / `test.stop`, `stats.clear`,
   per-flow `flow.start` / `flow.stop`.

@@ -42,10 +42,13 @@ and HW-validated:
   + edge-latch + CSR 0x0130..0x0140); single-card non-regression only — the SW
   servo + the daisy-chain test need a 2nd card (see Remaining).
 - **Web GUI + remote access** (`packetwyrm-proxyd`): separate HTTPS gateway that
-  serves an embedded single-page GUI and relays `POST /api/rpc` onto the daemon
-  socket; `pktwyrm --host` for remote CLI; daemon `config.get_raw`/`config.save`.
-  SW-complete, `make e2e` (`e2e_proxyd.sh`) green; **HW validation pending merge**
-  (RTL unchanged, so no bitstream rebuild — validate against the live card).
+  serves the GUI asset tree (ES modules, embedded blob table) and relays
+  `POST /api/rpc` onto the daemon socket; `pktwyrm --host` for remote CLI; daemon
+  `config.get_raw`/`config.save`. HW-validated on the live card. A full UX pass
+  landed (action-safety confirms/toasts, live status bar + sparklines + anomaly
+  highlight, js-yaml validation, a staged single-open per-flow accordion editor
+  with Apply-edit/Revert + Write-to-card, YAML file save/load, light/dark theme,
+  responsive + a11y). `make e2e` (`e2e_proxyd.sh`) green (51/51).
   Design: `docs/design/web-gui.md`.
 
 As-built design: `docs/design/csr-map.md`, `docs/design/rtl-modules.md`,
