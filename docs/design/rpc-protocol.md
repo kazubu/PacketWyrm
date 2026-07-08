@@ -24,6 +24,23 @@ response frame then closes. Max frame size is `PW_IPC_FRAME_MAX`
 { "rpc": "<method>", ...method-specific fields... }
 ```
 
+## Output contract (machine-readable vs. human-readable)
+
+There are two output surfaces with **different** stability guarantees:
+
+- **JSON** (this protocol, and every `pktwyrm ... --json`) is the machine-readable
+  contract. It is backward-compatible: fields are only **added**, never renamed
+  or removed within a protocol version. Consumers must ignore unknown fields and
+  must not depend on key order. (When a field genuinely must be renamed — as
+  `expected_seq` → `last_seq` was, because the value was the last *received*
+  sequence, not the expected one — it is called out in the changelog and, where
+  practical, the old key is kept as an alias for a deprecation window.)
+- **The pretty-printed CLI tables** (`pktwyrm stats`, `flow stats`, `latency`,
+  `test run`, …) are **human-readable only**. Columns may be added, reordered,
+  or relabeled at any time. Do **not** grep or field-split them in scripts —
+  use `--json`. (A CI check that scraped the `flow stats` table broke exactly
+  this way when a `path (tx->rx)` column was added; it was moved to `--json`.)
+
 ## Methods
 
 ### `version`
@@ -272,8 +289,24 @@ Toggle the TX-side enable bit of a flow.
 ### `test.arm` / `test.start` / `test.stop`
 
 Whole-tester orchestration. `arm` re-pushes the compiled
-program to every open backend (idempotent resync). `start` and
-`stop` toggle the enable bit of every flow.
+program to every open backend (idempotent resync) and soft-clears the RX
+counters. `start` and `stop` toggle the generator enable bit of every flow.
+
+> **Explicit start (default).** The daemon programs flows **idle**: starting
+> the daemon or running `config.load` puts *nothing* on the wire until an
+> explicit `test.start`. A freshly loaded config is therefore always stopped,
+> even if a run was in progress before the reload. `test.start` also re-primes
+> the cross-card `lat_correction` and clears the RX counters so a measurement
+> begins from a clean, timebase-corrected zero; `test.stop` just freezes the
+> counters (they stay readable). `test.arm` honors the current run-state (it
+> re-pushes whatever is staged), so arming a stopped tester does not start
+> traffic. Launch `packetwyrmd` with `-a`/`--autostart` to restore the legacy
+> "generate as soon as programmed" behavior.
+>
+> For cross-card flows, `test.arm`/`test.start` include a `servo_converged`
+> boolean; when false a `warning` field explains the J5 GPIO servo has no
+> coherent offset yet (cross-card latency would read a wrong timebase) — wait
+> for sync and re-arm.
 
 > **Not hitless.** `test.arm` (and `config.load` below) re-run
 > `program_backends`, which pulses the data-plane soft reset

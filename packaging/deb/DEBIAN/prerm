@@ -1,0 +1,20 @@
+#!/bin/sh
+# prerm for packetwyrm
+set -e
+
+case "$1" in
+    remove|deconfigure|upgrade)
+        # Stop the services if they happen to be running (they are installed
+        # disabled, but an operator may have enabled them).
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl stop packetwyrm-proxyd.service >/dev/null 2>&1 || true
+            systemctl stop packetwyrmd.service >/dev/null 2>&1 || true
+        fi
+        ;;
+    failed-upgrade)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

@@ -1,0 +1,57 @@
+#!/bin/sh
+# postinst for packetwyrm
+set -e
+
+PW_USER=packetwyrm
+PW_GROUP=packetwyrm
+
+create_user() {
+    # Prefer systemd-sysusers (the shipped /usr/lib/sysusers.d/packetwyrm.conf).
+    if command -v systemd-sysusers >/dev/null 2>&1; then
+        systemd-sysusers /usr/lib/sysusers.d/packetwyrm.conf >/dev/null 2>&1 && return 0
+    fi
+    # Fallback: adduser --system creates the system user + matching group.
+    if ! getent group "$PW_GROUP" >/dev/null 2>&1; then
+        addgroup --system "$PW_GROUP" >/dev/null 2>&1 || groupadd --system "$PW_GROUP" >/dev/null 2>&1 || true
+    fi
+    if ! getent passwd "$PW_USER" >/dev/null 2>&1; then
+        adduser --system --no-create-home --ingroup "$PW_GROUP" \
+            --gecos "PacketWyrm daemon/gateway" "$PW_USER" >/dev/null 2>&1 \
+        || useradd --system --no-create-home -g "$PW_GROUP" \
+            -c "PacketWyrm daemon/gateway" -s /usr/sbin/nologin "$PW_USER" >/dev/null 2>&1 \
+        || true
+    fi
+}
+
+case "$1" in
+    configure)
+        create_user
+
+        # Create runtime/state/log dirs (also declared in tmpfiles.d).
+        if command -v systemd-tmpfiles >/dev/null 2>&1; then
+            systemd-tmpfiles --create /usr/lib/tmpfiles.d/packetwyrm.conf >/dev/null 2>&1 || true
+        fi
+
+        # ldconfig for the shared library.
+        ldconfig || true
+
+        # Reload systemd but DO NOT enable or start the services. Traffic
+        # generation is opt-in: even the daemon only brings the management
+        # plane up (no traffic until `pktwyrm test start`). Install the unit
+        # disabled so a package install never begins generating traffic or
+        # binds a network gateway automatically.
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+        echo "packetwyrm installed. To run the daemon (management plane, no traffic):"
+        echo "  edit /etc/packetwyrm/packetwyrm.yaml for your card, then:"
+        echo "  systemctl enable --now packetwyrmd"
+        echo "Optional Web GUI gateway:  systemctl enable --now packetwyrm-proxyd"
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

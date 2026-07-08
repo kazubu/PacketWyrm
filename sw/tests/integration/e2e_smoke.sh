@@ -77,6 +77,44 @@ check "rpc stats"     '"stats"'        "$CLI" rpc stats   --socket "$SOCK"
 check "rpc flow.stats" '"flows"'       "$CLI" rpc flow.stats --socket "$SOCK"
 check "rpc unknown"   '"error"'        "$CLI" rpc no_such_method --socket "$SOCK"
 
+# Explicit-start default: the daemon was launched WITHOUT -a/--autostart, so a
+# freshly programmed flow must be IDLE (enabled:false) -- nothing on the wire
+# until an explicit test.start. Regression guard for the auto-start removal.
+idle=$("$CLI" rpc flows --socket "$SOCK" 2>&1)
+if grep -qE '"enabled":[[:space:]]*true' <<<"$idle"; then
+    echo "[FAIL explicit-start] a flow was enabled at startup without --autostart:"
+    echo "$idle"; exit 1
+fi
+echo "[ ok ] flows idle at startup (explicit-start default)"
+# The fake backend models traffic only while a flow's generator gate is on, so
+# tx_frames must be 0 before start (config.load never transmits).
+txf() { "$CLI" flow stats --flow 1 --json --socket "$SOCK" 2>&1 | \
+        python3 -c 'import json,sys;print(json.load(sys.stdin)["flows"][0]["tx_frames"])'; }
+"$CLI" test arm --socket "$SOCK" >/dev/null 2>&1   # clears counters
+[ "$(txf)" = "0" ] || { echo "[FAIL explicit-start] tx_frames nonzero before start"; exit 1; }
+echo "[ ok ] no traffic before test start (tx_frames=0)"
+# test start enables generation; counters must now advance.
+"$CLI" test start --socket "$SOCK" >/dev/null 2>&1
+check "test start enables" '"enabled":[[:space:]]*true'  "$CLI" rpc flows --socket "$SOCK"
+a=$(txf); b=$(txf)
+[ "$b" -gt "$a" ] 2>/dev/null || { echo "[FAIL explicit-start] tx_frames not advancing after start ($a -> $b)"; exit 1; }
+echo "[ ok ] traffic flows after test start (tx_frames advancing)"
+# test stop freezes: enabled false and counters stop advancing.
+"$CLI" test stop --socket "$SOCK" >/dev/null 2>&1
+if grep -qE '"enabled":[[:space:]]*true' <<<"$("$CLI" rpc flows --socket "$SOCK" 2>&1)"; then
+    echo "[FAIL explicit-start] test stop left a flow enabled"; exit 1
+fi
+c=$(txf); d=$(txf)
+[ "$c" = "$d" ] || { echo "[FAIL explicit-start] tx_frames still advancing after stop ($c -> $d)"; exit 1; }
+echo "[ ok ] test start/stop toggles the generator run-state"
+# `test run` orchestrates arm+start+wait+stop and returns PASS (exit 0) when the
+# loopback flow saw rx with no loss/dup/ooo.
+if "$CLI" test run --duration 300ms --socket "$SOCK" >/dev/null 2>&1; then
+    echo "[ ok ] test run reports PASS on a clean loopback"
+else
+    echo "[FAIL] test run did not PASS on the fake loopback"; exit 1
+fi
+
 check "flow start 1"  '"status":"ok"'  "$CLI" flow start 1 --socket "$SOCK"
 check "flow stop  1"  '"status":"ok"'  "$CLI" flow stop  1 --socket "$SOCK"
 check "flow start 99" '"invalid'       "$CLI" flow start 99 --socket "$SOCK"

@@ -85,13 +85,17 @@ static void *card_worker_main(void *arg) {
 
 static void usage(const char *prog) {
     fprintf(stderr,
-        "usage: %s [-e ENV] [-t TEST] [-n] [-v] [-s INTERVAL_MS] [-S SERVO_MS] [-C CAL_TICKS] [-p PROMETHEUS_PORT] [-F]\n"
+        "usage: %s [-e ENV] [-t TEST] [-n] [-v] [-a] [-s INTERVAL_MS] [-S SERVO_MS] [-C CAL_TICKS] [-p PROMETHEUS_PORT] [-F]\n"
         "  -e ENV            environment config: system/cards/logical_interfaces/secret\n"
         "                    (default /etc/packetwyrm/packetwyrm.yaml; may also carry\n"
         "                    flows for a combined single-file setup). -c is an alias.\n"
         "  -t TEST           test config: flows/forwards, attached onto the env\n"
         "  -n                dry run: parse + validate + compile, exit\n"
         "  -v                verbose\n"
+        "  -a, --autostart   begin generating traffic as soon as flows are programmed\n"
+        "                    (legacy behavior). DEFAULT is now to program flows IDLE\n"
+        "                    and wait for an explicit `pktwyrm test start`; a freshly\n"
+        "                    loaded config emits nothing until then.\n"
         "  -s INTERVAL_MS    stats print interval (default 5000, 0 = off)\n"
         "  -S SERVO_MS       cross-card lat_correction servo period (default 10;\n"
         "                    smaller = less ~ppm-skew residual between updates --\n"
@@ -349,6 +353,14 @@ static int card_idx_by_id(const struct pw_config *cfg, uint16_t card_id) {
  * pair; a >2-card rig with per-card capture skews would need a per-card table. */
 static int g_xcard_lat_cal_ticks = 0;
 
+/* Explicit-start gate. DEFAULT false: flows are programmed into the FPGA IDLE
+ * (generators disabled) and stay silent until an explicit `test.start`, so
+ * starting the daemon or loading a config never puts traffic on the wire by
+ * surprise. -a/--autostart restores the legacy "generate as soon as programmed"
+ * behavior. The run-state lives in the staged flow rows (which test.start/stop
+ * and flow.start/stop already toggle); we just change their INITIAL value. */
+static bool g_gen_autostart = false;
+
 static int64_t xcard_cal_bias(const struct pw_flow_meta *m) {
     if (g_xcard_lat_cal_ticks == 0 || m->tx_card_id == m->rx_card_id) return 0;
     return (m->tx_card_id < m->rx_card_id) ? (int64_t)g_xcard_lat_cal_ticks
@@ -380,6 +392,28 @@ static void servo_lat_correction(const struct pw_config *cfg,
             pw_gpio_sync_write_correction(&cards[rx_ci].backend, m->rx_local_flow_id,
                                           corr + xcard_cal_bias(m));
     }
+}
+
+/* True when every cross-card flow already has a coherent J5 GPIO offset, i.e.
+ * the servo has converged enough to correct cross-card latency. Returns true
+ * trivially when there are no cross-card flows (nothing to converge). Used to
+ * warn an operator who arms/starts a cross-card measurement before J5 sync has
+ * produced a valid edge -- those first samples would carry the raw wrong-
+ * timebase latency. */
+static bool servo_converged(const struct pw_config *cfg,
+                            const struct pw_program *prog,
+                            struct card_runtime cards[]) {
+    for (size_t i = 0; i < prog->n_flow_meta; i++) {
+        const struct pw_flow_meta *m = &prog->flow_meta[i];
+        if (!m->rx_slot_valid || m->tx_card_id == m->rx_card_id) continue;
+        int rx_ci = card_idx_by_id(cfg, m->rx_card_id);
+        int tx_ci = card_idx_by_id(cfg, m->tx_card_id);
+        if (rx_ci < 0 || tx_ci < 0 || !cards[rx_ci].open || !cards[tx_ci].open) continue;
+        int64_t corr;
+        if (!pw_gpio_sync_offset_coherent(&cards[tx_ci].backend, &cards[rx_ci].backend, &corr))
+            return false;
+    }
+    return true;
 }
 
 /* The servo runs in its OWN thread so no slow control RPC (notably sfp.info's
@@ -476,9 +510,13 @@ static void prime_lat_correction(const struct pw_config *cfg,
     }
 }
 
-static pw_status program_backends(const struct pw_program *prog,
-                                  const struct pw_config *cfg,
-                                  struct card_runtime cards[]) {
+/* diag (may be NULL) is filled with the concrete detail of the FIRST card that
+ * fails to program -- e.g. the capacity rejection's "N requested but device
+ * supports M" -- so config.load can surface numbers, not a bare status. */
+static pw_status program_backends_diag(const struct pw_program *prog,
+                                       const struct pw_config *cfg,
+                                       struct card_runtime cards[],
+                                       struct pw_diag *diag) {
     pw_status worst = PW_OK;
     for (size_t ci = 0; ci < prog->n_cards; ci++) {
         const struct pw_card_program *cp = &prog->per_card[ci];
@@ -493,7 +531,8 @@ static pw_status program_backends(const struct pw_program *prog,
             pw_status s = b->ops->write32(b->ctx, PWFPGA_REG_DP_RESET, 1u);
             if (s != PW_OK && s != PW_E_NOT_IMPLEMENTED && worst == PW_OK) worst = s;
         }
-        pw_status s = pw_program_card_tables(b->ops, b->ctx, cp);
+        pw_status s = pw_program_card_tables_diag(b->ops, b->ctx, cp,
+                                                  worst == PW_OK ? diag : NULL);
         if (s != PW_OK && worst == PW_OK) worst = s;
     }
     /* Bring up J5 time-sync for cross-card flows (latency offset correction). */
@@ -507,6 +546,13 @@ static pw_status program_backends(const struct pw_program *prog,
      * from the corrected baseline. (The main-loop servo then maintains it.) */
     prime_lat_correction(cfg, prog, cards);
     return worst;
+}
+
+/* Back-compat wrapper for the call sites that don't surface a diag. */
+static pw_status program_backends(const struct pw_program *prog,
+                                  const struct pw_config *cfg,
+                                  struct card_runtime cards[]) {
+    return program_backends_diag(prog, cfg, cards, NULL);
 }
 
 /* Look up the (tx) row index for a given global_flow_id. */
@@ -533,6 +579,24 @@ static int find_tx_row(const struct pw_program *prog,
         }
     }
     return -1;
+}
+
+/* Stage the generator run-state of every flow's TX row in `prog` IN MEMORY
+ * (no FPGA write): the next program_backends() commits it. Called right after
+ * a compile (startup + config.load) so the freshly compiled rows -- which the
+ * compiler marks enable=1 -- are forced idle before they ever reach the card,
+ * unless autostart. From then on test.start/stop and flow.start/stop own the
+ * run-state via set_flow_enable (they mutate these same staged rows), so a
+ * test.arm re-push honors the current state instead of silently re-enabling. */
+static void stage_flow_run_state(struct pw_program *prog, bool running) {
+    for (size_t k = 0; k < prog->n_flow_meta; k++) {
+        int ci = -1; uint32_t row = 0;
+        if (find_tx_row(prog, prog->flow_meta[k].global_flow_id, &ci, &row) < 0)
+            continue;
+        struct pwfpga_flow_config *fc = &prog->per_card[ci].flow_rows[row];
+        fc->enable    = running ? 1 : 0;
+        fc->tx_enable = running ? 1 : 0;
+    }
 }
 
 /* Re-write the TX flow row of `global_flow_id` with `enable` set accordingly,
@@ -726,6 +790,12 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
         goto fail;
     }
 
+    /* Explicit-start: a runtime config.load never puts traffic on the wire on
+     * its own -- the newly compiled flows are staged idle and wait for an
+     * explicit test.start (regardless of the daemon's -a startup default; a
+     * manual reload is exactly the moment a surprise burst would be worst). */
+    stage_flow_run_state(new_prog, false);
+
     /* From here we mutate the cards and swap cfg/prog. Hold off the servo thread
      * (which reads the cfg/prog pointers and would use-after-free across the
      * swap) for this whole section. config.load is rare/manual, so the
@@ -748,19 +818,23 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
      * FPGA matches the daemon's unchanged view, keep the old config running, and
      * reject the load. A half-applied config (daemon view != FPGA) is the worst
      * failure mode for a tester; see docs/design/daemon.md. */
-    pw_status prog_st = program_backends(new_prog, new_cfg, cards);
+    struct pw_diag prog_diag = {0};
+    pw_status prog_st = program_backends_diag(new_prog, new_cfg, cards, &prog_diag);
     if (prog_st != PW_OK) {
+        /* Prefer the concrete detail (e.g. capacity numbers) over the bare
+         * status string when the programming layer filled one in. */
+        const char *detail = prog_diag.message[0] ? prog_diag.message : pw_strerror(prog_st);
         fprintf(stderr, "load: stage failed (%s) -- rolling back to the previous "
-                "config\n", pw_strerror(prog_st));
+                "config\n", detail);
         pw_status rb_st = program_backends(*prog_pp, *cfg_pp, cards);  /* restore */
         pthread_mutex_unlock(&g_servo_lock);   /* cfg/prog unchanged; servo may resume */
         pw_program_free(new_prog);
         pw_config_free(new_cfg);
-        char msg[240];
+        char msg[320];
         if (rb_st == PW_OK) {
             snprintf(msg, sizeof msg,
                      "stage failed (%s); rolled back, previous config still running",
-                     pw_strerror(prog_st));
+                     detail);
         } else {
             /* Both the new config AND the restore failed: the FPGA no longer
              * matches the daemon's (unchanged) view. Report it honestly -- a
@@ -2066,6 +2140,19 @@ static void handle_client(int cfd,
                     if (s == PW_OK) changed++;
                     else            failed++;
                 }
+                /* test.start gives a clean, corrected baseline: now that the
+                 * generators are enabled, zero the RX checker counters and
+                 * (re)prime the cross-card lat_correction so a measurement
+                 * begins from zero with the right timebase. (The servo thread
+                 * keeps the correction tracked afterwards.) test.stop just
+                 * freezes -- leave the counters readable. */
+                if (en && !failed) {
+                    prime_lat_correction(cfg, prog, cards);
+                    for (size_t ci = 0; ci < cfg->n_cards; ci++)
+                        if (cards[ci].open && cards[ci].backend.ops->write32)
+                            (void)cards[ci].backend.ops->write32(
+                                cards[ci].backend.ctx, PWFPGA_REG_STATS_CLEAR, 1u);
+                }
             }
             resp = json_object_new_object();
             json_object_object_add(resp, "action", json_object_new_string(name));
@@ -2074,6 +2161,19 @@ static void handle_client(int cfd,
             if (!strcmp(name, "test.arm"))   /* false => re-program hard-failed, counters NOT cleared */
                 json_object_object_add(resp, "programmed",
                                        json_object_new_boolean(arm_programmed));
+            /* Warn if a cross-card measurement is armed/started before the J5
+             * servo has a coherent offset: those first samples would carry raw
+             * (wrong-timebase) latency. Only meaningful for arm/start. */
+            if (strcmp(name, "test.stop") != 0) {
+                bool conv = servo_converged(cfg, prog, cards);
+                json_object_object_add(resp, "servo_converged",
+                                       json_object_new_boolean(conv));
+                if (!conv)
+                    json_object_object_add(resp, "warning", json_object_new_string(
+                        "cross-card servo has no coherent J5 offset yet -- "
+                        "cross-card latency may be wrong; wait for sync then "
+                        "re-arm (test.arm) to re-baseline"));
+            }
         } else if (!strcmp(name, "stats.clear")) {
             /* Soft-clear all RX checker + per-port counters + histogram on
              * every card (same CSR as test.arm's clear) without re-pushing the
@@ -2230,6 +2330,7 @@ static int promex_listen(const char *addr, int port, int *out_fd) {
 
 static size_t promex_build_body(char *out, size_t cap,
                                 const struct pw_config *cfg,
+                                const struct pw_program *prog,
                                 struct card_runtime cards[],
                                 struct pw_host_plane *hps[MAX_CARDS]) {
     size_t n = 0;
@@ -2272,12 +2373,79 @@ static size_t promex_build_body(char *out, size_t cap,
         APPENDF("packetwyrm_tap_to_fpga_dropped{card=\"%u\"} %lu\n",  id, (unsigned long)tdrop);
         APPENDF("packetwyrm_punt_unknown_lif{card=\"%u\"} %lu\n",     id, (unsigned long)unk);
     }
+
+    /* Per-flow measurement metrics. Reuse build_flow_stats (the flow.stats RPC
+     * data path: snapshots every card, aggregates via prog->flow_meta) and walk
+     * its JSON so the exporter and the CLI/GUI always agree. Emitted only when a
+     * program is loaded. Labeled by flow id + name so Grafana can group. */
+    if (prog && prog->n_flow_meta > 0) {
+        struct json_object *fs = build_flow_stats(cfg, prog, cards, -1);
+        struct json_object *arr;
+        if (fs && json_object_object_get_ex(fs, "flows", &arr) &&
+            json_object_get_type(arr) == json_type_array) {
+            APPENDF("# HELP packetwyrm_flow_tx_frames Frames transmitted per flow\n");
+            APPENDF("# TYPE packetwyrm_flow_tx_frames counter\n");
+            APPENDF("# HELP packetwyrm_flow_rx_frames Frames received per flow\n");
+            APPENDF("# TYPE packetwyrm_flow_rx_frames counter\n");
+            APPENDF("# HELP packetwyrm_flow_tx_bytes Bytes transmitted per flow\n");
+            APPENDF("# TYPE packetwyrm_flow_tx_bytes counter\n");
+            APPENDF("# HELP packetwyrm_flow_rx_bytes Bytes received per flow\n");
+            APPENDF("# TYPE packetwyrm_flow_rx_bytes counter\n");
+            APPENDF("# HELP packetwyrm_flow_lost_packets Estimated lost packets per flow\n");
+            APPENDF("# TYPE packetwyrm_flow_lost_packets counter\n");
+            APPENDF("# HELP packetwyrm_flow_duplicate_packets Duplicate packets per flow\n");
+            APPENDF("# TYPE packetwyrm_flow_duplicate_packets counter\n");
+            APPENDF("# HELP packetwyrm_flow_out_of_order_packets Out-of-order packets per flow\n");
+            APPENDF("# TYPE packetwyrm_flow_out_of_order_packets counter\n");
+            APPENDF("# HELP packetwyrm_flow_latency_ns One-way latency per flow (nanoseconds)\n");
+            APPENDF("# TYPE packetwyrm_flow_latency_ns gauge\n");
+            size_t nf = json_object_array_length(arr);
+            for (size_t i = 0; i < nf; i++) {
+                struct json_object *f = json_object_array_get_idx(arr, i), *v;
+                int id = 0; const char *nm = "";
+                if (json_object_object_get_ex(f, "id", &v)) id = json_object_get_int(v);
+                if (json_object_object_get_ex(f, "name", &v)) nm = json_object_get_string(v);
+                #define FLOWMETRIC(field, key) do { \
+                    if (json_object_object_get_ex(f, key, &v)) \
+                        APPENDF("packetwyrm_flow_" field "{flow=\"%d\",name=\"%s\"} %lld\n", \
+                                id, nm, (long long)json_object_get_int64(v)); \
+                } while (0)
+                FLOWMETRIC("tx_frames", "tx_frames");
+                FLOWMETRIC("rx_frames", "rx_frames");
+                FLOWMETRIC("tx_bytes",  "tx_bytes");
+                FLOWMETRIC("rx_bytes",  "rx_bytes");
+                FLOWMETRIC("lost_packets", "lost");
+                FLOWMETRIC("duplicate_packets", "duplicate");
+                FLOWMETRIC("out_of_order_packets", "out_of_order");
+                #undef FLOWMETRIC
+                /* Latency is in ns already in the JSON (min/avg/max); export avg
+                 * as the gauge plus min/max as labeled stat variants. */
+                /* Latency in the JSON is in data-plane TICKS (6.4 ns); convert
+                 * to ns for the exporter. ns = ticks * 1e9 / clock_hz. */
+                struct json_object *lv;
+                if (json_object_object_get_ex(f, "latency_valid", &lv) &&
+                    json_object_get_boolean(lv)) {
+                    static const struct { const char *key, *stat; } lat[] = {
+                        {"min_latency","min"}, {"avg_latency","avg"}, {"max_latency","max"} };
+                    for (size_t k = 0; k < 3; k++) {
+                        if (!json_object_object_get_ex(f, lat[k].key, &v)) continue;
+                        double ns = (double)json_object_get_int64(v) * 1e9
+                                    / (double)PWFPGA_DATA_PLANE_CLOCK_HZ;
+                        APPENDF("packetwyrm_flow_latency_ns{flow=\"%d\",name=\"%s\",stat=\"%s\"} %.1f\n",
+                                id, nm, lat[k].stat, ns);
+                    }
+                }
+            }
+        }
+        if (fs) json_object_put(fs);
+    }
     #undef APPENDF
     return n;
 }
 
 static void promex_handle(int cfd,
                           const struct pw_config *cfg,
+                          const struct pw_program *prog,
                           struct card_runtime cards[],
                           struct pw_host_plane *hps[MAX_CARDS]) {
     /* Read until \r\n\r\n or some limit; we don't actually parse the
@@ -2287,8 +2455,10 @@ static void promex_handle(int cfd,
     if (n <= 0) return;
     req[n] = 0;
 
-    char body[16384];
-    size_t bn = promex_build_body(body, sizeof(body), cfg, cards, hps);
+    /* Sized for the management metrics + per-flow lines (NUM_FLOWS x ~10
+     * series x ~80 B); comfortably covers 32 flows. */
+    static char body[65536];
+    size_t bn = promex_build_body(body, sizeof(body), cfg, prog, cards, hps);
 
     char hdr[256];
     int hn = snprintf(hdr, sizeof(hdr),
@@ -2345,12 +2515,19 @@ int main(int argc, char **argv) {
     const char *prom_addr = "127.0.0.1";   /* -p default: loopback only */
 
     int opt;
-    while ((opt = getopt(argc, argv, "c:e:t:nvs:S:C:p:Fh")) != -1) {
+    static const struct option long_opts[] = {
+        {"autostart",  no_argument, 0, 'a'},
+        {"allow-fake", no_argument, 0, 'F'},
+        {"help",       no_argument, 0, 'h'},
+        {0, 0, 0, 0}
+    };
+    while ((opt = getopt_long(argc, argv, "c:e:t:nvas:S:C:p:Fh", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'c': case 'e': env_path = optarg; g_env_path = optarg; break;
         case 't': test_path = optarg; break;
         case 'n': dry_run = true; break;
         case 'v': verbose = true; break;
+        case 'a': g_gen_autostart = true; break;
         case 's': stats_interval = atoi(optarg); break;
         case 'S': servo_interval = atoi(optarg); if (servo_interval < 1) servo_interval = 1; break;
         case 'C': g_xcard_lat_cal_ticks = atoi(optarg); break;   /* xcard lat calibration (signed ticks) */
@@ -2418,6 +2595,10 @@ int main(int argc, char **argv) {
         close_all_backends(cfg, cards);
         return 1;
     }
+    /* Explicit-start default: stage all generators idle before the first
+     * program so nothing hits the wire until `test.start` (-a/--autostart
+     * keeps the compiled enable=1 and generates immediately). */
+    if (!g_gen_autostart) stage_flow_run_state(prog, false);
     if (program_backends(prog, cfg, cards) != PW_OK) {
         if (!allow_fake) {
             fprintf(stderr, "fatal: initial FPGA programming failed -- the device "
@@ -2609,7 +2790,7 @@ int main(int argc, char **argv) {
                             "dropping connection\n");
                     close(cfd);
                 } else {
-                    promex_handle(cfd, cfg, cards, hps);
+                    promex_handle(cfd, cfg, prog, cards, hps);
                     close(cfd);
                 }
             }

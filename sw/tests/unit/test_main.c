@@ -1766,64 +1766,6 @@ static void test_program_card_tables(void) {
     pw_config_free(cfg);
 }
 
-/* card_info overrides for test_program_capacity_reject: same fake backend ctx,
- * but the card reports a tiny (or zero/legacy) REAL flow capacity. */
-static pw_status tiny_card_info(void *ctx, struct pw_card_info *out) {
-    (void)ctx;
-    if (!out) return PW_E_INVAL;
-    memset(out, 0, sizeof(*out));
-    out->num_local_ports = PW_PORTS_PER_CARD;
-    out->num_local_flows = 2;
-    return PW_OK;
-}
-static pw_status zero_flows_card_info(void *ctx, struct pw_card_info *out) {
-    (void)ctx;
-    if (!out) return PW_E_INVAL;
-    memset(out, 0, sizeof(*out));
-    out->num_local_ports = PW_PORTS_PER_CARD;
-    return PW_OK;                 /* num_local_flows = 0: register absent/legacy */
-}
-
-/* Flow rows beyond the card's REAL capacity (num_local_flows) must be rejected
- * up front with PW_E_NO_RESOURCES: the CSR window accepts up to
- * PWFPGA_FLOW_TABLE_ROWS writes, but the RTL has no generator/checker behind
- * rows past num_local_flows, so they would be silently dead. A card that does
- * not report a capacity (no card_info / num_local_flows 0) keeps the
- * window-only behavior. */
-static void test_program_capacity_reject(void) {
-    struct pw_card_backend b;
-    PW_ASSERT_EQ(pw_fake_backend_open("0000:03:00.0", &b), PW_OK);
-
-    struct pwfpga_flow_config rows[3];
-    memset(rows, 0, sizeof(rows));
-    struct pw_card_program cp = {0};
-    cp.flow_rows   = rows;
-    cp.n_flow_rows = 3;
-
-    /* The stock fake reports num_local_flows=256: 3 rows fit. */
-    PW_ASSERT_EQ(pw_program_card_tables(b.ops, b.ctx, &cp), PW_OK);
-
-    /* A card with only 2 real slots rejects 3 rows... */
-    struct pw_card_backend_ops tiny = *b.ops;
-    tiny.card_info = tiny_card_info;
-    PW_ASSERT_EQ(pw_program_card_tables(&tiny, b.ctx, &cp), PW_E_NO_RESOURCES);
-    /* ...but accepts a program that fits exactly. */
-    cp.n_flow_rows = 2;
-    PW_ASSERT_EQ(pw_program_card_tables(&tiny, b.ctx, &cp), PW_OK);
-
-    /* num_local_flows = 0 (legacy bitstream) or no card_info at all: keep the
-     * historical window-only check -- do not reject a possibly-valid program. */
-    cp.n_flow_rows = 3;
-    struct pw_card_backend_ops legacy = *b.ops;
-    legacy.card_info = zero_flows_card_info;
-    PW_ASSERT_EQ(pw_program_card_tables(&legacy, b.ctx, &cp), PW_OK);
-    struct pw_card_backend_ops noinfo = *b.ops;
-    noinfo.card_info = NULL;
-    PW_ASSERT_EQ(pw_program_card_tables(&noinfo, b.ctx, &cp), PW_OK);
-
-    pw_card_backend_close(&b);
-}
-
 static void test_bar_backend_path(void) {
     /* Stage a 64K "BAR image" with the identity registers populated
      * exactly as the FPGA would. The path-variant BAR backend mmaps
@@ -2316,6 +2258,124 @@ static void test_tap_basic(void) {
     }
 }
 
+/* pw_pci_normalize_bdf must accept the short forms a user naturally types and
+ * canonicalize to "DDDD:BB:DD.F", while rejecting genuine garbage -- so tools
+ * work whether the user types "07:00.0" or the full "0000:07:00.0". */
+static void test_pci_normalize_bdf(void) {
+    char out[13];
+
+    /* short form gets a default 0000 domain + zero-padding */
+    PW_ASSERT_EQ(pw_pci_normalize_bdf("07:00.0", out), PW_OK);
+    PW_ASSERT_STR_EQ(out, "0000:07:00.0");
+
+    /* full canonical form is idempotent */
+    PW_ASSERT_EQ(pw_pci_normalize_bdf("0000:07:00.0", out), PW_OK);
+    PW_ASSERT_STR_EQ(out, "0000:07:00.0");
+
+    /* unpadded fields zero-pad; hex domain/bus preserved (lowercased) */
+    PW_ASSERT_EQ(pw_pci_normalize_bdf("7:0.0", out), PW_OK);
+    PW_ASSERT_STR_EQ(out, "0000:07:00.0");
+    PW_ASSERT_EQ(pw_pci_normalize_bdf("AB:1f.3", out), PW_OK);
+    PW_ASSERT_STR_EQ(out, "0000:ab:1f.3");
+    PW_ASSERT_EQ(pw_pci_normalize_bdf("dead:ab:1f.3", out), PW_OK);
+    PW_ASSERT_STR_EQ(out, "dead:ab:1f.3");
+
+    /* genuine garbage is rejected */
+    PW_ASSERT_EQ(pw_pci_normalize_bdf(NULL, out), PW_E_INVAL);
+    PW_ASSERT_EQ(pw_pci_normalize_bdf("", out), PW_E_INVAL);
+    PW_ASSERT_EQ(pw_pci_normalize_bdf("nonsense", out), PW_E_INVAL);
+    PW_ASSERT_EQ(pw_pci_normalize_bdf("07:00", out), PW_E_INVAL);      /* no function */
+    PW_ASSERT_EQ(pw_pci_normalize_bdf("07:00.8", out), PW_E_INVAL);    /* func > 7 */
+    PW_ASSERT_EQ(pw_pci_normalize_bdf("07:20.0", out), PW_E_INVAL);    /* device > 0x1f */
+    PW_ASSERT_EQ(pw_pci_normalize_bdf("07:00.0 ", out), PW_E_INVAL);   /* trailing junk */
+    PW_ASSERT_EQ(pw_pci_normalize_bdf("gg:00.0", out), PW_E_INVAL);    /* non-hex */
+    PW_ASSERT_EQ(pw_pci_normalize_bdf("12345:07:00.0", out), PW_E_INVAL); /* domain too wide */
+}
+
+/* pw_ipc_connect_hint must return the actionable, errno-keyed strings for the
+ * failures a CLI actually hits, so "rpc call failed" becomes diagnosable. */
+static void test_ipc_connect_hint(void) {
+    /* EACCES is the common one: the 0660 root:packetwyrm socket. */
+    PW_ASSERT(strstr(pw_ipc_connect_hint(EACCES), "packetwyrm") != NULL);
+    PW_ASSERT(strstr(pw_ipc_connect_hint(EACCES), "0660") != NULL);
+    PW_ASSERT(strstr(pw_ipc_connect_hint(ECONNREFUSED), "daemon") != NULL);
+    PW_ASSERT(strstr(pw_ipc_connect_hint(ENOENT), "running") != NULL);
+    /* unknown errno still returns a non-NULL, non-empty string */
+    PW_ASSERT(pw_ipc_connect_hint(0)[0] != '\0');
+
+    /* And the connect path leaves errno set for the caller to key on: a
+     * nonexistent socket path fails with ENOENT. */
+    int fd = -1;
+    errno = 0;
+    pw_status r = pw_ipc_connect("/tmp/pw-nonexistent-sock-xyz.sock", &fd);
+    PW_ASSERT_EQ(r, PW_E_IO);
+    PW_ASSERT_EQ(errno, ENOENT);
+}
+
+/* A card that reports only N real generator/checker slots (num_local_flows)
+ * must reject a program asking for more flow rows -- and the diagnostic must
+ * carry the concrete numbers, not just a code. */
+static pw_status tiny_card_info(void *ctx, struct pw_card_info *out) {
+    (void)ctx;
+    if (!out) return PW_E_INVAL;
+    memset(out, 0, sizeof(*out));
+    out->num_local_ports = PW_PORTS_PER_CARD;
+    out->num_local_flows = 2;     /* only 2 real slots */
+    return PW_OK;
+}
+static pw_status zero_flows_card_info(void *ctx, struct pw_card_info *out) {
+    (void)ctx;
+    if (!out) return PW_E_INVAL;
+    memset(out, 0, sizeof(*out));
+    out->num_local_ports = PW_PORTS_PER_CARD;
+    return PW_OK;                 /* num_local_flows = 0: register absent/legacy */
+}
+static void test_program_capacity_reject(void) {
+    struct pw_card_backend b;
+    PW_ASSERT_EQ(pw_fake_backend_open("0000:03:00.0", &b), PW_OK);
+
+    struct pwfpga_flow_config rows[3];
+    memset(rows, 0, sizeof(rows));
+    struct pw_card_program cp = {0};
+    cp.card_id     = 0;
+    cp.flow_rows   = rows;
+    cp.n_flow_rows = 3;
+
+    /* The stock fake reports a big num_local_flows: 3 rows fit. */
+    PW_ASSERT_EQ(pw_program_card_tables(b.ops, b.ctx, &cp), PW_OK);
+
+    /* A card with only 2 real slots rejects 3 rows, and the diagnostic names
+     * the card + the concrete requested/supported numbers. */
+    struct pw_card_backend_ops tiny = *b.ops;
+    tiny.card_info = tiny_card_info;
+    struct pw_diag diag = {0};
+    PW_ASSERT_EQ(pw_program_card_tables_diag(&tiny, b.ctx, &cp, &diag),
+                 PW_E_NO_RESOURCES);
+    PW_ASSERT_EQ(diag.code, PW_E_NO_RESOURCES);
+    PW_ASSERT_STR_EQ(diag.path, "card0");
+    PW_ASSERT(strstr(diag.message, "3 flow rows requested") != NULL);
+    PW_ASSERT(strstr(diag.message, "supports 2") != NULL);
+    PW_ASSERT(strstr(diag.message, "num_local_flows") != NULL);
+
+    /* The no-diag wrapper still returns the same status. */
+    PW_ASSERT_EQ(pw_program_card_tables(&tiny, b.ctx, &cp), PW_E_NO_RESOURCES);
+
+    /* A program that fits exactly is accepted. */
+    cp.n_flow_rows = 2;
+    PW_ASSERT_EQ(pw_program_card_tables(&tiny, b.ctx, &cp), PW_OK);
+
+    /* num_local_flows = 0 (legacy) or no card_info: keep window-only behavior. */
+    cp.n_flow_rows = 3;
+    struct pw_card_backend_ops legacy = *b.ops;
+    legacy.card_info = zero_flows_card_info;
+    PW_ASSERT_EQ(pw_program_card_tables(&legacy, b.ctx, &cp), PW_OK);
+    struct pw_card_backend_ops noinfo = *b.ops;
+    noinfo.card_info = NULL;
+    PW_ASSERT_EQ(pw_program_card_tables(&noinfo, b.ctx, &cp), PW_OK);
+
+    pw_card_backend_close(&b);
+}
+
 typedef void (*test_fn)(void);
 struct test_case { const char *name; test_fn fn; };
 
@@ -2414,6 +2474,7 @@ int main(void) {
         { "bar_backend_window_writes", test_bar_backend_window_writes },
         { "bar_backend_stats_reads", test_bar_backend_stats_reads },
         { "pci_discover_no_match", test_pci_discover_no_match },
+        { "pci_normalize_bdf", test_pci_normalize_bdf },
         { "vfio_open_bogus", test_vfio_open_bogus },
         { "fake_backend_slow_path", test_fake_backend_slow_path },
         { "host_plane_socketpair", test_host_plane_socketpair },
@@ -2422,6 +2483,7 @@ int main(void) {
         { "ipc_framing", test_ipc_framing },
         { "ipc_listen_connect", test_ipc_listen_connect },
         { "ipc_path_too_long", test_ipc_path_too_long },
+        { "ipc_connect_hint", test_ipc_connect_hint },
         { "yaml_schema_well_formed", test_yaml_schema_well_formed },
     };
     for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {

@@ -116,4 +116,16 @@ struct pw_card_backend_ops;
 pw_status pw_program_card_tables(const struct pw_card_backend_ops *ops, void *ctx,
                                  const struct pw_card_program *cp);
 
+/* As pw_program_card_tables, but on a rejection fills `*diag` (if non-NULL)
+ * with the concrete numbers instead of only a status code -- e.g. a program
+ * asking for more measured flow rows than the device implements
+ * (num_local_flows) reports "card0: 33 flow rows requested but device supports
+ * 32 (num_local_flows); reduce measured flows or mark some background". Lets a
+ * caller (daemon config.load / CLI) surface the actual capacity to the user
+ * rather than a bare "out of resources". pw_program_card_tables() is the
+ * diag==NULL case. */
+pw_status pw_program_card_tables_diag(const struct pw_card_backend_ops *ops,
+                                      void *ctx, const struct pw_card_program *cp,
+                                      struct pw_diag *diag);
+
 #endif

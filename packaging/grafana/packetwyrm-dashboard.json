@@ -1,0 +1,291 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "datasource", "uid": "grafana" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "row",
+      "id": 100,
+      "title": "Daemon / build",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "id": 1,
+      "title": "Build info",
+      "description": "packetwyrm_build_info{version} — the running daemon build.",
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "packetwyrm_build_info",
+          "legendFormat": "{{version}}",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^version$/", "values": false },
+        "textMode": "name",
+        "colorMode": "none"
+      },
+      "fieldConfig": { "defaults": {}, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "id": 2,
+      "title": "Cards open",
+      "description": "packetwyrm_card_open — 1 when the card backend is open, per card.",
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "packetwyrm_card_open",
+          "legendFormat": "card {{card}}",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "closed", "color": "red" }, "1": { "text": "open", "color": "green" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "id": 3,
+      "title": "Punts with unknown LIF",
+      "description": "packetwyrm_punt_unknown_lif — punts with an unbound logical_if_id (per card).",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "packetwyrm_punt_unknown_lif",
+          "legendFormat": "card {{card}}",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name",
+        "colorMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 } ] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "id": 101,
+      "title": "Host-plane punt / TAP (slow path)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 4,
+      "title": "Punt -> TAP frames/s",
+      "description": "rate(packetwyrm_punt_to_tap_ok) and rate(packetwyrm_punt_to_tap_dropped): frames the daemon forwarded to host TAPs vs dropped on TAP write.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "rate(packetwyrm_punt_to_tap_ok[$__rate_interval])",
+          "legendFormat": "card {{card}} ok"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "rate(packetwyrm_punt_to_tap_dropped[$__rate_interval])",
+          "legendFormat": "card {{card}} dropped"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "fps", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "id": 5,
+      "title": "TAP -> FPGA frames/s",
+      "description": "rate(packetwyrm_tap_to_fpga_ok) and rate(packetwyrm_tap_to_fpga_dropped): TAP-read frames forwarded to slow-path TX vs dropped.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "rate(packetwyrm_tap_to_fpga_ok[$__rate_interval])",
+          "legendFormat": "card {{card}} ok"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "rate(packetwyrm_tap_to_fpga_dropped[$__rate_interval])",
+          "legendFormat": "card {{card}} dropped"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "fps", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "id": 6,
+      "title": "Punt / TAP drops (cumulative)",
+      "description": "Cumulative counters. Any sustained rise here is a slow-path backpressure / loss signal.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "packetwyrm_punt_to_tap_dropped",
+          "legendFormat": "card {{card}} punt->tap dropped"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "packetwyrm_tap_to_fpga_dropped",
+          "legendFormat": "card {{card}} tap->fpga dropped"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 5, "lineWidth": 1 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["last"] }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "row",
+      "id": 102,
+      "title": "Per-flow measurement",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 7,
+      "title": "Per-flow tx/rx bps",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "bps" }, "overrides": [] },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "refId": "TX", "expr": "rate(packetwyrm_flow_tx_bytes[$__rate_interval]) * 8", "legendFormat": "tx {{name}}" },
+        { "refId": "RX", "expr": "rate(packetwyrm_flow_rx_bytes[$__rate_interval]) * 8", "legendFormat": "rx {{name}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 8,
+      "title": "Per-flow loss / dup / out-of-order (rate)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "pps" }, "overrides": [] },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "refId": "L", "expr": "rate(packetwyrm_flow_lost_packets[$__rate_interval])", "legendFormat": "lost {{name}}" },
+        { "refId": "D", "expr": "rate(packetwyrm_flow_duplicate_packets[$__rate_interval])", "legendFormat": "dup {{name}}" },
+        { "refId": "O", "expr": "rate(packetwyrm_flow_out_of_order_packets[$__rate_interval])", "legendFormat": "ooo {{name}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 9,
+      "title": "Per-flow one-way latency (min/avg/max)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 31 },
+      "fieldConfig": { "defaults": { "unit": "ns" }, "overrides": [] },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "refId": "A", "expr": "packetwyrm_flow_latency_ns", "legendFormat": "{{name}} {{stat}}" }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 10,
+      "title": "Total lost packets (all flows)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 31 },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "refId": "A", "expr": "sum(packetwyrm_flow_lost_packets) + sum(packetwyrm_flow_duplicate_packets) + sum(packetwyrm_flow_out_of_order_packets)", "legendFormat": "errors" }
+      ]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["packetwyrm", "network-test"],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1
+      },
+      {
+        "name": "card",
+        "label": "Card",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "query": "label_values(packetwyrm_card_open, card)",
+        "multi": true,
+        "includeAll": true,
+        "refresh": 2
+      }
+    ]
+  },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "PacketWyrm",
+  "uid": "packetwyrm-main",
+  "version": 1,
+  "weekStart": ""
+}

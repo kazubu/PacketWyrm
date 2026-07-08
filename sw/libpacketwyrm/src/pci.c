@@ -14,6 +14,66 @@
 
 #define PW_SYSFS_PCI "/sys/bus/pci/devices"
 
+/* Parse a run of 1..maxdigits hex digits starting at *p into *out, advancing
+ * *p past them. Returns 0 on success, -1 if there is no hex digit or the value
+ * overflows `max`. */
+static int parse_hex_field(const char **p, unsigned maxdigits,
+                           unsigned long max, unsigned long *out) {
+    const char *s = *p;
+    unsigned long v = 0;
+    unsigned n = 0;
+    for (; n < maxdigits; n++, s++) {
+        char c = *s;
+        unsigned d;
+        if      (c >= '0' && c <= '9') d = (unsigned)(c - '0');
+        else if (c >= 'a' && c <= 'f') d = (unsigned)(c - 'a') + 10u;
+        else if (c >= 'A' && c <= 'F') d = (unsigned)(c - 'A') + 10u;
+        else break;
+        v = v * 16u + d;
+    }
+    if (n == 0 || v > max) return -1;
+    *p = s;
+    *out = v;
+    return 0;
+}
+
+pw_status pw_pci_normalize_bdf(const char *in, char out[13]) {
+    if (!in || !out) return PW_E_INVAL;
+
+    /* Grammar: [DDDD:]BB:DD.F -- domain optional (defaults 0000). Each field
+     * is hex; the domain is 1..4 digits, bus 1..2, device 1..2, function 1
+     * (0..7). We split on the LAST ':' to find bus:device.function, then treat
+     * anything before an optional leading ':' as the domain. */
+    const char *p = in;
+    unsigned long domain = 0, bus, dev, func;
+
+    /* Look for two colons (domain:bus:...) vs one (bus:...). */
+    const char *c1 = strchr(in, ':');
+    if (!c1) return PW_E_INVAL;
+    const char *c2 = strchr(c1 + 1, ':');
+
+    if (c2) {
+        /* domain:bus:dev.func */
+        if (parse_hex_field(&p, 4, 0xFFFFul, &domain) < 0) return PW_E_INVAL;
+        if (*p != ':') return PW_E_INVAL;
+        p++;
+    }
+    /* bus */
+    if (parse_hex_field(&p, 2, 0xFFul, &bus) < 0) return PW_E_INVAL;
+    if (*p != ':') return PW_E_INVAL;
+    p++;
+    /* device */
+    if (parse_hex_field(&p, 2, 0x1Ful, &dev) < 0) return PW_E_INVAL;
+    if (*p != '.') return PW_E_INVAL;
+    p++;
+    /* function */
+    if (parse_hex_field(&p, 1, 0x7ul, &func) < 0) return PW_E_INVAL;
+    if (*p != '\0') return PW_E_INVAL;   /* trailing garbage */
+
+    snprintf(out, 13, "%04lx:%02lx:%02lx.%lu", domain, bus, dev, func);
+    return PW_OK;
+}
+
 static int read_hex_file(const char *path, uint32_t *out) {
     FILE *f = fopen(path, "r");
     if (!f) return -1;
@@ -125,10 +185,12 @@ pw_status pw_pci_open_bar0_path(const char *path, void **out_addr, size_t *out_s
 
 pw_status pw_pci_open_bar0(const char *bdf, void **out_addr, size_t *out_size) {
     if (!bdf) return PW_E_INVAL;
-    size_t n = strnlen(bdf, PW_PCI_BDF_MAX);
-    if (n == 0 || n >= PW_PCI_BDF_MAX) return PW_E_INVAL;
+    /* Accept the short forms a user types (e.g. "07:00.0"); canonicalize to
+     * "DDDD:BB:DD.F" before composing the sysfs path so they resolve. */
+    char cbdf[13];
+    if (pw_pci_normalize_bdf(bdf, cbdf) != PW_OK) return PW_E_INVAL;
     char path[64];
-    snprintf(path, sizeof(path), PW_SYSFS_PCI "/%.*s/resource0", (int)n, bdf);
+    snprintf(path, sizeof(path), PW_SYSFS_PCI "/%s/resource0", cbdf);
     return pw_pci_open_bar0_path(path, out_addr, out_size);
 }
 

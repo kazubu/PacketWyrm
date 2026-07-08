@@ -1,0 +1,132 @@
+.TH PKTWYRM 1 "2026-07-09" "PacketWyrm" "PacketWyrm Manual"
+.SH NAME
+pktwyrm \- PacketWyrm command-line client
+.SH SYNOPSIS
+.B pktwyrm
+.I VERB
+.RI [ ARGS ]
+.RI [ "GLOBAL FLAGS" ]
+.SH DESCRIPTION
+.B pktwyrm
+is the command-line client for PacketWyrm. It has two classes of verbs:
+offline verbs that operate on a YAML configuration file, and online verbs
+that talk to a running
+.BR packetwyrmd (8)
+daemon over a Unix control socket (or, with
+.BR --host ,
+to a remote
+.BR packetwyrm-proxyd (8)
+over HTTPS).
+.SH OFFLINE COMMANDS
+Operate on a YAML file; no running daemon required.
+.TP
+.B init \fR[\fB--out \fIFILE\fR]
+Generate an environment-config skeleton with the PCI BDFs of the discovered
+cards filled in. Writes to stdout, or to \fIFILE\fR with \fB--out\fR.
+.TP
+.B cards
+Discover real PacketWyrm PCI cards on the host.
+.TP
+.B cards \fICONFIG.yaml\fR
+List the cards configured in a YAML file.
+.TP
+.B ports \fICONFIG.yaml\fR
+List the ports configured in a YAML file.
+.TP
+.B map \fICONFIG.yaml\fR
+Show the port \(-> logical-interface map.
+.TP
+.B load \fICONFIG.yaml\fR
+Parse, validate and compile a configuration.
+.TP
+.B flow show \fICONFIG.yaml\fR
+List the flows defined in a YAML file.
+.TP
+.B version
+Print the client version.
+.SH ONLINE COMMANDS
+Talk to a running
+.B packetwyrmd
+over a Unix socket (or remote gateway with
+.BR --host ).
+.TP
+.B rpc version
+Query the daemon version.
+.TP
+.B rpc cards|ports|flows|stats
+Raw RPC query. Accepts \fB--socket\fR \fIPATH\fR and \fB--card\fR \fIN\fR.
+.TP
+.B stats
+Live port/flow statistics. Accepts \fB--socket\fR \fIPATH\fR, \fB--card\fR \fIN\fR,
+\fB--watch\fR \fIMS\fR, \fB--json\fR.
+.TP
+.B latency
+Per-flow one-way latency (same-card: exact; cross-card: J5 GPIO-corrected).
+Accepts \fB--flow\fR \fIN\fR, \fB--socket\fR \fIPATH\fR, \fB--json\fR.
+.TP
+.B sfp
+SFP identifier + DOM. Accepts \fB--card\fR \fIN\fR, \fB--port\fR \fIP\fR,
+\fB--socket\fR \fIPATH\fR, \fB--json\fR.
+.TP
+.B tap
+Host-plane TAP status + stats. Accepts \fB--socket\fR \fIPATH\fR, \fB--json\fR.
+.TP
+.B flow start|stop \fIID\fR
+Start or stop a single flow. Accepts \fB--socket\fR \fIPATH\fR.
+.TP
+.B flow stats
+Per-flow statistics. Accepts \fB--flow\fR \fIN\fR, \fB--socket\fR \fIPATH\fR,
+\fB--watch\fR \fIMS\fR, \fB--json\fR.
+.TP
+.B test arm|start|stop
+Arm, start or stop the test. Accepts \fB--socket\fR \fIPATH\fR, \fB--json\fR.
+Note the daemon programs flows idle: nothing is transmitted until
+.BR "test start" .
+.TP
+.B test run \fR[\fB--duration \fIT\fR]
+Run one measurement: arm, start, wait \fIT\fR (default 10s; accepts s/ms/m),
+stop, and print a per-flow PASS/FAIL table. Exit 0 on PASS, 1 on FAIL, 2 on
+error \(em suitable for CI. Accepts \fB--socket\fR \fIPATH\fR, \fB--json\fR.
+.TP
+.B hist latency --flow \fIN\fR
+Print the per-flow latency histogram. Accepts \fB--socket\fR \fIPATH\fR,
+\fB--json\fR.
+.TP
+.B load \fICONFIG.yaml\fR
+Load a test config into the running daemon. Accepts \fB--socket\fR \fIPATH\fR.
+.SH FIRMWARE
+.TP
+.B firmware update \fIFILE.bin\fR \fB--card \fIBDF\fR \fR[\fB--boot\fR] [\fB--scratch\fR]
+Local, direct-card bitstream update (needs root; the card must be free of a
+running daemon). Validates the image, live-writes the config flash over PCIe,
+verifies, and \(em with \fB--boot\fR \(em triggers an ICAP reload + PCIe rescan
+and confirms the build_id changed. Writes the boot image (offset 0) by default;
+\fB--scratch\fR targets the 0xE00000 dev region instead (incompatible with
+\fB--boot\fR).
+.SH GLOBAL FLAGS
+These may appear anywhere on the command line.
+.TP
+.B --secret \fIS\fR
+Control-socket secret. If unset, falls back to \fB$PACKETWYRM_SECRET\fR, then to
+the secret read from the \fB--env\fR file.
+.TP
+.B --env \fIPATH\fR
+Env config to read the secret from
+(default \fI/etc/packetwyrm/packetwyrm.yaml\fR).
+.TP
+.B --host \fIH\fR[:\fIP\fR]
+Talk to a remote
+.B packetwyrm-proxyd
+over HTTPS (default port 8443) instead of the local Unix socket;
+.B --socket
+is then ignored.
+.SH FILES
+.TP
+.I /etc/packetwyrm/packetwyrm.yaml
+Default environment config (source of the control-socket secret).
+.TP
+.I /run/packetwyrm/packetwyrmd.sock
+Default daemon control socket.
+.SH SEE ALSO
+.BR packetwyrmd (8),
+.BR packetwyrm-proxyd (8)

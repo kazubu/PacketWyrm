@@ -1,6 +1,7 @@
 /* PacketWyrm: VFIO BAR mapping (see vfio.h). */
 
 #include "packetwyrm/vfio.h"
+#include "packetwyrm/pci.h"   /* pw_pci_normalize_bdf */
 
 #include <errno.h>
 #include <fcntl.h>
@@ -191,9 +192,16 @@ pw_status pw_vfio_map_region(struct pw_vfio_handle *h, int bar_index,
     return PW_OK;
 }
 
-pw_status pw_vfio_open_bar(const char *bdf, int bar_index,
+pw_status pw_vfio_open_bar(const char *bdf_in, int bar_index,
                            struct pw_vfio_handle *h) {
-    if (!bdf || !h || bar_index < 0 || bar_index > 5) return PW_E_INVAL;
+    if (!bdf_in || !h || bar_index < 0 || bar_index > 5) return PW_E_INVAL;
+
+    /* Accept short BDF forms (e.g. "07:00.0") -- canonicalize once here so both
+     * the sysfs paths below and the VFIO_GROUP_GET_DEVICE_FD device name (which
+     * requires the full "DDDD:BB:DD.F") resolve. */
+    char cbdf[13];
+    if (pw_pci_normalize_bdf(bdf_in, cbdf) != PW_OK) return PW_E_INVAL;
+    const char *bdf = cbdf;
 
     /* Ensure the device is in D0 with memory decoding on before we mmap/read. */
     pw_vfio_prep_device(bdf);

@@ -159,6 +159,14 @@ static pw_status fake_write32(void *vctx, uint32_t off, uint32_t v) {
     case PWFPGA_REG_IRQ_STATUS:
         /* W1C; nothing sticky in fake model */
         return PW_OK;
+    case PWFPGA_REG_STATS_CLEAR:
+        /* Soft stats clear (test.arm / test.start / stats.clear): zero the
+         * modeled flow + port counters, like the RTL clears the RX checker /
+         * MAC counters. Lets the explicit-start tests re-baseline. */
+        memset(c->port, 0, sizeof(c->port));
+        memset(c->flow_stats, 0, sizeof(c->flow_stats));
+        memset(c->flow_stats_snapshot, 0, sizeof(c->flow_stats_snapshot));
+        return PW_OK;
     }
     /* Record writes to the classification windows so daemon-programming tests
      * can assert each table was actually programmed (otherwise the fake just
@@ -212,8 +220,32 @@ static pw_status fake_flow_commit(void *vctx) {
     return PW_OK;
 }
 
+/* Coarse traffic model so the explicit-start behavior is testable without
+ * hardware: each snapshot advances every COMMITTED flow row whose generator
+ * gate is on (enable && tx_enable -- the same condition pw_flow_window.sv
+ * gates on) by a fixed frame count, mirroring RX when the row also checks
+ * (same-card loopback). A loaded-but-not-started row (gate off) stays at 0,
+ * so tests can assert "config.load does not transmit" and "start -> counters
+ * grow, stop -> counters freeze". Per-snapshot (not wall-clock): deterministic
+ * for CI. */
+#define FAKE_FRAMES_PER_SNAPSHOT 1000ull
+
 static pw_status fake_stats_snapshot(void *vctx) {
     struct fake_ctx *c = vctx;
+    for (size_t i = 0; i < FAKE_NUM_FLOWS; i++) {
+        const struct pwfpga_flow_config *f = &c->flow[i];
+        if (!f->enable || !f->tx_enable) continue;
+        uint64_t flen = f->frame_len_min ? f->frame_len_min : 64u;
+        c->flow_stats[i].tx_frames += FAKE_FRAMES_PER_SNAPSHOT;
+        c->flow_stats[i].tx_bytes  += FAKE_FRAMES_PER_SNAPSHOT * flen;
+        if (f->rx_check_enable) {   /* same-card loopback: RX mirrors TX */
+            c->flow_stats[i].rx_frames += FAKE_FRAMES_PER_SNAPSHOT;
+            c->flow_stats[i].rx_bytes  += FAKE_FRAMES_PER_SNAPSHOT * flen;
+            c->flow_stats[i].last_sequence = c->flow_stats[i].rx_frames;
+        }
+    }
+    /* free-running 156.25 MHz timestamp: pretend 100 ms passed per snapshot */
+    c->timestamp += PWFPGA_DATA_PLANE_CLOCK_HZ / 10u;
     memcpy(c->flow_stats_snapshot, c->flow_stats, sizeof(c->flow_stats));
     return PW_OK;
 }

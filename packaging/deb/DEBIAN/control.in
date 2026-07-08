@@ -1,0 +1,18 @@
+Package: packetwyrm
+Version: @VERSION@
+Section: net
+Priority: optional
+Architecture: @ARCH@
+Maintainer: Kazuki Shimizu <kazubu@homenoc.ad.jp>
+Depends: @DEPENDS@
+Homepage: https://github.com/kazubu/packetwyrm
+Description: FPGA-based 10G network tester (daemon, CLI and Web GUI gateway)
+ PacketWyrm is an FPGA-based line-rate network tester. This package installs
+ the tester daemon (packetwyrmd), the command-line client (pktwyrm) and the
+ Web GUI / remote-RPC gateway (packetwyrm-proxyd), along with the shared
+ runtime library, systemd units, shell completions, man pages and a Grafana
+ dashboard.
+ .
+ The daemon opens the FPGA card BAR, runs the per-card host-plane workers and
+ serves a JSON-RPC control socket. The systemd unit brings the management
+ plane up only; it does not generate traffic until an explicit test start.

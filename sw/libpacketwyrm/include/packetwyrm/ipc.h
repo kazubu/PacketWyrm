@@ -37,8 +37,20 @@ pw_status pw_ipc_read_frame(int fd, void *buf, size_t buflen, size_t *out_len);
 pw_status pw_ipc_write_frame(int fd, const void *buf, size_t len);
 
 /* Connect to a daemon control socket. Caller is responsible for
- * close() on the returned fd. */
+ * close() on the returned fd. On failure returns PW_E_IO and leaves
+ * `errno` set to the underlying socket()/connect() error, so the caller
+ * can print strerror(errno) + pw_ipc_connect_hint(errno). */
 pw_status pw_ipc_connect(const char *path, int *out_fd);
+
+/* Human-friendly hint for a failed pw_ipc_connect, keyed on the errno it
+ * left set. Returns a short actionable string (never NULL) explaining the
+ * common causes, e.g.:
+ *   ECONNREFUSED -> "daemon not running or wrong --socket path"
+ *   ENOENT       -> "socket path does not exist -- is packetwyrmd running?"
+ *   EACCES       -> "permission denied -- run as root or join the 'packetwyrm'
+ *                    group (socket is 0660 root:packetwyrm)"
+ * so the CLI can turn a bare "rpc call failed" into a diagnosable message. */
+const char *pw_ipc_connect_hint(int err);
 
 /* Create + bind + listen a Unix domain socket suitable for the
  * daemon's control surface. Sets SO_REUSEADDR, removes a stale
