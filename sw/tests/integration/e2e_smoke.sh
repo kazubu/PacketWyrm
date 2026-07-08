@@ -77,6 +77,24 @@ check "rpc stats"     '"stats"'        "$CLI" rpc stats   --socket "$SOCK"
 check "rpc flow.stats" '"flows"'       "$CLI" rpc flow.stats --socket "$SOCK"
 check "rpc unknown"   '"error"'        "$CLI" rpc no_such_method --socket "$SOCK"
 
+# Explicit-start default: the daemon was launched WITHOUT -a/--autostart, so a
+# freshly programmed flow must be IDLE (enabled:false) -- nothing on the wire
+# until an explicit test.start. Regression guard for the auto-start removal.
+idle=$("$CLI" rpc flows --socket "$SOCK" 2>&1)
+if grep -qE '"enabled":[[:space:]]*true' <<<"$idle"; then
+    echo "[FAIL explicit-start] a flow was enabled at startup without --autostart:"
+    echo "$idle"; exit 1
+fi
+echo "[ ok ] flows idle at startup (explicit-start default)"
+# test start enables; test stop disables again (the run-state the generators follow).
+"$CLI" test start --socket "$SOCK" >/dev/null 2>&1
+check "test start enables" '"enabled":[[:space:]]*true'  "$CLI" rpc flows --socket "$SOCK"
+"$CLI" test stop --socket "$SOCK" >/dev/null 2>&1
+if grep -qE '"enabled":[[:space:]]*true' <<<"$("$CLI" rpc flows --socket "$SOCK" 2>&1)"; then
+    echo "[FAIL explicit-start] test stop left a flow enabled"; exit 1
+fi
+echo "[ ok ] test start/stop toggles the generator run-state"
+
 check "flow start 1"  '"status":"ok"'  "$CLI" flow start 1 --socket "$SOCK"
 check "flow stop  1"  '"status":"ok"'  "$CLI" flow stop  1 --socket "$SOCK"
 check "flow start 99" '"invalid'       "$CLI" flow start 99 --socket "$SOCK"

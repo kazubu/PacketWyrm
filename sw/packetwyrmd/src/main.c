@@ -85,13 +85,17 @@ static void *card_worker_main(void *arg) {
 
 static void usage(const char *prog) {
     fprintf(stderr,
-        "usage: %s [-e ENV] [-t TEST] [-n] [-v] [-s INTERVAL_MS] [-S SERVO_MS] [-C CAL_TICKS] [-p PROMETHEUS_PORT] [-F]\n"
+        "usage: %s [-e ENV] [-t TEST] [-n] [-v] [-a] [-s INTERVAL_MS] [-S SERVO_MS] [-C CAL_TICKS] [-p PROMETHEUS_PORT] [-F]\n"
         "  -e ENV            environment config: system/cards/logical_interfaces/secret\n"
         "                    (default /etc/packetwyrm/packetwyrm.yaml; may also carry\n"
         "                    flows for a combined single-file setup). -c is an alias.\n"
         "  -t TEST           test config: flows/forwards, attached onto the env\n"
         "  -n                dry run: parse + validate + compile, exit\n"
         "  -v                verbose\n"
+        "  -a, --autostart   begin generating traffic as soon as flows are programmed\n"
+        "                    (legacy behavior). DEFAULT is now to program flows IDLE\n"
+        "                    and wait for an explicit `pktwyrm test start`; a freshly\n"
+        "                    loaded config emits nothing until then.\n"
         "  -s INTERVAL_MS    stats print interval (default 5000, 0 = off)\n"
         "  -S SERVO_MS       cross-card lat_correction servo period (default 10;\n"
         "                    smaller = less ~ppm-skew residual between updates --\n"
@@ -349,6 +353,14 @@ static int card_idx_by_id(const struct pw_config *cfg, uint16_t card_id) {
  * pair; a >2-card rig with per-card capture skews would need a per-card table. */
 static int g_xcard_lat_cal_ticks = 0;
 
+/* Explicit-start gate. DEFAULT false: flows are programmed into the FPGA IDLE
+ * (generators disabled) and stay silent until an explicit `test.start`, so
+ * starting the daemon or loading a config never puts traffic on the wire by
+ * surprise. -a/--autostart restores the legacy "generate as soon as programmed"
+ * behavior. The run-state lives in the staged flow rows (which test.start/stop
+ * and flow.start/stop already toggle); we just change their INITIAL value. */
+static bool g_gen_autostart = false;
+
 static int64_t xcard_cal_bias(const struct pw_flow_meta *m) {
     if (g_xcard_lat_cal_ticks == 0 || m->tx_card_id == m->rx_card_id) return 0;
     return (m->tx_card_id < m->rx_card_id) ? (int64_t)g_xcard_lat_cal_ticks
@@ -380,6 +392,28 @@ static void servo_lat_correction(const struct pw_config *cfg,
             pw_gpio_sync_write_correction(&cards[rx_ci].backend, m->rx_local_flow_id,
                                           corr + xcard_cal_bias(m));
     }
+}
+
+/* True when every cross-card flow already has a coherent J5 GPIO offset, i.e.
+ * the servo has converged enough to correct cross-card latency. Returns true
+ * trivially when there are no cross-card flows (nothing to converge). Used to
+ * warn an operator who arms/starts a cross-card measurement before J5 sync has
+ * produced a valid edge -- those first samples would carry the raw wrong-
+ * timebase latency. */
+static bool servo_converged(const struct pw_config *cfg,
+                            const struct pw_program *prog,
+                            struct card_runtime cards[]) {
+    for (size_t i = 0; i < prog->n_flow_meta; i++) {
+        const struct pw_flow_meta *m = &prog->flow_meta[i];
+        if (!m->rx_slot_valid || m->tx_card_id == m->rx_card_id) continue;
+        int rx_ci = card_idx_by_id(cfg, m->rx_card_id);
+        int tx_ci = card_idx_by_id(cfg, m->tx_card_id);
+        if (rx_ci < 0 || tx_ci < 0 || !cards[rx_ci].open || !cards[tx_ci].open) continue;
+        int64_t corr;
+        if (!pw_gpio_sync_offset_coherent(&cards[tx_ci].backend, &cards[rx_ci].backend, &corr))
+            return false;
+    }
+    return true;
 }
 
 /* The servo runs in its OWN thread so no slow control RPC (notably sfp.info's
@@ -533,6 +567,24 @@ static int find_tx_row(const struct pw_program *prog,
         }
     }
     return -1;
+}
+
+/* Stage the generator run-state of every flow's TX row in `prog` IN MEMORY
+ * (no FPGA write): the next program_backends() commits it. Called right after
+ * a compile (startup + config.load) so the freshly compiled rows -- which the
+ * compiler marks enable=1 -- are forced idle before they ever reach the card,
+ * unless autostart. From then on test.start/stop and flow.start/stop own the
+ * run-state via set_flow_enable (they mutate these same staged rows), so a
+ * test.arm re-push honors the current state instead of silently re-enabling. */
+static void stage_flow_run_state(struct pw_program *prog, bool running) {
+    for (size_t k = 0; k < prog->n_flow_meta; k++) {
+        int ci = -1; uint32_t row = 0;
+        if (find_tx_row(prog, prog->flow_meta[k].global_flow_id, &ci, &row) < 0)
+            continue;
+        struct pwfpga_flow_config *fc = &prog->per_card[ci].flow_rows[row];
+        fc->enable    = running ? 1 : 0;
+        fc->tx_enable = running ? 1 : 0;
+    }
 }
 
 /* Re-write the TX flow row of `global_flow_id` with `enable` set accordingly,
@@ -725,6 +777,12 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
         resp = build_error(msg);
         goto fail;
     }
+
+    /* Explicit-start: a runtime config.load never puts traffic on the wire on
+     * its own -- the newly compiled flows are staged idle and wait for an
+     * explicit test.start (regardless of the daemon's -a startup default; a
+     * manual reload is exactly the moment a surprise burst would be worst). */
+    stage_flow_run_state(new_prog, false);
 
     /* From here we mutate the cards and swap cfg/prog. Hold off the servo thread
      * (which reads the cfg/prog pointers and would use-after-free across the
@@ -2066,6 +2124,19 @@ static void handle_client(int cfd,
                     if (s == PW_OK) changed++;
                     else            failed++;
                 }
+                /* test.start gives a clean, corrected baseline: now that the
+                 * generators are enabled, zero the RX checker counters and
+                 * (re)prime the cross-card lat_correction so a measurement
+                 * begins from zero with the right timebase. (The servo thread
+                 * keeps the correction tracked afterwards.) test.stop just
+                 * freezes -- leave the counters readable. */
+                if (en && !failed) {
+                    prime_lat_correction(cfg, prog, cards);
+                    for (size_t ci = 0; ci < cfg->n_cards; ci++)
+                        if (cards[ci].open && cards[ci].backend.ops->write32)
+                            (void)cards[ci].backend.ops->write32(
+                                cards[ci].backend.ctx, PWFPGA_REG_STATS_CLEAR, 1u);
+                }
             }
             resp = json_object_new_object();
             json_object_object_add(resp, "action", json_object_new_string(name));
@@ -2074,6 +2145,19 @@ static void handle_client(int cfd,
             if (!strcmp(name, "test.arm"))   /* false => re-program hard-failed, counters NOT cleared */
                 json_object_object_add(resp, "programmed",
                                        json_object_new_boolean(arm_programmed));
+            /* Warn if a cross-card measurement is armed/started before the J5
+             * servo has a coherent offset: those first samples would carry raw
+             * (wrong-timebase) latency. Only meaningful for arm/start. */
+            if (strcmp(name, "test.stop") != 0) {
+                bool conv = servo_converged(cfg, prog, cards);
+                json_object_object_add(resp, "servo_converged",
+                                       json_object_new_boolean(conv));
+                if (!conv)
+                    json_object_object_add(resp, "warning", json_object_new_string(
+                        "cross-card servo has no coherent J5 offset yet -- "
+                        "cross-card latency may be wrong; wait for sync then "
+                        "re-arm (test.arm) to re-baseline"));
+            }
         } else if (!strcmp(name, "stats.clear")) {
             /* Soft-clear all RX checker + per-port counters + histogram on
              * every card (same CSR as test.arm's clear) without re-pushing the
@@ -2345,12 +2429,19 @@ int main(int argc, char **argv) {
     const char *prom_addr = "127.0.0.1";   /* -p default: loopback only */
 
     int opt;
-    while ((opt = getopt(argc, argv, "c:e:t:nvs:S:C:p:Fh")) != -1) {
+    static const struct option long_opts[] = {
+        {"autostart",  no_argument, 0, 'a'},
+        {"allow-fake", no_argument, 0, 'F'},
+        {"help",       no_argument, 0, 'h'},
+        {0, 0, 0, 0}
+    };
+    while ((opt = getopt_long(argc, argv, "c:e:t:nvas:S:C:p:Fh", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'c': case 'e': env_path = optarg; g_env_path = optarg; break;
         case 't': test_path = optarg; break;
         case 'n': dry_run = true; break;
         case 'v': verbose = true; break;
+        case 'a': g_gen_autostart = true; break;
         case 's': stats_interval = atoi(optarg); break;
         case 'S': servo_interval = atoi(optarg); if (servo_interval < 1) servo_interval = 1; break;
         case 'C': g_xcard_lat_cal_ticks = atoi(optarg); break;   /* xcard lat calibration (signed ticks) */
@@ -2418,6 +2509,10 @@ int main(int argc, char **argv) {
         close_all_backends(cfg, cards);
         return 1;
     }
+    /* Explicit-start default: stage all generators idle before the first
+     * program so nothing hits the wire until `test.start` (-a/--autostart
+     * keeps the compiled enable=1 and generates immediately). */
+    if (!g_gen_autostart) stage_flow_run_state(prog, false);
     if (program_backends(prog, cfg, cards) != PW_OK) {
         if (!allow_fake) {
             fprintf(stderr, "fatal: initial FPGA programming failed -- the device "

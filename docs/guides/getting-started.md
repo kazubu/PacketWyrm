@@ -74,7 +74,11 @@ pktwyrm flow stats --flow 1 --json   # one flow, raw JSON
 pktwyrm flow start 1
 pktwyrm flow stop  1
 
-# Whole-tester orchestration
+# Whole-tester orchestration.
+# NOTE: the daemon programs flows IDLE -- nothing goes on the wire until you
+# start a test. `test start` enables every flow AND clears the counters for a
+# clean baseline; `test stop` freezes them. (Launch packetwyrmd with
+# -a/--autostart for the old "generate as soon as loaded" behavior.)
 pktwyrm test start
 pktwyrm test stop
 
