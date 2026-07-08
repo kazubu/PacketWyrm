@@ -695,7 +695,15 @@ static pw_status bar_backend_attach(void *base, size_t sz,
 
     out->ops = &bar_ops;
     out->ctx = c;
-    if (bdf) snprintf(out->pci_bdf, sizeof(out->pci_bdf), "%s", bdf);
+    /* Store the canonical "DDDD:BB:DD.F" so a card opened by a short form
+     * (e.g. "07:00.0") still reports/compares as its full BDF. */
+    if (bdf) {
+        char cbdf[13];
+        if (pw_pci_normalize_bdf(bdf, cbdf) == PW_OK)
+            snprintf(out->pci_bdf, sizeof(out->pci_bdf), "%s", cbdf);
+        else
+            snprintf(out->pci_bdf, sizeof(out->pci_bdf), "%s", bdf);
+    }
     out->card_id = 0;
     return PW_OK;
 }

@@ -21,8 +21,26 @@
 #include "packetwyrm/backend.h"
 #include "packetwyrm/csr.h"
 
-pw_status pw_program_card_tables(const struct pw_card_backend_ops *ops, void *ctx,
-                                 const struct pw_card_program *cp) {
+#include <stdarg.h>
+#include <stdio.h>
+
+/* Local diag setter (config.c's diag_set is file-static). Fills the concrete
+ * numbers behind a programming rejection so the caller can show them. */
+static void prog_diag(struct pw_diag *d, pw_status code,
+                      const char *path, const char *fmt, ...) {
+    if (!d) return;
+    d->code = code;
+    if (path) snprintf(d->path, sizeof(d->path), "%s", path);
+    else d->path[0] = '\0';
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(d->message, sizeof(d->message), fmt, ap);
+    va_end(ap);
+}
+
+pw_status pw_program_card_tables_diag(const struct pw_card_backend_ops *ops,
+                                      void *ctx, const struct pw_card_program *cp,
+                                      struct pw_diag *diag) {
     pw_status worst = PW_OK;
     if (!ops || !cp) return PW_E_INVAL;
 
@@ -55,16 +73,24 @@ pw_status pw_program_card_tables(const struct pw_card_backend_ops *ops, void *ct
      * window can address, but the bitstream only implements num_local_flows
      * (32 on the shipping build) generator/checker slots. A row programmed
      * past that writes back fine yet drives nothing, so the flow would look
-     * "programmed" while being silently dead. Reject up front so the caller
-     * (daemon config.load / test.arm) surfaces the error instead. If
-     * card_info is unavailable or reports 0 flows (a legacy backend or a
-     * bitstream without the register), keep the historical window-only
-     * behavior rather than rejecting a possibly-valid program. */
+     * "programmed" while being silently dead. Reject up front WITH the concrete
+     * numbers (via diag) so the caller surfaces "N requested but device
+     * supports M" instead of a bare "out of resources". If card_info is
+     * unavailable or reports 0 flows (a legacy backend or a bitstream without
+     * the register), keep the historical window-only behavior rather than
+     * rejecting a possibly-valid program. */
     struct pw_card_info info = {0};
     int have_info = ops->card_info && ops->card_info(ctx, &info) == PW_OK;
     if (have_info && info.num_local_flows != 0 &&
-        cp->n_flow_rows > (size_t)info.num_local_flows)
+        cp->n_flow_rows > (size_t)info.num_local_flows) {
+        char path[32];
+        snprintf(path, sizeof(path), "card%u", (unsigned)cp->card_id);
+        prog_diag(diag, PW_E_NO_RESOURCES, path,
+                  "%zu flow rows requested but device supports %u "
+                  "(num_local_flows); reduce measured flows or mark some background",
+                  cp->n_flow_rows, (unsigned)info.num_local_flows);
         return PW_E_NO_RESOURCES;
+    }
 
     #define CHK(call) do { \
         pw_status _s = (call); \
@@ -160,4 +186,10 @@ pw_status pw_program_card_tables(const struct pw_card_backend_ops *ops, void *ct
     }
     #undef CHK
     return worst;
+}
+
+/* Back-compat entry point: same as _diag with no diagnostic sink. */
+pw_status pw_program_card_tables(const struct pw_card_backend_ops *ops, void *ctx,
+                                 const struct pw_card_program *cp) {
+    return pw_program_card_tables_diag(ops, ctx, cp, NULL);
 }

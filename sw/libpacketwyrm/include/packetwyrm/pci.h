@@ -33,9 +33,22 @@ struct pw_pci_device {
 int pw_pci_discover(uint16_t vendor, uint16_t device,
                     struct pw_pci_device *out, size_t n_out);
 
-/* Map BAR0 of a PCI device by BDF.
- * On success, *out_addr is the userspace pointer and *out_size is
- * the BAR size in bytes. Caller must call pw_pci_close_bar0(). */
+/* Canonicalize a user-supplied PCI BDF into the "DDDD:BB:DD.F" form
+ * (12 chars + NUL). Accepts the short forms a user naturally types:
+ *   "07:00.0"        -> "0000:07:00.0"   (domain defaults to 0000)
+ *   "0000:07:00.0"   -> "0000:07:00.0"   (idempotent)
+ *   "7:0.0"          -> "0000:07:00.0"   (zero-padded)
+ * The `out` buffer must be at least 13 bytes (PW_PCI_BDF_MAX is safe).
+ * Returns PW_OK on success, PW_E_INVAL on NULL args or genuinely
+ * malformed input (missing fields, non-hex digits, out-of-range values).
+ * All the pw_pci_/backend open paths run their BDF argument through this,
+ * so short forms work everywhere a BDF string is accepted. */
+pw_status pw_pci_normalize_bdf(const char *in, char out[13]);
+
+/* Map BAR0 of a PCI device by BDF (short or canonical form -- see
+ * pw_pci_normalize_bdf). On success, *out_addr is the userspace pointer
+ * and *out_size is the BAR size in bytes. Caller must call
+ * pw_pci_close_bar0(). */
 pw_status pw_pci_open_bar0(const char *bdf, void **out_addr, size_t *out_size);
 
 /* Map an arbitrary file (e.g. /sys/.../resource0 or a test file) as

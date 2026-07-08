@@ -86,13 +86,36 @@ pw_status pw_ipc_connect(const char *path, int *out_fd) {
     pw_status r = fill_sockaddr_un(path, &sa);
     if (r != PW_OK) return r;
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return PW_E_IO;
+    if (fd < 0) return PW_E_IO;   /* errno from socket() left for the caller */
     if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        /* Preserve connect()'s errno across close() (which can clobber it) so
+         * the caller can strerror(errno) + pw_ipc_connect_hint(errno). */
+        int e = errno;
         close(fd);
+        errno = e;
         return PW_E_IO;
     }
     *out_fd = fd;
     return PW_OK;
+}
+
+const char *pw_ipc_connect_hint(int err) {
+    switch (err) {
+    case ECONNREFUSED:
+        return "daemon not running or wrong --socket path";
+    case ENOENT:
+        return "socket path does not exist -- is packetwyrmd running?";
+    case EACCES:
+    case EPERM:
+        return "permission denied -- run as root or join the 'packetwyrm' "
+               "group (socket is 0660 root:packetwyrm)";
+    case ENOTSOCK:
+        return "path exists but is not a socket -- check the --socket path";
+    case ETIMEDOUT:
+        return "connect timed out -- daemon may be hung or unreachable";
+    default:
+        return "unable to connect to the control socket";
+    }
 }
 
 /* Create the parent directory of `path` (mkdir -p style), best-effort. On a
