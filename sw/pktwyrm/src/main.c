@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>   /* strncasecmp */
+#include <errno.h>
 #include <time.h>
 #include <unistd.h>
 #include <math.h>
@@ -18,6 +19,8 @@
 #include <openssl/err.h>
 
 #include "packetwyrm/packetwyrm.h"
+#include "packetwyrm/vfio.h"        /* pw_vfio_bind */
+#include "packetwyrm/spi_flash.h"  /* pw_flash_program (firmware update) */
 
 /* The FPGA's latency counters and histogram buckets are in data-plane
  * clock ticks (the free-running timestamp runs at PWFPGA_DATA_PLANE_CLOCK_HZ
@@ -35,6 +38,10 @@ static int cmd_help(void);
  * packetwyrm.yaml). Read permission on that file is thus the access gate. */
 static const char *g_secret_arg = NULL;   /* --secret */
 static const char *g_env_arg    = NULL;   /* --env */
+/* errno from the last failed local-socket connect (pw_ipc_connect preserves
+ * it across its close()), so rpc_fail() can print an actionable hint instead
+ * of the opaque "rpc call failed". 0 when the failure wasn't a connect. */
+static int g_last_connect_errno = 0;
 /* --host HOST[:PORT]: talk to a remote packetwyrm-proxyd over HTTPS instead
  * of the local Unix socket. All RPCs then go through POST /api/rpc. */
 static const char *g_host_arg   = NULL;
@@ -484,13 +491,34 @@ static int rpc_call(const char *sock, const char *json_req,
         rc = https_rpc_call(g_host_arg, send, resp, resp_cap, out_len);
     } else {
         int fd = -1;
-        if (pw_ipc_connect(sock, &fd) != PW_OK) { if (o) json_object_put(o); return -1; }
+        if (pw_ipc_connect(sock, &fd) != PW_OK) {
+            g_last_connect_errno = errno;   /* pw_ipc_connect preserves it */
+            if (o) json_object_put(o);
+            return -1;
+        }
         rc = (pw_ipc_write_frame(fd, send, strlen(send)) == PW_OK &&
               pw_ipc_read_frame(fd, resp, resp_cap, out_len) == PW_OK) ? 0 : -1;
         close(fd);
     }
     if (o) json_object_put(o);
     return rc;
+}
+
+/* Print a diagnostic for a failed rpc_call. For a local-socket connect failure
+ * we captured errno; turn it into an actionable hint (daemon not running /
+ * wrong path / permission) instead of the opaque "rpc call failed". */
+static void rpc_fail(const char *sock) {
+    if (g_host_arg) {
+        fprintf(stderr, "rpc call failed (host=%s) -- is packetwyrm-proxyd "
+                "reachable and serving TLS there?\n", g_host_arg);
+    } else if (g_last_connect_errno) {
+        fprintf(stderr, "rpc call failed (socket=%s): %s\n         %s\n",
+                sock, strerror(g_last_connect_errno),
+                pw_ipc_connect_hint(g_last_connect_errno));
+    } else {
+        fprintf(stderr, "rpc call failed (socket=%s): the daemon closed the "
+                "connection or sent a malformed reply\n", sock);
+    }
 }
 
 /* Pretty-print the "stats" response. Falls back to printing the
@@ -599,7 +627,7 @@ static int cmd_latency(int argc, char **argv) {
     else           snprintf(req, sizeof(req), "{\"rpc\":\"flow.stats\"}");
     char resp[PW_IPC_FRAME_MAX]; size_t got = 0;
     if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
-        fprintf(stderr, "rpc call failed (socket=%s)\n", sock); return 1;
+        rpc_fail(sock); return 1;
     }
     if (raw) { fwrite(resp, 1, got, stdout); fputc('\n', stdout); }
     else     pretty_print_latency(resp, got);
@@ -680,7 +708,7 @@ static int cmd_tap(int argc, char **argv) {
     }
     char resp[PW_IPC_FRAME_MAX]; size_t got = 0;
     if (rpc_call(sock, "{\"rpc\":\"tap.stats\"}", resp, sizeof(resp), &got) < 0) {
-        fprintf(stderr, "rpc call failed (socket=%s)\n", sock); return 1;
+        rpc_fail(sock); return 1;
     }
     if (raw) { fwrite(resp, 1, got, stdout); fputc('\n', stdout); }
     else     pretty_print_taps(resp, got);
@@ -761,7 +789,7 @@ static int cmd_sfp(int argc, char **argv) {
     snprintf(req + off, sizeof(req) - off, "}");
     char resp[PW_IPC_FRAME_MAX]; size_t got = 0;
     if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
-        fprintf(stderr, "rpc call failed (socket=%s)\n", sock); return 1;
+        rpc_fail(sock); return 1;
     }
     if (raw) { fwrite(resp, 1, got, stdout); fputc('\n', stdout); }
     else     pretty_print_sfp(resp, got);
@@ -790,7 +818,7 @@ static int cmd_stats(int argc, char **argv) {
         char   resp[PW_IPC_FRAME_MAX];
         size_t got = 0;
         if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
-            fprintf(stderr, "rpc call failed (socket=%s)\n", sock);
+            rpc_fail(sock);
             return 1;
         }
         if (watch_ms > 0) printf("\033[2J\033[H");  /* clear screen */
@@ -840,7 +868,7 @@ static int cmd_rpc(int argc, char **argv) {
     char  resp[PW_IPC_FRAME_MAX];
     size_t got = 0;
     if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
-        fprintf(stderr, "rpc call failed\n");
+        rpc_fail(sock);
         return 1;
     }
     fwrite(resp, 1, got, stdout);
@@ -848,10 +876,284 @@ static int cmd_rpc(int argc, char **argv) {
     return 0;
 }
 
+/* `pktwyrm init [--out FILE]`: discover the PacketWyrm cards in this host and
+ * emit a ready-to-edit environment-config skeleton (system + cards + ports +
+ * a sample logical interface) with the real PCI BDFs filled in. Non-interactive
+ * and scriptable; writes to stdout by default, or --out FILE. This replaces the
+ * "run `pktwyrm cards`, copy an example, hand-edit the BDFs" first-run dance. */
+static int cmd_init(int argc, char **argv) {
+    const char *out = NULL;
+    for (int i = 0; i < argc; i++)
+        if (!strcmp(argv[i], "--out") && i + 1 < argc) out = argv[++i];
+
+    struct pw_pci_device devs[PW_MAX_CARDS] = {0};
+    int n = pw_pci_discover(PW_DEFAULT_PCI_VENDOR, PW_DEFAULT_PCI_DEVICE, devs, PW_MAX_CARDS);
+    if (n < 0) { fprintf(stderr, "PCI discovery failed: %s\n", pw_strerror((pw_status)n)); return 1; }
+
+    FILE *f = stdout;
+    if (out) { f = fopen(out, "w"); if (!f) { fprintf(stderr, "cannot write %s: %s\n", out, strerror(errno)); return 1; } }
+
+    fprintf(f,
+        "# PacketWyrm environment config (generated by `pktwyrm init`).\n"
+        "# Deploy as /etc/packetwyrm/packetwyrm.yaml, then edit as needed.\n"
+        "# Pair with a test config (flows/forwards) via `pktwyrm load`.\n"
+        "system:\n"
+        "  name: \"pw-host\"\n"
+        "  mode: \"multi-card\"\n"
+        "  default_speed: \"10g\"\n"
+        "  # secret: \"change-me\"   # uncomment to require a control-socket secret\n");
+    if (n == 0) {
+        fprintf(f,
+            "# NOTE: no PacketWyrm cards were discovered (vendor=0x%04x device=0x%04x).\n"
+            "#   Fill in the PCI BDF(s) below by hand once the card is bound.\n"
+            "cards:\n"
+            "  - id: 0\n"
+            "    name: \"card0\"\n"
+            "    pci: \"0000:00:00.0\"   # EDIT ME\n"
+            "    ports:\n"
+            "      - { local_port: 0, global_port: 0, name: \"p0\" }\n"
+            "      - { local_port: 1, global_port: 1, name: \"p1\" }\n",
+            PW_DEFAULT_PCI_VENDOR, PW_DEFAULT_PCI_DEVICE);
+    } else {
+        fprintf(f, "cards:\n");
+        int gp = 0;
+        for (int i = 0; i < n && i < PW_MAX_CARDS; i++) {
+            fprintf(f,
+                "  - id: %d\n"
+                "    name: \"card%d\"\n"
+                "    pci: \"%s\"\n"
+                "    ports:\n"
+                "      - { local_port: 0, global_port: %d, name: \"c%dp0\" }\n"
+                "      - { local_port: 1, global_port: %d, name: \"c%dp1\" }\n",
+                i, i, devs[i].bdf, gp, i, gp + 1, i);
+            gp += 2;
+        }
+    }
+    fprintf(f,
+        "logical_interfaces:\n"
+        "  - id: 1000\n"
+        "    global_port: 0\n"
+        "    vlan: 100\n"
+        "    mac: \"02:a5:02:00:00:64\"\n"
+        "    mtu: 9000\n"
+        "    punt: { arp: false, ipv6_nd: false, lldp: false, icmp: false, bgp: false, ospf: false }\n");
+    if (out) { fclose(f); fprintf(stderr, "wrote %s (%d card(s) discovered)\n", out, n); }
+    return 0;
+}
+
+/* Parse a duration like "10s", "500ms", "2m", or a bare integer (seconds).
+ * Returns milliseconds, or -1 on a malformed value. */
+static long parse_duration_ms(const char *s) {
+    char *end = NULL;
+    errno = 0;
+    double v = strtod(s, &end);
+    if (end == s || v < 0 || errno) return -1;
+    if (!*end || !strcmp(end, "s"))  return (long)(v * 1000.0 + 0.5);
+    if (!strcmp(end, "ms"))          return (long)(v + 0.5);
+    if (!strcmp(end, "m"))           return (long)(v * 60000.0 + 0.5);
+    return -1;
+}
+
+/* `pktwyrm test run [--duration 10s] [--socket PATH] [--json]`: the whole
+ * measurement loop in one verb -- arm (clean baseline) -> start -> wait ->
+ * read flow.stats -> stop -> PASS/FAIL. PASS = every measured (rx-bearing)
+ * flow saw rx_frames>0 with lost==0 && duplicate==0 && out_of_order==0.
+ * Exit 0 on PASS, 1 on FAIL, 2 on usage/RPC error -- so it drops into CI. */
+static int cmd_test_run(int argc, char **argv) {
+    const char *sock = PW_IPC_DEFAULT_PATH;
+    long dur_ms = 10000;   /* default 10 s */
+    bool raw = false;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
+        else if (!strcmp(argv[i], "--duration") && i + 1 < argc) {
+            dur_ms = parse_duration_ms(argv[++i]);
+            if (dur_ms < 0) { fprintf(stderr, "bad --duration (try 10s, 500ms, 2m)\n"); return 2; }
+        } else if (!strcmp(argv[i], "--json")) raw = true;
+    }
+    char resp[PW_IPC_FRAME_MAX]; size_t got = 0;
+    /* arm: re-push + clear counters for a clean baseline. */
+    if (rpc_call(sock, "{\"rpc\":\"test.arm\"}", resp, sizeof resp, &got) < 0) { rpc_fail(sock); return 2; }
+    /* start: enable generation (and re-clear + re-prime cross-card correction). */
+    if (rpc_call(sock, "{\"rpc\":\"test.start\"}", resp, sizeof resp, &got) < 0) { rpc_fail(sock); return 2; }
+    /* Surface the cross-card servo warning if the daemon reported one. */
+    {
+        struct json_tokener *tk = json_tokener_new();
+        struct json_object *r = json_tokener_parse_ex(tk, resp, (int)got);
+        json_tokener_free(tk);
+        if (r) { struct json_object *w;
+            if (json_object_object_get_ex(r, "warning", &w))
+                fprintf(stderr, "warning: %s\n", json_object_get_string(w));
+            json_object_put(r); }
+    }
+    if (!raw) fprintf(stderr, "running for %ld ms...\n", dur_ms);
+    struct timespec ts = { dur_ms / 1000, (dur_ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+    /* Sample flow.stats, then stop generation. */
+    int rc = rpc_call(sock, "{\"rpc\":\"flow.stats\"}", resp, sizeof resp, &got);
+    (void)rpc_call(sock, "{\"rpc\":\"test.stop\"}", (char[16]){0}, 16, &(size_t){0});
+    if (rc < 0) { rpc_fail(sock); return 2; }
+    if (raw) { fwrite(resp, 1, got, stdout); fputc('\n', stdout); }
+    struct json_tokener *tk = json_tokener_new();
+    struct json_object *root = json_tokener_parse_ex(tk, resp, (int)got);
+    json_tokener_free(tk);
+    if (!root) { if (!raw) { fwrite(resp,1,got,stdout); fputc('\n',stdout);} return 2; }
+    struct json_object *arr;
+    if (!json_object_object_get_ex(root, "flows", &arr) ||
+        json_object_get_type(arr) != json_type_array) {
+        fprintf(stderr, "unexpected flow.stats response\n"); json_object_put(root); return 2;
+    }
+    size_t n = json_object_array_length(arr);
+    int measured = 0, failed = 0;
+    if (!raw)
+        printf("%-4s %-14s %14s %14s %8s %8s %8s  %s\n",
+               "flow", "path", "tx_frames", "rx_frames", "lost", "dup", "ooo", "verdict");
+    for (size_t i = 0; i < n; i++) {
+        struct json_object *f = json_object_array_get_idx(arr, i), *v;
+        int id = 0; const char *path = "?";
+        int64_t tx=0, rx=0, lost=0, dup=0, ooo=0; bool has_rx = false;
+        if (json_object_object_get_ex(f, "id", &v)) id = json_object_get_int(v);
+        if (json_object_object_get_ex(f, "rx_port", &v)) path = json_object_get_string(v);
+        if (json_object_object_get_ex(f, "tx_frames", &v)) tx = json_object_get_int64(v);
+        if (json_object_object_get_ex(f, "rx_frames", &v)) { rx = json_object_get_int64(v); has_rx = true; }
+        if (json_object_object_get_ex(f, "lost", &v)) lost = json_object_get_int64(v);
+        if (json_object_object_get_ex(f, "duplicate", &v)) dup = json_object_get_int64(v);
+        if (json_object_object_get_ex(f, "out_of_order", &v)) ooo = json_object_get_int64(v);
+        /* A "measured" flow is one that has an RX checker (background/TX-only
+         * flows report no rx path); only those gate PASS/FAIL. */
+        bool is_measured = has_rx && json_object_object_get_ex(f, "rx_card_id", &v);
+        const char *verdict;
+        if (!is_measured)                         verdict = "-- (tx-only)";
+        else if (rx == 0)                         { verdict = "FAIL (no rx)"; failed++; measured++; }
+        else if (lost || dup || ooo)              { verdict = "FAIL";         failed++; measured++; }
+        else                                      { verdict = "PASS";                    measured++; }
+        if (!raw)
+            printf("%-4d %-14s %14lld %14lld %8lld %8lld %8lld  %s\n",
+                   id, path, (long long)tx, (long long)rx,
+                   (long long)lost, (long long)dup, (long long)ooo, verdict);
+    }
+    json_object_put(root);
+    if (!raw)
+        printf("\n%s: %d measured flow(s), %d failed\n",
+               failed ? "FAIL" : "PASS", measured, failed);
+    return failed ? 1 : 0;
+}
+
+/* `pktwyrm firmware update <file.bin> --card BDF [--boot] [--scratch]`:
+ * one guarded command for a bitstream update -- validate the image, read the
+ * running build_id, live-program the config flash over PCIe (with a progress
+ * line), verify, and (with --boot) trigger an ICAP reload + PCIe rescan and
+ * confirm the build_id CHANGED. LOCAL/direct-card (not via the daemon): the
+ * card must NOT be owned by a running daemon, and it needs root + vfio. This
+ * replaces the error-prone "pw_flash <bdf> <bin> 0 ; pw_reboot <bdf> ; eyeball
+ * the build_id" sequence, and refuses offset-0 (boot image) writes without an
+ * explicit choice so a fat-fingered scratch/boot mixup can't brick the card. */
+static int cmd_firmware(int argc, char **argv) {
+    if (argc < 2 || strcmp(argv[0], "update") != 0) {
+        fprintf(stderr,
+            "usage: pktwyrm firmware update <file.bin> --card BDF [--boot] [--scratch]\n"
+            "  Writes the config flash live over PCIe, then (with --boot) reloads.\n"
+            "  Default target is the BOOT image (offset 0); --scratch writes the\n"
+            "  0xE00000 dev region instead. Needs root; the card must be free\n"
+            "  (stop packetwyrmd first).\n");
+        return 2;
+    }
+    const char *file = argv[1];
+    const char *bdf = NULL;
+    bool boot = false, scratch = false;
+    for (int i = 2; i < argc; i++) {
+        if (!strcmp(argv[i], "--card") && i + 1 < argc) bdf = argv[++i];
+        else if (!strcmp(argv[i], "--boot")) boot = true;
+        else if (!strcmp(argv[i], "--scratch")) scratch = true;
+        else { fprintf(stderr, "unknown arg: %s\n", argv[i]); return 2; }
+    }
+    if (!bdf) { fprintf(stderr, "--card BDF required (e.g. --card 07:00.0)\n"); return 2; }
+    uint32_t off = scratch ? 0x00E00000u : 0u;
+
+    FILE *f = fopen(file, "rb");
+    if (!f) { fprintf(stderr, "cannot open %s: %s\n", file, strerror(errno)); return 1; }
+    fseek(f, 0, SEEK_END); long fsz = ftell(f); fseek(f, 0, SEEK_SET);
+    if (fsz <= 0 || fsz > (16 << 20)) {
+        fprintf(stderr, "bad image size %ld (expect a .bin up to 16 MB)\n", fsz);
+        fclose(f); return 1;
+    }
+    if ((uint64_t)off + (uint64_t)fsz > 0x01000000u) {
+        fprintf(stderr, "offset 0x%x + %ld B exceeds the 16 MB (3-byte) range\n", off, fsz);
+        fclose(f); return 1;
+    }
+    uint8_t *img = malloc((size_t)fsz);
+    if (!img) { fprintf(stderr, "out of memory (%ld bytes)\n", fsz); fclose(f); return 1; }
+    if (fread(img, 1, (size_t)fsz, f) != (size_t)fsz) {
+        fprintf(stderr, "short read on %s\n", file); free(img); fclose(f); return 1;
+    }
+    fclose(f);
+
+    pw_vfio_bind(bdf);
+    struct pw_card_backend be;
+    if (pw_bar_backend_open(bdf, &be) != PW_OK) {
+        fprintf(stderr, "backend open failed for %s -- is it a PacketWyrm card, "
+                "bound to vfio-pci, and NOT in use by a running packetwyrmd?\n", bdf);
+        free(img); return 1;
+    }
+    struct pw_card_info before = {0};
+    if (be.ops->card_info) be.ops->card_info(be.ctx, &before);
+    printf("card %s: build_id=0x%08x version=0x%08x num_flows=%u\n",
+           bdf, before.device_id ? before.build_id : 0, before.version, before.num_local_flows);
+    printf("writing %ld bytes to the %s region @ 0x%06x (live, PCIe stays up)...\n",
+           fsz, scratch ? "scratch" : "BOOT", off);
+    fflush(stdout);
+    uint64_t mism = 0;
+    pw_status s = pw_flash_program(be.ops, be.ctx, off, img, (size_t)fsz, &mism);
+    free(img);
+    if (s != PW_OK) { fprintf(stderr, "flash program failed (status %d)\n", s); return 1; }
+    if (mism != 0) { fprintf(stderr, "VERIFY FAILED: %llu mismatched bytes\n",
+                             (unsigned long long)mism); return 1; }
+    printf("verify OK: %ld bytes match\n", fsz);
+
+    if (!boot) {
+        printf("done (flash written). Pass --boot to reload into it now, or power-cycle.\n");
+        return 0;
+    }
+    if (scratch) {
+        fprintf(stderr, "refusing --boot with --scratch: the boot loader reads offset 0, "
+                "not the scratch region\n");
+        return 2;
+    }
+    printf("triggering ICAP reload (PCIe link drops, FPGA reloads from flash)...\n");
+    fflush(stdout);
+    be.ops->write32(be.ctx, PWFPGA_REG_REBOOT, PWFPGA_REBOOT_MAGIC);
+    pw_card_backend_close(&be);
+    /* PCIe remove + rescan so the host re-enumerates the reloaded device. */
+    char rm[256]; char cbdf[13];
+    if (pw_pci_normalize_bdf(bdf, cbdf) != PW_OK) { fprintf(stderr, "bad BDF %s\n", bdf); return 1; }
+    snprintf(rm, sizeof rm, "/sys/bus/pci/devices/%s/remove", cbdf);
+    FILE *w = fopen(rm, "w"); if (w) { fputc('1', w); fclose(w); }
+    struct timespec ts = { 2, 0 }; nanosleep(&ts, NULL);
+    w = fopen("/sys/bus/pci/rescan", "w"); if (w) { fputc('1', w); fclose(w); }
+    nanosleep(&ts, NULL);
+    pw_vfio_bind(bdf);
+    struct pw_card_backend be2;
+    if (pw_bar_backend_open(bdf, &be2) != PW_OK) {
+        fprintf(stderr, "card did not re-enumerate after reload -- recover via JTAG\n");
+        return 1;
+    }
+    struct pw_card_info after = {0};
+    if (be2.ops->card_info) be2.ops->card_info(be2.ctx, &after);
+    pw_card_backend_close(&be2);
+    printf("reloaded: build_id 0x%08x -> 0x%08x\n", before.build_id, after.build_id);
+    if (after.build_id == before.build_id) {
+        fprintf(stderr, "WARNING: build_id unchanged -- the new image may not have "
+                "booted (check the .bin, or the flash write region)\n");
+        return 1;
+    }
+    printf("firmware update OK: card is running the new image.\n");
+    return 0;
+}
+
 static int cmd_help(void) {
     puts("pktwyrm - PacketWyrm CLI");
     puts("");
     puts("Offline commands (operate on a YAML file):");
+    puts("  pktwyrm init  [--out FILE]           generate an env-config skeleton from discovered cards");
     puts("  pktwyrm cards                        discover real PacketWyrm PCI cards");
     puts("  pktwyrm cards <config.yaml>          list configured cards from YAML");
     puts("  pktwyrm ports <config.yaml>          list configured ports");
@@ -870,9 +1172,14 @@ static int cmd_help(void) {
     puts("  pktwyrm tap [--socket PATH] [--json]                 host-plane TAP status + stats");
     puts("  pktwyrm flow start|stop <id> [--socket PATH]");
     puts("  pktwyrm flow stats [--flow N] [--socket PATH] [--watch MS] [--json]");
-    puts("  pktwyrm test arm|start|stop [--socket PATH]");
-    puts("  pktwyrm hist latency --flow N [--socket PATH]");
+    puts("  pktwyrm test arm|start|stop [--socket PATH] [--json]");
+    puts("  pktwyrm test run [--duration 10s] [--socket PATH] [--json]  arm+start+wait+stop, PASS/FAIL");
+    puts("  pktwyrm hist latency --flow N [--socket PATH] [--json]");
     puts("  pktwyrm load <config.yaml> [--socket PATH]");
+    puts("");
+    puts("Firmware (LOCAL, direct card -- root, card free of any daemon):");
+    puts("  pktwyrm firmware update <file.bin> --card BDF [--boot] [--scratch]");
+    puts("                 validate + live-flash + verify (+ reload with --boot)");
     puts("");
     puts("Global flags (may appear anywhere):");
     puts("  --secret S     control-socket secret (else $PACKETWYRM_SECRET, else --env file)");
@@ -903,6 +1210,8 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "version") || !strcmp(sub, "--version")) {
         printf("pktwyrm %s\n", pw_version_string()); return 0;
     }
+    if (!strcmp(sub, "firmware")) return cmd_firmware(argc - 2, argv + 2);
+    if (!strcmp(sub, "init"))   return cmd_init(argc - 2, argv + 2);
     if (!strcmp(sub, "cards"))  return cmd_cards(argc - 2, argv + 2);
     if (!strcmp(sub, "ports"))  return cmd_ports(argc - 2, argv + 2);
     if (!strcmp(sub, "map"))    return cmd_map(argc - 2, argv + 2);
@@ -921,7 +1230,7 @@ int main(int argc, char **argv) {
                 if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
             char resp[PW_IPC_FRAME_MAX]; size_t got = 0;
             if (rpc_call(sock, "{\"rpc\":\"stats.clear\"}", resp, sizeof(resp), &got) < 0) {
-                fprintf(stderr, "rpc call failed (socket=%s)\n", sock);
+                rpc_fail(sock);
                 return 1;
             }
             fwrite(resp, 1, got, stdout); fputc('\n', stdout);
@@ -932,22 +1241,25 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "hist")) {
         if (argc < 4 || strcmp(argv[2], "latency")) {
             fprintf(stderr,
-                "usage: pktwyrm hist latency --flow N [--socket PATH]\n");
+                "usage: pktwyrm hist latency --flow N [--socket PATH] [--json]\n");
             return 2;
         }
         const char *sock = PW_IPC_DEFAULT_PATH;
         int flow_id = -1;
+        bool raw = false;
         for (int i = 3; i < argc; i++) {
             if (!strcmp(argv[i], "--flow") && i + 1 < argc) flow_id = atoi(argv[++i]);
             else if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
+            else if (!strcmp(argv[i], "--json")) raw = true;
         }
         if (flow_id < 0) { fprintf(stderr, "--flow required\n"); return 2; }
         char req[128];
         snprintf(req, sizeof(req), "{\"rpc\":\"flow.hist\",\"id\":%d}", flow_id);
         char  resp[PW_IPC_FRAME_MAX]; size_t got = 0;
         if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
-            fprintf(stderr, "rpc call failed\n"); return 1;
+            rpc_fail(sock); return 1;
         }
+        if (raw) { fwrite(resp, 1, got, stdout); fputc('\n', stdout); return 0; }
         /* Pretty-print: parse the bucket array and draw a small
          * text bar chart. */
         struct json_tokener *tok = json_tokener_new();
@@ -1005,10 +1317,12 @@ int main(int argc, char **argv) {
     if (!strcmp(sub, "test")) {
         if (argc < 3) {
             fprintf(stderr,
-                "usage: pktwyrm test arm|start|stop [--socket PATH]\n");
+                "usage: pktwyrm test arm|start|stop [--socket PATH] [--json]\n"
+                "       pktwyrm test run [--duration 10s] [--socket PATH] [--json]\n");
             return 2;
         }
         const char *action = argv[2];
+        if (!strcmp(action, "run")) return cmd_test_run(argc - 3, argv + 3);
         if (strcmp(action, "arm") && strcmp(action, "start") && strcmp(action, "stop")) {
             fprintf(stderr, "unknown test action: %s\n", action); return 2;
         }
@@ -1019,7 +1333,7 @@ int main(int argc, char **argv) {
         snprintf(req, sizeof(req), "{\"rpc\":\"test.%s\"}", action);
         char  resp[PW_IPC_FRAME_MAX]; size_t got = 0;
         if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
-            fprintf(stderr, "rpc call failed (socket=%s)\n", sock);
+            rpc_fail(sock);
             return 1;
         }
         fwrite(resp, 1, got, stdout); fputc('\n', stdout);
@@ -1041,7 +1355,7 @@ int main(int argc, char **argv) {
                 if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
             char  resp[PW_IPC_FRAME_MAX]; size_t got = 0;
             if (rpc_call(sock, "{\"rpc\":\"flash.id\"}", resp, sizeof(resp), &got) < 0) {
-                fprintf(stderr, "rpc call failed (socket=%s)\n", sock); return 1;
+                rpc_fail(sock); return 1;
             }
             fwrite(resp, 1, got, stdout); fputc('\n', stdout);
             return 0;
@@ -1065,7 +1379,7 @@ int main(int argc, char **argv) {
             char  resp[PW_IPC_FRAME_MAX]; size_t got = 0;
             int rc = rpc_call(sock, req_str, resp, sizeof(resp), &got);
             json_object_put(req);
-            if (rc < 0) { fprintf(stderr, "rpc call failed (socket=%s)\n", sock); return 1; }
+            if (rc < 0) { rpc_fail(sock); return 1; }
             fwrite(resp, 1, got, stdout); fputc('\n', stdout);
             struct json_tokener *tk = json_tokener_new();
             struct json_object  *r  = json_tokener_parse_ex(tk, resp, (int)got);
@@ -1106,7 +1420,7 @@ int main(int argc, char **argv) {
             do {
                 char  resp[PW_IPC_FRAME_MAX]; size_t got = 0;
                 if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
-                    fprintf(stderr, "rpc call failed (socket=%s)\n", sock);
+                    rpc_fail(sock);
                     return 1;
                 }
                 if (watch_ms > 0) printf("\033[2J\033[H");
@@ -1187,7 +1501,7 @@ int main(int argc, char **argv) {
             char  resp[PW_IPC_FRAME_MAX];
             size_t got = 0;
             if (rpc_call(sock, req, resp, sizeof(resp), &got) < 0) {
-                fprintf(stderr, "rpc call failed (socket=%s)\n", sock);
+                rpc_fail(sock);
                 return 1;
             }
             fwrite(resp, 1, got, stdout); fputc('\n', stdout);
