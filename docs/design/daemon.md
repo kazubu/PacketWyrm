@@ -88,8 +88,8 @@ root for BAR0 mmap.
   listens on the Unix control socket (plus the optional Prometheus port). The
   Web GUI and `pktwyrm --host` are served by `packetwyrm-proxyd`, a stateless
   TLS-terminating gateway that relays `POST /api/rpc` onto this socket. Keeping
-  it out-of-process means TLS/HTTP work never blocks the daemon's
-  control/servo loop. See `web-gui.md`.
+  it out-of-process means TLS/HTTP work never blocks the daemon's control loop
+  (nor the cross-card servo, which runs in its own thread). See `web-gui.md`.
 - Builds:
   - logical interface map (`logical_if_id` &harr; TAP fd &harr;
     `(card_id, local_port_id, vlan)`),
