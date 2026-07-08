@@ -510,9 +510,13 @@ static void prime_lat_correction(const struct pw_config *cfg,
     }
 }
 
-static pw_status program_backends(const struct pw_program *prog,
-                                  const struct pw_config *cfg,
-                                  struct card_runtime cards[]) {
+/* diag (may be NULL) is filled with the concrete detail of the FIRST card that
+ * fails to program -- e.g. the capacity rejection's "N requested but device
+ * supports M" -- so config.load can surface numbers, not a bare status. */
+static pw_status program_backends_diag(const struct pw_program *prog,
+                                       const struct pw_config *cfg,
+                                       struct card_runtime cards[],
+                                       struct pw_diag *diag) {
     pw_status worst = PW_OK;
     for (size_t ci = 0; ci < prog->n_cards; ci++) {
         const struct pw_card_program *cp = &prog->per_card[ci];
@@ -527,7 +531,8 @@ static pw_status program_backends(const struct pw_program *prog,
             pw_status s = b->ops->write32(b->ctx, PWFPGA_REG_DP_RESET, 1u);
             if (s != PW_OK && s != PW_E_NOT_IMPLEMENTED && worst == PW_OK) worst = s;
         }
-        pw_status s = pw_program_card_tables(b->ops, b->ctx, cp);
+        pw_status s = pw_program_card_tables_diag(b->ops, b->ctx, cp,
+                                                  worst == PW_OK ? diag : NULL);
         if (s != PW_OK && worst == PW_OK) worst = s;
     }
     /* Bring up J5 time-sync for cross-card flows (latency offset correction). */
@@ -541,6 +546,13 @@ static pw_status program_backends(const struct pw_program *prog,
      * from the corrected baseline. (The main-loop servo then maintains it.) */
     prime_lat_correction(cfg, prog, cards);
     return worst;
+}
+
+/* Back-compat wrapper for the call sites that don't surface a diag. */
+static pw_status program_backends(const struct pw_program *prog,
+                                  const struct pw_config *cfg,
+                                  struct card_runtime cards[]) {
+    return program_backends_diag(prog, cfg, cards, NULL);
 }
 
 /* Look up the (tx) row index for a given global_flow_id. */
@@ -806,19 +818,23 @@ static struct json_object *do_config_load(struct pw_config  **cfg_pp,
      * FPGA matches the daemon's unchanged view, keep the old config running, and
      * reject the load. A half-applied config (daemon view != FPGA) is the worst
      * failure mode for a tester; see docs/design/daemon.md. */
-    pw_status prog_st = program_backends(new_prog, new_cfg, cards);
+    struct pw_diag prog_diag = {0};
+    pw_status prog_st = program_backends_diag(new_prog, new_cfg, cards, &prog_diag);
     if (prog_st != PW_OK) {
+        /* Prefer the concrete detail (e.g. capacity numbers) over the bare
+         * status string when the programming layer filled one in. */
+        const char *detail = prog_diag.message[0] ? prog_diag.message : pw_strerror(prog_st);
         fprintf(stderr, "load: stage failed (%s) -- rolling back to the previous "
-                "config\n", pw_strerror(prog_st));
+                "config\n", detail);
         pw_status rb_st = program_backends(*prog_pp, *cfg_pp, cards);  /* restore */
         pthread_mutex_unlock(&g_servo_lock);   /* cfg/prog unchanged; servo may resume */
         pw_program_free(new_prog);
         pw_config_free(new_cfg);
-        char msg[240];
+        char msg[320];
         if (rb_st == PW_OK) {
             snprintf(msg, sizeof msg,
                      "stage failed (%s); rolled back, previous config still running",
-                     pw_strerror(prog_st));
+                     detail);
         } else {
             /* Both the new config AND the restore failed: the FPGA no longer
              * matches the daemon's (unchanged) view. Report it honestly -- a
