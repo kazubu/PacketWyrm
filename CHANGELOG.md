@@ -45,6 +45,21 @@ For where work is going next, see `NEXT-STEPS.md`.
       longer silently clobber hand-edited YAML — a dirty-state hint + "Regenerate
       from form" button make the relationship explicit); the YAML editor inserts
       spaces on Tab; Env Save shows a diff vs the loaded file before writing.
+    - *Flows editor rework:* each flow is now an expandable row (single-open
+      accordion) so it's clear which one is being edited; edits are STAGED in a
+      per-flow working copy with a "● modified" badge, an "Apply edit" that commits
+      into the config/YAML (not the card) and a "Revert"; the top button is
+      "Write to card" (config.load) which warns on uncommitted edits and refuses
+      to silently discard hand-edited raw YAML. The rate field shows a live
+      SI-unit conversion (e.g. "= 1 Gbps"). YAML can be saved to / loaded from a
+      local file (client-side).
+    - *Polish + accessibility:* a light/dark theme toggle (persisted); responsive
+      header/nav + horizontally-scrollable cards so wide tables don't break narrow
+      screens; ARIA tablist/tab/tabpanel wiring, `:focus-visible` rings,
+      `<th scope>`, aria-labels on icon buttons; thousands separators on big
+      counters and raw-tick tooltips on latency cells; the latency-histogram
+      dropdown no longer rebuilds every poll (was disrupting selection); the
+      Aggregate-counters table gained tx/rx bps columns and thousands separators.
   - **Per-flow tx/rx byte counters (real HW) + tx/rx bps.** The RTL had no
     per-flow byte counters, so `flow.stats` tx_bytes/rx_bytes were always 0 and
     the dashboard's bps read blank. Added true byte accumulators: the generator

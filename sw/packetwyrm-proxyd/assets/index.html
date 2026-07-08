@@ -18,20 +18,21 @@
 <header>
   <h1>🐉 PacketWyrm</h1>
   <div class="grow"></div>
-  <input id="secret" type="password" placeholder="secret (if required)">
-  <span id="conn">—</span>
+  <input id="secret" type="password" placeholder="secret (if required)" aria-label="control secret">
+  <button id="theme" title="Toggle light / dark theme" aria-label="Toggle light or dark theme">🌓</button>
+  <span id="conn" role="status" aria-live="polite">—</span>
 </header>
-<nav>
-  <button data-tab="dash" class="active">Dashboard</button>
-  <button data-tab="flows">Flows</button>
-  <button data-tab="forwards">Forwards</button>
-  <button data-tab="control">Control</button>
-  <button data-tab="env">Environment</button>
+<nav role="tablist" aria-label="sections">
+  <button role="tab" id="navtab-dash" aria-controls="tab-dash" aria-selected="true" data-tab="dash" class="active">Dashboard</button>
+  <button role="tab" id="navtab-flows" aria-controls="tab-flows" aria-selected="false" data-tab="flows">Flows</button>
+  <button role="tab" id="navtab-forwards" aria-controls="tab-forwards" aria-selected="false" data-tab="forwards">Forwards</button>
+  <button role="tab" id="navtab-control" aria-controls="tab-control" aria-selected="false" data-tab="control">Control</button>
+  <button role="tab" id="navtab-env" aria-controls="tab-env" aria-selected="false" data-tab="env">Environment</button>
 </nav>
 <div id="statusbar" class="statusbar"></div>
 <main>
   <!-- Dashboard -->
-  <div class="tab active" id="tab-dash">
+  <div class="tab active" id="tab-dash" role="tabpanel" aria-labelledby="navtab-dash">
     <section class="card"><h2>Versions</h2><div id="d-versions">…</div></section>
     <section class="card"><h2>Health / LED</h2><div id="d-health">…</div></section>
     <section class="card"><h2>Cards</h2><div id="d-cards">…</div></section>
@@ -49,23 +50,21 @@
   </div>
 
   <!-- Flows -->
-  <div class="tab" id="tab-flows">
+  <div class="tab" id="tab-flows" role="tabpanel" aria-labelledby="navtab-flows">
     <section class="card">
       <h2>Test flows</h2>
       <div id="flow-list"></div>
       <div class="row" style="margin-top:10px">
         <button class="act" id="flow-add">+ Add flow</button>
         <button class="act ghost" id="flow-load">Load current</button>
-        <button class="act ghost" id="flow-apply">Apply (config.load)</button>
+        <button class="act" id="flow-apply" title="Program the committed config onto the FPGA (config.load)">Write to card</button>
       </div>
-      <p class="muted">The form authors new flows. <b>Load current</b> pulls the
-        running test config into the YAML editor below (lossless — includes
-        encap/modifiers/match); edit &amp; <b>Apply raw YAML</b> there.</p>
+      <p class="muted">Click a flow to expand its editor. In the editor,
+        <b>Apply edit</b> commits your field changes into the config below (it does
+        <i>not</i> touch the card); <b>Revert</b> discards them. <b>Write to card</b>
+        programs the committed config onto the FPGA. <b>Load current</b> pulls the
+        running config in.</p>
       <div id="flow-msg"></div>
-    </section>
-    <section class="card">
-      <h2>Editor</h2>
-      <div id="flow-edit" class="muted">Add or select a flow to edit.</div>
     </section>
     <details class="adv card" id="flow-yaml-details"><summary>Test-config YAML (running / generated / advanced raw edit)</summary>
       <p class="muted">This is what <b>Apply</b> sends. Edit here directly for features the
@@ -75,12 +74,15 @@
       <div class="row" style="margin-top:8px">
         <button class="act ghost" id="flow-apply-raw">Apply raw YAML</button>
         <button class="act ghost" id="flow-yaml-regen">↻ Regenerate from form</button>
+        <button class="act ghost" id="flow-yaml-save">⭳ Save to file</button>
+        <button class="act ghost" id="flow-yaml-loadfile">⭱ Load from file</button>
+        <input type="file" id="flow-yaml-file" accept=".yaml,.yml,text/yaml,text/plain" style="display:none">
       </div>
     </details>
   </div>
 
   <!-- Forwards -->
-  <div class="tab" id="tab-forwards">
+  <div class="tab" id="tab-forwards" role="tabpanel" aria-labelledby="navtab-forwards">
     <section class="card">
       <h2>Forward (store-and-forward) rules</h2>
       <div id="fwd-list"></div>
@@ -94,7 +96,7 @@
   </div>
 
   <!-- Control -->
-  <div class="tab" id="tab-control">
+  <div class="tab" id="tab-control" role="tabpanel" aria-labelledby="navtab-control">
     <section class="card">
       <h2>Test orchestration</h2>
       <div class="row">
@@ -112,7 +114,7 @@
   </div>
 
   <!-- Environment -->
-  <div class="tab" id="tab-env">
+  <div class="tab" id="tab-env" role="tabpanel" aria-labelledby="navtab-env">
     <section class="card">
       <h2>Environment config (rarely changed)</h2>
       <p class="muted">The daemon's <code>-e</code> file (system / cards / logical_interfaces /
