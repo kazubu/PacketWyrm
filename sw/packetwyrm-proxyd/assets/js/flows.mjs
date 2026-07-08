@@ -12,24 +12,9 @@ import { $, $$, el } from "./dom.mjs";
 import { rpc, showMsg } from "./rpc.mjs";
 import { confirmDialog, withPending } from "./ui.mjs";
 import { state, newFlow, flowFromJson, fwdFromJson, MOD_FIELDS } from "./state.mjs";
-import { buildTestYaml, validateYaml, fieldError, flowErrors } from "./yaml.mjs";
-import { renderFwdList, renderFwdEdit } from "./forwards.mjs";
-
-// Whether the raw YAML editor holds manual edits the form must NOT clobber.
-let rawDirty = false;
-function setRawDirty(d) {
-  rawDirty = d;
-  const h = $("#flow-yaml-hint");
-  if (h) { h.textContent = d
-    ? "Raw YAML has manual edits — form changes won't overwrite it. Use “Apply raw YAML”, or “Regenerate from form” to discard these edits."
-    : ""; }
-}
-
-const clone = o => JSON.parse(JSON.stringify(o));
-// Staged working copy per flow object (edits live here until "Apply edit").
-const workingByObj = new WeakMap();
-function workingFor(f) { let w = workingByObj.get(f); if (!w) { w = clone(f); workingByObj.set(f, w); } return w; }
-function flowModified(f) { const w = workingByObj.get(f); return w ? JSON.stringify(w) !== JSON.stringify(f) : false; }
+import { buildTestYaml, validateYaml, fieldError, flowErrors, fwdErrors } from "./yaml.mjs";
+import { renderFwdList } from "./forwards.mjs";
+import { clone, workingFor, peekWorking, modified, dropWorking, isRawDirty, setRawDirty } from "./staging.mjs";
 
 const flowSummary = f =>
   `#${f.id} · ${f.name || "(no name)"} · ${f.tx}→${f.rx} · ${f.l3}/${f.l4} · ${f.rate} ${f.rate_mode || "bps"}`;
@@ -61,8 +46,8 @@ function rateCell(w) {
 function refreshRows() {
   $$("#flow-list details.flow-item").forEach((d, i) => {
     const f = state.flows[i]; if (!f) return;
-    const w = workingByObj.get(f) || f;
-    const mod = flowModified(f);
+    const w = peekWorking(f) || f;
+    const mod = modified(f);
     const sum = d.querySelector(".flow-sum"); if (sum) sum.textContent = flowSummary(w);
     const badge = d.querySelector(".flow-mod"); if (badge) badge.textContent = mod ? "● modified" : "";
     const ap = d.querySelector(".ed-apply"); if (ap) ap.disabled = !mod;
@@ -77,19 +62,19 @@ function renderFlowList() {
   if (!state.flows.length) { box.append(el("div", { class: "muted", text: "No flows. Add one." })); return; }
   state.flows.forEach((f, i) => {
     const open = state.selFlow === i;
-    const w = workingByObj.get(f) || f;
+    const w = peekWorking(f) || f;
     const det = el("details", { class: "flow-item", ...(open ? { open: "1" } : {}) });
     const del = el("button", { class: "danger", text: "del", "aria-label": `delete flow ${f.id}` });
     del.addEventListener("click", async (e) => {
       e.preventDefault(); e.stopPropagation();   // don't toggle the row
       if (!await confirmDialog(`Delete flow ${f.id}${f.name ? ` (${f.name})` : ""}?`, { ok: "Delete", danger: true })) return;
-      workingByObj.delete(f);
+      dropWorking(f);
       const idx = state.flows.indexOf(f); if (idx >= 0) state.flows.splice(idx, 1);   // identity, not render-time i
       state.selFlow = null; refreshFlows();
     });
     det.append(el("summary", {}, [
       el("span", { class: "flow-sum", text: flowSummary(w) }),
-      el("span", { class: "flow-mod", text: flowModified(f) ? "● modified" : "" }),
+      el("span", { class: "flow-mod", text: modified(f) ? "● modified" : "" }),
       del,
     ]));
     const body = el("div", { class: "flow-editor" });
@@ -197,24 +182,47 @@ function buildFlowEditor(box, f) {
     title: "Commit these edits into the config / YAML preview (does NOT write to the card)" });
   const revertBtn = el("button", { class: "act ghost ed-revert", text: "Revert",
     title: "Discard the edits and restore the committed values" });
-  applyBtn.disabled = revertBtn.disabled = !flowModified(f);
+  applyBtn.disabled = revertBtn.disabled = !modified(f);
   applyBtn.addEventListener("click", () => {
     const errs = flowErrors(w);
     if (errs.length) { showMsg("#flow-msg", "err", "Fix these first:\n• " + errs.join("\n• ")); return; }
     const idx = state.flows.indexOf(f);
     if (idx >= 0) { state.flows[idx] = clone(w); state.selFlow = idx; }
-    if (!rawDirty) $("#flow-yaml").value = buildTestYaml();   // committed -> YAML preview
+    if (!isRawDirty()) $("#flow-yaml").value = buildTestYaml();   // committed -> YAML preview
     refreshFlows();
     showMsg("#flow-msg", "ok", `Flow #${w.id} committed to the config. Use “Write to card” to program the FPGA.`);
   });
-  revertBtn.addEventListener("click", () => { workingByObj.delete(f); refreshFlows(); });
+  revertBtn.addEventListener("click", () => { dropWorking(f); refreshFlows(); });
   box.append(el("div", { class: "row flow-actions" }, [applyBtn, revertBtn]));
 }
 
 export function refreshFlows() {
   renderFlowList();
   // Don't clobber the raw editor if the user has manual edits there.
-  if (!rawDirty) $("#flow-yaml").value = buildTestYaml();
+  if (!isRawDirty()) $("#flow-yaml").value = buildTestYaml();
+}
+
+// Shared "Write to card": program the COMMITTED config (flows + forwards) onto
+// the FPGA via config.load. Used by both the Flows and Forwards tabs; msgSel is
+// where to report. Blocks on manual raw-YAML edits, validates flows + forwards,
+// and warns about any uncommitted staged editor edits (across both).
+export async function writeToCard(msgSel) {
+  if (isRawDirty()) {
+    showMsg(msgSel, "warn", "You have manual raw-YAML edits. Use “Apply raw YAML” to write "
+      + "them to the card, or “Regenerate from form” to discard them first.");
+    return;
+  }
+  const errs = [...state.flows.flatMap(flowErrors), ...state.fwds.flatMap(fwdErrors)];
+  if (errs.length) { showMsg(msgSel, "err", "Fix these before writing:\n• " + errs.join("\n• ")); return; }
+  const pending = state.flows.filter(modified).length + state.fwds.filter(modified).length;
+  const warn = pending ? `\n\n${pending} item(s) have uncommitted editor edits — "Apply edit" them first `
+    + "to include them; this writes the committed config only." : "";
+  if (!await confirmDialog("Write this config to the card? It replaces the running test config on the FPGA." + warn, { ok: "Write to card" })) return;
+  const yaml = buildTestYaml();
+  $("#flow-yaml").value = yaml; setRawDirty(false);
+  const r = await rpc({ rpc: "config.load", yaml });
+  if (r.ok) showMsg(msgSel, "ok", `Written to card: ${r.n_flows} flows, ${r.n_classifier_rows} classifier rows`);
+  else showMsg(msgSel, "err", r.error || JSON.stringify(r));
 }
 
 export function initFlows() {
@@ -234,9 +242,9 @@ export function initFlows() {
   // Save the current test-config YAML to a local file (client-side, no daemon).
   $("#flow-yaml-save").addEventListener("click", async () => {
     // Warn if staged editor edits aren't in the YAML yet (same footgun as Write).
-    const pending = state.flows.filter(flowModified).length;
-    if (pending && !rawDirty &&
-        !await confirmDialog(`${pending} flow(s) have uncommitted editor edits not in this YAML `
+    const pending = state.flows.filter(modified).length + state.fwds.filter(modified).length;
+    if (pending && !isRawDirty() &&
+        !await confirmDialog(`${pending} item(s) have uncommitted editor edits not in this YAML `
           + "(Apply edit them first to include). Save the committed YAML anyway?", { ok: "Save" })) return;
     const blob = new Blob([$("#flow-yaml").value], { type: "text/yaml" });
     const url = URL.createObjectURL(blob);
@@ -275,7 +283,7 @@ export function initFlows() {
       state.selFlow = state.flows.length ? 0 : null;
       state.selFwd = state.fwds.length ? 0 : null;
       refreshFlows();
-      renderFwdList(); renderFwdEdit();
+      renderFwdList();
     }
     if (hasYaml) $("#flow-yaml").value = r.yaml;
     $("#flow-yaml-details").open = true;
@@ -283,26 +291,8 @@ export function initFlows() {
       `Loaded ${state.flows.length} flow(s)${state.fwds.length ? ` + ${state.fwds.length} forward(s)` : ""} `
       + "into the form and the YAML editor.");
   }));
-  // Top button: WRITE TO CARD (config.load -> program the committed config on the FPGA).
-  $("#flow-apply").addEventListener("click", e => withPending(e.currentTarget, async () => {
-    // Respect the raw-YAML footgun fix: never silently discard manual raw edits.
-    if (rawDirty) {
-      showMsg("#flow-msg", "warn", "You have manual raw-YAML edits. Use “Apply raw YAML” to write "
-        + "them to the card, or “Regenerate from form” to discard them first.");
-      return;
-    }
-    const errs = state.flows.flatMap(flowErrors);
-    if (errs.length) { showMsg("#flow-msg", "err", "Fix these before writing:\n• " + errs.join("\n• ")); return; }
-    const pending = state.flows.filter(flowModified).length;
-    const warn = pending ? `\n\n${pending} flow(s) have uncommitted editor edits — "Apply edit" them first to include them; ` +
-      "this writes the committed config only." : "";
-    if (!await confirmDialog("Write this config to the card? It replaces the running test config on the FPGA." + warn, { ok: "Write to card" })) return;
-    const yaml = buildTestYaml();
-    $("#flow-yaml").value = yaml; setRawDirty(false);
-    const r = await rpc({ rpc: "config.load", yaml });
-    if (r.ok) showMsg("#flow-msg", "ok", `Written to card: ${r.n_flows} flows, ${r.n_classifier_rows} classifier rows`);
-    else showMsg("#flow-msg", "err", r.error || JSON.stringify(r));
-  }));
+  // Top button: WRITE TO CARD (program the committed config on the FPGA).
+  $("#flow-apply").addEventListener("click", e => withPending(e.currentTarget, () => writeToCard("#flow-msg")));
   $("#flow-apply-raw").addEventListener("click", e => withPending(e.currentTarget, async () => {
     const v = validateYaml($("#flow-yaml").value);
     if (!v.ok) { showMsg("#flow-msg", "err", `YAML syntax error${v.line ? ` (line ${v.line})` : ""}: ${v.msg}`); return; }

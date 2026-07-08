@@ -186,7 +186,10 @@ narrow screens. Tabs:
   the YAML from the model; and the YAML can be **saved to / loaded from a local
   file**. The YAML the form emits is exactly what `packetwyrmd` parses (see
   `yaml-schema.md`).
-- **Forwards** — form editor for store-and-forward rules → `config.load`.
+- **Forwards** — store-and-forward rules with the same expandable-accordion,
+  staged-edit UX as Flows (Apply edit / Revert / "● modified" / Write to card),
+  sharing the working-copy + raw-YAML state (`js/staging.mjs`) and the
+  `writeToCard` path (which validates + warns across flows *and* forwards).
 - **Control** — `test.arm` / `test.start` / `test.stop`, `stats.clear`,
   per-flow `flow.start` / `flow.stop`.
 - **Environment** — `config.get_raw` → edit → `config.save` (see

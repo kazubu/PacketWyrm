@@ -88,11 +88,13 @@
       <div id="fwd-list"></div>
       <div class="row" style="margin-top:10px">
         <button class="act" id="fwd-add">+ Add rule</button>
-        <button class="act ghost" id="fwd-apply">Apply (config.load)</button>
+        <button class="act" id="fwd-apply" title="Program the committed config onto the FPGA (config.load)">Write to card</button>
       </div>
+      <p class="muted">Click a rule to expand its editor. <b>Apply edit</b> commits your
+        changes into the config; <b>Write to card</b> programs the committed config
+        (flows + forwards) onto the FPGA.</p>
       <div id="fwd-msg"></div>
     </section>
-    <section class="card"><h2>Editor</h2><div id="fwd-edit" class="muted">Add a rule to edit.</div></section>
   </div>
 
   <!-- Control -->

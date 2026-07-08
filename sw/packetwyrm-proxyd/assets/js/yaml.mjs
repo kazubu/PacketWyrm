@@ -185,3 +185,24 @@ export function flowErrors(f) {
   });
   return errs;
 }
+
+// Forwards use their OWN validator table: `udp_dst` here is a destination PORT
+// (not a hex classifier mask like in flows), so it must not share flows' CHECK.
+const FWD_CHECK = {
+  ingress: v => intRange(v, 0, 4095), egress: v => intRange(v, 0, 4095),
+  priority: v => isBlank(v) ? null : intRange(v, 0, 65535),
+  ethertype: v => isBlank(v) ? null : (RE_HEX.test(String(v)) ? null : "hex (e.g. 0x0800)"),
+  ip_proto: v => isBlank(v) ? null : intRange(v, 0, 255),
+  udp_dst: v => isBlank(v) ? null : intRange(v, 0, 65535),
+  vlan: v => isBlank(v) ? null : intRange(v, 0, 4095),
+};
+export function fwdFieldError(key, value) { return FWD_CHECK[key] ? FWD_CHECK[key](value) : null; }
+export function fwdErrors(r) {
+  const errs = [];
+  const who = r.name || `${r.ingress}→${r.egress}`;
+  const chk = (label, key, val) => { const e = fwdFieldError(key, val); if (e) errs.push(`forward ${who} ${label}: ${e}`); };
+  chk("ingress", "ingress", r.ingress); chk("egress", "egress", r.egress);
+  chk("priority", "priority", r.priority); chk("ethertype", "ethertype", r.ethertype);
+  chk("ip_proto", "ip_proto", r.ip_proto); chk("udp_dst", "udp_dst", r.udp_dst); chk("vlan", "vlan", r.vlan);
+  return errs;
+}
