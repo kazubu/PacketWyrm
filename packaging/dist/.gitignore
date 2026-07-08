@@ -1,0 +1,4 @@
+# Built packages are artifacts, not source.
+*.deb
+*.buildinfo
+*.changes

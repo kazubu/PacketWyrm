@@ -1,0 +1,41 @@
+#!/bin/sh
+# postrm for packetwyrm
+set -e
+
+PW_USER=packetwyrm
+PW_GROUP=packetwyrm
+
+case "$1" in
+    remove)
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+        ldconfig || true
+        ;;
+    purge)
+        # Remove the system user/group we created and the config tree.
+        if getent passwd "$PW_USER" >/dev/null 2>&1; then
+            deluser --system "$PW_USER" >/dev/null 2>&1 \
+                || userdel "$PW_USER" >/dev/null 2>&1 || true
+        fi
+        if getent group "$PW_GROUP" >/dev/null 2>&1; then
+            delgroup --system "$PW_GROUP" >/dev/null 2>&1 \
+                || groupdel "$PW_GROUP" >/dev/null 2>&1 || true
+        fi
+        # Remove config (including the conffile and any operator edits) and
+        # the runtime/state/log dirs. dpkg removes the conffile itself on
+        # purge, but drop the directory tree too.
+        rm -rf /etc/packetwyrm
+        rm -rf /run/packetwyrm /var/lib/packetwyrm /var/log/packetwyrm
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+        ldconfig || true
+        ;;
+    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+    *)
+        ;;
+esac
+
+exit 0

@@ -245,6 +245,13 @@ INSTALL ?= install
 INST_MK = $(INSTALL) -d
 INST    = $(INSTALL) -m
 
+.PHONY: deb
+# Assemble a binary .deb from the artifacts already in $(BUILD_DIR). Builds
+# the daemon/CLI/proxyd/lib plus the pw_flash/pw_reboot helpers first, then
+# hands off to packaging/build-deb.sh (plain dpkg-deb, no debhelper, no net).
+deb: all pw_flash pw_reboot
+	$(PKGROOT)/packaging/build-deb.sh
+
 .PHONY: install uninstall
 install: all
 	$(INST_MK) $(DESTDIR)$(SBINDIR)

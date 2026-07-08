@@ -1,0 +1,101 @@
+#compdef pktwyrm
+# zsh completion for pktwyrm (PacketWyrm CLI)
+# Install to a directory on $fpath, e.g. /usr/share/zsh/vendor-completions/_pktwyrm
+#
+# Verbs and flags track `pktwyrm --help`; update when the CLI grows new verbs.
+
+_pktwyrm() {
+    local curcontext="$curcontext" state line
+    typeset -A opt_args
+
+    local -a global_flags
+    global_flags=(
+        '--secret[control-socket secret]:secret:'
+        '--env[env config to read the secret from]:env file:_files -g "*.yaml *.yml"'
+        '--host[talk to a remote packetwyrm-proxyd over HTTPS]:host[:port]:'
+        '--socket[daemon control socket path]:socket:_files'
+        '--card[card index]:card:'
+        '--watch[refresh interval ms]:ms:'
+        '--flow[flow id]:flow:'
+        '--port[port index]:port:'
+        '--json[emit JSON]'
+    )
+
+    _arguments -C \
+        $global_flags \
+        '1: :_pktwyrm_verbs' \
+        '*::arg:->args'
+
+    case "$state" in
+        args)
+            case "${line[1]}" in
+                cards|ports|map|load)
+                    _arguments \
+                        $global_flags \
+                        '1:config file:_files -g "*.yaml *.yml"'
+                    ;;
+                flow)
+                    if (( CURRENT == 2 )); then
+                        _values 'flow subcommand' show start stop stats
+                    else
+                        case "${line[2]}" in
+                            show)
+                                _arguments '1:config file:_files -g "*.yaml *.yml"' ;;
+                            start|stop)
+                                _arguments $global_flags '1:flow id:' ;;
+                            *)
+                                _arguments $global_flags ;;
+                        esac
+                    fi
+                    ;;
+                test)
+                    if (( CURRENT == 2 )); then
+                        _values 'test subcommand' arm start stop
+                    else
+                        _arguments $global_flags
+                    fi
+                    ;;
+                rpc)
+                    if (( CURRENT == 2 )); then
+                        _values 'rpc subcommand' version cards ports flows stats
+                    else
+                        _arguments $global_flags
+                    fi
+                    ;;
+                hist)
+                    if (( CURRENT == 2 )); then
+                        _values 'hist subcommand' latency
+                    else
+                        _arguments $global_flags
+                    fi
+                    ;;
+                stats|latency|sfp|tap)
+                    _arguments $global_flags ;;
+                *)
+                    _arguments $global_flags ;;
+            esac
+            ;;
+    esac
+}
+
+_pktwyrm_verbs() {
+    local -a verbs
+    verbs=(
+        'cards:discover or list PacketWyrm cards'
+        'ports:list configured ports'
+        'map:show port -> logical-if map'
+        'load:parse+validate+compile a config (or load into a running daemon)'
+        'flow:show/start/stop flows and per-flow stats'
+        'rpc:raw RPC (version/cards/ports/flows/stats)'
+        'stats:live port/flow statistics'
+        'latency:per-flow one-way latency'
+        'sfp:SFP identifier + DOM'
+        'tap:host-plane TAP status + stats'
+        'test:arm/start/stop the test'
+        'hist:latency histogram'
+        'version:print version'
+    )
+    _describe -t verbs 'pktwyrm verb' verbs
+}
+
+_pktwyrm "$@"

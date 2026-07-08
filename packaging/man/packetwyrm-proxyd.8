@@ -1,0 +1,57 @@
+.TH PACKETWYRM-PROXYD 8 "2026-07-09" "PacketWyrm" "PacketWyrm Manual"
+.SH NAME
+packetwyrm-proxyd \- PacketWyrm Web GUI / remote-RPC gateway
+.SH SYNOPSIS
+.B packetwyrm-proxyd
+.RI [ options ]
+.SH DESCRIPTION
+.B packetwyrm-proxyd
+is a TLS-terminating relay in front of the
+.BR packetwyrmd (8)
+control socket. It serves the embedded Web GUI and relays
+.B POST /api/rpc
+requests to the daemon's Unix control socket. The daemon remains the sole
+authority for the access secret, which the gateway forwards verbatim.
+.PP
+The gateway holds no hardware and runs unprivileged (as the
+.B packetwyrm
+user/group), reaching the daemon socket through its group membership.
+.SH OPTIONS
+.TP
+.BI --listen " ADDR:PORT"
+Bind address (default \fI0.0.0.0:8443\fR). The packaged unit overrides this to
+\fI127.0.0.1:8443\fR so a fresh install starts cleanly.
+.TP
+.BI --socket " PATH"
+Daemon control socket (default \fI/run/packetwyrm/packetwyrmd.sock\fR).
+.TP
+.BI --tls-cert " FILE"
+TLS certificate (PEM); default self-signed.
+.TP
+.BI --tls-key " FILE"
+TLS private key (PEM).
+.TP
+.B --no-tls
+Serve plain HTTP (localhost / SSH tunnel only).
+.TP
+.B --insecure-no-auth
+Allow a non-loopback bind even if the daemon has no secret configured.
+.TP
+.BI --allowed-host " NAME[,NAME...]"
+Additional Host header values accepted on \fBPOST /api/rpc\fR (anti
+DNS-rebinding). localhost, 127.0.0.1, [::1] and the \fB--listen\fR address are
+always accepted.
+.TP
+.BR -h ", " --help
+Show the help text.
+.SH SECURITY
+A public (0.0.0.0) bind fail-closes unless
+.B system.secret
+is set in the env config. To expose the GUI, set the secret and change
+.B --listen
+to
+.I 0.0.0.0:8443
+deliberately, then firewall it.
+.SH SEE ALSO
+.BR packetwyrmd (8),
+.BR pktwyrm (1)

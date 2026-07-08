@@ -1,0 +1,107 @@
+.TH PACKETWYRMD 8 "2026-07-09" "PacketWyrm" "PacketWyrm Manual"
+.SH NAME
+packetwyrmd \- PacketWyrm tester daemon
+.SH SYNOPSIS
+.B packetwyrmd
+.RB [ \-e
+.IR ENV ]
+.RB [ \-t
+.IR TEST ]
+.RB [ \-n ]
+.RB [ \-v ]
+.RB [ \-s
+.IR INTERVAL_MS ]
+.RB [ \-S
+.IR SERVO_MS ]
+.RB [ \-C
+.IR CAL_TICKS ]
+.RB [ \-p
+.RI [ ADDR :] PORT ]
+.RB [ \-F ]
+.SH DESCRIPTION
+.B packetwyrmd
+is the PacketWyrm tester daemon. It opens the FPGA card backend(s), runs the
+per-card host-plane workers, and serves a JSON-RPC control socket that
+.BR pktwyrm (1)
+and the Web GUI gateway
+.BR packetwyrm-proxyd (8)
+connect to.
+.PP
+It reads an environment config (system / cards / logical_interfaces / secret)
+and, optionally, a test config (flows / forwards) attached onto it.
+.SH OPTIONS
+.TP
+.BI \-e " ENV"
+Environment config: system/cards/logical_interfaces/secret
+(default \fI/etc/packetwyrm/packetwyrm.yaml\fR; may also carry flows for a
+combined single-file setup).
+.B \-c
+is an alias.
+.TP
+.BI \-t " TEST"
+Test config: flows/forwards, attached onto the env.
+.TP
+.B \-n
+Dry run: parse + validate + compile, then exit.
+.TP
+.B \-v
+Verbose.
+.TP
+.BI \-s " INTERVAL_MS"
+Stats print interval (default 5000, 0 = off).
+.TP
+.BI \-S " SERVO_MS"
+Cross-card lat_correction servo period (default 10; smaller = less ppm-skew
+residual between updates \(em 1.6 ppm x period; 10 ms ~= 16 ns, 1 ms ~= 1.6 ns.
+The J5 edge updates every ~210 us so below that is moot).
+.TP
+.BI \-C " CAL_TICKS"
+Cross-card one-way latency calibration (signed ticks, 6.4 ns each; default 0).
+Added to the servo correction antisymmetrically by card-id order
+(tx<rx:+, tx>rx:-) to cancel the direction-asymmetric TX/RX capture bias so both
+directions read the true one-way latency. Set to ~half the measured
+inter-direction gap (2-card rig).
+.TP
+.BI \-p " [ADDR:]PORT"
+Bind a Prometheus \fI/metrics\fR exporter; ADDR defaults to 127.0.0.1
+(loopback). Use \fI0.0.0.0:PORT\fR to expose it on all interfaces
+(unauthenticated \(em opt in deliberately). 0/unset leaves it disabled.
+.TP
+.B \-F
+Allow falling back to the no-op fake backend when a card's BAR cannot be opened
+(dev/CI; default: error).
+.SH CAPABILITIES
+The daemon runs as root and needs the full root capability set: it mmaps the
+FPGA PCI BAR (CAP_SYS_RAWIO), reads/writes PCI config and power sysfs
+(CAP_SYS_ADMIN), creates TAP devices (CAP_NET_ADMIN), and drives VFIO. Do not
+clamp the CapabilityBoundingSet in the systemd unit.
+.SH METRICS
+When \fB\-p\fR is given, an unauthenticated Prometheus text exporter is served on
+\fI/metrics\fR. Exported series include
+.BR packetwyrm_build_info ,
+.BR packetwyrm_card_open ,
+.BR packetwyrm_punt_to_tap_ok ,
+.BR packetwyrm_punt_to_tap_dropped ,
+.BR packetwyrm_tap_to_fpga_ok ,
+.BR packetwyrm_tap_to_fpga_dropped ,
+and
+.BR packetwyrm_punt_unknown_lif .
+.SH FILES
+.TP
+.I /etc/packetwyrm/packetwyrm.yaml
+Default environment config.
+.TP
+.I /run/packetwyrm/packetwyrmd.sock
+Control socket (0660 root:packetwyrm in production).
+.SH SEE ALSO
+.BR pktwyrm (1),
+.BR packetwyrm-proxyd (8)
+.SH NOTES
+The packaged systemd unit starts the daemon with the management plane up but does
+.B not
+generate traffic until an explicit
+.B test start
+(via
+.BR pktwyrm (1)).
+The unit is installed disabled; enable it with
+.BR "systemctl enable --now packetwyrm" .
