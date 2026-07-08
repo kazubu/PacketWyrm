@@ -132,7 +132,7 @@ verification (`--ca` / fingerprint pinning) is a future addition.
 Self-contained, no external/CDN dependencies — all served same-origin by proxyd:
 `index.html` is a thin shell that pulls `/css/app.css` and the ES-module app
 under `/js/` (`main.mjs` → `dom` / `rpc` / `format` / `state` / `yaml` / `ui` /
-`flows` / `forwards` / `control` / `dashboard` / `env`). No bundler (native ES
+`flows` / `forwards` / `control` / `dashboard` / `events` / `env`). No bundler (native ES
 modules); libraries are vendored under `assets/vendor/` (currently **js-yaml**,
 loaded as a classic `<script>` so `window.jsyaml` is ready before the module —
 used for client-side YAML syntax validation with line numbers before Apply-raw /
@@ -161,12 +161,30 @@ narrow screens. Tabs:
   counters, with the causing counters incl. per-port FCS from `ports.stats`);
   a **Ports** table with per-port pps/bps + an rx-pps sparkline (FCS/drops red
   when non-zero) + `sfp.info`; **Aggregate counters** (total / per rx-card /
-  per rx-port, with tx/rx frames + pps + bps, thousands-separated); **Flow
-  statistics** with Started/Stopped state, tx/rx frames + pps + bps, rx-pps and
-  latency sparklines, and lost/dup/reorder highlighted red (lossy rows tinted);
-  and a per-flow **latency histogram** (`flow.hist`) that auto-selects the first
-  flow and live-refreshes, with time-unit bucket labels (ns/µs/ms). Rates are
-  shown RAW (no smoothing) so momentary changes stay visible.
+  per rx-port, with tx/rx frames + pps + bps, thousands-separated, plus an
+  aggregate rx-bps sparkline on the Total row); **Flow statistics** with a
+  per-flow **health badge** (client-side, from poll-to-poll deltas: red =
+  lost/dup/reorder increased since the last poll; yellow = `read_ok:false`, tx
+  growing with no rx, or idle with previously-accumulated errors; green = rx
+  flowing with no new errors; grey = **idle** — no tx/rx growth and no
+  accumulated errors, so a programmed-but-not-started flow never reads as
+  broken; a `running:false` field from the daemon, when present, forces idle;
+  the tooltip explains the verdict), Started/Stopped state, tx/rx frames + pps
+  + bps, an rx-bps sparkline and an avg-latency sparkline with a min-max band,
+  and lost/dup/reorder highlighted red (lossy rows tinted); an **Events**
+  timeline card (client-side ring buffer, last 200, newest first, Clear
+  button): each poll diffs per-flow lost/dup/reorder/seq-gap and per-port
+  FCS/drop counters and logs a timestamped entry per positive delta
+  ("12:34:56 flow 3: +5 lost" — answers *when* a soak broke), plus every GUI
+  test action (arm/start/stop/clear, per-flow start/stop); and a per-flow
+  **latency histogram** (`flow.hist`) that auto-selects the first flow and
+  live-refreshes, with time-unit bucket labels (ns/µs/ms), an **overlay of up
+  to 4 flows** (compare checkboxes; grouped color-coded bars + legend) and a
+  **lin/log toggle** for the count axis (log is essential when one bucket
+  dominates). Rates are shown RAW (no smoothing) so momentary changes stay
+  visible; sparkline history is ~120 polls, counter resets (arm/`stats.clear`)
+  render as gaps rather than spikes, and each series' SVG node is cached and
+  updated in place (no per-poll SVG re-creation).
 - **Flows** — each flow is an expandable row (single-open accordion) whose editor
   opens inline, covering the full schema: ports / L2 (incl. `ethertype`) / L3
   v4|v6 / L4 udp|tcp / traffic (incl. `frame_template` test|raw|ip|eth; the rate
@@ -184,14 +202,20 @@ narrow screens. Tabs:
   and the raw-YAML editor; **Apply raw YAML** writes the raw text (js-yaml
   syntax-checks it first, with a line number); **Regenerate from form** rebuilds
   the YAML from the model; and the YAML can be **saved to / loaded from a local
-  file**. The YAML the form emits is exactly what `packetwyrmd` parses (see
-  `yaml-schema.md`).
+  file**. **Copy YAML + CLI** puts the test-config YAML on the clipboard and
+  shows the equivalent copyable command sequence (`pktwyrm load
+  packetwyrm-flows.yaml && pktwyrm test arm && pktwyrm test start`, prefixed
+  with `--host <gateway>` when the GUI isn't served from localhost). The YAML
+  the form emits is exactly what `packetwyrmd` parses (see `yaml-schema.md`).
 - **Forwards** — store-and-forward rules with the same expandable-accordion,
   staged-edit UX as Flows (Apply edit / Revert / "● modified" / Write to card),
   sharing the working-copy + raw-YAML state (`js/staging.mjs`) and the
   `writeToCard` path (which validates + warns across flows *and* forwards).
 - **Control** — `test.arm` / `test.start` / `test.stop`, `stats.clear`,
-  per-flow `flow.start` / `flow.stop`.
+  per-flow `flow.start` / `flow.stop`. Each orchestration button carries a
+  small ⧉ copy-CLI affordance (aria-labelled) that copies the equivalent
+  `pktwyrm test arm|start|stop` / `pktwyrm stats clear` command; every action
+  performed here is also logged to the Dashboard's Events timeline.
 - **Environment** — `config.get_raw` → edit → `config.save` (see
   `rpc-protocol.md`); a banner warns when a topology change requires a
   daemon restart. The `secret` value is shown redacted.

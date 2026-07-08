@@ -42,10 +42,25 @@
     <section class="card"><h2>Aggregate counters</h2><div id="d-agg">…</div></section>
     <section class="card"><h2>Flow statistics</h2><div id="d-flowstats">…</div></section>
     <section class="card">
+      <h2>Events</h2>
+      <div class="row">
+        <span class="muted" style="flex:1">Counter increases (lost / dup / reorder / seq-gap,
+          port FCS / drops) and GUI test actions — newest first, last 200, this browser session.</span>
+        <button class="act ghost" id="ev-clear" style="margin-top:0" aria-label="clear event log">Clear</button>
+      </div>
+      <div id="d-events" role="log" aria-live="off" style="margin-top:8px">…</div>
+    </section>
+    <section class="card">
       <h2>Latency histogram</h2>
-      <div class="row"><label style="margin:0">flow id</label>
-        <select id="hist-flow" style="width:120px"></select></div>
-      <div id="d-hist" style="margin-top:10px">select a flow</div>
+      <div class="row">
+        <label style="margin:0" for="hist-flow">flow id</label>
+        <select id="hist-flow" style="width:120px"></select>
+        <span class="muted">compare (≤4):</span>
+        <span id="hist-compare" role="group" aria-label="overlay additional flows"></span>
+        <label class="chk" style="margin:0"><input type="checkbox" id="hist-log"> <span>log scale</span></label>
+      </div>
+      <div id="hist-legend" style="margin-top:8px"></div>
+      <div id="d-hist" style="margin-top:6px">select a flow</div>
     </section>
   </div>
 
@@ -58,6 +73,13 @@
         <button class="act" id="flow-add">+ Add flow</button>
         <button class="act ghost" id="flow-load">Load current</button>
         <button class="act" id="flow-apply" title="Program the committed config onto the FPGA (config.load)">Write to card</button>
+        <button class="act ghost" id="flow-copy-cli"
+          title="Copy the test-config YAML to the clipboard and show the equivalent pktwyrm commands">⧉ Copy YAML + CLI</button>
+      </div>
+      <div class="cli-snip" id="flow-cli-snip" hidden>
+        <code id="flow-cli-cmd"></code>
+        <button class="copy-cli" id="flow-cli-copy" aria-label="copy the command sequence"
+          title="copy the command sequence">⧉</button>
       </div>
       <p class="muted">Click a flow to expand its editor. In the editor,
         <b>Apply edit</b> commits your field changes into the config below (it does
