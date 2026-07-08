@@ -6,17 +6,53 @@ import { rpc, setConn } from "./rpc.mjs";
 import { TICK_NS, fmt3, fmtTime, fmtRate } from "./format.mjs";
 import { statePill } from "./ui.mjs";
 import { healthSeenErr } from "./state.mjs";
+import { sparkline, makeRing } from "./chart.mjs";
+
+// Raw (un-smoothed) history for sparklines: per-flow rx pps + latency, per-port rx pps.
+const flowRxHist = makeRing(40), flowLatHist = makeRing(40), portRxHist = makeRing(40);
 
 function tableFrom(rows, cols) {
   const t = el("table");
   t.append(el("tr", {}, cols.map(c => el("th", { class: c.num ? "num" : "", text: c.h }))));
   rows.forEach(row => t.append(el("tr", {}, cols.map(c => {
+    if (c.node) return el("td", { class: c.num ? "num" : "" }, [c.node(row)]);   // DOM cell (e.g. sparkline)
     const v = c.get(row);
-    return el("td", { class: c.num ? "num" : "", text: v == null ? "—" : String(v) });
+    const td = el("td", { class: c.num ? "num" : "", text: v == null ? "—" : String(v) });
+    if (c.bad && c.bad(row)) td.style.color = "var(--err)";                       // anomaly highlight
+    return td;
   }))));
   return t;
 }
 function setBox(id, node) { const b = $(id); b.innerHTML = ""; b.append(node); }
+
+// At-a-glance status strip (all tabs). Built from the poll data we already have.
+// The health verdict MIRRORS the Health/LED panel (err_sticky OR any derived
+// error: flow lost/dup/reorder, per-port FCS/drops, host-plane drops) so the bar
+// never reads "ok" while that panel is red.
+function renderStatusBar(cards, fstats, rates, hpstats, portstats) {
+  const bar = $("#statusbar"); if (!bar) return;
+  const enabled = fstats.filter(f => f.enabled).length;
+  let totTx = 0, totRx = 0, totLoss = 0;
+  fstats.forEach(f => { const rt = rates.get(f.id) || {}; totTx += rt.tx || 0; totRx += rt.rx || 0; totLoss += f.lost || 0; });
+  const temps = (cards || []).map(c => c.temp_c).filter(v => v != null);
+  const maxTemp = temps.length ? Math.max(...temps) : null;
+  let derived = false;
+  fstats.forEach(f => { if (f.lost > 0 || f.duplicate > 0 || f.out_of_order > 0) derived = true; });
+  (portstats || []).forEach(p => { if (p.rx_fcs_error > 0 || p.drops > 0) derived = true; });
+  (hpstats || []).forEach(s => { if (s.punt_to_tap_dropped > 0 || s.tap_to_fpga_dropped > 0 || s.punt_unknown_lif > 0) derived = true; });
+  const anyErr = (cards || []).some(c => c.err_sticky === true) || derived;
+  const chip = (label, value, cls = "") => el("span", { class: "chip " + cls },
+    [el("b", { text: label + " " }), el("span", { text: value })]);
+  bar.innerHTML = "";
+  bar.append(
+    chip("test", enabled ? `running (${enabled}/${fstats.length})` : "stopped", enabled ? "ok" : ""),
+    chip("tx", fmtRate(totTx)),
+    chip("rx", fmtRate(totRx)),
+    chip("loss", String(totLoss), totLoss > 0 ? "bad" : "ok"),
+    chip("health", anyErr ? "error" : "ok", anyErr ? "bad" : "ok"),
+    maxTemp != null ? chip("temp", `${fmt3(maxTemp)} °C`, maxTemp >= 90 ? "bad" : (maxTemp >= 80 ? "warn" : "")) : "",
+  );
+}
 // numeric cell that goes red when non-zero (for error counters)
 function errTd(v) {
   const td = el("td", { class: "num", text: v == null ? "—" : String(v) });
@@ -170,12 +206,12 @@ function renderHealth(cards, stats, fstats, metaById, portstats) {
 const lat = (f, k) =>
   (f.latency_valid && f[k] != null) ? fmtTime(f[k] * TICK_NS) : "—";
 function renderFlowStatsTable(fstats, rates) {
-  const cols = ["id", "state", "path (tx→rx)", "tx frm", "tx pps", "tx bps", "rx frm", "rx pps", "rx bps", "lost", "dup", "reorder", "min", "avg", "max"];
+  const cols = ["id", "state", "path (tx→rx)", "tx frm", "tx pps", "tx bps", "rx frm", "rx pps", "rx ~", "rx bps", "lost", "dup", "reorder", "min", "avg", "avg ~", "max"];
   const t = el("table");
   t.append(el("tr", {}, cols.map(h => el("th", { class: /frm|pps|bps|lost|dup|reorder|min|avg|max/.test(h) ? "num" : "", text: h }))));
   fstats.forEach(f => {
     const rt = rates.get(f.id) || {};
-    t.append(el("tr", {}, [
+    const row = el("tr", {}, [
       el("td", { class: "num", text: f.id }),
       el("td", {}, [statePill(!!f.enabled)]),
       el("td", { class: "path", text: `${f.tx_port || "?"} → ${f.rx_port || "?"}` }),
@@ -184,13 +220,17 @@ function renderFlowStatsTable(fstats, rates) {
       el("td", { class: "num", text: rt.txb != null ? fmtRate(rt.txb).replace("/s", "bps") : "—" }),
       el("td", { class: "num", text: f.rx_frames }),
       el("td", { class: "num", text: fmtRate(rt.rx) }),
+      el("td", {}, [sparkline(flowRxHist.get(f.id))]),
       el("td", { class: "num", text: rt.rxb != null ? fmtRate(rt.rxb).replace("/s", "bps") : "—" }),
       errTd(f.lost), errTd(f.duplicate), errTd(f.out_of_order),
       // latency fields are absent when read_ok/latency_valid is false -> show —
       el("td", { class: "num", text: lat(f, "min_latency") }),
       el("td", { class: "num", text: lat(f, "avg_latency") }),
+      el("td", {}, [sparkline(flowLatHist.get(f.id), { color: "var(--ok)" })]),
       el("td", { class: "num", text: lat(f, "max_latency") }),
-    ]));
+    ]);
+    if (f.lost > 0) row.style.background = "rgba(239,68,68,.08)";   // flag lossy flows
+    t.append(row);
   });
   return t;
 }
@@ -260,6 +300,21 @@ export async function poll() {
     });
     rateT = now;
 
+    // Feed sparkline rings with RAW values (no smoothing).
+    (fstats.flows || []).forEach(f => {
+      const rt = rates.get(f.id) || {};
+      flowRxHist.push(f.id, rt.rx || 0);
+      flowLatHist.push(f.id, (f.latency_valid && f.avg_latency != null) ? f.avg_latency * TICK_NS : 0);
+    });
+    const flowIds = (fstats.flows || []).map(f => f.id);
+    flowRxHist.keep(flowIds); flowLatHist.keep(flowIds);
+    (pstats.ports || []).forEach(p => {
+      const k = `${p.card_id}:${p.local_port}`;
+      portRxHist.push(k, (prates.get(k) || {}).rxpps || 0);
+    });
+    portRxHist.keep((pstats.ports || []).map(p => `${p.card_id}:${p.local_port}`));
+    renderStatusBar(cards.cards, fstats.flows || [], rates, stats.stats, pstats.ports);
+
     const metaById = new Map((flowsMeta.flows || []).map(f => [f.id,
       { name: f.name, tx: f.tx_global_port, rx: f.rx_global_port, enabled: f.enabled }]));
 
@@ -279,8 +334,10 @@ export async function poll() {
         { h: "rx bps", get: r => fmtRate(prates.get(`${r.card_id}:${r.local_port}`)?.rxbps), num: 1 },
         { h: "tx pps", get: r => fmtRate(prates.get(`${r.card_id}:${r.local_port}`)?.txpps), num: 1 },
         { h: "tx bps", get: r => fmtRate(prates.get(`${r.card_id}:${r.local_port}`)?.txbps), num: 1 },
+        { h: "rx ~", node: r => sparkline(portRxHist.get(`${r.card_id}:${r.local_port}`)) },
         { h: "rx frm", get: r => r.rx_frames, num: 1 }, { h: "tx frm", get: r => r.tx_frames, num: 1 },
-        { h: "FCS", get: r => r.rx_fcs_error, num: 1 }, { h: "drops", get: r => r.drops, num: 1 },
+        { h: "FCS", get: r => r.rx_fcs_error, num: 1, bad: r => r.rx_fcs_error > 0 },
+        { h: "drops", get: r => r.drops, num: 1, bad: r => r.drops > 0 },
         { h: "unmatched", get: r => r.rx_unmatched, num: 1 }]));
     } else if (ports.ports) setBox("#d-ports", tableFrom(ports.ports, [
       { h: "name", get: r => r.name }, { h: "card", get: r => r.card_id, num: 1 },
@@ -308,17 +365,25 @@ export async function poll() {
       setBox("#d-agg", renderAggregate(fstats.flows, rates, metaById));
       setBox("#d-flowstats", renderFlowStatsTable(fstats.flows, rates));
       const sel = $("#hist-flow"); const cur = sel.value;
-      sel.innerHTML = ""; fstats.flows.forEach(f => sel.append(el("option", { value: f.id, text: f.id })));
-      if (cur) sel.value = cur;
+      sel.innerHTML = ""; fstats.flows.forEach(f => sel.append(el("option", { value: String(f.id), text: f.id })));
+      const ids = fstats.flows.map(f => String(f.id));
+      if (cur && ids.includes(cur)) sel.value = cur;      // keep the user's choice
+      else if (ids.length) sel.value = ids[0];            // auto-select the first flow
+      if (sel.value) renderHist();                        // live-refresh the histogram each poll
     }
     setConn(true, "connected");
   } catch (e) { setConn(false, "no connection"); }
 }
 
+let histBusy = false;
 async function renderHist() {
   const id = $("#hist-flow").value;
-  if (!id) return;
-  const r = await rpc({ rpc: "flow.hist", id: Number(id) });
+  if (!id || histBusy) return;          // skip overlapping in-flight reads (live poll + change)
+  histBusy = true;
+  let r;
+  try { r = await rpc({ rpc: "flow.hist", id: Number(id) }); }
+  finally { histBusy = false; }
+  if ($("#hist-flow").value !== id) return;   // selection changed while in flight -> drop stale
   const box = $("#d-hist"); box.innerHTML = "";
   if (!r.buckets) { box.append(el("div", { class: "muted", text: r.error || "no data" })); return; }
   const max = Math.max(1, ...r.buckets);
