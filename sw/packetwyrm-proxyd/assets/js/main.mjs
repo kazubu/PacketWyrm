@@ -3,7 +3,7 @@ import { $, $$ } from "./dom.mjs";
 import { initSecret } from "./rpc.mjs";
 import { state, newFlow } from "./state.mjs";
 import { initFlows, refreshFlows } from "./flows.mjs";
-import { initForwards, renderFwdList, renderFwdEdit } from "./forwards.mjs";
+import { initForwards, renderFwdList } from "./forwards.mjs";
 import { initControl, renderCtlFlows } from "./control.mjs";
 import { initDashboard, poll } from "./dashboard.mjs";
 import { initEnv } from "./env.mjs";
@@ -41,6 +41,6 @@ initDashboard();
 initEnv();
 
 state.flows = [newFlow()]; refreshFlows();
-renderFwdList(); renderFwdEdit();
+renderFwdList();
 $("#conn").textContent = "connecting…";   // neutral until the first poll resolves
 poll(); setInterval(poll, 1500);
