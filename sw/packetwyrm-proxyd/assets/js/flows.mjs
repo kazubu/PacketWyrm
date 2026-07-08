@@ -3,8 +3,18 @@ import { $, el } from "./dom.mjs";
 import { rpc, showMsg } from "./rpc.mjs";
 import { confirmDialog, withPending } from "./ui.mjs";
 import { state, newFlow, flowFromJson, fwdFromJson, MOD_FIELDS } from "./state.mjs";
-import { buildTestYaml } from "./yaml.mjs";
+import { buildTestYaml, validateYaml, fieldError, flowErrors } from "./yaml.mjs";
 import { renderFwdList, renderFwdEdit } from "./forwards.mjs";
+
+// Whether the raw YAML editor holds manual edits the form must NOT clobber.
+let rawDirty = false;
+function setRawDirty(d) {
+  rawDirty = d;
+  const h = $("#flow-yaml-hint");
+  if (h) { h.textContent = d
+    ? "Raw YAML has manual edits — form changes won't overwrite it. Use “Apply raw YAML”, or “Regenerate from form” to discard these edits."
+    : ""; }
+}
 
 function renderFlowList() {
   const box = $("#flow-list");
@@ -43,8 +53,13 @@ function field(label, obj, key, type = "text", opts = null) {
   input.addEventListener("change", e => {
     let v = type === "checkbox" ? e.target.checked : e.target.value;
     if (type === "number") v = v === "" ? "" : Number(v);
-    obj[key] = v; refreshFlows(false);
+    obj[key] = v;
+    // inline validation: flag the field red as you edit (uses the element ref,
+    // so it's immune to the fe_<key> id collisions between sub-sections).
+    if (type !== "checkbox" && type !== "select") input.classList.toggle("invalid", !!fieldError(key, v));
+    refreshFlows(false);
   });
+  if (type !== "checkbox" && type !== "select") input.classList.toggle("invalid", !!fieldError(key, obj[key]));
   if (type === "checkbox") return el("div", { class: "chk" }, [input, el("span", { text: label })]);
   return el("div", {}, [el("label", { text: label }), input]);
 }
@@ -124,14 +139,28 @@ function renderFlowEdit() {
 export function refreshFlows(reEdit = true) {
   renderFlowList();
   if (reEdit) renderFlowEdit();
-  $("#flow-yaml").value = buildTestYaml();
+  // Don't clobber the raw editor if the user has manual edits there (footgun:
+  // previously any form change silently overwrote hand-edited YAML).
+  if (!rawDirty) $("#flow-yaml").value = buildTestYaml();
 }
 
 export function initFlows() {
   $("#flow-add").addEventListener("click", () => { state.flows.push(newFlow()); state.selFlow = state.flows.length - 1; refreshFlows(); });
+  // Track manual edits to the raw YAML so the form can't silently clobber them.
+  $("#flow-yaml").addEventListener("input", () => setRawDirty(true));
+  // Tab inserts two spaces (YAML) instead of moving focus out of the editor.
+  $("#flow-yaml").addEventListener("keydown", e => {
+    if (e.key !== "Tab") return;
+    e.preventDefault();
+    const ta = e.target, s = ta.selectionStart, en = ta.selectionEnd;
+    ta.value = ta.value.slice(0, s) + "  " + ta.value.slice(en);
+    ta.selectionStart = ta.selectionEnd = s + 2;
+    setRawDirty(true);
+  });
+  $("#flow-yaml-regen").addEventListener("click", () => { $("#flow-yaml").value = buildTestYaml(); setRawDirty(false); });
   $("#flow-load").addEventListener("click", e => withPending(e.currentTarget, async () => {
     const r = await rpc({ rpc: "config.get_test" });
-    if (r.error) { showMsg("#flow-msg", "err", r.error); return; }
+    if (r.error) { showMsg("#flow-msg", "err", r.error); return; }   // keep any manual edits
     const jf = Array.isArray(r.flows) ? r.flows : [];
     const jw = Array.isArray(r.forwards) ? r.forwards : [];
     const hasForm = jf.length || jw.length;
@@ -139,8 +168,11 @@ export function initFlows() {
     if (!hasForm && !hasYaml) {
       showMsg("#flow-msg", "warn", "No test config loaded yet (load one via Apply, "
         + "`pktwyrm load`, or the daemon's -t). Nothing to edit.");
-      return;
+      return;   // nothing loaded -> don't disturb the editor / dirty state
     }
+    // A successful load intentionally replaces the editor -> clear dirty BEFORE
+    // refreshFlows so it regenerates, then (below) overwrite with the raw YAML.
+    setRawDirty(false);
     // Populate the form model from the structured flows/forwards…
     if (hasForm) {
       state.flows = jf.map(flowFromJson);
@@ -158,14 +190,20 @@ export function initFlows() {
       + "into the form and the YAML editor. Edit above, then Apply.");
   }));
   $("#flow-apply").addEventListener("click", e => withPending(e.currentTarget, async () => {
+    // Client-side field validation first — no point confirming an invalid config.
+    const errs = state.flows.flatMap(flowErrors);
+    if (errs.length) { showMsg("#flow-msg", "err", "Fix these before applying:\n• " + errs.join("\n• ")); return; }
     if (!await confirmDialog("Apply this config? It replaces the running test config on the FPGA.", { ok: "Apply" })) return;
     const yaml = buildTestYaml();
-    $("#flow-yaml").value = yaml;
+    $("#flow-yaml").value = yaml; setRawDirty(false);   // form is the source of truth on a form-apply
     const r = await rpc({ rpc: "config.load", yaml });
     if (r.ok) showMsg("#flow-msg", "ok", `Loaded: ${r.n_flows} flows, ${r.n_classifier_rows} classifier rows`);
     else showMsg("#flow-msg", "err", r.error || JSON.stringify(r));
   }));
   $("#flow-apply-raw").addEventListener("click", e => withPending(e.currentTarget, async () => {
+    // Catch YAML syntax errors client-side (line number) before the round-trip.
+    const v = validateYaml($("#flow-yaml").value);
+    if (!v.ok) { showMsg("#flow-msg", "err", `YAML syntax error${v.line ? ` (line ${v.line})` : ""}: ${v.msg}`); return; }
     if (!await confirmDialog("Apply the raw YAML? It replaces the running test config on the FPGA.", { ok: "Apply raw" })) return;
     const r = await rpc({ rpc: "config.load", yaml: $("#flow-yaml").value });
     if (r.ok) showMsg("#flow-msg", "ok", `Loaded (raw): ${r.n_flows} flows, ${r.n_classifier_rows} classifier rows`);

@@ -102,3 +102,8 @@ button.pending::after { content: ""; position: absolute; inset: 0; margin: auto;
 /* sparklines */
 svg.spark { display: block; }
 td svg.spark { opacity: .9; }
+
+/* invalid form field (client-side validation) */
+input.invalid { border-color: var(--err); background: rgba(239,68,68,.08); }
+#flow-yaml-hint:not(:empty) { margin: 6px 0; padding: 6px 10px; border-radius: 4px;
+  background: rgba(234,179,8,.12); color: #eab308; font-size: 12px; white-space: pre-wrap; }

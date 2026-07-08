@@ -133,7 +133,18 @@ Self-contained, no external/CDN dependencies — all served same-origin by proxy
 `index.html` is a thin shell that pulls `/css/app.css` and the ES-module app
 under `/js/` (`main.mjs` → `dom` / `rpc` / `format` / `state` / `yaml` / `ui` /
 `flows` / `forwards` / `control` / `dashboard` / `env`). No bundler (native ES
-modules); libraries, if any, are vendored under `assets/vendor/`. Tabs:
+modules); libraries are vendored under `assets/vendor/` (currently **js-yaml**,
+loaded as a classic `<script>` so `window.jsyaml` is ready before the module —
+used for client-side YAML syntax validation with line numbers before Apply-raw /
+Env Save). Shared UX widgets (toasts, a confirm modal, an async-button/pending
+helper) and inline-SVG sparklines live in `js/ui.mjs` + `js/chart.mjs`.
+
+UX niceties: destructive actions confirm via a modal and every RPC button shows a
+pending state; a sticky status bar + anomaly highlighting + sparklines make the
+dashboard scannable (rates are raw, deliberately not smoothed); the Flows raw-YAML
+editor tracks manual edits so a form change can't silently clobber them (with a
+"Regenerate from form" escape hatch), validates fields (MAC/port/range/hex) before
+Apply, and inserts spaces on Tab. Tabs:
 
 - **Dashboard** — polls every ~1.5 s: a **Versions** panel (packetwyrmd via
   `version`, packetwyrm-proxyd via `GET /proxyd/version`, per-card FPGA

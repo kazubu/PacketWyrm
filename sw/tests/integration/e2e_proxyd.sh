@@ -124,6 +124,10 @@ check "query string stripped before lookup" '200' \
     "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PLAIN_PORT/js/main.mjs?v=1")"
 check "response carries CSP header" 'script-src' \
     "$(curl -s -D - -o /dev/null http://127.0.0.1:$PLAIN_PORT/)"
+check "vendored js-yaml served" '200' \
+    "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PLAIN_PORT/vendor/js-yaml.min.js)"
+check "GET / pulls in js-yaml" '/vendor/js-yaml.min.js' \
+    "$(curl -s http://127.0.0.1:$PLAIN_PORT/)"
 check "path traversal 404 (no filesystem)" '404' \
     "$(curl -s -o /dev/null -w '%{http_code}' --path-as-is "http://127.0.0.1:$PLAIN_PORT/../etc/passwd")"
 # secret required: without it we get unauthorized, with it we get version.
