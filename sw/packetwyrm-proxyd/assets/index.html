@@ -9,6 +9,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PacketWyrm</title>
 <link rel="stylesheet" href="/css/app.css">
+<!-- js-yaml (UMD, vendored same-origin) sets window.jsyaml; a classic script so
+     it runs before the deferred ES module. Used for client-side YAML syntax
+     validation (line numbers) before Apply/Save. -->
+<script src="/vendor/js-yaml.min.js"></script>
 </head>
 <body>
 <header>
@@ -66,8 +70,12 @@
     <details class="adv card" id="flow-yaml-details"><summary>Test-config YAML (running / generated / advanced raw edit)</summary>
       <p class="muted">This is what <b>Apply</b> sends. Edit here directly for features the
         form doesn't cover (encap, modifiers, match masks); raw edits win on Apply-raw.</p>
+      <div id="flow-yaml-hint" class="muted"></div>
       <textarea id="flow-yaml"></textarea>
-      <button class="act ghost" id="flow-apply-raw">Apply raw YAML</button>
+      <div class="row" style="margin-top:8px">
+        <button class="act ghost" id="flow-apply-raw">Apply raw YAML</button>
+        <button class="act ghost" id="flow-yaml-regen">↻ Regenerate from form</button>
+      </div>
     </details>
   </div>
 

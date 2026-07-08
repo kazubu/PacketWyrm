@@ -26,6 +26,25 @@ For where work is going next, see `NEXT-STEPS.md`.
     to cover multi-file serving + content-types + traversal (49/49).
 
 ### Added
+  - **Web GUI UX pass (action safety, live monitoring, config editing).** Built on
+    the ES-module split above:
+    - *Action safety + feedback:* destructive actions (Stop all, delete flow/
+      forward, Apply, Env Save) now confirm via a modal; every RPC button runs
+      under a pending state (disable + spinner, no double-submit); results surface
+      as auto-dismissing toasts; the connection badge starts at "connecting…".
+    - *Live monitoring:* a sticky at-a-glance status bar (test/tx/rx/loss/health/
+      temp, health mirroring the Health panel); anomaly highlighting (lossy flow
+      rows + per-port FCS/drops go red); inline-SVG sparklines for per-flow rx pps
+      + latency and per-port rx pps (RAW — no rate smoothing, so momentary changes
+      stay visible); the latency histogram auto-selects the first flow and
+      live-refreshes (with a stale-result guard).
+    - *Config editing:* vendored **js-yaml** (same-origin `/vendor/`) gives
+      client-side YAML syntax validation with line numbers before Apply-raw / Env
+      Save; light inline field validation (MAC / port / range / hex) flags bad
+      fields red and blocks Apply; the raw-YAML footgun is fixed (form changes no
+      longer silently clobber hand-edited YAML — a dirty-state hint + "Regenerate
+      from form" button make the relationship explicit); the YAML editor inserts
+      spaces on Tab; Env Save shows a diff vs the loaded file before writing.
   - **Per-flow tx/rx byte counters (real HW) + tx/rx bps.** The RTL had no
     per-flow byte counters, so `flow.stats` tx_bytes/rx_bytes were always 0 and
     the dashboard's bps read blank. Added true byte accumulators: the generator

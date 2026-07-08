@@ -106,3 +106,82 @@ export function buildTestYaml() {
   if (state.fwds.length)  out += "forwards:\n" + state.fwds.map(fwdYaml).join("\n") + "\n";
   return out || "flows: []\n";
 }
+
+/* ---- validation --------------------------------------------------------- */
+/* Client-side YAML syntax check via the vendored js-yaml (window.jsyaml). Gives
+ * an immediate line number before we round-trip to the daemon. Returns
+ * {ok:true} or {ok:false, line, msg}. If the lib is somehow absent, we don't
+ * block (the daemon still validates). */
+export function validateYaml(text) {
+  const j = (typeof window !== "undefined") ? window.jsyaml : undefined;
+  if (!j) return { ok: true };
+  try { j.load(text); return { ok: true }; }
+  catch (e) {
+    const line = (e && e.mark && typeof e.mark.line === "number") ? e.mark.line + 1 : null;
+    return { ok: false, line, msg: (e && (e.reason || e.message)) || "invalid YAML" };
+  }
+}
+
+const isBlank = v => v === "" || v == null;
+const asInt = v => (typeof v === "number") ? v : Number(String(v).trim());
+const RE_MAC = /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/;
+const RE_HEX = /^(0x)?[0-9a-fA-F]+$/;
+function intRange(v, lo, hi) {
+  const n = asInt(v);
+  return (Number.isInteger(n) && n >= lo && n <= hi) ? null : `must be an integer ${lo}–${hi}`;
+}
+// Per-field-KEY validator (keys are the model keys used by the form). Blank is
+// accepted for optional fields; required ones are enforced by range.
+const CHECK = {
+  src_mac: v => RE_MAC.test(String(v)) ? null : "not a MAC (aa:bb:cc:dd:ee:ff)",
+  dst_mac: v => RE_MAC.test(String(v)) ? null : "not a MAC (aa:bb:cc:dd:ee:ff)",
+  inner_src_mac: v => isBlank(v) ? null : (RE_MAC.test(String(v)) ? null : "not a MAC"),
+  inner_dst_mac: v => isBlank(v) ? null : (RE_MAC.test(String(v)) ? null : "not a MAC"),
+  sport: v => intRange(v, 0, 65535), dport: v => intRange(v, 0, 65535),
+  ttl:   v => isBlank(v) ? null : intRange(v, 0, 255),
+  vlan:  v => isBlank(v) ? null : intRange(v, 0, 4095),
+  dscp:  v => isBlank(v) ? null : intRange(v, 0, 63),
+  frame_len: v => intRange(v, 1, 16384),
+  id: v => intRange(v, 0, 4294967295), tx: v => intRange(v, 0, 4095), rx: v => intRange(v, 0, 4095),
+  rate: v => intRange(v, 0, Number.MAX_SAFE_INTEGER),
+  tcp_flags: v => isBlank(v) ? null : (RE_HEX.test(String(v)) ? null : "hex (e.g. 0x18)"),
+  ethertype: v => isBlank(v) ? null : (RE_HEX.test(String(v)) ? null : "hex (e.g. 0x0800)"),
+  udp_dst: v => isBlank(v) ? null : (RE_HEX.test(String(v)) ? null : "hex mask"),
+  ipv4_dst: v => isBlank(v) ? null : (RE_HEX.test(String(v)) ? null : "hex mask"),
+  ipv6_dst_prefix: v => isBlank(v) ? null : intRange(v, 0, 128),
+  ipv6_src_prefix: v => isBlank(v) ? null : intRange(v, 0, 128),
+  mask: v => isBlank(v) ? null : ((RE_HEX.test(String(v)) || String(v).includes(":")) ? null : "hex or IPv6 literal"),
+};
+// Returns an error string for (key,value) or null. Unvalidated keys -> null.
+export function fieldError(key, value) {
+  return CHECK[key] ? CHECK[key](value) : null;
+}
+// Aggregate the human-readable errors for a whole flow (for Apply blocking).
+export function flowErrors(f) {
+  const errs = [];
+  const chk = (label, key, val) => { const e = fieldError(key, val); if (e) errs.push(`flow ${f.id} ${label}: ${e}`); };
+  chk("src_mac", "src_mac", f.src_mac); chk("dst_mac", "dst_mac", f.dst_mac);
+  chk("src port", "sport", f.sport);    chk("dst port", "dport", f.dport);
+  chk("ttl", "ttl", f.ttl); chk("vlan", "vlan", f.vlan); chk("frame_len", "frame_len", f.frame_len);
+  chk("tx port", "tx", f.tx); chk("rx port", "rx", f.rx);
+  if (f.l4 === "tcp") chk("tcp_flags", "tcp_flags", f.tcp_flags);
+  chk("ethertype", "ethertype", f.ethertype);
+  const e = f.encap || {};
+  if (e.type && e.type !== "none") {
+    chk("encap ttl", "ttl", e.ttl); chk("encap dscp", "dscp", e.dscp);
+    chk("encap inner src_mac", "inner_src_mac", e.inner_src_mac);
+    chk("encap inner dst_mac", "inner_dst_mac", e.inner_dst_mac);
+  }
+  // advanced: match masks + modifier masks (these can also go red inline, so
+  // aggregate them here too -- otherwise a red field would still let Apply run).
+  const m = f.match || {};
+  ["udp_dst", "ipv4_dst", "ipv6_dst_prefix", "ipv6_src_prefix"].forEach(k => {
+    const e2 = fieldError(k, m[k]); if (e2) errs.push(`flow ${f.id} match.${k}: ${e2}`);
+  });
+  const mods = f.mods || {};
+  Object.keys(mods).forEach(k => {
+    const e2 = fieldError("mask", mods[k] && mods[k].mask);
+    if (e2) errs.push(`flow ${f.id} mod ${k} mask: ${e2}`);
+  });
+  return errs;
+}
