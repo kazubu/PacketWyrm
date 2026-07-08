@@ -10,8 +10,14 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ### Added
   - **UX sweep (2026-07-09): explicit test start, richer CLI, GUI, packaging,
-    observability.** SW/GUI/packaging only (no RTL); validated on the fake
-    backend + all test suites, HW smoke pending.
+    observability.** SW/GUI/packaging only (no RTL). Validated on the fake
+    backend + all test suites (unit 531, e2e_smoke, e2e_proxyd 51, tinet,
+    schema) AND HW-smoked on arran 07:00.0 (build 0x6a4d2892): config.load
+    leaves flows idle (tx=rx=0) until `test run`, which PASSed at line rate
+    (36.7M frames, loss=0); a 33-flow config was rejected with the concrete
+    "33 requested but device supports 32"; per-flow Prometheus metrics served
+    with real latency (min 198.4 / avg 204.8 / max 217.6 ns); `firmware update`
+    wrote+verified the 12.3 MB boot image live over PCIe.
     - **Explicit test start (behavior change).** `packetwyrmd` no longer puts
       traffic on the wire when flows are programmed. Flows are staged IDLE at
       startup and on every `config.load`; generation begins only at an explicit
