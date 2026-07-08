@@ -88,3 +88,17 @@ button.pending::after { content: ""; position: absolute; inset: 0; margin: auto;
 .modal-msg { white-space: pre-wrap; margin-bottom: 14px; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .modal-actions button { margin-top: 0; }
+
+/* at-a-glance status bar (sticky under the nav, shown on every tab) */
+.statusbar { position: sticky; top: 0; z-index: 50; display: flex; flex-wrap: wrap; gap: 8px;
+  padding: 8px 18px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.statusbar:empty { display: none; }
+.chip { font-size: 12px; padding: 3px 10px; border-radius: 12px; background: var(--input);
+  border: 1px solid var(--line); color: var(--ink); white-space: nowrap; }
+.chip b { color: var(--dim); font-weight: 600; }
+.chip.ok   { border-color: rgba(34,197,94,.5); }
+.chip.warn { border-color: #eab308; color: #eab308; }
+.chip.bad  { border-color: var(--err); color: var(--err); background: rgba(239,68,68,.10); }
+/* sparklines */
+svg.spark { display: block; }
+td svg.spark { opacity: .9; }
