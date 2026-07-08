@@ -2314,6 +2314,7 @@ static int promex_listen(const char *addr, int port, int *out_fd) {
 
 static size_t promex_build_body(char *out, size_t cap,
                                 const struct pw_config *cfg,
+                                const struct pw_program *prog,
                                 struct card_runtime cards[],
                                 struct pw_host_plane *hps[MAX_CARDS]) {
     size_t n = 0;
@@ -2356,12 +2357,79 @@ static size_t promex_build_body(char *out, size_t cap,
         APPENDF("packetwyrm_tap_to_fpga_dropped{card=\"%u\"} %lu\n",  id, (unsigned long)tdrop);
         APPENDF("packetwyrm_punt_unknown_lif{card=\"%u\"} %lu\n",     id, (unsigned long)unk);
     }
+
+    /* Per-flow measurement metrics. Reuse build_flow_stats (the flow.stats RPC
+     * data path: snapshots every card, aggregates via prog->flow_meta) and walk
+     * its JSON so the exporter and the CLI/GUI always agree. Emitted only when a
+     * program is loaded. Labeled by flow id + name so Grafana can group. */
+    if (prog && prog->n_flow_meta > 0) {
+        struct json_object *fs = build_flow_stats(cfg, prog, cards, -1);
+        struct json_object *arr;
+        if (fs && json_object_object_get_ex(fs, "flows", &arr) &&
+            json_object_get_type(arr) == json_type_array) {
+            APPENDF("# HELP packetwyrm_flow_tx_frames Frames transmitted per flow\n");
+            APPENDF("# TYPE packetwyrm_flow_tx_frames counter\n");
+            APPENDF("# HELP packetwyrm_flow_rx_frames Frames received per flow\n");
+            APPENDF("# TYPE packetwyrm_flow_rx_frames counter\n");
+            APPENDF("# HELP packetwyrm_flow_tx_bytes Bytes transmitted per flow\n");
+            APPENDF("# TYPE packetwyrm_flow_tx_bytes counter\n");
+            APPENDF("# HELP packetwyrm_flow_rx_bytes Bytes received per flow\n");
+            APPENDF("# TYPE packetwyrm_flow_rx_bytes counter\n");
+            APPENDF("# HELP packetwyrm_flow_lost_packets Estimated lost packets per flow\n");
+            APPENDF("# TYPE packetwyrm_flow_lost_packets counter\n");
+            APPENDF("# HELP packetwyrm_flow_duplicate_packets Duplicate packets per flow\n");
+            APPENDF("# TYPE packetwyrm_flow_duplicate_packets counter\n");
+            APPENDF("# HELP packetwyrm_flow_out_of_order_packets Out-of-order packets per flow\n");
+            APPENDF("# TYPE packetwyrm_flow_out_of_order_packets counter\n");
+            APPENDF("# HELP packetwyrm_flow_latency_ns One-way latency per flow (nanoseconds)\n");
+            APPENDF("# TYPE packetwyrm_flow_latency_ns gauge\n");
+            size_t nf = json_object_array_length(arr);
+            for (size_t i = 0; i < nf; i++) {
+                struct json_object *f = json_object_array_get_idx(arr, i), *v;
+                int id = 0; const char *nm = "";
+                if (json_object_object_get_ex(f, "id", &v)) id = json_object_get_int(v);
+                if (json_object_object_get_ex(f, "name", &v)) nm = json_object_get_string(v);
+                #define FLOWMETRIC(field, key) do { \
+                    if (json_object_object_get_ex(f, key, &v)) \
+                        APPENDF("packetwyrm_flow_" field "{flow=\"%d\",name=\"%s\"} %lld\n", \
+                                id, nm, (long long)json_object_get_int64(v)); \
+                } while (0)
+                FLOWMETRIC("tx_frames", "tx_frames");
+                FLOWMETRIC("rx_frames", "rx_frames");
+                FLOWMETRIC("tx_bytes",  "tx_bytes");
+                FLOWMETRIC("rx_bytes",  "rx_bytes");
+                FLOWMETRIC("lost_packets", "lost");
+                FLOWMETRIC("duplicate_packets", "duplicate");
+                FLOWMETRIC("out_of_order_packets", "out_of_order");
+                #undef FLOWMETRIC
+                /* Latency is in ns already in the JSON (min/avg/max); export avg
+                 * as the gauge plus min/max as labeled stat variants. */
+                /* Latency in the JSON is in data-plane TICKS (6.4 ns); convert
+                 * to ns for the exporter. ns = ticks * 1e9 / clock_hz. */
+                struct json_object *lv;
+                if (json_object_object_get_ex(f, "latency_valid", &lv) &&
+                    json_object_get_boolean(lv)) {
+                    static const struct { const char *key, *stat; } lat[] = {
+                        {"min_latency","min"}, {"avg_latency","avg"}, {"max_latency","max"} };
+                    for (size_t k = 0; k < 3; k++) {
+                        if (!json_object_object_get_ex(f, lat[k].key, &v)) continue;
+                        double ns = (double)json_object_get_int64(v) * 1e9
+                                    / (double)PWFPGA_DATA_PLANE_CLOCK_HZ;
+                        APPENDF("packetwyrm_flow_latency_ns{flow=\"%d\",name=\"%s\",stat=\"%s\"} %.1f\n",
+                                id, nm, lat[k].stat, ns);
+                    }
+                }
+            }
+        }
+        if (fs) json_object_put(fs);
+    }
     #undef APPENDF
     return n;
 }
 
 static void promex_handle(int cfd,
                           const struct pw_config *cfg,
+                          const struct pw_program *prog,
                           struct card_runtime cards[],
                           struct pw_host_plane *hps[MAX_CARDS]) {
     /* Read until \r\n\r\n or some limit; we don't actually parse the
@@ -2371,8 +2439,10 @@ static void promex_handle(int cfd,
     if (n <= 0) return;
     req[n] = 0;
 
-    char body[16384];
-    size_t bn = promex_build_body(body, sizeof(body), cfg, cards, hps);
+    /* Sized for the management metrics + per-flow lines (NUM_FLOWS x ~10
+     * series x ~80 B); comfortably covers 32 flows. */
+    static char body[65536];
+    size_t bn = promex_build_body(body, sizeof(body), cfg, prog, cards, hps);
 
     char hdr[256];
     int hn = snprintf(hdr, sizeof(hdr),
@@ -2704,7 +2774,7 @@ int main(int argc, char **argv) {
                             "dropping connection\n");
                     close(cfd);
                 } else {
-                    promex_handle(cfd, cfg, cards, hps);
+                    promex_handle(cfd, cfg, prog, cards, hps);
                     close(cfd);
                 }
             }

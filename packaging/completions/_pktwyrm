@@ -50,11 +50,21 @@ _pktwyrm() {
                     ;;
                 test)
                     if (( CURRENT == 2 )); then
-                        _values 'test subcommand' arm start stop
+                        _values 'test subcommand' arm start stop run
                     else
-                        _arguments $global_flags
+                        _arguments $global_flags '--duration[run duration, e.g. 10s]:duration' '--json[raw JSON output]'
                     fi
                     ;;
+                firmware)
+                    if (( CURRENT == 2 )); then
+                        _values 'firmware subcommand' update
+                    else
+                        _arguments '--card[PCI BDF]:bdf' '--boot[reload after flashing]' \
+                                   '--scratch[write the scratch region]' '*:bin file:_files -g "*.bin"'
+                    fi
+                    ;;
+                init)
+                    _arguments $global_flags '--out[write skeleton to FILE]:file:_files' ;;
                 rpc)
                     if (( CURRENT == 2 )); then
                         _values 'rpc subcommand' version cards ports flows stats
@@ -81,6 +91,7 @@ _pktwyrm() {
 _pktwyrm_verbs() {
     local -a verbs
     verbs=(
+        'init:generate an env-config skeleton from discovered cards'
         'cards:discover or list PacketWyrm cards'
         'ports:list configured ports'
         'map:show port -> logical-if map'
@@ -91,8 +102,9 @@ _pktwyrm_verbs() {
         'latency:per-flow one-way latency'
         'sfp:SFP identifier + DOM'
         'tap:host-plane TAP status + stats'
-        'test:arm/start/stop the test'
+        'test:arm/start/stop/run the test'
         'hist:latency histogram'
+        'firmware:update the card bitstream (local, direct card)'
         'version:print version'
     )
     _describe -t verbs 'pktwyrm verb' verbs

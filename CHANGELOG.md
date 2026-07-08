@@ -8,6 +8,42 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ## Unreleased
 
+### Added
+  - **UX sweep (2026-07-09): explicit test start, richer CLI, GUI, packaging,
+    observability.** SW/GUI/packaging only (no RTL); validated on the fake
+    backend + all test suites, HW smoke pending.
+    - **Explicit test start (behavior change).** `packetwyrmd` no longer puts
+      traffic on the wire when flows are programmed. Flows are staged IDLE at
+      startup and on every `config.load`; generation begins only at an explicit
+      `test.start` (which also clears counters + re-primes cross-card
+      correction for a clean baseline). `test.stop` freezes; `test.arm` honors
+      the current run-state. `-a`/`--autostart` restores the legacy
+      generate-on-program behavior. `test.arm`/`test.start` report
+      `servo_converged` (+ a warning) for cross-card flows armed before the J5
+      servo has a coherent offset.
+    - **CLI**: `test run [--duration 10s]` (arm+start+wait+stop → per-flow
+      PASS/FAIL, CI exit codes); `firmware update <bin> --card BDF [--boot]`
+      (validate + live-flash + verify + optional ICAP reload + build_id check,
+      replacing the pw_flash/pw_reboot two-step); `init [--out FILE]`
+      (env-config skeleton from discovered cards); errno-hinted connect errors
+      (ECONNREFUSED/ENOENT/EACCES...) instead of "rpc call failed"; `--json` on
+      `hist latency`; s/ms/m duration suffixes.
+    - **libpacketwyrm**: `pw_pci_normalize_bdf` (accept `07:00.0` short forms
+      everywhere); capacity rejection now carries the concrete
+      requested/supported flow counts.
+    - **Web GUI**: per-flow health badges, an error-event timeline, rx-bps +
+      latency-band sparklines, copy-as-CLI buttons, and a multi-flow latency
+      histogram overlay with a log-scale toggle.
+    - **Prometheus exporter**: per-flow series (`packetwyrm_flow_tx/rx_frames`,
+      `_tx/rx_bytes`, `_lost/duplicate/out_of_order_packets`, `_latency_ns`
+      with a `stat` label) sourced from the same snapshot as `flow.stats`.
+    - **Packaging**: Ubuntu/Debian `.deb` (`make -C sw deb`), a Grafana
+      dashboard (management + per-flow panels), bash/zsh completions, and
+      man pages. Units install disabled and never auto-start traffic.
+  - **Output contract documented** (`rpc-protocol.md`): JSON is the
+    machine-readable, additive-only surface; the pretty CLI tables are
+    human-only and may change — scripts must use `--json`.
+
 ### Changed
   - **Web GUI: multi-file asset serving + ES-module refactor (foundation for UX
     work).** `packetwyrm-proxyd` now serves a whole `assets/` tree (index.html +

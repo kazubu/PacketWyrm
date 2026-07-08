@@ -20,6 +20,10 @@ over HTTPS).
 .SH OFFLINE COMMANDS
 Operate on a YAML file; no running daemon required.
 .TP
+.B init \fR[\fB--out \fIFILE\fR]
+Generate an environment-config skeleton with the PCI BDFs of the discovered
+cards filled in. Writes to stdout, or to \fIFILE\fR with \fB--out\fR.
+.TP
 .B cards
 Discover real PacketWyrm PCI cards on the host.
 .TP
@@ -75,13 +79,30 @@ Per-flow statistics. Accepts \fB--flow\fR \fIN\fR, \fB--socket\fR \fIPATH\fR,
 \fB--watch\fR \fIMS\fR, \fB--json\fR.
 .TP
 .B test arm|start|stop
-Arm, start or stop the test. Accepts \fB--socket\fR \fIPATH\fR.
+Arm, start or stop the test. Accepts \fB--socket\fR \fIPATH\fR, \fB--json\fR.
+Note the daemon programs flows idle: nothing is transmitted until
+.BR "test start" .
+.TP
+.B test run \fR[\fB--duration \fIT\fR]
+Run one measurement: arm, start, wait \fIT\fR (default 10s; accepts s/ms/m),
+stop, and print a per-flow PASS/FAIL table. Exit 0 on PASS, 1 on FAIL, 2 on
+error \(em suitable for CI. Accepts \fB--socket\fR \fIPATH\fR, \fB--json\fR.
 .TP
 .B hist latency --flow \fIN\fR
-Print the per-flow latency histogram. Accepts \fB--socket\fR \fIPATH\fR.
+Print the per-flow latency histogram. Accepts \fB--socket\fR \fIPATH\fR,
+\fB--json\fR.
 .TP
 .B load \fICONFIG.yaml\fR
 Load a test config into the running daemon. Accepts \fB--socket\fR \fIPATH\fR.
+.SH FIRMWARE
+.TP
+.B firmware update \fIFILE.bin\fR \fB--card \fIBDF\fR \fR[\fB--boot\fR] [\fB--scratch\fR]
+Local, direct-card bitstream update (needs root; the card must be free of a
+running daemon). Validates the image, live-writes the config flash over PCIe,
+verifies, and \(em with \fB--boot\fR \(em triggers an ICAP reload + PCIe rescan
+and confirms the build_id changed. Writes the boot image (offset 0) by default;
+\fB--scratch\fR targets the 0xE00000 dev region instead (incompatible with
+\fB--boot\fR).
 .SH GLOBAL FLAGS
 These may appear anywhere on the command line.
 .TP

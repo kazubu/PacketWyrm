@@ -40,9 +40,9 @@ template variable populated from `label_values(packetwyrm_card_open, card)`).
 The installed package ships this file at
 `/usr/share/packetwyrm/grafana/packetwyrm-dashboard.json`.
 
-## Exported metrics (this build)
+## Exported metrics
 
-The daemon currently exports only management-plane series:
+Management-plane series:
 
 | Metric                              | Type    | Labels     | Meaning |
 |-------------------------------------|---------|------------|---------|
@@ -54,17 +54,22 @@ The daemon currently exports only management-plane series:
 | `packetwyrm_tap_to_fpga_dropped`    | counter | `card`     | TAP-read frames dropped |
 | `packetwyrm_punt_unknown_lif`       | counter | `card`     | Punts with an unbound `logical_if_id` |
 
-## Not yet on `/metrics`
+Per-flow measurement series (present once a test config is loaded; labeled by
+`flow` id and `name`). These come from the same snapshot the `flow.stats` RPC
+uses, so the dashboard, CLI, and GUI always agree:
 
-Per-flow **tx/rx bps**, **loss/dup/ooo** counters, **latency min/avg/max**, and
-**port counters** are not exported as Prometheus series in this build. They are
-available live via the CLI:
+| Metric                                | Type    | Labels             | Meaning |
+|---------------------------------------|---------|--------------------|---------|
+| `packetwyrm_flow_tx_frames`           | counter | `flow`,`name`      | Frames transmitted |
+| `packetwyrm_flow_rx_frames`           | counter | `flow`,`name`      | Frames received |
+| `packetwyrm_flow_tx_bytes`            | counter | `flow`,`name`      | Bytes transmitted (derive bps via `rate()*8`) |
+| `packetwyrm_flow_rx_bytes`            | counter | `flow`,`name`      | Bytes received |
+| `packetwyrm_flow_lost_packets`        | counter | `flow`,`name`      | Estimated lost packets |
+| `packetwyrm_flow_duplicate_packets`   | counter | `flow`,`name`      | Duplicate packets |
+| `packetwyrm_flow_out_of_order_packets`| counter | `flow`,`name`      | Out-of-order packets |
+| `packetwyrm_flow_latency_ns`          | gauge   | `flow`,`name`,`stat` | One-way latency; `stat` ∈ {min,avg,max} |
 
-- `pktwyrm flow stats --json`  — per-flow tx/rx bps, loss/dup/ooo
-- `pktwyrm latency --json`     — per-flow one-way latency min/avg/max
-- `pktwyrm hist latency --flow N` — latency histogram
-- `pktwyrm stats --json`       — port counters
-
-The dashboard has a placeholder panel documenting this. When the daemon starts
-exporting those series, add the corresponding timeseries panels using the
-**real** metric names (do not guess names ahead of the implementation).
+The bundled dashboard has timeseries panels for per-flow bps, loss/dup/ooo, and
+latency, plus a red-on-error total-errors stat. Note bps is derived in Grafana
+(`rate(packetwyrm_flow_tx_bytes[$__rate_interval]) * 8`) rather than exported
+directly, so the rate window is the panel's, not a fixed daemon interval.

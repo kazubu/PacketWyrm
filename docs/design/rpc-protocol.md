@@ -24,6 +24,23 @@ response frame then closes. Max frame size is `PW_IPC_FRAME_MAX`
 { "rpc": "<method>", ...method-specific fields... }
 ```
 
+## Output contract (machine-readable vs. human-readable)
+
+There are two output surfaces with **different** stability guarantees:
+
+- **JSON** (this protocol, and every `pktwyrm ... --json`) is the machine-readable
+  contract. It is backward-compatible: fields are only **added**, never renamed
+  or removed within a protocol version. Consumers must ignore unknown fields and
+  must not depend on key order. (When a field genuinely must be renamed — as
+  `expected_seq` → `last_seq` was, because the value was the last *received*
+  sequence, not the expected one — it is called out in the changelog and, where
+  practical, the old key is kept as an alias for a deprecation window.)
+- **The pretty-printed CLI tables** (`pktwyrm stats`, `flow stats`, `latency`,
+  `test run`, …) are **human-readable only**. Columns may be added, reordered,
+  or relabeled at any time. Do **not** grep or field-split them in scripts —
+  use `--json`. (A CI check that scraped the `flow stats` table broke exactly
+  this way when a `path (tx->rx)` column was added; it was moved to `--json`.)
+
 ## Methods
 
 ### `version`

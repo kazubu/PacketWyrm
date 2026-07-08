@@ -15,7 +15,7 @@ _pktwyrm()
     }
 
     # Top-level verbs (offline + online), from `pktwyrm --help`.
-    local verbs="cards ports map load flow rpc stats latency sfp tap test hist version"
+    local verbs="init cards ports map load flow rpc stats latency sfp tap test hist firmware version"
     local globals="--secret --env --host --socket --card --watch --json --flow --port"
 
     # Complete the value of a flag that takes an argument.
@@ -77,10 +77,24 @@ _pktwyrm()
             ;;
         test)
             if [[ -z "$subverb" ]]; then
-                COMPREPLY=( $(compgen -W "arm start stop" -- "$cur") )
+                COMPREPLY=( $(compgen -W "arm start stop run" -- "$cur") )
+            elif [[ "$subverb" == "run" ]]; then
+                COMPREPLY=( $(compgen -W "--duration --json --socket $globals" -- "$cur") )
             else
-                COMPREPLY=( $(compgen -W "$globals" -- "$cur") )
+                COMPREPLY=( $(compgen -W "--json $globals" -- "$cur") )
             fi
+            ;;
+        firmware)
+            if [[ -z "$subverb" ]]; then
+                COMPREPLY=( $(compgen -W "update" -- "$cur") )
+            elif [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "--card --boot --scratch" -- "$cur") )
+            else
+                COMPREPLY=( $(compgen -f -X '!*.bin' -- "$cur") $(compgen -d -- "$cur") )
+            fi
+            ;;
+        init)
+            COMPREPLY=( $(compgen -W "--out $globals" -- "$cur") )
             ;;
         rpc)
             if [[ -z "$subverb" ]]; then
