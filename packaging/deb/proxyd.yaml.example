@@ -29,5 +29,5 @@ insecure_no_auth: false
 # Extra Host header values accepted on POST /api/rpc (anti DNS-rebinding).
 # localhost, 127.0.0.1, [::1] and the listen address are always accepted;
 # add the hostname/IP clients use to reach a network-exposed gateway.
-# Comma-separated, e.g. "pwhost1.lab,172.21.100.104".
+# Comma-separated, e.g. "gw.example.com,203.0.113.10".
 allowed_hosts: ""

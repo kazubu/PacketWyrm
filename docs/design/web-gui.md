@@ -61,7 +61,7 @@ listen: "0.0.0.0:8443"
 socket: "/run/packetwyrm/packetwyrmd.sock"
 no_tls: false
 insecure_no_auth: false
-allowed_hosts: "pwhost1.lab,172.21.100.104"
+allowed_hosts: "gw.example.com,203.0.113.10"
 ```
 
 - `--listen` — default `0.0.0.0:8443`; the shipped `proxyd.yaml` sets
