@@ -42,11 +42,22 @@ case "$1" in
         # binds a network gateway automatically.
         if command -v systemctl >/dev/null 2>&1; then
             systemctl daemon-reload >/dev/null 2>&1 || true
+            # On UPGRADE ($2 = old version), restart services that were already
+            # running so the new binary takes effect -- try-restart is a no-op
+            # for a stopped/disabled service, so a fresh install still never
+            # auto-starts (traffic stays opt-in). Without this, an upgrade left
+            # the daemon stopped and its control socket gone.
+            if [ -n "$2" ]; then
+                systemctl try-restart packetwyrmd.service >/dev/null 2>&1 || true
+                systemctl try-restart packetwyrm-proxyd.service >/dev/null 2>&1 || true
+            fi
         fi
-        echo "packetwyrm installed. To run the daemon (management plane, no traffic):"
-        echo "  edit /etc/packetwyrm/packetwyrm.yaml for your card, then:"
-        echo "  systemctl enable --now packetwyrmd"
-        echo "Optional Web GUI gateway:  systemctl enable --now packetwyrm-proxyd"
+        if [ -z "$2" ]; then
+            echo "packetwyrm installed. To run the daemon (management plane, no traffic):"
+            echo "  edit /etc/packetwyrm/packetwyrm.yaml for your card, then:"
+            echo "  systemctl enable --now packetwyrmd"
+            echo "Optional Web GUI gateway:  systemctl enable --now packetwyrm-proxyd"
+        fi
         ;;
     abort-upgrade|abort-remove|abort-deconfigure)
         ;;

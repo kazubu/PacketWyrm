@@ -3,15 +3,19 @@
 set -e
 
 case "$1" in
-    remove|deconfigure|upgrade)
-        # Stop the services if they happen to be running (they are installed
-        # disabled, but an operator may have enabled them).
+    remove)
+        # Stop the services on REMOVE only (they install disabled, but an
+        # operator may have enabled them). NOT on upgrade: leaving them running
+        # through the binary swap lets postinst's try-restart bring the new
+        # binary up without a control-socket outage. (Stopping here on upgrade
+        # left the daemon down because postinst's try-restart then saw it
+        # inactive and did nothing.)
         if command -v systemctl >/dev/null 2>&1; then
             systemctl stop packetwyrm-proxyd.service >/dev/null 2>&1 || true
             systemctl stop packetwyrmd.service >/dev/null 2>&1 || true
         fi
         ;;
-    failed-upgrade)
+    upgrade|deconfigure|failed-upgrade)
         ;;
     *)
         ;;
