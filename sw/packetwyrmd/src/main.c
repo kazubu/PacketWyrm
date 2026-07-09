@@ -33,6 +33,7 @@
 #include "packetwyrm/spi_flash.h"
 #include "packetwyrm/gpio_sync.h"
 #include "packetwyrm/sfp.h"
+#include "packetwyrm/frame_preview.h"
 
 static volatile sig_atomic_t g_stop = 0;
 static void on_signal(int sig) { (void)sig; g_stop = 1; }
@@ -2025,6 +2026,83 @@ static struct json_object *build_error(const char *msg) {
     return r;
 }
 
+/* flow.preview: build the on-wire frame a flow's generator emits (shared
+ * builder in libpacketwyrm) and return it as hex + a decoded summary. The flow
+ * source is either an inline test-config `yaml` (so the GUI can preview an
+ * edited-but-unloaded flow) or, absent that, the running config. `id` selects a
+ * flow by global id (else the first); `seq` picks the packet number. Offline /
+ * read-only: touches no hardware. */
+static struct json_object *build_flow_preview(const struct pw_config *run_cfg,
+                                              const char *yaml, size_t yaml_len,
+                                              int want_id, uint32_t seq) {
+    struct pw_config *tmp = NULL;
+    const struct pw_config *cfg = run_cfg;
+    if (yaml && yaml_len) {
+        tmp = pw_config_new();
+        struct pw_diag d = {0};
+        if (pw_config_parse_string_ex(yaml, yaml_len, PW_CFG_TEST_ONLY, tmp, &d) != PW_OK) {
+            char m[300]; snprintf(m, sizeof m, "preview parse error at %.40s: %.220s", d.path, d.message);
+            pw_config_free(tmp);
+            return build_error(m);
+        }
+        cfg = tmp;
+    }
+    if (!cfg || cfg->n_flows == 0) {
+        if (tmp) pw_config_free(tmp);
+        return build_error("no flows to preview");
+    }
+    const struct pw_flow *f = NULL;
+    for (size_t i = 0; i < cfg->n_flows; i++) {
+        if (want_id < 0 || (int)cfg->flows[i].id == want_id) { f = &cfg->flows[i]; break; }
+    }
+    if (!f) { if (tmp) pw_config_free(tmp); return build_error("flow id not found"); }
+
+    uint8_t buf[9200]; size_t built = 0;
+    int len = pw_flow_build_preview(f, seq, buf, sizeof buf, &built);
+    if (len < 0) { if (tmp) pw_config_free(tmp); return build_error("cannot build preview (unsupported template/length)"); }
+
+    struct json_object *r = json_object_new_object();
+    json_object_object_add(r, "ok", json_object_new_boolean(true));
+    json_object_object_add(r, "flow", json_object_new_int((int)f->id));
+    json_object_object_add(r, "name", json_object_new_string(f->name));
+    unsigned t = f->traffic.frame_template;
+    json_object_object_add(r, "template", json_object_new_string(
+        t==0?"test":t==1?"l4raw":t==2?"l3raw":t==3?"l2raw":"?"));
+    json_object_object_add(r, "len", json_object_new_int(len));
+    json_object_object_add(r, "header_len", json_object_new_int((int)built));
+    json_object_object_add(r, "seq", json_object_new_int64(seq));
+    /* hex string of the whole frame */
+    char *hex = malloc((size_t)len * 2 + 1);
+    if (hex) {
+        static const char H[] = "0123456789abcdef";
+        for (int b = 0; b < len; b++) { hex[b*2] = H[buf[b]>>4]; hex[b*2+1] = H[buf[b]&0xF]; }
+        hex[len*2] = '\0';
+        json_object_object_add(r, "hex", json_object_new_string(hex));
+        free(hex);
+    }
+    /* decoded field summary (mirrors the CLI preview) */
+    struct json_object *dec = json_object_new_object();
+    char mac[24];
+    snprintf(mac, sizeof mac, "%02x:%02x:%02x:%02x:%02x:%02x",
+             f->l2.dst_mac[0],f->l2.dst_mac[1],f->l2.dst_mac[2],f->l2.dst_mac[3],f->l2.dst_mac[4],f->l2.dst_mac[5]);
+    json_object_object_add(dec, "eth_dst", json_object_new_string(mac));
+    snprintf(mac, sizeof mac, "%02x:%02x:%02x:%02x:%02x:%02x",
+             f->l2.src_mac[0],f->l2.src_mac[1],f->l2.src_mac[2],f->l2.src_mac[3],f->l2.src_mac[4],f->l2.src_mac[5]);
+    json_object_object_add(dec, "eth_src", json_object_new_string(mac));
+    if (f->l2.vlan_set) json_object_object_add(dec, "vlan", json_object_new_int(f->l2.vlan));
+    if (f->encap.present && t != 3)
+        json_object_object_add(dec, "encap", json_object_new_string(
+            f->encap.type==1?"ipip":f->encap.type==2?"gre":"etherip"));
+    if (t != 3)
+        json_object_object_add(dec, "l3", json_object_new_string(f->ipv6.present?"ipv6":"ipv4"));
+    if (t != 3 && t != 2)
+        json_object_object_add(dec, "l4", json_object_new_string(f->udp.l4_proto==6?"tcp":"udp"));
+    json_object_object_add(r, "decode", dec);
+
+    if (tmp) pw_config_free(tmp);
+    return r;
+}
+
 /* Handle one connection: read one request frame, dispatch, write
  * one response frame. */
 static void handle_client(int cfd,
@@ -2101,6 +2179,17 @@ static void handle_client(int cfd,
                 resp = build_flow_hist(cfg, prog, cards,
                                        json_object_get_int(jid));
             }
+        } else if (!strcmp(name, "flow.preview")) {
+            struct json_object *jv, *ji, *js;
+            const char *pv_yaml = NULL; size_t pv_ylen = 0;
+            int pv_want = -1; uint32_t pv_seq = 0;
+            if (json_object_object_get_ex(req, "yaml", &jv)) {
+                pv_yaml = json_object_get_string(jv);
+                pv_ylen = pv_yaml ? (size_t)json_object_get_string_len(jv) : 0;
+            }
+            if (json_object_object_get_ex(req, "id", &ji))  pv_want = json_object_get_int(ji);
+            if (json_object_object_get_ex(req, "seq", &js)) pv_seq = (uint32_t)json_object_get_int64(js);
+            resp = build_flow_preview(cfg, pv_yaml, pv_ylen, pv_want, pv_seq);
         } else if (!strcmp(name, "flow.stats")) {
             struct json_object *jc;
             int filter = -1;

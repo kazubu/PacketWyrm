@@ -242,6 +242,13 @@ check "ports.stats has rx_unmatched" '"rx_unmatched"' "$pstats"
 check "tap.stats relayed" '"taps"' \
     "$(curl -s -H "$PWH" http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"tap.stats","secret":"e2e-secret"}')"
 
+# flow.preview: build the generated frame for an inline (edited-but-unloaded)
+# flow -- the GUI's frame-preview path. Returns hex + a decoded summary.
+prev=$(curl -s -H "$PWH" http://127.0.0.1:$PLAIN_PORT/api/rpc -d '{"rpc":"flow.preview","secret":"e2e-secret","seq":5,"yaml":"flows:\n  - id: 7\n    name: prev\n    tx_global_port: 0\n    rx_global_port: 1\n    l2: { src_mac: \"02:00:00:00:00:01\", dst_mac: \"02:00:00:00:00:02\", vlan: 100 }\n    ipv4: { src: \"10.0.0.1\", dst: \"10.0.0.2\", ttl: 64 }\n    udp: { src_port: 1000, dst_port: 2000 }\n    traffic: { frame_len: 128, rate_bps: 1000000000, insert_sequence: true, insert_timestamp: true }"}')
+check "flow.preview returns hex" '"hex":"[0-9a-f]' "$prev"
+check "flow.preview magic A5027E57 present" 'a5027e57' "$prev"
+check "flow.preview decode l3 ipv4" '"l3":"ipv4"' "$prev"
+
 # config.load with a GUI-shaped test config (mirrors the Flows-editor YAML
 # emitter: v4/udp + v6/tcp, vlan, measurements). Guards emitter/parser drift.
 gui_yaml=$(cat <<'YML'

@@ -223,6 +223,13 @@ narrow screens. Tabs:
   packetwyrm-flows.yaml && pktwyrm test arm && pktwyrm test start`, prefixed
   with `--host <gateway>` when the GUI isn't served from localhost). The YAML
   the form emits is exactly what `packetwyrmd` parses (see `yaml-schema.md`).
+  **👁 Preview frame** decodes and hex-dumps the exact on-wire frame the flow's
+  generator will emit, for the packet number in the adjacent `seq` box. It
+  previews the LIVE editor values (before Apply/Write) by sending the single
+  flow to the daemon's `flow.preview` RPC, which builds it with the shared
+  `libpacketwyrm` frame builder — the same one the CLI `flow preview` and the
+  RTL use — so the preview matches the wire (timestamp shown 0, HW-stamped at
+  egress; L4 checksum computed for the shown packet).
 - **Forwards** — store-and-forward rules with the same expandable-accordion,
   staged-edit UX as Flows (Apply edit / Revert / "● modified" / Write to card),
   sharing the working-copy + raw-YAML state (`js/staging.mjs`) and the

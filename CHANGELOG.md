@@ -8,6 +8,19 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ## Unreleased
 
+### Added
+  - **Generated-frame preview (CLI + Web GUI).** `pktwyrm flow preview
+    <config.yaml> [--flow ID] [--seq N] [--json]` builds and decodes/hex-dumps
+    the exact on-wire frame a flow's generator emits (Ethernet [+VLAN] /
+    [IPIP|GRE|EtherIP outer] / IPv4|IPv6 / UDP|TCP / 32-byte test header), and
+    the Flows editor gains a **👁 Preview frame** button (with a `seq` box) that
+    previews the live-edited flow. One builder in `libpacketwyrm`
+    (`pw_flow_build_preview`) backs the CLI and the new daemon `flow.preview`
+    RPC, mirroring the RTL layout — the departure timestamp is 0 (HW-stamped at
+    egress) and IPv4/L4 checksums are computed so the hex is a valid, decodable
+    packet. Validated against a scapy-style decode for v4/v6, UDP/TCP, and all
+    three encapsulations; e2e_proxyd covers the GUI path.
+
 ### Changed
   - **`pktwyrm load` now DEPLOYS to the running daemon by default.** Previously
     `pktwyrm load FILE` (without `--socket`) only validated/compiled the file

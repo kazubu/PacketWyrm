@@ -175,3 +175,11 @@ button.copy-cli:hover { color: var(--ink); }
 input.invalid { border-color: var(--err); background: rgba(239,68,68,.08); }
 #flow-yaml-hint:not(:empty) { margin: 6px 0; padding: 6px 10px; border-radius: 4px;
   background: rgba(234,179,8,.12); color: #eab308; font-size: 12px; white-space: pre-wrap; }
+
+/* Generated-frame preview (Flows editor) */
+.frame-preview {
+  margin: 8px 0 0; padding: 10px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--input); color: var(--ink);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 12px; line-height: 1.4; white-space: pre; overflow-x: auto;
+}

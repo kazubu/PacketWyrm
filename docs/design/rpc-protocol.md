@@ -220,6 +220,29 @@ correction is tracked per sample, min/max/avg no longer smear over a long
 accumulation (the earlier read-time single-offset scheme did, under the ~ppm
 clock skew) -- a `stats.clear` short-window workaround is no longer needed.
 
+### `flow.preview`
+
+Build the on-wire frame a flow's generator emits (offline / read-only; touches
+no hardware) and return it as a hex string plus a decoded summary. The flow
+source is either an inline `yaml` test-config (so the Web GUI can preview an
+edited-but-unloaded flow) or, absent `yaml`, the running config; `id` selects a
+flow by global id (else the first), `seq` picks the packet number. The frame is
+built by the shared `libpacketwyrm` builder (same one the CLI `flow preview`
+uses), so it matches the RTL layout. The departure timestamp is left 0 (hardware
+stamps it at egress) and the IPv4/L4 checksums are computed over that ts=0 frame
+so the hex is a valid, decodable packet.
+
+```json
+{ "rpc": "flow.preview", "yaml": "flows:\n  - id: 7\n    ...", "id": 7, "seq": 0 }
+```
+&rarr;
+```json
+{ "ok": true, "flow": 7, "name": "prev", "template": "test", "len": 128,
+  "header_len": 78, "seq": 0, "hex": "02...",
+  "decode": { "eth_dst": "...", "eth_src": "...", "vlan": 100,
+              "l3": "ipv4", "l4": "udp" } }
+```
+
 ### `flow.hist`
 
 Per-flow power-of-two latency histogram.

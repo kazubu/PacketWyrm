@@ -12,7 +12,7 @@ import { $, $$, el } from "./dom.mjs";
 import { rpc, showMsg } from "./rpc.mjs";
 import { confirmDialog, withPending, copyText, cliBase } from "./ui.mjs";
 import { state, newFlow, flowFromJson, fwdFromJson, MOD_FIELDS } from "./state.mjs";
-import { buildTestYaml, validateYaml, fieldError, flowErrors, fwdErrors } from "./yaml.mjs";
+import { buildTestYaml, flowYaml, validateYaml, fieldError, flowErrors, fwdErrors } from "./yaml.mjs";
 import { renderFwdList } from "./forwards.mjs";
 import { clone, workingFor, peekWorking, modified, dropWorking, isRawDirty, setRawDirty } from "./staging.mjs";
 
@@ -193,7 +193,63 @@ function buildFlowEditor(box, f) {
     showMsg("#flow-msg", "ok", `Flow #${w.id} committed to the config. Use “Write to card” to program the FPGA.`);
   });
   revertBtn.addEventListener("click", () => { dropWorking(f); refreshFlows(); });
-  box.append(el("div", { class: "row flow-actions" }, [applyBtn, revertBtn]));
+
+  // Preview the exact on-wire frame this flow's generator emits (daemon builds
+  // it via the shared libpacketwyrm builder -> single source of truth with the
+  // CLI/RTL). Previews the LIVE editor values (w), even before Apply/Write.
+  const seqIn = el("input", { type: "number", value: "0", min: "0",
+                              style: "width:80px", title: "packet sequence number" });
+  const prevBtn = el("button", { class: "act ghost", text: "👁 Preview frame",
+    title: "Decode + hex-dump the generated frame (does not touch the card)" });
+  const out = el("pre", { class: "frame-preview", style: "display:none" });
+  prevBtn.addEventListener("click", async () => {
+    const errs = flowErrors(w);
+    if (errs.length) { showMsg("#flow-msg", "err", "Fix these first:\n• " + errs.join("\n• ")); return; }
+    const seq = Math.max(0, parseInt(seqIn.value, 10) || 0);
+    const yaml = "flows:\n" + flowYaml(w) + "\n";
+    const r = await rpc({ rpc: "flow.preview", yaml, id: w.id, seq });
+    out.style.display = "block";
+    out.textContent = "";
+    if (!r || r.error) { out.textContent = "preview failed: " + (r ? r.error : "no response"); return; }
+    out.textContent = renderPreview(r);
+  });
+  box.append(el("div", { class: "row flow-actions" }, [applyBtn, revertBtn, prevBtn,
+    el("span", { class: "muted", text: "seq" }), seqIn]));
+  box.append(out);
+}
+
+/* Render a flow.preview response as a decoded summary + hex dump (text). */
+function renderPreview(r) {
+  const d = r.decode || {};
+  const hex = r.hex || "";
+  const bytes = [];
+  for (let i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.substr(i, 2), 16));
+  let s = `flow ${r.flow} "${r.name || ""}"  template=${r.template}  ` +
+          `frame_len=${r.len} B (pre-FCS)  seq=${r.seq}\n`;
+  const layers = [];
+  layers.push(`eth  ${d.eth_dst} <- ${d.eth_src}`);
+  if (d.vlan != null) layers.push(`vlan ${d.vlan}`);
+  if (d.encap) layers.push(`encap ${d.encap}`);
+  if (d.l3) layers.push(d.l3);
+  if (d.l4) layers.push(d.l4);
+  if (r.template === "test") layers.push("test-hdr");
+  s += "  " + layers.join(" / ") + "\n";
+  const show = Math.min(bytes.length, (r.header_len || 0) + 16);
+  for (let b = 0; b < show; b += 16) {
+    let hexpart = "", asc = "";
+    for (let j = 0; j < 16; j++) {
+      if (b + j < show) {
+        hexpart += bytes[b + j].toString(16).padStart(2, "0") + " ";
+        const c = bytes[b + j];
+        asc += (c >= 32 && c < 127) ? String.fromCharCode(c) : ".";
+      } else hexpart += "   ";
+      if (j === 7) hexpart += " ";
+    }
+    s += "  " + b.toString(16).padStart(4, "0") + "  " + hexpart + " |" + asc + "|\n";
+  }
+  if (bytes.length > show) s += `  ... +${bytes.length - show} payload bytes (zero-filled)\n`;
+  s += "  note: timestamp stamped by HW at egress (shown 0); L4 csum computed for this seq.";
+  return s;
 }
 
 export function refreshFlows() {
