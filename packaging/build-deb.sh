@@ -30,17 +30,19 @@ DIST_DIR="$SCRIPT_DIR/dist"
 # Fallback version if not in a git tree / no tags.
 VERSION="${VERSION:-0.1.0}"
 if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    if desc="$(git -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null)"; then
-        # Strip a leading v; turn describe's dashes into deb-friendly form.
-        desc="${desc#v}"
-        # git describe with tags -> 1.2.3-4-gabc123 ; without tags -> abc123.
-        # Make it a valid deb version: replace '-' after the tag with '+'.
-        if printf '%s' "$desc" | grep -qE '^[0-9]'; then
-            VERSION="$(printf '%s' "$desc" | sed 's/-/+/;s/-/./g')"
-        else
-            # No tag: 0.1.0+g<sha> (or +dirty)
-            VERSION="${VERSION}+g${desc}"
-        fi
+    # Detect a real tag with `git describe --tags` WITHOUT --always: it succeeds
+    # only when an ancestor tag exists. (Using --always would return a bare SHA,
+    # and a SHA that happens to start with a digit -- e.g. 620e340 -- would be
+    # misclassified as a version tag, so the version format flipped per commit.)
+    if desc="$(git -C "$REPO_ROOT" describe --tags --dirty 2>/dev/null)"; then
+        desc="${desc#v}"                                  # strip a leading v
+        # 1.2.3-4-gabc123[-dirty] -> 1.2.3+4.gabc123[.dirty] (deb-friendly).
+        VERSION="$(printf '%s' "$desc" | sed 's/-/+/;s/-/./g')"
+    else
+        # No tag: 0.1.0+g<short-sha>, with a +dirty marker for an unclean tree.
+        sha="$(git -C "$REPO_ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
+        git -C "$REPO_ROOT" diff --quiet HEAD 2>/dev/null || sha="${sha}.dirty"
+        VERSION="${VERSION}+g${sha}"
     fi
 fi
 
