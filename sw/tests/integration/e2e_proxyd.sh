@@ -97,11 +97,26 @@ check_exit "reject hostname --listen" 2 "$rc"
 rc=0; "$PROXYD" --listen 0.0.0.0:9 --socket /no/such.sock --no-tls >/dev/null 2>&1 || rc=$?
 check_exit "fail-closed non-loopback + unreachable daemon" 1 "$rc"
 
-# --- plaintext gateway (loopback) ---
-# --allowed-host: extra Host values accepted on /api/rpc (tested below).
-"$PROXYD" --listen 127.0.0.1:$PLAIN_PORT --socket "$SOCK" --no-tls \
-    --allowed-host pw.example.test \
-    > "$WORK/px_plain.log" 2>&1 &
+# --config: a bad key must be rejected (exit 2), proving the file is parsed.
+cat > "$WORK/bad.yaml" <<EOF
+listen: 127.0.0.1:$PLAIN_PORT
+bogus_key: 1
+EOF
+rc=0; "$PROXYD" --config "$WORK/bad.yaml" --socket "$SOCK" --no-tls >/dev/null 2>&1 || rc=$?
+check_exit "reject unknown config key" 2 "$rc"
+
+# --- plaintext gateway (loopback), configured entirely via a --config FILE ---
+# Exercises the config-file path: listen / socket / no_tls / allowed_hosts all
+# come from the file (no CLI flags). The downstream Host: pw.example.test check
+# then also proves allowed_hosts was honored from the file.
+cat > "$WORK/proxyd.yaml" <<EOF
+# proxyd config (e2e)
+listen: "127.0.0.1:$PLAIN_PORT"
+socket: "$SOCK"
+no_tls: true
+allowed_hosts: "pw.example.test"
+EOF
+"$PROXYD" --config "$WORK/proxyd.yaml" > "$WORK/px_plain.log" 2>&1 &
 PXP=$!
 wait_proxyd http $PLAIN_PORT || { echo "plaintext proxyd not ready"; cat "$WORK/px_plain.log"; exit 1; }
 

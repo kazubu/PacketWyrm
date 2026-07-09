@@ -580,6 +580,10 @@ static int probe_daemon_secret(void) {
 static void usage(void) {
     fputs(
         "usage: packetwyrm-proxyd [options]\n"
+        "  -c, --config FILE    read options from a config file (key: value;\n"
+        "                       keys: listen, socket, tls_cert, tls_key, no_tls,\n"
+        "                       insecure_no_auth, allowed_hosts). CLI flags below\n"
+        "                       override the file.\n"
         "  --listen ADDR:PORT   bind address (default " PROXYD_DEFAULT_LISTEN ")\n"
         "  --socket PATH        daemon control socket (default "
             PW_IPC_DEFAULT_PATH ")\n"
@@ -624,6 +628,73 @@ static int parse_listen(struct proxyd_opts *o, const char *s) {
     return parse_port_strict(s, &o->listen_port);
 }
 
+/* Parse a boolean scalar: true/false, yes/no, on/off, 1/0 (case-insensitive).
+ * Returns 0 and sets *out on success, -1 on an unrecognized value. */
+static int parse_bool(const char *s, bool *out) {
+    if (!strcasecmp(s, "true") || !strcasecmp(s, "yes") ||
+        !strcasecmp(s, "on")   || !strcmp(s, "1"))  { *out = true;  return 0; }
+    if (!strcasecmp(s, "false")|| !strcasecmp(s, "no") ||
+        !strcasecmp(s, "off")  || !strcmp(s, "0"))  { *out = false; return 0; }
+    return -1;
+}
+
+/* Load proxyd options from a small YAML-subset config file: one `key: value`
+ * per line, `#` comments and blank lines ignored, optional surrounding quotes
+ * on values. Recognized keys mirror the CLI flags:
+ *   listen, socket, tls_cert, tls_key, no_tls, insecure_no_auth, allowed_hosts
+ * Values seed `o`; explicit CLI flags parsed afterwards override them. String
+ * values are strdup'd (config is loaded once at startup). Returns 0 on success,
+ * -1 on a read/parse error (with a message on stderr). */
+static int load_config_file(struct proxyd_opts *o, const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) { fprintf(stderr, "proxyd: cannot open config %s: %s\n", path, strerror(errno)); return -1; }
+    char line[1024];
+    int lineno = 0, rc = 0;
+    while (fgets(line, sizeof line, f)) {
+        lineno++;
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;          /* leading ws */
+        if (*p == '#' || *p == '\n' || *p == '\0' || *p == '\r') continue;
+        char *colon = strchr(p, ':');
+        if (!colon) { fprintf(stderr, "proxyd: %s:%d: expected 'key: value'\n", path, lineno); rc = -1; break; }
+        *colon = '\0';
+        char *key = p;
+        /* trim trailing ws off key */
+        char *ke = key + strlen(key);
+        while (ke > key && (ke[-1] == ' ' || ke[-1] == '\t')) *--ke = '\0';
+        char *val = colon + 1;
+        while (*val == ' ' || *val == '\t') val++;    /* leading ws off value */
+        /* strip trailing ws / newline */
+        char *ve = val + strlen(val);
+        while (ve > val && (ve[-1] == '\n' || ve[-1] == '\r' || ve[-1] == ' ' || ve[-1] == '\t')) *--ve = '\0';
+        /* strip a single pair of surrounding quotes */
+        size_t vl = strlen(val);
+        if (vl >= 2 && ((val[0] == '"' && val[vl-1] == '"') || (val[0] == '\'' && val[vl-1] == '\''))) {
+            val[vl-1] = '\0'; val++;
+        }
+
+        if (!strcmp(key, "listen")) {
+            if (parse_listen(o, val) != 0) { fprintf(stderr, "proxyd: %s:%d: bad listen '%s'\n", path, lineno, val); rc = -1; break; }
+        } else if (!strcmp(key, "socket")) {
+            o->daemon_sock = strdup(val);
+        } else if (!strcmp(key, "tls_cert")) {
+            o->tls_cert = val[0] ? strdup(val) : NULL;
+        } else if (!strcmp(key, "tls_key")) {
+            o->tls_key = val[0] ? strdup(val) : NULL;
+        } else if (!strcmp(key, "allowed_hosts") || !strcmp(key, "allowed_host")) {
+            o->allowed_hosts = strdup(val);
+        } else if (!strcmp(key, "no_tls")) {
+            if (parse_bool(val, &o->no_tls) != 0) { fprintf(stderr, "proxyd: %s:%d: bad bool '%s'\n", path, lineno, val); rc = -1; break; }
+        } else if (!strcmp(key, "insecure_no_auth")) {
+            if (parse_bool(val, &o->insecure_no_auth) != 0) { fprintf(stderr, "proxyd: %s:%d: bad bool '%s'\n", path, lineno, val); rc = -1; break; }
+        } else {
+            fprintf(stderr, "proxyd: %s:%d: unknown key '%s'\n", path, lineno, key); rc = -1; break;
+        }
+    }
+    fclose(f);
+    return rc;
+}
+
 int main(int argc, char **argv) {
     struct proxyd_opts o = {
         .listen_addr = "0.0.0.0",
@@ -631,9 +702,19 @@ int main(int argc, char **argv) {
         .daemon_sock = PW_IPC_DEFAULT_PATH,
     };
 
+    /* First pass: if a config file is named, load it so its values seed `o`
+     * before the CLI loop below, which then OVERRIDES them (CLI > file). */
+    for (int i = 1; i < argc; i++) {
+        if ((!strcmp(argv[i], "--config") || !strcmp(argv[i], "-c")) && i + 1 < argc) {
+            if (load_config_file(&o, argv[i + 1]) != 0) return 2;
+        }
+    }
+
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
-        if (!strcmp(a, "--listen") && i + 1 < argc) {
+        if ((!strcmp(a, "--config") || !strcmp(a, "-c")) && i + 1 < argc) {
+            i++;   /* consumed in the first pass */
+        } else if (!strcmp(a, "--listen") && i + 1 < argc) {
             if (parse_listen(&o, argv[++i]) != 0) {
                 fprintf(stderr, "proxyd: bad --listen\n");
                 return 2;

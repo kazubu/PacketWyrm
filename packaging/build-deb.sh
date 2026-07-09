@@ -136,6 +136,8 @@ install -m 0644 "$SCRIPT_DIR/packetwyrm.tmpfiles"  "$STAGE/usr/lib/tmpfiles.d/pa
 
 # Example env config as the conffile. 0640: it may later hold system.secret.
 install -m 0640 "$DEB_SRC/packetwyrm.yaml.example" "$STAGE/etc/packetwyrm/packetwyrm.yaml"
+# proxyd gateway config (conffile). 0644: no secret in it.
+install -m 0644 "$DEB_SRC/proxyd.yaml.example" "$STAGE/etc/packetwyrm/proxyd.yaml"
 
 # Shell completions
 install -m 0644 "$SCRIPT_DIR/completions/pktwyrm.bash" \

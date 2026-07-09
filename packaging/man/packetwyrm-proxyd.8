@@ -18,9 +18,18 @@ The gateway holds no hardware and runs unprivileged (as the
 user/group), reaching the daemon socket through its group membership.
 .SH OPTIONS
 .TP
+.BR -c ", " --config " \fIFILE\fR"
+Read options from a config file (one \fIkey: value\fR per line; \fB#\fR
+comments and blank lines ignored; keys: \fBlisten\fR, \fBsocket\fR,
+\fBtls_cert\fR, \fBtls_key\fR, \fBno_tls\fR, \fBinsecure_no_auth\fR,
+\fBallowed_hosts\fR). Any CLI flag below overrides the corresponding file value.
+The packaged unit runs \fB--config /etc/packetwyrm/proxyd.yaml\fR, so edit that
+file and restart the service rather than passing flags.
+.TP
 .BI --listen " ADDR:PORT"
-Bind address (default \fI0.0.0.0:8443\fR). The packaged unit overrides this to
-\fI127.0.0.1:8443\fR so a fresh install starts cleanly.
+Bind address (default \fI0.0.0.0:8443\fR). The shipped
+\fI/etc/packetwyrm/proxyd.yaml\fR sets \fI127.0.0.1:8443\fR so a fresh install
+starts cleanly.
 .TP
 .BI --socket " PATH"
 Daemon control socket (default \fI/run/packetwyrm/packetwyrmd.sock\fR).

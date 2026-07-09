@@ -44,12 +44,28 @@ are no locks and no coupling to the daemon's control/servo timing.
 ## Options
 
 ```
-packetwyrm-proxyd [--listen ADDR:PORT] [--socket DAEMON_SOCK]
+packetwyrm-proxyd [-c|--config FILE] [--listen ADDR:PORT] [--socket DAEMON_SOCK]
                   [--tls-cert FILE --tls-key FILE] [--no-tls]
-                  [--insecure-no-auth]
+                  [--insecure-no-auth] [--allowed-host NAME[,NAME...]]
 ```
 
-- `--listen` — default `0.0.0.0:8443`.
+All options can be set in a **config file** (`--config FILE`; the packaged
+systemd unit uses `/etc/packetwyrm/proxyd.yaml`), one `key: value` per line
+(`#` comments allowed). Keys mirror the flags: `listen`, `socket`, `tls_cert`,
+`tls_key`, `no_tls`, `insecure_no_auth`, `allowed_hosts`. A CLI flag overrides
+the file, so operators edit the file and `systemctl restart packetwyrm-proxyd`
+rather than editing a unit drop-in. Example:
+
+```yaml
+listen: "0.0.0.0:8443"
+socket: "/run/packetwyrm/packetwyrmd.sock"
+no_tls: false
+insecure_no_auth: false
+allowed_hosts: "pwhost1.lab,172.21.100.104"
+```
+
+- `--listen` — default `0.0.0.0:8443`; the shipped `proxyd.yaml` sets
+  `127.0.0.1:8443`.
 - `--socket` — daemon control socket (default
   `/run/packetwyrm/packetwyrmd.sock`).
 - `--tls-cert` / `--tls-key` — a real PEM certificate + key. If omitted,
