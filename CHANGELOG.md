@@ -8,6 +8,23 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ## Unreleased
 
+### Changed
+  - **`pktwyrm load` now DEPLOYS to the running daemon by default.** Previously
+    `pktwyrm load FILE` (without `--socket`) only validated/compiled the file
+    offline and silently did nothing to the daemon, while still printing a
+    "Configuration OK / card0 program…" summary that looked like it had applied.
+    It now sends `config.load` to the default control socket (or `--host`), and
+    reports an actionable error if the daemon is unreachable. Offline validation
+    moved to `--check` (alias `-n`). `--socket` still overrides the target.
+  - **proxyd options are configurable via a file** (`--config`, default
+    `/etc/packetwyrm/proxyd.yaml` in the package): `listen`, `socket`,
+    `tls_cert`, `tls_key`, `no_tls`, `insecure_no_auth`, `allowed_hosts`. CLI
+    flags override the file; the systemd unit runs `--config`, so operators edit
+    the file + `systemctl restart` instead of a unit drop-in.
+  - **build-deb**: version derivation no longer misclassifies a commit SHA that
+    starts with a digit as a version tag (the `.deb` version format was
+    flipping between builds); untagged builds are consistently `0.1.0+g<sha>`.
+
 ### Added
   - **UX sweep (2026-07-09): explicit test start, richer CLI, GUI, packaging,
     observability.** SW/GUI/packaging only (no RTL). Validated on the fake

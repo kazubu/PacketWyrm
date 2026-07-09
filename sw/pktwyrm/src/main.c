@@ -193,6 +193,7 @@ static int cmd_map(int argc, char **argv) {
 
 static int rpc_call(const char *sock, const char *json_req,
                     char *resp, size_t resp_cap, size_t *out_len);
+static void rpc_fail(const char *sock);
 
 /* Read an entire file into a newly allocated buffer. Caller frees. */
 static char *slurp_file(const char *path, size_t *out_len) {
@@ -214,17 +215,27 @@ static char *slurp_file(const char *path, size_t *out_len) {
 static int cmd_load(int argc, char **argv) {
     const char *path = NULL;
     const char *sock = NULL;
+    bool check_only = false;   /* --check / -n: offline validate, do not deploy */
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock = argv[++i];
+        else if (!strcmp(argv[i], "--check") || !strcmp(argv[i], "-n")) check_only = true;
         else if ((!strcmp(argv[i], "--env") || !strcmp(argv[i], "--secret")) && i + 1 < argc)
             i++;                                  /* global flags, consumed in main */
         else if (!path) path = argv[i];
     }
     if (!path) {
         fprintf(stderr,
-                "usage: pktwyrm load <config.yaml> [--socket PATH]\n");
+                "usage: pktwyrm load <config.yaml> [--socket PATH] [--check]\n"
+                "  Deploys to the running daemon by default (socket %s);\n"
+                "  --check validates the file offline without deploying.\n",
+                g_host_arg ? "via --host" : PW_IPC_DEFAULT_PATH);
         return 2;
     }
+    /* Deploy by default -- `load` means "load into the running daemon". Use the
+     * default control socket unless --socket / --host overrides it; --check does
+     * the offline validate only. (Historically load was offline-only unless
+     * --socket was given, which silently did nothing to a running daemon.) */
+    if (!sock && !g_host_arg) sock = PW_IPC_DEFAULT_PATH;
 
     /* Offline syntax check before opening the socket. The file may be a full
      * combined config (system+cards+flows) OR a test-only config (flows/forwards
@@ -274,9 +285,14 @@ static int cmd_load(int argc, char **argv) {
         pw_config_free(t);
     }
 
-    if (!sock) return 0;
+    if (check_only) {
+        printf("(--check: validated offline, not deployed)\n");
+        return 0;
+    }
+    if (!sock && !g_host_arg) return 0;   /* nothing to deploy to (shouldn't happen) */
 
-    /* Live deploy: ship the YAML body to the running daemon. */
+    /* Live deploy: ship the YAML body to the running daemon (Unix socket, or a
+     * remote gateway when --host is set -- rpc_call routes on g_host_arg). */
     size_t yaml_len = 0;
     char  *yaml = slurp_file(path, &yaml_len);
     if (!yaml) { fprintf(stderr, "cannot read %s\n", path); return 1; }
@@ -288,11 +304,12 @@ static int cmd_load(int argc, char **argv) {
 
     char resp_buf[PW_IPC_FRAME_MAX];
     size_t resp_len = 0;
+    const char *dest = g_host_arg ? g_host_arg : sock;
     int rc = rpc_call(sock, req_str, resp_buf, sizeof(resp_buf), &resp_len);
     json_object_put(req);
     free(yaml);
     if (rc != 0) {
-        fprintf(stderr, "RPC to %s failed\n", sock);
+        rpc_fail(sock);
         return 1;
     }
     struct json_tokener *tok = json_tokener_new();
@@ -312,7 +329,7 @@ static int cmd_load(int argc, char **argv) {
     if (json_object_object_get_ex(resp, "n_flows",          &jflows)) nflows = json_object_get_int(jflows);
     if (json_object_object_get_ex(resp, "n_classifier_rows",&jcls))   ncls   = json_object_get_int(jcls);
     printf("Deployed to %s: %d flows, %d classifier rows.\n",
-           sock, nflows, ncls);
+           dest, nflows, ncls);
     json_object_put(resp);
     return 0;
 }
@@ -1158,7 +1175,7 @@ static int cmd_help(void) {
     puts("  pktwyrm cards <config.yaml>          list configured cards from YAML");
     puts("  pktwyrm ports <config.yaml>          list configured ports");
     puts("  pktwyrm map   <config.yaml>          show port -> logical-if map");
-    puts("  pktwyrm load  <config.yaml>          parse + validate + compile");
+    puts("  pktwyrm load  <config.yaml> [--check]  validate offline (--check), else deploy");
     puts("  pktwyrm flow show <config.yaml>      list flows");
     puts("  pktwyrm version");
     puts("");
@@ -1175,7 +1192,7 @@ static int cmd_help(void) {
     puts("  pktwyrm test arm|start|stop [--socket PATH] [--json]");
     puts("  pktwyrm test run [--duration 10s] [--socket PATH] [--json]  arm+start+wait+stop, PASS/FAIL");
     puts("  pktwyrm hist latency --flow N [--socket PATH] [--json]");
-    puts("  pktwyrm load <config.yaml> [--socket PATH]");
+    puts("  pktwyrm load <config.yaml> [--socket PATH]      deploy a config to the daemon (default)");
     puts("");
     puts("Firmware (LOCAL, direct card -- root, card free of any daemon):");
     puts("  pktwyrm firmware update <file.bin> --card BDF [--boot] [--scratch]");

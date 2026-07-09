@@ -36,8 +36,12 @@ List the ports configured in a YAML file.
 .B map \fICONFIG.yaml\fR
 Show the port \(-> logical-interface map.
 .TP
-.B load \fICONFIG.yaml\fR
-Parse, validate and compile a configuration.
+.B load \fICONFIG.yaml\fR \fR[\fB--socket \fIPATH\fR] [\fB--check\fR]
+Load a configuration into the running daemon (\fBconfig.load\fR). Deploys to the
+default control socket unless \fB--socket\fR (or the global \fB--host\fR)
+overrides it. \fB--check\fR (alias \fB-n\fR) validates + compiles the file
+offline and exits WITHOUT deploying. If the daemon is unreachable the error
+names the reason (not running / wrong path / permission).
 .TP
 .B flow show \fICONFIG.yaml\fR
 List the flows defined in a YAML file.

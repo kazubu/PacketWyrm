@@ -58,9 +58,10 @@ _pktwyrm()
 
     case "$verb" in
         cards|ports|map|load)
-            # These take a config.yaml path (load also accepts --socket online).
+            # These take a config.yaml path (load deploys by default; --check
+            # validates offline, --socket overrides the target).
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=( $(compgen -W "--socket $globals" -- "$cur") )
+                COMPREPLY=( $(compgen -W "--socket --check $globals" -- "$cur") )
             else
                 COMPREPLY=( $(compgen -f -X '!*.@(yaml|yml)' -- "$cur") $(compgen -d -- "$cur") )
             fi
