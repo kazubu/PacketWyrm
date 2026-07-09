@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <getopt.h>
+#include <math.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -2406,8 +2407,16 @@ static size_t promex_build_body(char *out, size_t cap,
             APPENDF("# TYPE packetwyrm_flow_duplicate_packets counter\n");
             APPENDF("# HELP packetwyrm_flow_out_of_order_packets Out-of-order packets per flow\n");
             APPENDF("# TYPE packetwyrm_flow_out_of_order_packets counter\n");
+            APPENDF("# HELP packetwyrm_flow_sequence_gaps Sequence-gap events per flow\n");
+            APPENDF("# TYPE packetwyrm_flow_sequence_gaps counter\n");
+            APPENDF("# HELP packetwyrm_flow_latency_samples Latency samples measured per flow\n");
+            APPENDF("# TYPE packetwyrm_flow_latency_samples counter\n");
+            APPENDF("# HELP packetwyrm_flow_running 1 when the flow's generator is enabled\n");
+            APPENDF("# TYPE packetwyrm_flow_running gauge\n");
             APPENDF("# HELP packetwyrm_flow_latency_ns One-way latency per flow (nanoseconds)\n");
             APPENDF("# TYPE packetwyrm_flow_latency_ns gauge\n");
+            APPENDF("# HELP packetwyrm_flow_jitter_ns Inter-packet delay variation per flow (nanoseconds)\n");
+            APPENDF("# TYPE packetwyrm_flow_jitter_ns gauge\n");
             size_t nf = json_object_array_length(arr);
             for (size_t i = 0; i < nf; i++) {
                 struct json_object *f = json_object_array_get_idx(arr, i), *v;
@@ -2426,28 +2435,154 @@ static size_t promex_build_body(char *out, size_t cap,
                 FLOWMETRIC("lost_packets", "lost");
                 FLOWMETRIC("duplicate_packets", "duplicate");
                 FLOWMETRIC("out_of_order_packets", "out_of_order");
+                FLOWMETRIC("sequence_gaps", "seq_gap");
+                FLOWMETRIC("latency_samples", "sample_count");
                 #undef FLOWMETRIC
-                /* Latency is in ns already in the JSON (min/avg/max); export avg
-                 * as the gauge plus min/max as labeled stat variants. */
-                /* Latency in the JSON is in data-plane TICKS (6.4 ns); convert
-                 * to ns for the exporter. ns = ticks * 1e9 / clock_hz. */
+                if (json_object_object_get_ex(f, "enabled", &v))
+                    APPENDF("packetwyrm_flow_running{flow=\"%d\",name=\"%s\"} %d\n",
+                            id, nm, json_object_get_boolean(v) ? 1 : 0);
+                /* Latency AND jitter come from the JSON in data-plane TICKS
+                 * (6.4 ns); convert to ns. ns = ticks * 1e9 / clock_hz. Only
+                 * present when the measurement is valid (has samples). */
                 struct json_object *lv;
                 if (json_object_object_get_ex(f, "latency_valid", &lv) &&
                     json_object_get_boolean(lv)) {
-                    static const struct { const char *key, *stat; } lat[] = {
-                        {"min_latency","min"}, {"avg_latency","avg"}, {"max_latency","max"} };
+                    static const struct { const char *lkey, *jkey, *stat; } st[] = {
+                        {"min_latency","jitter_min","min"},
+                        {"avg_latency","jitter_avg","avg"},
+                        {"max_latency","jitter_max","max"} };
                     for (size_t k = 0; k < 3; k++) {
-                        if (!json_object_object_get_ex(f, lat[k].key, &v)) continue;
-                        double ns = (double)json_object_get_int64(v) * 1e9
-                                    / (double)PWFPGA_DATA_PLANE_CLOCK_HZ;
-                        APPENDF("packetwyrm_flow_latency_ns{flow=\"%d\",name=\"%s\",stat=\"%s\"} %.1f\n",
-                                id, nm, lat[k].stat, ns);
+                        if (json_object_object_get_ex(f, st[k].lkey, &v))
+                            APPENDF("packetwyrm_flow_latency_ns{flow=\"%d\",name=\"%s\",stat=\"%s\"} %.1f\n",
+                                    id, nm, st[k].stat,
+                                    (double)json_object_get_int64(v) * 1e9 / (double)PWFPGA_DATA_PLANE_CLOCK_HZ);
+                        if (json_object_object_get_ex(f, st[k].jkey, &v))
+                            APPENDF("packetwyrm_flow_jitter_ns{flow=\"%d\",name=\"%s\",stat=\"%s\"} %.1f\n",
+                                    id, nm, st[k].stat,
+                                    (double)json_object_get_int64(v) * 1e9 / (double)PWFPGA_DATA_PLANE_CLOCK_HZ);
                     }
                 }
             }
         }
         if (fs) json_object_put(fs);
     }
+
+    /* ---- Card / FPGA health (per card): SYSMON die temp + supply rails, and
+     * the sticky-error / activity status bits. Cheap direct CSR reads. ---- */
+    APPENDF("# HELP packetwyrm_card_temp_celsius FPGA die temperature (SYSMON)\n");
+    APPENDF("# TYPE packetwyrm_card_temp_celsius gauge\n");
+    APPENDF("# HELP packetwyrm_card_vccint_volts FPGA VCCINT rail (SYSMON)\n");
+    APPENDF("# TYPE packetwyrm_card_vccint_volts gauge\n");
+    APPENDF("# HELP packetwyrm_card_vccaux_volts FPGA VCCAUX rail (SYSMON)\n");
+    APPENDF("# TYPE packetwyrm_card_vccaux_volts gauge\n");
+    APPENDF("# HELP packetwyrm_card_error_sticky 1 when the card latched an error\n");
+    APPENDF("# TYPE packetwyrm_card_error_sticky gauge\n");
+    for (size_t ci = 0; ci < cfg->n_cards; ci++) {
+        if (!cards[ci].open || !cards[ci].backend.ops->read32) continue;
+        void *bx = cards[ci].backend.ctx;
+        unsigned id = cfg->cards[ci].id;
+        uint32_t tc = 0, sup = 0, gs = 0;
+        if (cards[ci].backend.ops->read32(bx, PWFPGA_REG_SYSMON_TEMP, &tc) == PW_OK &&
+            PWFPGA_SYSMON_CODE(tc) != 0) {
+            APPENDF("packetwyrm_card_temp_celsius{card=\"%u\"} %.1f\n", id, PWFPGA_SYSMON_TEMP_C(tc));
+            if (cards[ci].backend.ops->read32(bx, PWFPGA_REG_SYSMON_SUPPLY, &sup) == PW_OK) {
+                if (PWFPGA_SYSMON_CODE(sup & 0xFFFF))
+                    APPENDF("packetwyrm_card_vccint_volts{card=\"%u\"} %.3f\n", id, PWFPGA_SYSMON_SUPPLY_V(sup & 0xFFFF));
+                if (PWFPGA_SYSMON_CODE(sup >> 16))
+                    APPENDF("packetwyrm_card_vccaux_volts{card=\"%u\"} %.3f\n", id, PWFPGA_SYSMON_SUPPLY_V(sup >> 16));
+            }
+        }
+        if (cards[ci].backend.ops->read32(bx, PWFPGA_REG_GLOBAL_STATUS, &gs) == PW_OK)
+            APPENDF("packetwyrm_card_error_sticky{card=\"%u\"} %d\n",
+                    id, (gs & PWFPGA_GSTAT_ERROR) ? 1 : 0);
+    }
+
+    /* ---- Per-port wire counters (per card+port) straight from the MAC. ---- */
+    APPENDF("# HELP packetwyrm_port_rx_frames Frames received on the port (wire)\n");
+    APPENDF("# TYPE packetwyrm_port_rx_frames counter\n");
+    APPENDF("# HELP packetwyrm_port_tx_frames Frames transmitted on the port (wire)\n");
+    APPENDF("# TYPE packetwyrm_port_tx_frames counter\n");
+    APPENDF("# HELP packetwyrm_port_rx_bytes Bytes received on the port (wire)\n");
+    APPENDF("# TYPE packetwyrm_port_rx_bytes counter\n");
+    APPENDF("# HELP packetwyrm_port_tx_bytes Bytes transmitted on the port (wire)\n");
+    APPENDF("# TYPE packetwyrm_port_tx_bytes counter\n");
+    APPENDF("# HELP packetwyrm_port_rx_fcs_errors FCS (CRC) errors received\n");
+    APPENDF("# TYPE packetwyrm_port_rx_fcs_errors counter\n");
+    APPENDF("# HELP packetwyrm_port_rx_bad_frames Real RX drops (SAF buffer overflow)\n");
+    APPENDF("# TYPE packetwyrm_port_rx_bad_frames counter\n");
+    APPENDF("# HELP packetwyrm_port_rx_oversize Oversize frames received\n");
+    APPENDF("# TYPE packetwyrm_port_rx_oversize counter\n");
+    APPENDF("# HELP packetwyrm_port_rx_undersize Undersize frames received\n");
+    APPENDF("# TYPE packetwyrm_port_rx_undersize counter\n");
+    APPENDF("# HELP packetwyrm_port_rx_unmatched Frames with no classifier match (informational)\n");
+    APPENDF("# TYPE packetwyrm_port_rx_unmatched counter\n");
+    APPENDF("# HELP packetwyrm_port_link_up_events Link-up transitions\n");
+    APPENDF("# TYPE packetwyrm_port_link_up_events counter\n");
+    APPENDF("# HELP packetwyrm_port_link_down_events Link-down transitions\n");
+    APPENDF("# TYPE packetwyrm_port_link_down_events counter\n");
+    APPENDF("# HELP packetwyrm_port_block_lock_loss PCS block-lock loss events\n");
+    APPENDF("# TYPE packetwyrm_port_block_lock_loss counter\n");
+    for (size_t ci = 0; ci < cfg->n_cards; ci++) {
+        if (!cards[ci].open || !cards[ci].backend.ops->port_stats_read) continue;
+        if (cards[ci].backend.ops->stats_snapshot)
+            (void)cards[ci].backend.ops->stats_snapshot(cards[ci].backend.ctx);
+        unsigned id = cfg->cards[ci].id;
+        for (uint8_t p = 0; p < PW_PORTS_PER_CARD; p++) {
+            struct pw_port_stats ps = {0};
+            if (cards[ci].backend.ops->port_stats_read(cards[ci].backend.ctx, p, &ps) != PW_OK)
+                continue;
+            #define PORTMETRIC(field, val) \
+                APPENDF("packetwyrm_port_" field "{card=\"%u\",port=\"%u\"} %llu\n", id, p, (unsigned long long)(val))
+            PORTMETRIC("rx_frames",      ps.rx_frames);
+            PORTMETRIC("tx_frames",      ps.tx_frames);
+            PORTMETRIC("rx_bytes",       ps.rx_bytes);
+            PORTMETRIC("tx_bytes",       ps.tx_bytes);
+            PORTMETRIC("rx_fcs_errors",  ps.rx_fcs_error);
+            PORTMETRIC("rx_bad_frames",  ps.rx_bad_frame);
+            PORTMETRIC("rx_oversize",    ps.rx_oversize);
+            PORTMETRIC("rx_undersize",   ps.rx_undersize);
+            PORTMETRIC("rx_unmatched",   ps.rx_unmatched);
+            PORTMETRIC("link_up_events", ps.link_up_count);
+            PORTMETRIC("link_down_events", ps.link_down_count);
+            PORTMETRIC("block_lock_loss", ps.block_lock_loss);
+            #undef PORTMETRIC
+        }
+    }
+
+    /* ---- SFP+ optics (per card+port) from the background DOM cache -- no I2C
+     * on the scrape path (the sfp poller thread refills g_sfp_cache). ---- */
+    APPENDF("# HELP packetwyrm_sfp_present 1 when a module is seated\n");
+    APPENDF("# TYPE packetwyrm_sfp_present gauge\n");
+    APPENDF("# HELP packetwyrm_sfp_temp_celsius Module temperature (DOM)\n");
+    APPENDF("# TYPE packetwyrm_sfp_temp_celsius gauge\n");
+    APPENDF("# HELP packetwyrm_sfp_vcc_volts Module supply voltage (DOM)\n");
+    APPENDF("# TYPE packetwyrm_sfp_vcc_volts gauge\n");
+    APPENDF("# HELP packetwyrm_sfp_tx_bias_ma Laser bias current (DOM)\n");
+    APPENDF("# TYPE packetwyrm_sfp_tx_bias_ma gauge\n");
+    APPENDF("# HELP packetwyrm_sfp_tx_power_dbm TX optical power (DOM)\n");
+    APPENDF("# TYPE packetwyrm_sfp_tx_power_dbm gauge\n");
+    APPENDF("# HELP packetwyrm_sfp_rx_power_dbm RX optical power (DOM)\n");
+    APPENDF("# TYPE packetwyrm_sfp_rx_power_dbm gauge\n");
+    pthread_mutex_lock(&g_sfp_lock);
+    for (size_t ci = 0; ci < cfg->n_cards && ci < MAX_CARDS; ci++) {
+        unsigned id = cfg->cards[ci].id;
+        for (int p = 0; p < 2; p++) {
+            struct sfp_cache_entry *e = &g_sfp_cache[ci][p];
+            if (!e->valid || !e->probe_ok) continue;
+            APPENDF("packetwyrm_sfp_present{card=\"%u\",port=\"%d\"} %d\n", id, p, e->info.present ? 1 : 0);
+            if (e->info.present && e->info.dom_valid) {
+                APPENDF("packetwyrm_sfp_temp_celsius{card=\"%u\",port=\"%d\"} %.1f\n", id, p, e->info.temp_c);
+                APPENDF("packetwyrm_sfp_vcc_volts{card=\"%u\",port=\"%d\"} %.3f\n", id, p, e->info.vcc_v);
+                APPENDF("packetwyrm_sfp_tx_bias_ma{card=\"%u\",port=\"%d\"} %.2f\n", id, p, e->info.tx_bias_ma);
+                /* mW -> dBm (operators read optical power in dBm). Guard log(0). */
+                if (e->info.tx_power_mw > 0)
+                    APPENDF("packetwyrm_sfp_tx_power_dbm{card=\"%u\",port=\"%d\"} %.2f\n", id, p, 10.0 * log10(e->info.tx_power_mw));
+                if (e->info.rx_power_mw > 0)
+                    APPENDF("packetwyrm_sfp_rx_power_dbm{card=\"%u\",port=\"%d\"} %.2f\n", id, p, 10.0 * log10(e->info.rx_power_mw));
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_sfp_lock);
     #undef APPENDF
     return n;
 }
@@ -2466,7 +2601,7 @@ static void promex_handle(int cfd,
 
     /* Sized for the management metrics + per-flow lines (NUM_FLOWS x ~10
      * series x ~80 B); comfortably covers 32 flows. */
-    static char body[65536];
+    static char body[262144];
     size_t bn = promex_build_body(body, sizeof(body), cfg, prog, cards, hps);
 
     char hdr[256];

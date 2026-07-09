@@ -28,7 +28,7 @@ SSL_CFLAGS  := $(shell $(PKG_CONFIG) --cflags openssl)
 SSL_LIBS    := $(shell $(PKG_CONFIG) --libs openssl)
 
 EXTRA_CFLAGS := $(YAML_CFLAGS) $(JSON_CFLAGS)
-EXTRA_LIBS   := $(YAML_LIBS) $(JSON_LIBS) -lpthread
+EXTRA_LIBS   := $(YAML_LIBS) $(JSON_LIBS) -lpthread -lm
 
 # Build-time git revision embedded into pw_version_string() (all SW binaries
 # funnel through it). Short SHA + "+dirty" when tracked files differ from HEAD;
