@@ -46,6 +46,12 @@ names the reason (not running / wrong path / permission).
 .B flow show \fICONFIG.yaml\fR
 List the flows defined in a YAML file.
 .TP
+.B flow preview \fICONFIG.yaml\fR \fR[\fB--flow \fIID\fR] [\fB--seq \fIN\fR] [\fB--json\fR]
+Decode + hex-dump the on-wire frame the generator emits for a flow (offline;
+Ethernet/VLAN/[encap]/IP/L4/test-header). Shows packet \fIN\fR (default 0); the
+departure timestamp is HW-stamped at egress (shown 0) and the L4 checksum is
+computed for that frame.
+.TP
 .B version
 Print the client version.
 .SH ONLINE COMMANDS

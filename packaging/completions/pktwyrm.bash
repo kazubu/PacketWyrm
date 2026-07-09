@@ -69,7 +69,7 @@ _pktwyrm()
         flow)
             # pktwyrm flow show <cfg> | start <id> | stop <id> | stats [--flow N]
             if [[ -z "$subverb" ]]; then
-                COMPREPLY=( $(compgen -W "show start stop stats" -- "$cur") )
+                COMPREPLY=( $(compgen -W "show preview start stop stats" -- "$cur") )
             elif [[ "$subverb" == "show" ]]; then
                 COMPREPLY=( $(compgen -f -X '!*.@(yaml|yml)' -- "$cur") $(compgen -d -- "$cur") )
             else

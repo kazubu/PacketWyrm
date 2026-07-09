@@ -36,7 +36,7 @@ _pktwyrm() {
                     ;;
                 flow)
                     if (( CURRENT == 2 )); then
-                        _values 'flow subcommand' show start stop stats
+                        _values 'flow subcommand' show preview start stop stats
                     else
                         case "${line[2]}" in
                             show)
