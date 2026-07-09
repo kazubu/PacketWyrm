@@ -1983,13 +1983,22 @@ static struct json_object *build_flow_stats(const struct pw_config *cfg,
         bool lat_ok = read_ok && m->rx_slot_valid && (m->latency_valid || xcard);
         json_object_object_add(f, "latency_valid", json_object_new_boolean(lat_ok));
         if (lat_ok) {
-            json_object_object_add(f, "min_latency", json_object_new_int64((int64_t)(uint32_t)rs.min_latency));
+            /* min_latency / jitter_min are tracked in HW from a 0xFFFFFFFF
+             * sentinel that the first sample overwrites. With NO samples yet
+             * (no traffic / flow not started) that sentinel is meaningless --
+             * report 0 so it never surfaces as a bogus ~27.5 s "min" (0xFFFFFFFF
+             * ticks * 6.4 ns). Consumers key "has a measurement" off
+             * sample_count, which is emitted below. */
+            int have = rs.sample_count > 0;
+            json_object_object_add(f, "min_latency",
+                json_object_new_int64(have ? (int64_t)(uint32_t)rs.min_latency : 0));
             json_object_object_add(f, "max_latency", json_object_new_int64((int64_t)(uint32_t)rs.max_latency));
             int64_t avg = rs.sample_count ? (int64_t)(rs.sum_latency / rs.sample_count) : 0;
             json_object_object_add(f, "avg_latency", json_object_new_int64(avg));
             json_object_object_add(f, "sample_count",
                                    json_object_new_int64((int64_t)rs.sample_count));
-            json_object_object_add(f, "jitter_min", json_object_new_int64((int64_t)rs.jitter_min));
+            json_object_object_add(f, "jitter_min",
+                json_object_new_int64(have ? (int64_t)rs.jitter_min : 0));
             json_object_object_add(f, "jitter_max", json_object_new_int64((int64_t)rs.jitter_max));
             int64_t jit_avg = rs.sample_count
                 ? (int64_t)(rs.jitter_sum / rs.sample_count)

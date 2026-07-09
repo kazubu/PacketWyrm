@@ -620,12 +620,13 @@ static void pretty_print_latency(const char *json, size_t len) {
         if (json_object_object_get_ex(f,"sample_count",&v))  samp=json_object_get_int64(v);
         if (json_object_object_get_ex(f,"latency_method",&v))meth=json_object_get_string(v);
         char path[4*PW_NAME_MAX+4]; snprintf(path, sizeof(path), "%s->%s", txp, rxp);
-        if (valid)
+        if (valid && samp > 0)
             printf("%-5d %-19s %10.1f %10.1f %8.1f %8ld  %s\n",
                    id, path, mn*6.4, mx*6.4, jmx*6.4, samp, meth);
         else
+            /* no samples yet (no traffic) -> dashes, not a 0xFFFFFFFF sentinel */
             printf("%-5d %-19s %10s %10s %8s %8ld  %s\n",
-                   id, path, "-", "-", "-", samp, "no latency");
+                   id, path, "-", "-", "-", samp, valid ? "no traffic" : "no latency");
     }
     json_object_put(root);
 }
@@ -1462,7 +1463,7 @@ int main(int argc, char **argv) {
                             struct json_object *f = json_object_array_get_idx(arr, i);
                             struct json_object *v;
                             int64_t fid=0,tx=0,rx=0,lost=0,dup=0,reord=0;
-                            int64_t mn=0,mx=0,avg=0; bool lv=false;
+                            int64_t mn=0,mx=0,avg=0,samp=0; bool lv=false;
                             const char *txp="?", *rxp="?";
                             #define GETI(k, dst) do { if (json_object_object_get_ex(f, k, &v)) dst = json_object_get_int64(v); } while(0)
                             #define GETB(k, dst) do { if (json_object_object_get_ex(f, k, &v)) dst = json_object_get_boolean(v); } while(0)
@@ -1478,19 +1479,32 @@ int main(int argc, char **argv) {
                             GETI("min_latency", mn);
                             GETI("max_latency", mx);
                             GETI("avg_latency", avg);
+                            GETI("sample_count", samp);
                             GETB("latency_valid", lv);
                             #undef GETI
                             #undef GETB
                             #undef GETS
                             char path[4*PW_NAME_MAX+4];
                             snprintf(path, sizeof path, "%s->%s", txp, rxp);
-                            printf("%-4ld %-19s %10ld %10ld %8ld %8ld %8ld %10ld %10ld %10ld %s\n",
+                            /* No samples yet (no traffic / not started) -> show
+                             * "-" rather than a latency number: min in HW is a
+                             * 0xFFFFFFFF sentinel until the first packet, and 0
+                             * would read as a real 0 ns measurement. */
+                            char mns[16], ans[16], xns[16];
+                            if (lv && samp > 0) {
+                                snprintf(mns, sizeof mns, "%ld", (long)pw_ticks_to_ns((unsigned long long)mn));
+                                snprintf(ans, sizeof ans, "%ld", (long)pw_ticks_to_ns((unsigned long long)avg));
+                                snprintf(xns, sizeof xns, "%ld", (long)pw_ticks_to_ns((unsigned long long)mx));
+                            } else {
+                                snprintf(mns, sizeof mns, "-");
+                                snprintf(ans, sizeof ans, "-");
+                                snprintf(xns, sizeof xns, "-");
+                            }
+                            printf("%-4ld %-19s %10ld %10ld %8ld %8ld %8ld %10s %10s %10s %s\n",
                                    (long)fid, path,
                                    (long)tx, (long)rx,
                                    (long)lost, (long)dup, (long)reord,
-                                   lv ? (long)pw_ticks_to_ns((unsigned long long)mn) : 0,
-                                   lv ? (long)pw_ticks_to_ns((unsigned long long)avg) : 0,
-                                   lv ? (long)pw_ticks_to_ns((unsigned long long)mx) : 0,
+                                   mns, ans, xns,
                                    lv ? "yes" : "no");
                         }
                         json_object_put(root);
