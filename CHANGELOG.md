@@ -39,6 +39,9 @@ The detailed development log that produced this release is preserved below.
 
 ## Pre-release development log
 
+Grouped by type; within each type entries are in the order they were logged
+during pre-release development (roughly newest first).
+
 ### Added
   - **Generated-frame preview (CLI + Web GUI).** `pktwyrm flow preview
     <config.yaml> [--flow ID] [--seq N] [--json]` builds and decodes/hex-dumps
@@ -55,31 +58,6 @@ The detailed development log that produced this release is preserved below.
     v6 128-bit lanes) for the requested `seq`, matching the RTL xorshift/lane
     salts exactly, so stepping `seq` shows the same variation the wire carries.
 
-### Changed
-  - **Web GUI YAML is now emitted with js-yaml** (`window.jsyaml.dump`) instead
-    of hand-written string concatenation. The Flows/Forwards editors build a
-    plain object and let the library serialise it, so quoting/escaping is
-    correct by construction (MAC/IPv6 colons, names with YAML-special chars) and
-    the emit side uses the same library as the parse-side syntax check. Verified
-    the daemon accepts the js-yaml output for flow.preview + config.load,
-    including a hostile flow name and block-form modifiers.
-  - **`pktwyrm load` now DEPLOYS to the running daemon by default.** Previously
-    `pktwyrm load FILE` (without `--socket`) only validated/compiled the file
-    offline and silently did nothing to the daemon, while still printing a
-    "Configuration OK / card0 program…" summary that looked like it had applied.
-    It now sends `config.load` to the default control socket (or `--host`), and
-    reports an actionable error if the daemon is unreachable. Offline validation
-    moved to `--check` (alias `-n`). `--socket` still overrides the target.
-  - **proxyd options are configurable via a file** (`--config`, default
-    `/etc/packetwyrm/proxyd.yaml` in the package): `listen`, `socket`,
-    `tls_cert`, `tls_key`, `no_tls`, `insecure_no_auth`, `allowed_hosts`. CLI
-    flags override the file; the systemd unit runs `--config`, so operators edit
-    the file + `systemctl restart` instead of a unit drop-in.
-  - **build-deb**: version derivation no longer misclassifies a commit SHA that
-    starts with a digit as a version tag (the `.deb` version format was
-    flipping between builds); untagged builds are consistently `0.1.0+g<sha>`.
-
-### Added
   - **UX sweep (2026-07-09): explicit test start, richer CLI, GUI, packaging,
     observability.** SW/GUI/packaging only (no RTL). Validated on the fake
     backend + all test suites (unit 531, e2e_smoke, e2e_proxyd 51, tinet,
@@ -121,24 +99,6 @@ The detailed development log that produced this release is preserved below.
     machine-readable, additive-only surface; the pretty CLI tables are
     human-only and may change — scripts must use `--json`.
 
-### Changed
-  - **Web GUI: multi-file asset serving + ES-module refactor (foundation for UX
-    work).** `packetwyrm-proxyd` now serves a whole `assets/` tree (index.html +
-    `css/app.css` + `js/*.mjs` ES modules + future `vendor/` libs) instead of a
-    single `xxd`-embedded `index.html`: a build-time `gen_assets.py` embeds the
-    tree as a C blob table and `GET /<path>` is an exact table lookup ( `/`→
-    index, query stripped, unknown→404; exact match against the in-binary table
-    means no filesystem access and no path traversal). Responses now carry a
-    same-origin `Content-Security-Policy` (`script-src 'self'`, so no inline
-    script) + `X-Content-Type-Options: nosniff`; the response-header buffer is
-    enlarged and overflow-checked so adding headers can't truncate. The 986-line
-    inline GUI
-    was split (behaviour-preserving) into ES modules (dom/rpc/format/state/yaml/
-    ui/flows/forwards/control/dashboard/env/main) with the CSS extracted — no
-    functional change, just structure for the UX phases to build on. e2e extended
-    to cover multi-file serving + content-types + traversal (49/49).
-
-### Added
   - **Web GUI UX pass (action safety, live monitoring, config editing).** Built on
     the ES-module split above:
     - *Action safety + feedback:* destructive actions (Stop all, delete flow/
@@ -197,162 +157,6 @@ The detailed development log that produced this release is preserved below.
     Arm AFTER the servo converges — an arm during a startup transient captures a
     large un-settled offset.
 
-### Fixed
-  - **Full-codebase review sweep (2026-07-07): generator seq integrity, CSR
-    correctness, parser robustness, SW hardening.** One coordinated fix pass
-    over the whole tree; RTL items are sim-validated (all 30 suites green,
-    each fix mutation-checked against its new regression test) and
-    HW-VALIDATED on build_id 0x6a4d2892 (post-route WNS +0.076): arran
-    07:00.0 — 10 generator-restart cycles at line rate (~37M frames each,
-    12.3 Mpps 74B), lost=0 dup=0 ooo=0 every cycle (the old RTL emitted
-    duplicate=1 per restart); 80..112 sweep at line rate clean, mean 96.000;
-    32-flow scale clean; 33-flow config rejected with out-of-resources and
-    rolled back; 7-min histogram soak read-coherent across the 2^32 carry
-    (210+ reads, 0 anomalies); CLI bucket 0 prints "< 12 ns" on HW.
-    pwhost1 both cards — bidirectional 32-flow cross-card: lost=0 dup=0,
-    gpio-corrected latency 27..37 ticks, no 0/0xFFFFFFFF wrap, 5 restart
-    cycles clean; live pw_flash of the 12.3 MB image exercised the new
-    partial-tail-sector RMW path (VERIFY OK on all three cards).
-    - *Generator (HIGH)*: `pw_flow_gen_multi` committed a slot's sequence
-      number and sweep length at the frame's LAST beat, but the precompute
-      pipeline samples them 3 cycles before a launch — a pipeline-primed
-      back-to-back launch (2-3 cycles after last beat) reused the previous
-      seq. Every idle→line-rate transition put one duplicate seq on the wire
-      and skipped one number after the run (phantom `duplicate`/`lost` in the
-      RX checker, wrong health-LED blips); the frame-length sweep likewise
-      emitted each size twice at line rate. seq/cur_len now commit AT LAUNCH
-      (≥8 beats ahead of the 3-cycle sample window). tb now checks seq from
-      the very first frame after reset (the old steady-state monitor could
-      never see the transition dup) + a back-to-back sweep scenario.
-    - *CSR*: `ERROR_STATUS` W1C was dead in both `pw_csr_full` and
-      `pw_csr_min` (the clear NBA was overwritten by the textually later
-      unconditional set-merge in the same always block) — restructured to a
-      single assignment point. Live histogram 64-bit buckets are no longer
-      torn across a 2^32 carry: the lo-dword read latches a hi shadow
-      (LOW-then-HIGH protocol, same as REG_TIMESTAMP); the SW window reader
-      already reads ascending words, so no SW change. `gpio_sync_ts_high`
-      shadow added to the read-FSM reset list.
-    - *Egress stamper*: `pw_ts_insert` re-stamped FORWARDED v4 TEST frames
-      (magic alone, no `is_gen` gate) — end-to-end latency silently became
-      last-hop latency in bump-in-the-wire topologies, and a forwarded v4 TCP
-      frame got its ts bytes rewritten with NO checksum fixup (corrupt L4
-      csum on the wire). v4 stamping now requires the generator marker too.
-    - *Parser*: tunnel-descent reads (GRE proto, EtherIP ethertype) had no
-      frame-length guard and the capture buffer is not cleared between
-      frames, so a truncated encap frame classified on a PREVIOUS frame's
-      residual bytes (history-dependent `is_ipv4/is_ipv6`). Descent is now
-      length-guarded (deterministic outer-only key when short). Flagged GRE
-      (C/K/S/version≠0, header >4 B) no longer descends at a wrong offset —
-      treated as non-encap.
-    - *Flow programming (SW)*: a config with more measured flows than the
-      bitstream's `num_local_flows` (32) programmed "successfully" with the
-      excess flows silently dead (rows past DEPTH are write-ignored in RTL;
-      the SW check used the 64-row BAR-window ceiling). `pw_program_card_tables`
-      now rejects it with `PW_E_NO_RESOURCES`.
-    - *DMA slow path (SW)*: C2H overrun recovery skipped to `done - RING`,
-      which is exactly the buffer the engine's in-flight descriptor is
-      writing (and the `== RING` backlog case slipped the `>` compare) — a
-      punt storm could hand a torn frame to the TAP. Safe backlog is RING-1.
-    - *Library hardening*: control-socket bind now runs under `umask(0077)`
-      (no window where the socket file is world-connectable when file mode IS
-      the ACL); `rate_pps` realization computed in 128-bit (a huge pps value
-      wrapped 64-bit into a tiny token rate); `pw_parse_u64` no longer parses
-      leading-zero decimals as octal (`vlan: 010` was 8); `pw_flash_program`
-      preserves non-target bytes of partially covered head/tail 64 KB sectors
-      (read-merge-erase-program + verify); BAR attach / file-backed BAR open
-      validate mapping size before dereferencing (truncated image file was a
-      SIGBUS); legacy punt-window read bounds the full window, not just the
-      base offset.
-    - *Daemon*: `flash.write` checks `malloc`; `build_flow_hist` gained the
-      `stats_snapshot` ops NULL guard its siblings had.
-    - *CLI*: latency-histogram bucket 0 label — bucket 0 holds `[0, 2)` ticks,
-      so it now prints `< 12 ns` instead of `>= 6 ns` (completes the GUI fix
-      d7425fc on the CLI side).
-    - *Tools*: `pw_gpio_sync` master default `period_log2` was 16, which
-      wraps to 0 in the 4-bit HW field (pulses every 32 cycles while the tool
-      printed 65536) — default 15, range-checked 0..15, prints the effective
-      (RTL-clamped) period.
-    - *Sim-only RTL*: `pw_flow_gen_axis` 33-bit token compare (32-bit wrap
-      zeroed a near-cap bucket); `pw_flow_gen` untagged flows no longer pay
-      the 4-byte VLAN cost; `pw_axis_serial`/deserializer converted to the
-      standard AXIS lane convention (tkeep qualified the EMPTY lanes on a
-      partial beat).
-    - *Stats naming*: `pw_flow_stats.expected_sequence` → `last_sequence`
-      and JSON `expected_seq` → `last_seq` — the HW snapshot exports the
-      LAST RECEIVED sequence, not the expected one; consumers trusting the
-      old name were off by one (API rename, no RTL change).
-    - *Tests/CI*: e2e_smoke now really asserts clean SIGINT shutdown (exit
-      status was unconditionally swallowed), re-checks flow state after the
-      double-fault rollback, and drops the `echo | grep` SIGPIPE flake; fixed
-      the `flow stats` table regex that was failing on main since the
-      `path (tx->rx)` column landed (CI e2e was red); `check-schema.sh`
-      enumerates configs recursively (the two lab example configs were never
-      validated) and fails on zero matches; `sw/Makefile` direct-compile
-      tools got `-MMD` dep tracking (editing `pw_tool_fc.h` left stale
-      binaries); `test_host_plane_socketpair` now tests the real
-      duplicate-bind contract; e2e_proxyd picks free ports (was colliding
-      with a long-running lab proxyd on 18443).
-    - *pktwyrm-tinet*: router `addr`/`addr6` validated (a bogus address used
-      to bring the lab up "successfully" with an unconfigured router); IPv6
-      `networks` now emitted under `address-family ipv6 unicast` with v6
-      neighbor activation (were emitted under ipv4 unicast and silently never
-      advertised); numeric fields raise proper schema errors instead of raw
-      tracebacks; duplicate `addr`/`addr6` across routers rejected.
-  - **proxyd: `/api/rpc` CSRF/DNS-rebinding defence + availability hardening.**
-    POST `/api/rpc` now requires the custom header `X-PW-Request: 1` (forces a
-    CORS preflight that cross-origin pages fail; proxyd never answers OPTIONS)
-    AND an allow-listed `Host` header (loopback names, the bind address, or
-    `--allowed-host NAME[,...]`) — without these, ANY web page in a local
-    browser could drive a secretless-loopback deployment (config.save writes
-    /etc as root), and DNS rebinding defeated a header-only defence. GUI and
-    `pktwyrm --host` send the header. Also: a 30 s whole-request deadline
-    (Slowloris could pin all 32 workers with 1 byte/14 s trickles → 408), and
-    non-loopback binds lazily re-confirm (≤60 s) that the daemon still
-    requires a secret (startup-only probe was TOCTOU across a daemon restart;
-    fail-closed 403).
-  - **Cross-card latency smeared to min=0 / huge tails whenever the Web GUI was
-    open (servo starvation — the true root cause).** The dashboard polls
-    `sfp.info` at ~1 Hz, and that RPC did I2C bit-bang per SFP module
-    (~0.3 s/module, ~0.58 s total) INLINE on the daemon's single-threaded main
-    poll loop — the same loop that ran the cross-card `lat_correction` servo.
-    Each poll blocked the loop ~0.58 s, so the servo went stale and the
-    ~1.6 ppm inter-card skew drifted the correction ~140 ticks over the stall;
-    the corrected latency then scattered — one direction's low tail clamped to
-    min=0, the other's high tail to ~200 ticks. The apparent "~20-tick direction
-    asymmetry" was the same artifact. Fix: the cross-card servo and the SFP I2C
-    now each run in their OWN thread. `sfp.info` is served from a
-    background-refreshed cache (the RPC never blocks); the servo keeps its ~1 ms
-    cadence regardless of control-RPC load (`g_servo_lock` serialises its
-    cfg/prog use against a `config.load` swap). HW-validated on pwhost1 under a
-    1 Hz sfp.info poll: servo max-gap 565 ms → 2 ms, all 32 cross-card flows
-    min>0 (was min=0), latency tight (c0→c1 29–31, c1→c0 34–37 ticks; the TRUE
-    direction asymmetry is only ~3 ticks = the J5 sync-path capture delay),
-    loss=0. This was a SW concurrency bug, not the timestamp/GPIO datapath —
-    no RTL change, and no per-session calibration is needed.
-  - **Cross-card latency showed garbage (0xFFFFFFFF) in one direction (Phase 1
-    clamp).** On two cards whose free-running timestamp counters differ, the
-    corrected one-way latency `(rx_now + lat_correction) − tx_stamp` can go
-    slightly negative when the inter-card sync residual over-corrects; the BRAM
-    checker truncated it as UNSIGNED (`lat32 = s1_lat[31:0]`), so a negative
-    sample read as ~0xFFFF_FFxx and pinned max/jitter to 0xFFFFFFFF (and the
-    histogram top bucket). `pw_test_rx_checker_bram` now treats the result as
-    signed and clamps to `[0, 0xFFFFFFFF]` before it feeds min/max/sum/jitter/
-    histogram; in-range latencies (incl. same-card, correction=0) are
-    bit-identical. HW-validated on pwhost1 (build_id 0x6a4bc32d): the 16
-    card0→card1 flows went from all-0xFFFFFFFF to min=0/avg=19/max=31, loss=0.
-    The residual ~2× direction asymmetry (true one-way ≈63 vs ≈19 ticks) is a
-    calibration issue tracked as Phase 2 (since resolved — see the
-    cross-card latency section of `docs/design/daemon.md`).
-  - **Two FPGAs in one IOMMU group: second card failed to open.** Behind
-    non-ACS CPU root ports both cards share one VFIO group, and VFIO forbids
-    opening a group fd twice. `pw_vfio_open_bar` now shares one group+container
-    fd across same-group cards via a process-wide registry (refcounted; DMA IOVA
-    bump-allocated per container). Done ABI-preserving: the now-dead per-handle
-    `iova_next` field is repurposed in place as `grp_slot` (same offset/size),
-    so `struct pw_vfio_handle`'s layout is unchanged. HW-validated on pwhost1:
-    cards_open = 2/2, loss=0.
-
-### Added
   - **Cross-cutting (whole-system) review — no P0.** A system-level pass
     (end-to-end secret/auth/privilege, cross-thread concurrency, failure-mode
     recovery, fd/mem/DMA lifecycle across module boundaries, generator↔consumer
@@ -1336,50 +1140,6 @@ The detailed development log that produced this release is preserved below.
     pretty-prints it (vendor/part/serial/bit-rate + DOM temp/Vcc/bias/TX+RX in
     dBm). HW-validated on the dev card (both Finisar 10G-LR read via the daemon).
 
-### Fixed
-  - **Invalid inject egress id can no longer wedge the DMA slow path.**
-    `pw_dma_slowpath` latched the H2C inject header's egress id unvalidated; an
-    id `>= PORT_COUNT` matches no TX arbiter, so `m_inj_tvalid` stayed high
-    forever, the inject FIFO backed up and the whole XDMA H2C channel wedged
-    with no recovery. The header-strip FSM now validates the FULL egress byte
-    (0x11 must not alias to port 1) and swallows out-of-range frames (consumed
-    to `tlast`, never presented). New `PORT_COUNT` parameter wired from
-    `NUM_PORTS` at the top level; `sim_dma` gained bad-egress (plain + aliasing)
-    + follow-up-valid-frame scenarios.
-  - **`pw_dma_slowpath` now resets with the data-plane soft reset.** Its dp-side
-    reset was `~rst_n` only, while the arbiters/SAFs it feeds also reset on the
-    CSR `DP_RESET`; a soft reset could leave a stale half-frame in the bridge,
-    desynced against the freshly reset plane. Now `~rst_n | dp_soft_rst`. Safe
-    one-sided: the taxi async FIFO synchronizes each side's reset into the other
-    domain (`taxi_sync_reset`) and drops partial frames, so both FIFO halves
-    flush coherently (pointer corruption impossible by design). `sim_dma` gained
-    a dp-reset-mid-frame recovery scenario.
-  - **`pw_flow_gen_axis` token deduct wrapped at 32 bits** near bucket cap
-    (`tokens_q + tokens_per_tick_fp_i` overflowed and zeroed the bucket). Now
-    the 33-bit compare/deduct, same pattern as `pw_flow_gen`/`pw_flow_gen_multi`.
-    (Sim-only module today — not in the production plane.)
-  - **`pw_flow_gen` (sim-only skeleton) charged untagged flows 4 VLAN bytes**
-    in the token-bucket cost; the cost now includes the tag only when
-    `vlan_enable_i`, matching what `build_frame` emits.
-  - **`pw_axis_serial` (sim-only) tkeep qualified the wrong lanes.** The
-    serializer packed wire byte k big-endian into `tdata[(7-k)*8 +: 8]` while
-    `tkeep[n-1:0]` qualified the LOW lanes — per AXI-Stream, the empty ones on a
-    partial beat — and the reverse of the production convention. Serializer +
-    deserializer now use the standard convention (byte k at `tdata[k*8 +: 8]`,
-    `tkeep[k]`); the tb now checks the wire lane convention directly, not just
-    the round-trip.
-  - **Deep-encap UDF classifier matching.** A UDF slice comparator reads inner
-    byte `base_i(eff) + offset` out of the captured window, but the window was
-    truncated to the low `SLICE_WIN`(48) bytes, so for `eff + offset ≥ 48` (deep
-    encap, e.g. v6-in-v6) it read 0 and could never match the inner frame (only
-    shallow UDFs like the IS-IS punt worked). The classifier now gets the full
-    `HDR_BYTES`(176) window, so a UDF reaches the inner frame at any single-encap
-    depth. Widens only the two `pw_slice_match` byte-muxes (classifier latency-2
-    path); the dp_clk-critical parser is untouched. (No config emits a deep-encap
-    UDF today, so this was a latent limitation, but it restores the documented
-    "offset relative to the inner frame, encap-agnostic" UDF contract.)
-
-### Added
   - **Per-flow cross-card latency correction (Stage 2).** The single global
     `lat_correction` CSR (0x0144/0x0148) is replaced by a per-flow window
     (`0x0180 + slot*8`, atomic LO-stage/HI-commit) feeding a data-plane
@@ -1470,64 +1230,6 @@ The detailed development log that produced this release is preserved below.
     the xcku3p routing budget (~93% LUT), so TCP ships after a dedicated
     LUT-reduction pass.)
 
-### Fixed
-  - **`DP_RESET` now also resets the MAC-TX CDC, to recover a presumed TX-FIFO
-    wedge in-system.** The data-plane soft reset only quiesced dp_clk-domain
-    state (gen / SAF / arbiters); the per-port MAC-TX CDC FIFO + `pw_ts_insert`
-    live in the MAC tx_clk domain and were outside it. An observed egress hang
-    (every flow `tx=0`, inject `INJECT_STATUS_BUSY` stuck, link still up) cleared
-    only on an ICAP reboot / power cycle — consistent with a stuck TX-FIFO state.
-    The `DP_RESET` pulse is now stretched in dp_clk and CDC'd into each MAC
-    tx_clk to flush the TX FIFO (both sides) and reset `pw_ts_insert`. This
-    re-initialises the TX-CDC state while the TX clock is running; it does not
-    cover the MAC/PCS/GT, the RX CDC, or a stopped TX clock (still a reboot).
-  - **Sub-minimum frame lengths no longer stall a flow.** The generator clamps a
-    too-short frame up to the minimum legal size (incl. VLAN/encap/IP family);
-    the SW now computes that same minimum and applies it to the token-bucket cap
-    **and** the rate_pps byte basis, so a flow configured below the minimum (e.g.
-    64 B) transmits at the right rate instead of starving (cap < cost).
-  - **Reloads no longer leave stale classifier / flow / hash / map entries.**
-    `pw_program_card_tables` now writes every table to its full capacity on each
-    load: configured entries enabled, all remaining slots invalidated (flow rows
-    zeroed, rules `enable=0`, hash buckets + flow-id-map entries `valid=0`).
-    Previously a reload that *shrank* the config left the deleted flows / punt /
-    forward / TEST_RX entries live, since the RTL commit only copies
-    shadow→live without touching un-written slots. HW-validated on the loopback
-    (4-flow multiflow, lost_est=0, correct per-slot classification).
-  - **Slow-path inject window bounds-checks its inputs** (`pw_inject_tx_window`):
-    `byte_len` is clamped to the 512 B buffer and out-of-range DATA word writes
-    are dropped, so a malformed host inject can't alias onto a valid beat or emit
-    a frame longer than the buffer. (RTL; ships in the next bitstream.)
-  - **TX-arbiter source-select width** (`pw_data_plane_axis` `SELW`) widened to
-    `$clog2(PW_PORTS + 2)` to cover the host-inject source index (`PW_PORTS+1`);
-    the old `+1` was correct only by luck at `PW_PORTS=2`. (RTL; future-proofs
-    `PW_PORTS≥3`.)
-  - **config.load now rolls back on a staging failure** instead of swapping the
-    daemon's view to a config the FPGA may not actually hold. If programming a
-    card hard-fails (BAR error / card drop), the daemon re-programs the previous
-    config, keeps it running, and rejects the load with an error — matching the
-    documented behavior (`docs/design/daemon.md`). A half-applied config (daemon
-    view != FPGA) was the worst failure mode for a tester.
-
-### Changed
-  - **dp_clk timing + LUT optimization (WNS -0.001 → +0.132 ns; LUT 89.2% →
-    87.9%).** Two targeted changes recovered the razor-thin timing the
-    variable-frame-length work left:
-    * `pw_hash_classifier` pipelined 2→3 cycles — a masked-key register splits
-      the dp_clk-critical `parser-key → assemble → mask → XOR-fold → multiply →
-      BRAM-address` path (the actual WNS path). The data plane delays the field
-      classifier + flow-id map results and the decision/`rx_kv_d` chain by one
-      cycle so all three classification paths stay aligned at the precedence mux.
-    * `pw_spi_flash` TX/RX buffers moved from two 512-byte register arrays
-      (~10K LUT of byte-indexed muxes) to 32-bit-word block RAM; MOSI is a direct
-      bit-select of the current word (the 1-cycle BRAM latency is absorbed by the
-      SCK divider) and RX accumulates words. The CSR read is now a 1-cycle
-      pending read (`spi_pend`, like the histogram/punt windows).
-    HW-validated on the xcku3p loopback: map + hash-hit (24-flow header-classify)
-    loopbacks loss=0, SPI JEDEC-ID read + 512 B live write/verify OK, link stable
-    (blk_lock_loss=0). All Verilator tbs green.
-
-### Added
   - **TCP SYN generator (`pw_tcp_syn`) over the slow-path inject.** Reuses the
     existing `slow_path_tx` arbitrary-frame path: the host composes a complete
     Ethernet/IPv4/TCP-SYN frame with the IPv4 + TCP checksums computed in
@@ -1540,34 +1242,6 @@ The detailed development log that produced this release is preserved below.
     would need the streaming generator (`pw_flow_gen_multi`) to emit a TCP header
     + checksum, a separate RTL change.
 
-### Fixed
-  - **Punt rules narrowed; fake backend no longer a silent default.** BGP punt
-    now matches **TCP port 179 only** (one rule per direction — listener dst:179,
-    initiator src:179) instead of all TCP, so generated TCP test traffic (e.g. a
-    SYN flood on other ports) is not swallowed by the slow path. IS-IS punt now
-    matches the 802.3/LLC DSAP/SSAP (0xFEFE) via a UDF instead of a catch-all
-    that punted **every** frame on the ingress (fails safe: under-matches rather
-    than over-matches if the parser's L3 base differs for length-encoded frames).
-    Pure compiler change (existing bitstream's L4-port comparators + UDFs);
-    HW-confirmed it programs cleanly with the data plane at loss=0. The daemon
-    no longer falls back to the no-op **fake backend by default** — a BAR-open
-    failure is now an error unless `--allow-fake`/`-F` is passed (dev/CI), so a
-    real deployment can't look healthy while silently dropping all CSR writes.
-  - **Code-review hardening (config/validation/daemon).** `rate_pps` is now
-    realized (compiler computes pps × frame bytes → token rate; a pps-only flow
-    transmitted 0 frames before — HW-validated tx>0, loss=0). The config parser
-    now validates traffic: exactly one of `rate_bps`/`rate_pps`, frame-length
-    range [64,1518], `frame_len_min ≤ frame_len_max`, `frame_len_step ≥ 1`, and
-    `frame_len` vs the `frame_len_min/max/step` triple are mutually exclusive
-    (schema gained the matching `oneOf`; max tightened 9216→1518 to the FIFO/RTL
-    limit). `program_backends` returns the worst hard status (card drop / BAR
-    error), and `config.load` reports it (`ok=false` + `program_error`) instead
-    of always succeeding. RPC `config.load` response key fixed
-    `n_classifier_rules`→`n_classifier_rows` (matches the CLI + docs; the CLI
-    printed 0 rows). `pw_rfc2544` now aborts on any CSR op failure (naming the
-    failing access) and validates `trial_ms`.
-
-### Added
   - **Variable frame length in the generator + RFC 2544 driver** — the test
     generator (`pw_flow_gen_multi`) now honors `frame_len_min/max/step`: each
     slot emits a total L2 frame length that is fixed (`min==max`, RFC 2544) or
@@ -2133,8 +1807,325 @@ The detailed development log that produced this release is preserved below.
     The Verilator SV suite remains the integration gate against
     the production RTL.
 
-### Documentation
+### Changed
+  - **Web GUI YAML is now emitted with js-yaml** (`window.jsyaml.dump`) instead
+    of hand-written string concatenation. The Flows/Forwards editors build a
+    plain object and let the library serialise it, so quoting/escaping is
+    correct by construction (MAC/IPv6 colons, names with YAML-special chars) and
+    the emit side uses the same library as the parse-side syntax check. Verified
+    the daemon accepts the js-yaml output for flow.preview + config.load,
+    including a hostile flow name and block-form modifiers.
+  - **`pktwyrm load` now DEPLOYS to the running daemon by default.** Previously
+    `pktwyrm load FILE` (without `--socket`) only validated/compiled the file
+    offline and silently did nothing to the daemon, while still printing a
+    "Configuration OK / card0 program…" summary that looked like it had applied.
+    It now sends `config.load` to the default control socket (or `--host`), and
+    reports an actionable error if the daemon is unreachable. Offline validation
+    moved to `--check` (alias `-n`). `--socket` still overrides the target.
+  - **proxyd options are configurable via a file** (`--config`, default
+    `/etc/packetwyrm/proxyd.yaml` in the package): `listen`, `socket`,
+    `tls_cert`, `tls_key`, `no_tls`, `insecure_no_auth`, `allowed_hosts`. CLI
+    flags override the file; the systemd unit runs `--config`, so operators edit
+    the file + `systemctl restart` instead of a unit drop-in.
+  - **build-deb**: version derivation no longer misclassifies a commit SHA that
+    starts with a digit as a version tag (the `.deb` version format was
+    flipping between builds); untagged builds are consistently `0.1.0+g<sha>`.
 
+  - **Web GUI: multi-file asset serving + ES-module refactor (foundation for UX
+    work).** `packetwyrm-proxyd` now serves a whole `assets/` tree (index.html +
+    `css/app.css` + `js/*.mjs` ES modules + future `vendor/` libs) instead of a
+    single `xxd`-embedded `index.html`: a build-time `gen_assets.py` embeds the
+    tree as a C blob table and `GET /<path>` is an exact table lookup ( `/`→
+    index, query stripped, unknown→404; exact match against the in-binary table
+    means no filesystem access and no path traversal). Responses now carry a
+    same-origin `Content-Security-Policy` (`script-src 'self'`, so no inline
+    script) + `X-Content-Type-Options: nosniff`; the response-header buffer is
+    enlarged and overflow-checked so adding headers can't truncate. The 986-line
+    inline GUI
+    was split (behaviour-preserving) into ES modules (dom/rpc/format/state/yaml/
+    ui/flows/forwards/control/dashboard/env/main) with the CSS extracted — no
+    functional change, just structure for the UX phases to build on. e2e extended
+    to cover multi-file serving + content-types + traversal (49/49).
+
+  - **dp_clk timing + LUT optimization (WNS -0.001 → +0.132 ns; LUT 89.2% →
+    87.9%).** Two targeted changes recovered the razor-thin timing the
+    variable-frame-length work left:
+    * `pw_hash_classifier` pipelined 2→3 cycles — a masked-key register splits
+      the dp_clk-critical `parser-key → assemble → mask → XOR-fold → multiply →
+      BRAM-address` path (the actual WNS path). The data plane delays the field
+      classifier + flow-id map results and the decision/`rx_kv_d` chain by one
+      cycle so all three classification paths stay aligned at the precedence mux.
+    * `pw_spi_flash` TX/RX buffers moved from two 512-byte register arrays
+      (~10K LUT of byte-indexed muxes) to 32-bit-word block RAM; MOSI is a direct
+      bit-select of the current word (the 1-cycle BRAM latency is absorbed by the
+      SCK divider) and RX accumulates words. The CSR read is now a 1-cycle
+      pending read (`spi_pend`, like the histogram/punt windows).
+    HW-validated on the xcku3p loopback: map + hash-hit (24-flow header-classify)
+    loopbacks loss=0, SPI JEDEC-ID read + 512 B live write/verify OK, link stable
+    (blk_lock_loss=0). All Verilator tbs green.
+
+### Fixed
+  - **Full-codebase review sweep (2026-07-07): generator seq integrity, CSR
+    correctness, parser robustness, SW hardening.** One coordinated fix pass
+    over the whole tree; RTL items are sim-validated (all 30 suites green,
+    each fix mutation-checked against its new regression test) and
+    HW-VALIDATED on build_id 0x6a4d2892 (post-route WNS +0.076): arran
+    07:00.0 — 10 generator-restart cycles at line rate (~37M frames each,
+    12.3 Mpps 74B), lost=0 dup=0 ooo=0 every cycle (the old RTL emitted
+    duplicate=1 per restart); 80..112 sweep at line rate clean, mean 96.000;
+    32-flow scale clean; 33-flow config rejected with out-of-resources and
+    rolled back; 7-min histogram soak read-coherent across the 2^32 carry
+    (210+ reads, 0 anomalies); CLI bucket 0 prints "< 12 ns" on HW.
+    pwhost1 both cards — bidirectional 32-flow cross-card: lost=0 dup=0,
+    gpio-corrected latency 27..37 ticks, no 0/0xFFFFFFFF wrap, 5 restart
+    cycles clean; live pw_flash of the 12.3 MB image exercised the new
+    partial-tail-sector RMW path (VERIFY OK on all three cards).
+    - *Generator (HIGH)*: `pw_flow_gen_multi` committed a slot's sequence
+      number and sweep length at the frame's LAST beat, but the precompute
+      pipeline samples them 3 cycles before a launch — a pipeline-primed
+      back-to-back launch (2-3 cycles after last beat) reused the previous
+      seq. Every idle→line-rate transition put one duplicate seq on the wire
+      and skipped one number after the run (phantom `duplicate`/`lost` in the
+      RX checker, wrong health-LED blips); the frame-length sweep likewise
+      emitted each size twice at line rate. seq/cur_len now commit AT LAUNCH
+      (≥8 beats ahead of the 3-cycle sample window). tb now checks seq from
+      the very first frame after reset (the old steady-state monitor could
+      never see the transition dup) + a back-to-back sweep scenario.
+    - *CSR*: `ERROR_STATUS` W1C was dead in both `pw_csr_full` and
+      `pw_csr_min` (the clear NBA was overwritten by the textually later
+      unconditional set-merge in the same always block) — restructured to a
+      single assignment point. Live histogram 64-bit buckets are no longer
+      torn across a 2^32 carry: the lo-dword read latches a hi shadow
+      (LOW-then-HIGH protocol, same as REG_TIMESTAMP); the SW window reader
+      already reads ascending words, so no SW change. `gpio_sync_ts_high`
+      shadow added to the read-FSM reset list.
+    - *Egress stamper*: `pw_ts_insert` re-stamped FORWARDED v4 TEST frames
+      (magic alone, no `is_gen` gate) — end-to-end latency silently became
+      last-hop latency in bump-in-the-wire topologies, and a forwarded v4 TCP
+      frame got its ts bytes rewritten with NO checksum fixup (corrupt L4
+      csum on the wire). v4 stamping now requires the generator marker too.
+    - *Parser*: tunnel-descent reads (GRE proto, EtherIP ethertype) had no
+      frame-length guard and the capture buffer is not cleared between
+      frames, so a truncated encap frame classified on a PREVIOUS frame's
+      residual bytes (history-dependent `is_ipv4/is_ipv6`). Descent is now
+      length-guarded (deterministic outer-only key when short). Flagged GRE
+      (C/K/S/version≠0, header >4 B) no longer descends at a wrong offset —
+      treated as non-encap.
+    - *Flow programming (SW)*: a config with more measured flows than the
+      bitstream's `num_local_flows` (32) programmed "successfully" with the
+      excess flows silently dead (rows past DEPTH are write-ignored in RTL;
+      the SW check used the 64-row BAR-window ceiling). `pw_program_card_tables`
+      now rejects it with `PW_E_NO_RESOURCES`.
+    - *DMA slow path (SW)*: C2H overrun recovery skipped to `done - RING`,
+      which is exactly the buffer the engine's in-flight descriptor is
+      writing (and the `== RING` backlog case slipped the `>` compare) — a
+      punt storm could hand a torn frame to the TAP. Safe backlog is RING-1.
+    - *Library hardening*: control-socket bind now runs under `umask(0077)`
+      (no window where the socket file is world-connectable when file mode IS
+      the ACL); `rate_pps` realization computed in 128-bit (a huge pps value
+      wrapped 64-bit into a tiny token rate); `pw_parse_u64` no longer parses
+      leading-zero decimals as octal (`vlan: 010` was 8); `pw_flash_program`
+      preserves non-target bytes of partially covered head/tail 64 KB sectors
+      (read-merge-erase-program + verify); BAR attach / file-backed BAR open
+      validate mapping size before dereferencing (truncated image file was a
+      SIGBUS); legacy punt-window read bounds the full window, not just the
+      base offset.
+    - *Daemon*: `flash.write` checks `malloc`; `build_flow_hist` gained the
+      `stats_snapshot` ops NULL guard its siblings had.
+    - *CLI*: latency-histogram bucket 0 label — bucket 0 holds `[0, 2)` ticks,
+      so it now prints `< 12 ns` instead of `>= 6 ns` (completes the GUI fix
+      d7425fc on the CLI side).
+    - *Tools*: `pw_gpio_sync` master default `period_log2` was 16, which
+      wraps to 0 in the 4-bit HW field (pulses every 32 cycles while the tool
+      printed 65536) — default 15, range-checked 0..15, prints the effective
+      (RTL-clamped) period.
+    - *Sim-only RTL*: `pw_flow_gen_axis` 33-bit token compare (32-bit wrap
+      zeroed a near-cap bucket); `pw_flow_gen` untagged flows no longer pay
+      the 4-byte VLAN cost; `pw_axis_serial`/deserializer converted to the
+      standard AXIS lane convention (tkeep qualified the EMPTY lanes on a
+      partial beat).
+    - *Stats naming*: `pw_flow_stats.expected_sequence` → `last_sequence`
+      and JSON `expected_seq` → `last_seq` — the HW snapshot exports the
+      LAST RECEIVED sequence, not the expected one; consumers trusting the
+      old name were off by one (API rename, no RTL change).
+    - *Tests/CI*: e2e_smoke now really asserts clean SIGINT shutdown (exit
+      status was unconditionally swallowed), re-checks flow state after the
+      double-fault rollback, and drops the `echo | grep` SIGPIPE flake; fixed
+      the `flow stats` table regex that was failing on main since the
+      `path (tx->rx)` column landed (CI e2e was red); `check-schema.sh`
+      enumerates configs recursively (the two lab example configs were never
+      validated) and fails on zero matches; `sw/Makefile` direct-compile
+      tools got `-MMD` dep tracking (editing `pw_tool_fc.h` left stale
+      binaries); `test_host_plane_socketpair` now tests the real
+      duplicate-bind contract; e2e_proxyd picks free ports (was colliding
+      with a long-running lab proxyd on 18443).
+    - *pktwyrm-tinet*: router `addr`/`addr6` validated (a bogus address used
+      to bring the lab up "successfully" with an unconfigured router); IPv6
+      `networks` now emitted under `address-family ipv6 unicast` with v6
+      neighbor activation (were emitted under ipv4 unicast and silently never
+      advertised); numeric fields raise proper schema errors instead of raw
+      tracebacks; duplicate `addr`/`addr6` across routers rejected.
+  - **proxyd: `/api/rpc` CSRF/DNS-rebinding defence + availability hardening.**
+    POST `/api/rpc` now requires the custom header `X-PW-Request: 1` (forces a
+    CORS preflight that cross-origin pages fail; proxyd never answers OPTIONS)
+    AND an allow-listed `Host` header (loopback names, the bind address, or
+    `--allowed-host NAME[,...]`) — without these, ANY web page in a local
+    browser could drive a secretless-loopback deployment (config.save writes
+    /etc as root), and DNS rebinding defeated a header-only defence. GUI and
+    `pktwyrm --host` send the header. Also: a 30 s whole-request deadline
+    (Slowloris could pin all 32 workers with 1 byte/14 s trickles → 408), and
+    non-loopback binds lazily re-confirm (≤60 s) that the daemon still
+    requires a secret (startup-only probe was TOCTOU across a daemon restart;
+    fail-closed 403).
+  - **Cross-card latency smeared to min=0 / huge tails whenever the Web GUI was
+    open (servo starvation — the true root cause).** The dashboard polls
+    `sfp.info` at ~1 Hz, and that RPC did I2C bit-bang per SFP module
+    (~0.3 s/module, ~0.58 s total) INLINE on the daemon's single-threaded main
+    poll loop — the same loop that ran the cross-card `lat_correction` servo.
+    Each poll blocked the loop ~0.58 s, so the servo went stale and the
+    ~1.6 ppm inter-card skew drifted the correction ~140 ticks over the stall;
+    the corrected latency then scattered — one direction's low tail clamped to
+    min=0, the other's high tail to ~200 ticks. The apparent "~20-tick direction
+    asymmetry" was the same artifact. Fix: the cross-card servo and the SFP I2C
+    now each run in their OWN thread. `sfp.info` is served from a
+    background-refreshed cache (the RPC never blocks); the servo keeps its ~1 ms
+    cadence regardless of control-RPC load (`g_servo_lock` serialises its
+    cfg/prog use against a `config.load` swap). HW-validated on pwhost1 under a
+    1 Hz sfp.info poll: servo max-gap 565 ms → 2 ms, all 32 cross-card flows
+    min>0 (was min=0), latency tight (c0→c1 29–31, c1→c0 34–37 ticks; the TRUE
+    direction asymmetry is only ~3 ticks = the J5 sync-path capture delay),
+    loss=0. This was a SW concurrency bug, not the timestamp/GPIO datapath —
+    no RTL change, and no per-session calibration is needed.
+  - **Cross-card latency showed garbage (0xFFFFFFFF) in one direction (Phase 1
+    clamp).** On two cards whose free-running timestamp counters differ, the
+    corrected one-way latency `(rx_now + lat_correction) − tx_stamp` can go
+    slightly negative when the inter-card sync residual over-corrects; the BRAM
+    checker truncated it as UNSIGNED (`lat32 = s1_lat[31:0]`), so a negative
+    sample read as ~0xFFFF_FFxx and pinned max/jitter to 0xFFFFFFFF (and the
+    histogram top bucket). `pw_test_rx_checker_bram` now treats the result as
+    signed and clamps to `[0, 0xFFFFFFFF]` before it feeds min/max/sum/jitter/
+    histogram; in-range latencies (incl. same-card, correction=0) are
+    bit-identical. HW-validated on pwhost1 (build_id 0x6a4bc32d): the 16
+    card0→card1 flows went from all-0xFFFFFFFF to min=0/avg=19/max=31, loss=0.
+    The residual ~2× direction asymmetry (true one-way ≈63 vs ≈19 ticks) is a
+    calibration issue tracked as Phase 2 (since resolved — see the
+    cross-card latency section of `docs/design/daemon.md`).
+  - **Two FPGAs in one IOMMU group: second card failed to open.** Behind
+    non-ACS CPU root ports both cards share one VFIO group, and VFIO forbids
+    opening a group fd twice. `pw_vfio_open_bar` now shares one group+container
+    fd across same-group cards via a process-wide registry (refcounted; DMA IOVA
+    bump-allocated per container). Done ABI-preserving: the now-dead per-handle
+    `iova_next` field is repurposed in place as `grp_slot` (same offset/size),
+    so `struct pw_vfio_handle`'s layout is unchanged. HW-validated on pwhost1:
+    cards_open = 2/2, loss=0.
+
+  - **Invalid inject egress id can no longer wedge the DMA slow path.**
+    `pw_dma_slowpath` latched the H2C inject header's egress id unvalidated; an
+    id `>= PORT_COUNT` matches no TX arbiter, so `m_inj_tvalid` stayed high
+    forever, the inject FIFO backed up and the whole XDMA H2C channel wedged
+    with no recovery. The header-strip FSM now validates the FULL egress byte
+    (0x11 must not alias to port 1) and swallows out-of-range frames (consumed
+    to `tlast`, never presented). New `PORT_COUNT` parameter wired from
+    `NUM_PORTS` at the top level; `sim_dma` gained bad-egress (plain + aliasing)
+    + follow-up-valid-frame scenarios.
+  - **`pw_dma_slowpath` now resets with the data-plane soft reset.** Its dp-side
+    reset was `~rst_n` only, while the arbiters/SAFs it feeds also reset on the
+    CSR `DP_RESET`; a soft reset could leave a stale half-frame in the bridge,
+    desynced against the freshly reset plane. Now `~rst_n | dp_soft_rst`. Safe
+    one-sided: the taxi async FIFO synchronizes each side's reset into the other
+    domain (`taxi_sync_reset`) and drops partial frames, so both FIFO halves
+    flush coherently (pointer corruption impossible by design). `sim_dma` gained
+    a dp-reset-mid-frame recovery scenario.
+  - **`pw_flow_gen_axis` token deduct wrapped at 32 bits** near bucket cap
+    (`tokens_q + tokens_per_tick_fp_i` overflowed and zeroed the bucket). Now
+    the 33-bit compare/deduct, same pattern as `pw_flow_gen`/`pw_flow_gen_multi`.
+    (Sim-only module today — not in the production plane.)
+  - **`pw_flow_gen` (sim-only skeleton) charged untagged flows 4 VLAN bytes**
+    in the token-bucket cost; the cost now includes the tag only when
+    `vlan_enable_i`, matching what `build_frame` emits.
+  - **`pw_axis_serial` (sim-only) tkeep qualified the wrong lanes.** The
+    serializer packed wire byte k big-endian into `tdata[(7-k)*8 +: 8]` while
+    `tkeep[n-1:0]` qualified the LOW lanes — per AXI-Stream, the empty ones on a
+    partial beat — and the reverse of the production convention. Serializer +
+    deserializer now use the standard convention (byte k at `tdata[k*8 +: 8]`,
+    `tkeep[k]`); the tb now checks the wire lane convention directly, not just
+    the round-trip.
+  - **Deep-encap UDF classifier matching.** A UDF slice comparator reads inner
+    byte `base_i(eff) + offset` out of the captured window, but the window was
+    truncated to the low `SLICE_WIN`(48) bytes, so for `eff + offset ≥ 48` (deep
+    encap, e.g. v6-in-v6) it read 0 and could never match the inner frame (only
+    shallow UDFs like the IS-IS punt worked). The classifier now gets the full
+    `HDR_BYTES`(176) window, so a UDF reaches the inner frame at any single-encap
+    depth. Widens only the two `pw_slice_match` byte-muxes (classifier latency-2
+    path); the dp_clk-critical parser is untouched. (No config emits a deep-encap
+    UDF today, so this was a latent limitation, but it restores the documented
+    "offset relative to the inner frame, encap-agnostic" UDF contract.)
+
+  - **`DP_RESET` now also resets the MAC-TX CDC, to recover a presumed TX-FIFO
+    wedge in-system.** The data-plane soft reset only quiesced dp_clk-domain
+    state (gen / SAF / arbiters); the per-port MAC-TX CDC FIFO + `pw_ts_insert`
+    live in the MAC tx_clk domain and were outside it. An observed egress hang
+    (every flow `tx=0`, inject `INJECT_STATUS_BUSY` stuck, link still up) cleared
+    only on an ICAP reboot / power cycle — consistent with a stuck TX-FIFO state.
+    The `DP_RESET` pulse is now stretched in dp_clk and CDC'd into each MAC
+    tx_clk to flush the TX FIFO (both sides) and reset `pw_ts_insert`. This
+    re-initialises the TX-CDC state while the TX clock is running; it does not
+    cover the MAC/PCS/GT, the RX CDC, or a stopped TX clock (still a reboot).
+  - **Sub-minimum frame lengths no longer stall a flow.** The generator clamps a
+    too-short frame up to the minimum legal size (incl. VLAN/encap/IP family);
+    the SW now computes that same minimum and applies it to the token-bucket cap
+    **and** the rate_pps byte basis, so a flow configured below the minimum (e.g.
+    64 B) transmits at the right rate instead of starving (cap < cost).
+  - **Reloads no longer leave stale classifier / flow / hash / map entries.**
+    `pw_program_card_tables` now writes every table to its full capacity on each
+    load: configured entries enabled, all remaining slots invalidated (flow rows
+    zeroed, rules `enable=0`, hash buckets + flow-id-map entries `valid=0`).
+    Previously a reload that *shrank* the config left the deleted flows / punt /
+    forward / TEST_RX entries live, since the RTL commit only copies
+    shadow→live without touching un-written slots. HW-validated on the loopback
+    (4-flow multiflow, lost_est=0, correct per-slot classification).
+  - **Slow-path inject window bounds-checks its inputs** (`pw_inject_tx_window`):
+    `byte_len` is clamped to the 512 B buffer and out-of-range DATA word writes
+    are dropped, so a malformed host inject can't alias onto a valid beat or emit
+    a frame longer than the buffer. (RTL; ships in the next bitstream.)
+  - **TX-arbiter source-select width** (`pw_data_plane_axis` `SELW`) widened to
+    `$clog2(PW_PORTS + 2)` to cover the host-inject source index (`PW_PORTS+1`);
+    the old `+1` was correct only by luck at `PW_PORTS=2`. (RTL; future-proofs
+    `PW_PORTS≥3`.)
+  - **config.load now rolls back on a staging failure** instead of swapping the
+    daemon's view to a config the FPGA may not actually hold. If programming a
+    card hard-fails (BAR error / card drop), the daemon re-programs the previous
+    config, keeps it running, and rejects the load with an error — matching the
+    documented behavior (`docs/design/daemon.md`). A half-applied config (daemon
+    view != FPGA) was the worst failure mode for a tester.
+
+  - **Punt rules narrowed; fake backend no longer a silent default.** BGP punt
+    now matches **TCP port 179 only** (one rule per direction — listener dst:179,
+    initiator src:179) instead of all TCP, so generated TCP test traffic (e.g. a
+    SYN flood on other ports) is not swallowed by the slow path. IS-IS punt now
+    matches the 802.3/LLC DSAP/SSAP (0xFEFE) via a UDF instead of a catch-all
+    that punted **every** frame on the ingress (fails safe: under-matches rather
+    than over-matches if the parser's L3 base differs for length-encoded frames).
+    Pure compiler change (existing bitstream's L4-port comparators + UDFs);
+    HW-confirmed it programs cleanly with the data plane at loss=0. The daemon
+    no longer falls back to the no-op **fake backend by default** — a BAR-open
+    failure is now an error unless `--allow-fake`/`-F` is passed (dev/CI), so a
+    real deployment can't look healthy while silently dropping all CSR writes.
+  - **Code-review hardening (config/validation/daemon).** `rate_pps` is now
+    realized (compiler computes pps × frame bytes → token rate; a pps-only flow
+    transmitted 0 frames before — HW-validated tx>0, loss=0). The config parser
+    now validates traffic: exactly one of `rate_bps`/`rate_pps`, frame-length
+    range [64,1518], `frame_len_min ≤ frame_len_max`, `frame_len_step ≥ 1`, and
+    `frame_len` vs the `frame_len_min/max/step` triple are mutually exclusive
+    (schema gained the matching `oneOf`; max tightened 9216→1518 to the FIFO/RTL
+    limit). `program_backends` returns the worst hard status (card drop / BAR
+    error), and `config.load` reports it (`ok=false` + `program_error`) instead
+    of always succeeding. RPC `config.load` response key fixed
+    `n_classifier_rules`→`n_classifier_rows` (matches the CLI + docs; the CLI
+    printed 0 rows). `pw_rfc2544` now aborts on any CSR op failure (naming the
+    failing access) and validates `trial_ms`.
+
+### Documentation
 - Initial design docs under `docs/design/` and phase plan under
   `docs/phases/`
 - README updated to reflect the current implementation status
