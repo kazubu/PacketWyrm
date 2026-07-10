@@ -77,31 +77,33 @@ The project currently ships:
   recipes (`make program` / `make flash`), and host tools for live
   flash update (`pw_flash`) and in-band reboot (`pw_reboot`).
 
-| Layer                                | Status                          |
-|--------------------------------------|---------------------------------|
-| Phase 0  &mdash; data model + YAML   | done                            |
-| Phase 0.5 &mdash; PCI vendor/device  | `10ee:a502` (private dev IDs)   |
-| Phase 1  &mdash; KU3P PCIe bring-up  | done on HW (`10ee:a502` enumerates, identity reads back) |
-| Phase 2  &mdash; SFP+ MAC / PCS      | done on HW: 10GBASE-R DAC loopback, line-rate, loss=0 both directions |
-| Phase 3  &mdash; data-plane RTL      | done on HW: 64-bit streaming plane at 32 flows / 16 classifier / 16 bins, loss=0 at line rate; BRAM histogram; egress HW timestamping; data-plane soft-reset; live SPI-flash write + ICAP reboot |
-| Phase 4  &mdash; BAR-mmap backend    | done                            |
-| Phase 5  &mdash; TAP + host plane    | done                            |
-| Phase 6  &mdash; multi-card mgmt     | done (per-card worker threads)  |
-| Phase 7  &mdash; cross-card flows    | compiler + aggregator done      |
-| Phase 8  &mdash; container labs      | done (pktwyrm-tinet up/down/conf) |
-| Phase 11 &mdash; kernel netdev driver| skeleton builds                 |
+| Phase | Layer                     | Status            |
+|-------|---------------------------|-------------------|
+| 0     | data model + YAML         | done              |
+| 0.5   | PCI vendor/device         | `10ee:a502`       |
+| 1     | KU3P PCIe bring-up        | done on HW        |
+| 2     | SFP+ MAC / PCS            | done on HW        |
+| 3     | data-plane RTL            | done on HW        |
+| 4     | BAR-mmap backend          | done              |
+| 5     | TAP + host plane          | done              |
+| 6     | multi-card mgmt           | done              |
+| 7     | cross-card flows          | done              |
+| 8     | container labs            | done              |
+| 11    | kernel netdev driver      | skeleton          |
+
+(Details of the on-hardware Phase 1–3 results are in the bullets above.)
 
 Test surface today (all green):
 
-| Command                            | Result                                          |
-|------------------------------------|-------------------------------------------------|
-| `make -C sw test`                  | host unit assertions (all pass)                 |
-| `make -C sw e2e`                   | daemon &harr; CLI smoke                         |
-| `make -C sim sim_all`              | Verilator suite green: data plane, parser (2-stage), classifier, flow gen, BRAM histogram, SPI flash, ICAP, egress TS, punt RX, TX inject, end-to-end |
-| `make -C sim/cocotb all`           | Scapy-driven parser/classifier/flow_gen         |
-| `make -C tools/pktwyrm-tinet test` | generator + lifecycle orchestrator              |
-| `make -C fpga/as02mc04 lint`       | clean (Verilator + Xilinx blackbox)             |
-| `make -C kernel`                   | builds with `linux-headers-$(uname -r)`         |
+| Command                            | Covers                              |
+|------------------------------------|-------------------------------------|
+| `make -C sw test`                  | host unit tests                     |
+| `make -C sw e2e`                   | daemon &harr; CLI smoke             |
+| `make -C sim sim_all`              | Verilator RTL testbench suite       |
+| `make -C sim/cocotb all`           | Scapy-driven RTL units              |
+| `make -C tools/pktwyrm-tinet test` | lab generator + orchestrator        |
+| `make -C fpga/as02mc04 lint`       | RTL lint                            |
+| `make -C kernel`                   | kernel module build                 |
 
 CI runs the host job (build + `make test` + `make e2e` + staged
 install) and the RTL job (`make sim_all` + AS02MC04 lint).
