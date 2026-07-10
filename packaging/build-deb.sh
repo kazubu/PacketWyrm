@@ -159,6 +159,12 @@ install -m 0644 "$SCRIPT_DIR/grafana/packetwyrm-dashboard.json" \
 install -m 0644 "$SCRIPT_DIR/grafana/README.md" \
     "$STAGE/usr/share/packetwyrm/grafana/README.md"
 
+# Copyright (Debian policy requires /usr/share/doc/<pkg>/copyright). The
+# package ships MIT-licensed software only; the machine-readable file also
+# records the repo's split licensing for reference.
+install -d "$STAGE/usr/share/doc/packetwyrm"
+install -m 0644 "$DEB_SRC/copyright" "$STAGE/usr/share/doc/packetwyrm/copyright"
+
 # --- DEBIAN control dir ----------------------------------------------------
 sed -e "s#@VERSION@#$VERSION#g" \
     -e "s#@ARCH@#$ARCH#g" \

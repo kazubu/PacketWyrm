@@ -51,11 +51,28 @@ jobs:
           echo "== dpkg-deb --info =="; dpkg-deb --info "$deb"
           echo "== dpkg-deb --contents =="; dpkg-deb --contents "$deb"
 
+      # Prefer the matching CHANGELOG.md section as release notes (a heading
+      # `## <tag> ...`, e.g. `## v0.1.0 - 2026-07-11`); fall back to
+      # auto-generated notes if the tag has no section.
+      - name: assemble release notes
+        run: |
+          notes=$(awk -v tag="$GITHUB_REF_NAME" '
+            $0 ~ "^## " tag "([ \t]|$)" {grab=1; next}
+            grab && /^## / {exit}
+            grab {print}
+          ' CHANGELOG.md)
+          if [ -n "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
+            printf '%s\n' "$notes" > /tmp/relnotes.md
+            echo "NOTES_ARG=--notes-file=/tmp/relnotes.md" >> "$GITHUB_ENV"
+          else
+            echo "NOTES_ARG=--generate-notes" >> "$GITHUB_ENV"
+          fi
+
       - name: publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" "$DEB" \
             --title "$GITHUB_REF_NAME" \
-            --generate-notes \
+            $NOTES_ARG \
             --verify-tag

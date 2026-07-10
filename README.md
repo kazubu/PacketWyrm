@@ -267,10 +267,42 @@ Start here:
 - `tools/pktwyrm-tinet/README.md` &mdash; lab generator + orchestrator
 - `fpga/as02mc04/docs/jtag-bringup.md` &mdash; OpenOCD + J-Link recipe
 
+## Known limitations
+
+This is an active, pre-release project (v0.1.0). Known open items:
+
+- **Kernel driver is a probe-only skeleton** &mdash; no ioctl / mmap / chardev /
+  netdev. The userspace vfio + BAR-mmap path is the supported one; the
+  in-kernel netdev is Phase 11, not yet built.
+- **Single / low-flow IPv6 loopback is low-volume on the current rig** &mdash;
+  the stock `phase3-ipv6.yaml` reproduces a very low rx while IPv4 multiflow
+  runs at line rate; IPv6 at higher flow counts loops clean (loss=0). Under
+  investigation (DAC / MAC-PCS / IPv6 classification behaviour).
+- **Cross-card latency deep-underflow edge** &mdash; one-way latency is measured
+  and corrected per flow, but the clamp behaviour at extreme timebase skew is a
+  known edge (see the `xcard-latency-wrap` note); normal operation is unaffected.
+
+See `NEXT-STEPS.md` for the full priority-ordered list.
+
+## Licensing
+
+PacketWyrm is **split-licensed** (see `LICENSE` for the full explanation):
+
+- **Host software** (`sw/`, plus `tools/`, `configs/`, `docs/`) &mdash; **MIT**
+  (`LICENSE.sw`). The published `.deb` ships this software only, so the release
+  artifact is MIT in its entirety.
+- **FPGA gateware** (`rtl/phase3/`, `fpga/`) &mdash; **CERN-OHL-S-2.0**
+  (`LICENSE.rtl`), matching the vendored Taxi 10G MAC/PCS submodule
+  (`rtl/phase2/vendor/taxi`, CERN-OHL-S-2.0) it is synthesised with, so
+  distributing the combined design or bitstream is reciprocity-clean.
+
+The host software is an independent work that talks to the card over PCIe/BAR;
+the hardware reciprocity licence does not reach it.
+
 ## Non-goals (initial)
 
 PCIe SR-IOV / VF enumeration, DPDK PMD, large PCAP replay, large
 packet capture, stateful TCP traffic generation, full IXIA /
-Spirent-class protocol emulation, cross-card one-way latency,
-PTP / GPS / external clock sync, and 25G are all explicitly out
-of scope for the first release. 10GBASE-R is the supported target.
+Spirent-class protocol emulation, PTP / GPS / external clock sync,
+and 25G are all explicitly out of scope for the first release.
+10GBASE-R is the supported target.

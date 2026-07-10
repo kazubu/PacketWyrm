@@ -6,7 +6,11 @@ push and is the source of truth for "what's working today".
 
 For where work is going next, see `NEXT-STEPS.md`.
 
-## Unreleased
+## v0.1.0 — 2026-07-11
+
+First tagged release. Split-licensed: the host software (`sw/`, shipped in the
+`.deb`) is MIT; the FPGA gateware (`rtl/phase3`, `fpga/`) and the vendored Taxi
+submodule are CERN-OHL-S-2.0. See `LICENSE`, `LICENSE.sw`, `LICENSE.rtl`.
 
 ### Added
   - **Generated-frame preview (CLI + Web GUI).** `pktwyrm flow preview

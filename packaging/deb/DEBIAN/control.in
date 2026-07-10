@@ -5,7 +5,7 @@ Priority: optional
 Architecture: @ARCH@
 Maintainer: Kazuki Shimizu <kazubu@homenoc.ad.jp>
 Depends: @DEPENDS@
-Homepage: https://github.com/kazubu/packetwyrm
+Homepage: https://github.com/kazubu/PacketWyrm
 Description: FPGA-based 10G network tester (daemon, CLI and Web GUI gateway)
  PacketWyrm is an FPGA-based line-rate network tester. This package installs
  the tester daemon (packetwyrmd), the command-line client (pktwyrm) and the
