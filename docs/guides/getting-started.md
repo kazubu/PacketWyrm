@@ -1,6 +1,9 @@
 # Getting started
 
-A five-minute walk through PacketWyrm with no FPGA hardware.
+A five-minute walk through PacketWyrm with no FPGA hardware. For the full set of
+operator guides — installation, configuration, running tests, the CLI, the Web
+GUI, monitoring, firmware, and troubleshooting — see the
+[user guide index](README.md).
 
 ## 1. Build
 

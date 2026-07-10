@@ -232,6 +232,9 @@ git tag v0.2.0 && git push origin v0.2.0
 
 Start here:
 
+- **`docs/guides/`** &mdash; **operator guides** (start at
+  `docs/guides/README.md`): installation, configuration, running tests, the
+  CLI reference, the Web GUI, monitoring, firmware updates, troubleshooting.
 - `NEXT-STEPS.md` &mdash; **read this first if you're picking the
   project up.** Priority-ordered TODO + Verilator hazards we hit.
 - `docs/guides/getting-started.md` &mdash; 5-minute walkthrough
