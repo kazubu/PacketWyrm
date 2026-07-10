@@ -11,6 +11,56 @@ static uint16_t ones_csum(const uint8_t *p, size_t n, uint32_t sum) {
 }
 static void wbe16(uint8_t *b, uint16_t v) { b[0] = v >> 8; b[1] = v & 0xFF; }
 
+/* Per-packet field modifiers -- mirror pw_flow_gen_multi.sv exactly so the
+ * preview shows the SAME per-seq variation the hardware emits. mode: 0=static
+ * (base), 1=increment (seq in the masked bits), 2=random (xorshift-scrambled
+ * seq in the masked bits); unmasked bits keep the base. */
+static uint32_t pv_scramble(uint32_t x) {
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5; return x;
+}
+static uint32_t pv_mod32(uint8_t mode, uint32_t base, uint32_t mask, uint32_t seq) {
+    if (mode == 0) return base;
+    uint32_t rot = (mode == 2) ? pv_scramble(seq) : seq;
+    return (base & ~mask) | (rot & mask);
+}
+static uint16_t pv_mod16(uint8_t mode, uint16_t base, uint16_t mask, uint32_t seq) {
+    if (mode == 0) return base;
+    uint16_t rot = (mode == 2) ? (uint16_t)(pv_scramble(seq) >> 3) : (uint16_t)seq;
+    return (uint16_t)((base & ~mask) | (rot & mask));
+}
+static uint64_t pv_mod48(uint8_t mode, uint64_t base, uint64_t mask, uint64_t seq) {
+    if (mode == 0) return base;
+    uint64_t rnd = ((uint64_t)pv_scramble((uint32_t)(seq >> 32)) << 32) | pv_scramble((uint32_t)seq);
+    uint64_t rot = (mode == 2) ? (rnd & 0xFFFFFFFFFFFFULL) : (seq & 0xFFFFFFFFFFFFULL);
+    return (base & ~mask) | (rot & mask);
+}
+/* 128-bit v6 modifier: 4 independent 32-bit lanes, lane 0 = low 32 bits (last 4
+ * address bytes). in/out and mask are MSB-first byte arrays [0]=bits[127:120]. */
+static void pv_mod128(uint8_t mode, const uint8_t base[16], const uint8_t mask[16],
+                      uint32_t seq, uint32_t field_salt, uint8_t out[16]) {
+    static const uint32_t lsalt[4] = {0, 0x9E3779B1u, 0x85EBCA77u, 0xC2B2AE3Du};
+    static const uint32_t loff[4]  = {0, 0x10000000u, 0x20000000u, 0x30000000u};
+    for (int l = 0; l < 4; l++) {
+        int p = (3 - l) * 4;   /* byte offset of this lane (MSB-first) */
+        uint32_t b = (uint32_t)base[p]<<24 | (uint32_t)base[p+1]<<16 | (uint32_t)base[p+2]<<8 | base[p+3];
+        uint32_t m = (uint32_t)mask[p]<<24 | (uint32_t)mask[p+1]<<16 | (uint32_t)mask[p+2]<<8 | mask[p+3];
+        uint32_t e;
+        if (mode == 0) e = b;
+        else {
+            uint32_t rot = (mode == 2) ? pv_scramble(seq ^ field_salt ^ lsalt[l]) : (seq + loff[l]);
+            e = (b & ~m) | (rot & m);
+        }
+        out[p]=e>>24; out[p+1]=e>>16; out[p+2]=e>>8; out[p+3]=e;
+    }
+}
+static uint64_t mac_to_u48(const uint8_t m[6]) {
+    return (uint64_t)m[0]<<40 | (uint64_t)m[1]<<32 | (uint64_t)m[2]<<24 |
+           (uint64_t)m[3]<<16 | (uint64_t)m[4]<<8  | m[5];
+}
+static void u48_to_mac(uint64_t v, uint8_t m[6]) {
+    m[0]=v>>40; m[1]=v>>32; m[2]=v>>24; m[3]=v>>16; m[4]=v>>8; m[5]=v;
+}
+
 /* Returns total L2 length (pre-FCS), or -1 on unsupported/overflow.
  * *built receives the number of header+test-header bytes (rest is zero pad). */
 int pw_flow_build_preview(const struct pw_flow *f, uint32_t seq,
@@ -24,15 +74,35 @@ int pw_flow_build_preview(const struct pw_flow *f, uint32_t seq,
     size_t frame_len = f->traffic.frame_len_fixed_set
                        ? f->traffic.frame_len_fixed : f->traffic.frame_len_min;
     if (frame_len < 14 || frame_len > 9100 || frame_len > cap) return -1;
+
+    /* Apply the per-packet field modifiers for this seq (same as the RTL). The
+     * effective values feed the header bytes AND the checksums; the outer
+     * (encap) IP + the EtherIP inner MAC are NOT modified (RTL parity). */
+    const struct pw_flow_modifiers *md = &f->mod;
+    uint8_t  eff_dmac[6], eff_smac[6];
+    u48_to_mac(pv_mod48(md->dst_mac.mode, mac_to_u48(f->l2.dst_mac), md->dst_mac.mask, seq), eff_dmac);
+    u48_to_mac(pv_mod48(md->src_mac.mode, mac_to_u48(f->l2.src_mac), md->src_mac.mask, seq), eff_smac);
+    uint16_t eff_vlan = pv_mod16(md->vlan.mode, (uint16_t)(f->l2.vlan & 0x0FFF),
+                                 (uint16_t)(md->vlan.mask & 0x0FFF), seq) & 0x0FFF;
+    uint16_t eff_sp = pv_mod16(md->udp_src.mode, f->udp.src_port, (uint16_t)md->udp_src.mask, seq);
+    uint16_t eff_dp = pv_mod16(md->udp_dst.mode, f->udp.dst_port, (uint16_t)md->udp_dst.mask, seq);
+    uint32_t eff_sip = pv_mod32(md->src_ipv4.mode, f->ipv4.src, (uint32_t)md->src_ipv4.mask, seq);
+    uint32_t eff_dip = pv_mod32(md->dst_ipv4.mode, f->ipv4.dst, (uint32_t)md->dst_ipv4.mask, seq);
+    uint8_t  eff_v6src[16], eff_v6dst[16];
+    /* v6 mode lives in src_ipv4/dst_ipv4; mask is the 128-bit src/dst_ipv6_mask.
+     * field_salt: src=0 (SALT_SIP), dst=0x5A5A5A5A (SALT_DIP). */
+    pv_mod128(md->src_ipv4.mode, f->ipv6.src, md->src_ipv6_mask, seq, 0x00000000u, eff_v6src);
+    pv_mod128(md->dst_ipv4.mode, f->ipv6.dst, md->dst_ipv6_mask, seq, 0x5A5A5A5Au, eff_v6dst);
+
     size_t o = 0;
     #define PUT(b)  do { if (o >= cap) return -1; buf[o++] = (uint8_t)(b); } while (0)
     #define PUTMAC(m) do { for (int _i=0;_i<6;_i++) PUT((m)[_i]); } while (0)
 
     /* Ethernet + optional 802.1Q */
-    PUTMAC(f->l2.dst_mac); PUTMAC(f->l2.src_mac);
+    PUTMAC(eff_dmac); PUTMAC(eff_smac);
     if (f->l2.vlan_set) {
         PUT(0x81); PUT(0x00);
-        uint16_t tci = ((uint16_t)(f->l2.pcp & 7) << 13) | (f->l2.vlan & 0x0FFF);
+        uint16_t tci = ((uint16_t)(f->l2.pcp & 7) << 13) | (eff_vlan & 0x0FFF);
         PUT(tci >> 8); PUT(tci & 0xFF);
     }
 
@@ -107,8 +177,8 @@ int pw_flow_build_preview(const struct pw_flow *f, uint32_t seq,
         PUT(ip_pl >> 8); PUT(ip_pl & 0xFF);
         PUT(tmpl == PW_FRAME_TEMPLATE_L3RAW ? 0xFD : (is_tcp ? 6 : 17));
         PUT(f->ipv6.hop_limit ? f->ipv6.hop_limit : 64);
-        for (int i=0;i<16;i++) PUT(f->ipv6.src[i]);
-        for (int i=0;i<16;i++) PUT(f->ipv6.dst[i]);
+        for (int i=0;i<16;i++) PUT(eff_v6src[i]);
+        for (int i=0;i<16;i++) PUT(eff_v6dst[i]);
     } else {
         uint16_t tot = (uint16_t)(20 + ip_pl);
         PUT(0x45); PUT(f->ipv4.dscp << 2); PUT(tot >> 8); PUT(tot & 0xFF);
@@ -116,8 +186,8 @@ int pw_flow_build_preview(const struct pw_flow *f, uint32_t seq,
         PUT(f->ipv4.ttl ? f->ipv4.ttl : 64);
         PUT(tmpl == PW_FRAME_TEMPLATE_L3RAW ? 0xFD : (is_tcp ? 6 : 17));
         PUT(0); PUT(0);   /* csum below */
-        PUT(f->ipv4.src >> 24); PUT(f->ipv4.src >> 16); PUT(f->ipv4.src >> 8); PUT(f->ipv4.src);
-        PUT(f->ipv4.dst >> 24); PUT(f->ipv4.dst >> 16); PUT(f->ipv4.dst >> 8); PUT(f->ipv4.dst);
+        PUT(eff_sip >> 24); PUT(eff_sip >> 16); PUT(eff_sip >> 8); PUT(eff_sip);
+        PUT(eff_dip >> 24); PUT(eff_dip >> 16); PUT(eff_dip >> 8); PUT(eff_dip);
         wbe16(&buf[iph + 10], ones_csum(&buf[iph], 20, 0));
     }
 
@@ -125,8 +195,8 @@ int pw_flow_build_preview(const struct pw_flow *f, uint32_t seq,
 
     /* ---- L4 (UDP/TCP) ---- */
     size_t l4 = o;
-    PUT(f->udp.src_port >> 8); PUT(f->udp.src_port & 0xFF);
-    PUT(f->udp.dst_port >> 8); PUT(f->udp.dst_port & 0xFF);
+    PUT(eff_sp >> 8); PUT(eff_sp & 0xFF);
+    PUT(eff_dp >> 8); PUT(eff_dp & 0xFF);
     if (is_tcp) {
         PUT(seq >> 24); PUT(seq >> 16); PUT(seq >> 8); PUT(seq);   /* TCP seq = test seq low32 */
         PUT(0); PUT(0); PUT(0); PUT(0);                            /* ack */
@@ -156,10 +226,10 @@ int pw_flow_build_preview(const struct pw_flow *f, uint32_t seq,
     {
         uint32_t sum = is_tcp ? 6 : 17;
         sum += (uint32_t)l4_len;
-        if (inner_v6) { for (int i=0;i<16;i++){ sum += (uint32_t)f->ipv6.src[i]<<((i&1)?0:8);}
-                        for (int i=0;i<16;i++){ sum += (uint32_t)f->ipv6.dst[i]<<((i&1)?0:8);} }
-        else { sum += (f->ipv4.src>>16)&0xFFFF; sum += f->ipv4.src&0xFFFF;
-               sum += (f->ipv4.dst>>16)&0xFFFF; sum += f->ipv4.dst&0xFFFF; }
+        if (inner_v6) { for (int i=0;i<16;i++){ sum += (uint32_t)eff_v6src[i]<<((i&1)?0:8);}
+                        for (int i=0;i<16;i++){ sum += (uint32_t)eff_v6dst[i]<<((i&1)?0:8);} }
+        else { sum += (eff_sip>>16)&0xFFFF; sum += eff_sip&0xFFFF;
+               sum += (eff_dip>>16)&0xFFFF; sum += eff_dip&0xFFFF; }
         uint16_t c = ones_csum(&buf[l4], frame_len - l4, sum);
         if (is_tcp) wbe16(&buf[l4 + 16], c);
         else        wbe16(&buf[l4 + 6],  c);   /* incl. v4 UDP (valid; HW sends 0) */

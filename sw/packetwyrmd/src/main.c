@@ -2097,6 +2097,18 @@ static struct json_object *build_flow_preview(const struct pw_config *run_cfg,
         json_object_object_add(dec, "l3", json_object_new_string(f->ipv6.present?"ipv6":"ipv4"));
     if (t != 3 && t != 2)
         json_object_object_add(dec, "l4", json_object_new_string(f->udp.l4_proto==6?"tcp":"udp"));
+    /* Active field modifiers (so the GUI can flag that fields vary per seq). */
+    {
+        const struct pw_flow_modifiers *m = &f->mod;
+        char mod[256]; size_t ml = 0;
+        #define MOD(nm, fm) do { if ((fm).mode) ml += (size_t)snprintf(mod+ml, sizeof mod-ml, \
+            "%s%s=%s", ml?" ":"", nm, (fm).mode==1?"inc":(fm).mode==2?"rand":"?"); } while (0)
+        MOD("src_ip", m->src_ipv4); MOD("dst_ip", m->dst_ipv4);
+        MOD("sport", m->udp_src);   MOD("dport", m->udp_dst);
+        MOD("smac", m->src_mac);    MOD("dmac", m->dst_mac); MOD("vlan", m->vlan);
+        #undef MOD
+        if (ml) json_object_object_add(dec, "mod", json_object_new_string(mod));
+    }
     json_object_object_add(r, "decode", dec);
 
     if (tmp) pw_config_free(tmp);

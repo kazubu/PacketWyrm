@@ -234,6 +234,7 @@ function renderPreview(r) {
   if (d.l4) layers.push(d.l4);
   if (r.template === "test") layers.push("test-hdr");
   s += "  " + layers.join(" / ") + "\n";
+  if (d.mod) s += "  modifiers: " + d.mod + "  (fields vary per seq — change seq)\n";
   const show = Math.min(bytes.length, (r.header_len || 0) + 16);
   for (let b = 0; b < show; b += 16) {
     let hexpart = "", asc = "";

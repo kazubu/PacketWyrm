@@ -411,6 +411,19 @@ static int cmd_flow_preview(int argc, char **argv) {
             if (f->traffic.frame_template==PW_FRAME_TEMPLATE_TEST)
                 printf("  test  magic=A5027E57 flow_id=%u seq=%u ts=<egress>\n", f->id, seq);
         }
+        /* Note active field modifiers so it's clear the frame varies per seq
+         * (the hex below already reflects the modifier for this seq). */
+        {
+            const struct pw_flow_modifiers *m = &f->mod;
+            char mod[256]; size_t ml = 0;
+            #define MOD(nm, fm) do { if ((fm).mode) ml += (size_t)snprintf(mod+ml, sizeof mod-ml, \
+                " %s=%s", nm, (fm).mode==1?"inc":(fm).mode==2?"rand":"?"); } while (0)
+            MOD("src_ip", m->src_ipv4); MOD("dst_ip", m->dst_ipv4);
+            MOD("sport", m->udp_src);   MOD("dport", m->udp_dst);
+            MOD("smac", m->src_mac);    MOD("dmac", m->dst_mac);  MOD("vlan", m->vlan);
+            #undef MOD
+            if (ml) printf("  mod  %s  (fields vary per seq -- change --seq to step)\n", mod);
+        }
         /* hexdump: full header region + up to 16 payload bytes */
         int show = (int)built + 16; if (show > len) show = len;
         for (int b = 0; b < show; b += 16) {

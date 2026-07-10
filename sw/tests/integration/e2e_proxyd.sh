@@ -249,6 +249,15 @@ check "flow.preview returns hex" '"hex":"[0-9a-f]' "$prev"
 check "flow.preview magic A5027E57 present" 'a5027e57' "$prev"
 check "flow.preview decode l3 ipv4" '"l3":"ipv4"' "$prev"
 
+# Modifier preview: a flow with an incrementing dst-IP modifier must produce
+# DIFFERENT frames for different seq (regression: modifiers were ignored, so
+# every seq previewed identically).
+mflow='flows:\n  - id: 8\n    name: mod\n    tx_global_port: 0\n    rx_global_port: 1\n    l2: { src_mac: \"02:00:00:00:00:01\", dst_mac: \"02:00:00:00:00:02\" }\n    ipv4: { src: \"10.0.0.1\", dst: \"10.0.0.0\", ttl: 64 }\n    udp: { src_port: 1000, dst_port: 2000 }\n    traffic: { frame_len: 128, rate_bps: 1000000000, insert_sequence: true, insert_timestamp: true }\n    modifiers: { dst_ipv4: { mode: increment, mask: 0x000000ff } }'
+h0=$(curl -s -H "$PWH" http://127.0.0.1:$PLAIN_PORT/api/rpc -d "{\"rpc\":\"flow.preview\",\"secret\":\"e2e-secret\",\"seq\":0,\"yaml\":\"$mflow\"}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["hex"])')
+h9=$(curl -s -H "$PWH" http://127.0.0.1:$PLAIN_PORT/api/rpc -d "{\"rpc\":\"flow.preview\",\"secret\":\"e2e-secret\",\"seq\":9,\"yaml\":\"$mflow\"}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["hex"])')
+if [ -n "$h0" ] && [ "$h0" != "$h9" ]; then echo "[ ok ] flow.preview: modifier varies frame across seq"
+else echo "[FAIL] flow.preview modifier did not vary ($h0 vs $h9)"; exit 1; fi
+
 # config.load with a GUI-shaped test config (mirrors the Flows-editor YAML
 # emitter: v4/udp + v6/tcp, vlan, measurements). Guards emitter/parser drift.
 gui_yaml=$(cat <<'YML'

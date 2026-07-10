@@ -19,7 +19,10 @@ For where work is going next, see `NEXT-STEPS.md`.
     RPC, mirroring the RTL layout — the departure timestamp is 0 (HW-stamped at
     egress) and IPv4/L4 checksums are computed so the hex is a valid, decodable
     packet. Validated against a scapy-style decode for v4/v6, UDP/TCP, and all
-    three encapsulations; e2e_proxyd covers the GUI path.
+    three encapsulations; e2e_proxyd covers the GUI path. The builder applies
+    the per-packet field MODIFIERS (inc/rand src/dst IP, ports, MAC, VLAN;
+    v6 128-bit lanes) for the requested `seq`, matching the RTL xorshift/lane
+    salts exactly, so stepping `seq` shows the same variation the wire carries.
 
 ### Changed
   - **`pktwyrm load` now DEPLOYS to the running daemon by default.** Previously
