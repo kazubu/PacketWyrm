@@ -274,10 +274,10 @@ This is an active, pre-release project (v0.1.0). Known open items:
 - **Kernel driver is a probe-only skeleton** &mdash; no ioctl / mmap / chardev /
   netdev. The userspace vfio + BAR-mmap path is the supported one; the
   in-kernel netdev is Phase 11, not yet built.
-- **Single / low-flow IPv6 loopback is low-volume on the current rig** &mdash;
-  the stock `phase3-ipv6.yaml` reproduces a very low rx while IPv4 multiflow
-  runs at line rate; IPv6 at higher flow counts loops clean (loss=0). Under
-  investigation (DAC / MAC-PCS / IPv6 classification behaviour).
+- **Deep v6-in-v6 encap (test header > 128 B) is not RX-classified** &mdash;
+  non-encap and single-encap v4/v6 are fine; only the deepest v6-in-v6 *encap*
+  case pushes the test header past the 128 B classifier window (TX generation is
+  unaffected).
 - **Cross-card latency deep-underflow edge** &mdash; one-way latency is measured
   and corrected per flow, but the clamp behaviour at extreme timebase skew is a
   known edge (see the `xcard-latency-wrap` note); normal operation is unaffected.

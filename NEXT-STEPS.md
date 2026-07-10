@@ -138,11 +138,13 @@ so all encap depths now classify for both UDP and TCP.
 ≤128 B — non-encap + single-encap v4/v6 are fine; the deepest v6-in-v6 *encap*
 test header (>128 B) is no longer RX-classified (TX generation is unaffected).
 
-**Known: single/low-flow IPv6 loopback is low-volume on this rig** (the stock
-`phase3-ipv6.yaml` reproduces rx≈2 while IPv4 multiflow runs at 345K frames,
-loss=0). Pre-existing (the generator rate logic is family-agnostic and unchanged;
-IPv6 frames loop clean — loss=0, fcs=0). Worth a separate investigation (DAC /
-MAC-PCS / classification behavior with IPv6); not introduced by A+B.
+**RESOLVED: single/low-flow IPv6 loopback runs at full rate** (was: stock
+`phase3-ipv6.yaml` reproduced rx≈2). Re-verified on arran 07:00.0, build
+0x6a4d2892: the stock config (512 B @ 1 Gbps) runs 5.48 M frames tx==rx,
+loss=0/dup=0/reord=0, latency measured (avg 31 ticks); a single IPv6 flow at
+96 B @ 10 Gbps reaches ~10.5 M fps (line rate) equally clean. The old rx≈2 was
+single-flow generator starvation, since fixed by the gen_multi commit-at-launch
+priming + the flow-id-map classifier; nothing IPv6-specific remained.
 
 Standalone HW tools (`sw/tests/`, run via `sudo env PW_BACKEND=vfio
 sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
@@ -168,10 +170,10 @@ Genuinely open / next:
    (see `pw_test_rx_checker_bram.sv`); the servo keeps the correction valid in
    normal operation, but the clamp behavior at extreme skew is a known edge to
    keep an eye on (memory `xcard-latency-wrap-bug`).
-3. **IPv6 low-volume loopback on this rig** — the stock `phase3-ipv6.yaml`
-   reproduces rx≈2 while IPv4 multiflow runs at 345K frames, loss=0. Frames loop
-   clean (loss=0, fcs=0); the low volume is pre-existing and family-agnostic in
-   the generator. Worth a separate DAC / MAC-PCS / classification investigation.
+3. **Deep v6-in-v6 encap (test header > 128 B) not RX-classified** — the
+   HDR_BYTES=128 capability boundary above; TX generation is unaffected, only
+   the deepest v6-in-v6 encap case loses RX classification. (The old "IPv6
+   low-volume loopback" item is RESOLVED — see the HW re-verification above.)
 4. **Push + tag a release** — `main` is unpushed; a `v*` tag triggers the .deb
    release workflow.
 
