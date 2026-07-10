@@ -80,7 +80,11 @@ SFP -> MAC/PCS -> parser -> classifier (match: ARP / dst MAC / ...)
 
 If the logical interface owns the VLAN, the daemon strips the 802.1Q
 tag before writing to the TAP. The container sees an untagged
-interface and configures its own L3.
+interface and configures its own L3. **Not yet implemented:** the
+current host-plane bridge (`pw_host_plane_poll`) writes the punted
+frame to the TAP fd verbatim — VLAN strip/prepend is a planned
+addition, so today VLAN ownership must be handled by the RTL punt
+path or left tagged.
 
 ## Inject flow
 
@@ -90,7 +94,8 @@ container writes to tap-pw-p0-v100
    v
 packetwyrmd reads TAP fd
    |
-   +-- prepend VLAN tag (if the logical interface owns one)
+   +-- prepend VLAN tag (if the logical interface owns one) [planned;
+   |   not yet applied by the host-plane bridge]
    +-- enqueue slow-path TX descriptor:
          egress_local_port = 0
          logical_if_id = K
@@ -134,7 +139,10 @@ fall through to the punt rules. There is no overlap by design.
 
 - TAP creation failure &rarr; config rejected.
 - TAP write would block (Linux not draining) &rarr; drop, increment
-  `logical_if_tap_tx_dropped`. Control plane retransmits.
+  the per-binding `punt_to_tap_dropped` counter (punt→TAP direction).
+  A failed TAP→FPGA inject increments `tap_to_fpga_dropped`; a punt for
+  an unbound `logical_if_id` bumps `punt_unknown_lif`. Control plane
+  retransmits.
 - Container moves the TAP back to the daemon's namespace
   unexpectedly &rarr; daemon detects via `IFLA_NET_NS_PID` events
   and logs.

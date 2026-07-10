@@ -65,6 +65,16 @@ produced and read back as zero.
 | `jitter_min/max/sum`     | u32/64| **yes**  | **yes**    |
 | latency histogram bins   | u64[]| **yes**   | **yes** (HW-corrected) |
 
+`last_sequence` is the **last received** sequence number (the HW snapshot
+exports the last seq seen, not an expected one). The C struct field is
+`last_sequence` (`backend.h`) and the `flow.stats` JSON key is `last_seq`.
+
+`min_latency` and `jitter_min` are tracked in HW from a `0xFFFFFFFF` sentinel
+that the first sample overwrites. When `sample_count == 0` (no traffic / flow
+not started) that sentinel is meaningless, so the daemon reports **0** for both
+(never the raw ~27.5 s that `0xFFFFFFFF` ticks × 6.4 ns would imply); the CLI
+prints `-` and keys "has a measurement" off `sample_count`.
+
 Cross-card latency is **now valid too**: the RX checker corrects each sample in
 hardware (the `lat_correction` CSR carries the inter-card offset from the J5
 GPIO sync, kept current by the daemon servo), so min/max/sum and the histogram
@@ -127,6 +137,8 @@ Flow  TX       RX       Loss   Dup  Reord  Late  MinLat  AvgLat  MaxLat
 
 ### JSON
 
+The `flow.stats` RPC emits flat per-flow fields (latency/jitter in ns):
+
 ```json
 {
   "flows": [
@@ -134,30 +146,44 @@ Flow  TX       RX       Loss   Dup  Reord  Late  MinLat  AvgLat  MaxLat
       "id": 1,
       "tx_frames": 12345,
       "rx_frames": 12340,
-      "lost_est": 5,
+      "lost": 5,
       "duplicate": 0,
       "out_of_order": 0,
-      "late": 0,
+      "seq_gap": 0,
+      "last_seq": 12340,
+      "read_ok": true,
       "latency_valid": true,
-      "latency_ns": { "min": 1200, "avg": 1340, "max": 2100 },
-      "jitter_ns":  { "min": 0,    "max": 800,  "avg": 120  }
+      "min_latency": 1200, "avg_latency": 1340, "max_latency": 2100,
+      "sample_count": 12340,
+      "jitter_min": 0, "jitter_avg": 120, "jitter_max": 800,
+      "latency_method": "same-card"
     },
     {
       "id": 2,
       "tx_frames": 12345,
       "rx_frames": 12340,
-      "lost_est": 5,
+      "lost": 5,
       "duplicate": 0,
       "out_of_order": 0,
-      "late": 0,
+      "seq_gap": 0,
+      "last_seq": 12340,
+      "read_ok": true,
       "latency_valid": true,
-      "cross_card": true,
-      "latency_ns": { "min": 190, "avg": 210, "max": 240 },
-      "jitter_ns":  { "min": 0,   "max": 80,  "avg": 13 }
+      "min_latency": 190, "avg_latency": 210, "max_latency": 240,
+      "sample_count": 12340,
+      "jitter_min": 0, "jitter_avg": 13, "jitter_max": 80,
+      "latency_method": "gpio-corrected",
+      "offset_ticks": 42
     }
   ]
 }
 ```
+
+(The library aggregator `pw_stats_aggregate` also carries a `cross_card` flag
+and raw `*_ns` fields on `struct pw_global_flow_stats`; the daemon's `flow.stats`
+surface uses `latency_method` = `"same-card"` / `"gpio-corrected"` instead of a
+separate `cross_card` boolean, and applies the no-samples → 0 rule described
+above.)
 
 ### Prometheus (optional)
 
@@ -166,10 +192,12 @@ Flow  TX       RX       Loss   Dup  Reord  Late  MinLat  AvgLat  MaxLat
 - `packetwyrm_port_rx_frames_total{card="0",port="p0"} ...`
 - `packetwyrm_flow_tx_frames_total{flow="1"} ...`
 - `packetwyrm_flow_lost_total{flow="1"} ...`
-- `packetwyrm_flow_latency_ns{flow="1",quantile="0.5"} ...` (same-card only)
+- `packetwyrm_flow_latency_ns{flow="1",quantile="0.5"} ...` (same- and
+  cross-card; cross-card is HW-corrected)
 
-A `packetwyrm_flow_latency_supported{flow="2"} 0` gauge advertises
-the unsupported state.
+Latency is valid for both same-card and cross-card flows, so no
+"unsupported" gauge is needed; a `cross_card` / `latency_method` label can
+distinguish the exact vs GPIO-corrected source.
 
 ## Overflow and reset
 

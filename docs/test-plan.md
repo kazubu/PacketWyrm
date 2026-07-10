@@ -4,6 +4,12 @@ PacketWyrm's tests live in three layers: RTL simulation, host software
 unit tests, and hardware-in-the-loop integration tests. Each layer
 catches a different class of bug; none of them subsumes the others.
 
+> **Status:** all three layers are green for phases 0&ndash;8 (see the coverage
+> gate table at the end). Phases 1/2/3 and the dual-card / cross-card cases run
+> on real AS02MC04 hardware (shipping build `0x6a4d2892`); the software and RTL
+> layers run in CI on every push. Targets marked "(still pending)" below have
+> since landed and are noted inline.
+
 ## RTL simulation
 
 Two complementary stacks live under `sim/`:
@@ -40,8 +46,9 @@ IP-heavy modules (PCIe hard-IP, transceiver IBERT) once they land.
   `pw_csr_full` decoder agreement.
 - `phase3_top` &mdash; `pwfpga_top_phase3`: AXI-Lite host writes
   end-to-end through to a frame on the AXIS pipe and back.
-- `slow_path_rx/tx_dma` &mdash; descriptor fetch, completion ordering
-  (still pending).
+- `dma_slowpath` &mdash; PCIe-DMA slow path (`pw_dma_slowpath`, XDMA
+  AXI-Stream): punt/inject framing, egress swallow, completion ordering.
+  (`sim/dma_slowpath_tb`; HW-validated end-to-end by the cRPD dual-stack lab.)
 
 ### Required cases
 

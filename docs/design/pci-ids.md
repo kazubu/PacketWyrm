@@ -75,14 +75,22 @@ search-and-replace later.
 
 ## Environment-variable override
 
-For ad-hoc testing with a different bitstream, every tool that
-matches PCI IDs respects environment variables:
+For ad-hoc testing with a different bitstream, the **bring-up shell
+scripts** respect environment variables:
 
-| Variable                | Default     | Used by                            |
-|-------------------------|-------------|------------------------------------|
-| `PW_VENDOR_ID`          | `10ee`      | `bringup-check.sh`, `packetwyrmd`  |
-| `PW_DEVICE_ID`          | `a502`      | `bringup-check.sh`, `packetwyrmd`  |
-| `PW_EXPECTED_DEVICE_REG`| `0xA502BEEF`| `bringup-check.sh`                 |
+| Variable                | Default     | Used by                                     |
+|-------------------------|-------------|---------------------------------------------|
+| `PW_VENDOR_ID`          | `10ee`      | `bringup-check.sh`, `bringup-check-vfio.sh` |
+| `PW_DEVICE_ID`          | `a502`      | `bringup-check.sh`, `bringup-check-vfio.sh` |
+| `PW_EXPECTED_DEVICE_REG`| `0xA502BEEF`| `bringup-check.sh`                          |
 
-`packetwyrmd` reads the first two at startup; missing values fall
-through to the defaults above.
+Missing values fall through to the defaults above.
+
+The C tools do **not** read these variables. `packetwyrmd` opens each
+card by its explicit BDF from the env config (each `cards[]` entry's
+`pci:` field), so it never discovers by vendor/device at all. `pktwyrm`
+(the discovery paths — `pktwyrm cards`, `pktwyrm gen-config`) matches
+against the compile-time constants `PW_DEFAULT_PCI_VENDOR` /
+`PW_DEFAULT_PCI_DEVICE` in
+`sw/libpacketwyrm/include/packetwyrm/pci.h`, which is where a permanent
+ID change is made in code.

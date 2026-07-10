@@ -50,6 +50,22 @@ free list (kept by the daemon) for a fresh `local_flow_id`:
   RX checker anchor, addressed by the classifier).
 - Cross-card flow: one `local_flow_id` on the TX card (generator), one
   on the RX card (checker / classifier).
+- **Background (load) flow** (`background: true`): TX-only. It gets a TX
+  `local_flow_id` but **no RX checker slot** — it consumes no classifier /
+  flow-id-map entry and produces no RX/loss/latency/jitter stats (the
+  validator rejects a background flow that requests any measurement). Its
+  `flow_meta` carries `rx_slot_valid = false`; the daemon must not read the RX
+  side (it would alias a real flow's slot).
+
+**Capacity ceiling.** `pw_program_card_tables` enforces the card's *real* flow
+capacity, not just the 64-row CSR-window ceiling. If `n_flow_rows` exceeds the
+bitstream's `num_local_flows` (32 on the shipping build, from `card_info`) it
+rejects the program with a concrete diagnostic — `"<N> flow rows requested but
+device supports <M> (num_local_flows); reduce measured flows or mark some
+background"` — rather than silently programming a dead row past the implemented
+generator/checker slots. Comparators / rules / hash / map are separately bounded
+by `PWFPGA_NUM_CMP` (12) / `PWFPGA_NUM_UDF` (2) / `PWFPGA_NUM_RULE` (32) /
+`PWFPGA_HASH_DEPTH` (128) / `PWFPGA_FLOWID_MAP_DEPTH` (256).
 
 ### 3. Build TX flow row
 
@@ -91,29 +107,43 @@ For the TX card, fill in `pwfpga_flow_config`:
   frame and the egress stamper finds the inner test header at its deep
   offset.
 
-### 4. Build RX classifier row + RX flow row
+### 4. Build RX classifier entry + RX flow row
 
-For the RX card (which equals the TX card on same-card flows):
+For the RX card (which equals the TX card on same-card flows), the compiler
+picks one of two RX-identification paths, selected per flow by `classify:`:
 
-Classifier match key (in priority order):
+- **`classify: map` (default) — TEST_RX flow-id map.** The generated test
+  header already carries the `global_flow_id`. The compiler installs a
+  `pw_flowid_map` entry (`flow_id → local_flow_id`); the parser's magic match
+  (`is_test`) gates it and the flow_id indexes directly, so the udp_dst /
+  ipv4 / ipv6 match fields are redundant and are **not** used. This is the
+  high-count path (up to `PWFPGA_FLOWID_MAP_DEPTH` = 256 structured test
+  flows), and it consumes no field-comparator / rule budget.
 
-| Field             | Source                                |
-|-------------------|---------------------------------------|
-| ingress_local_port| `rx_local_port`                       |
-| vlan_id           | flow's `l2.vlan` (if set)             |
-| udp_dst_port      | flow's `udp.dst_port`                 |
-| ipv4_dst          | flow's `ipv4.dst` (if set)            |
-| test_magic        | `0xA5027E57` (always, for safety)     |
-| global_flow_id    | flow's `id` (carried in test header)  |
+- **`classify: header` — hash exact table.** For payload-agnostic matching
+  (e.g. traffic that must classify on the header alone), the compiler builds
+  a `pw_hash_classifier` entry: a masked 11-word header key (IPv4/IPv6
+  5-tuple + VLAN + ethertype) with a global key mask and a collision-free
+  seed found in a per-card post-pass. Two header-classify flows that collide
+  in a non-randomized field are rejected with a diagnostic (make a field
+  differ, or use `classify: map`).
 
 Action: `TEST_RX`. Tags: `local_flow_id` (RX), `logical_if_id` (for
 diagnostics / tooling; not used for forwarding).
 
-The match key uses the flow's **inner** `udp.dst_port` / `ipv4.dst` even for
-an encapsulated flow: the RX parser auto-decapsulates a recognized tunnel
-(IPIP/GRE/EtherIP) and classifies on the inner frame, so the same key matches
-whether the DUT returns the bare inner frame (`rx_expect: inner`) or the
-tunneled frame (`rx_expect: tunneled`).
+Both paths auto-decapsulate: the RX parser strips a recognized tunnel
+(IPIP/GRE/EtherIP) and classifies on the **inner** frame, so the same flow
+matches whether the DUT returns the bare inner frame (`rx_expect: inner`) or
+the tunneled frame (`rx_expect: tunneled`).
+
+**Modifiers relax the match mask.** A flow may diversify per-packet header
+fields with modifiers (`inc` / `rand` / `mask` per field; IPv6 uses 128-bit
+per-lane salts), applied by sequence number in the generator. When a field is
+modified — or narrowed by an explicit match mask — the compiler **clears the
+corresponding bits from the hash key mask** (`pw_fc_relax_mask`), so the
+randomized/don't-care bits do not break classification (the RTL masks the same
+bits before hashing and verifying). The flow-id-map path is unaffected: it keys
+only on the fixed `flow_id`.
 
 RX flow row mirrors the TX configuration (so the FPGA knows the
 expected packet shape) but with the generator disabled
@@ -192,8 +222,13 @@ int pw_flow_compile(const pw_config *cfg, pw_program *out) {
             : pw_alloc_local_flow_id(out, rx.card_id);
 
         pw_emit_tx_flow_row(out, tx, f, tx_lfid);
-        pw_emit_rx_classifier_row(out, rx, f, rx_lfid);
-        if (!same_card) pw_emit_rx_flow_row(out, rx, f, rx_lfid);
+        // Background (TX-only) flows emit no RX entry and set rx_slot_valid=0.
+        // Real flows install a flow-id-map entry (classify: map, default) or a
+        // hash entry (classify: header); modifiers relax the hash key mask.
+        if (!f->background) {
+            pw_emit_rx_classify(out, rx, f, rx_lfid);   // map or hash per classify:
+            if (!same_card) pw_emit_rx_flow_row(out, rx, f, rx_lfid);
+        }
 
         out->flow_meta[i] = (pw_flow_meta){
             .global_flow_id = f->id,
@@ -201,7 +236,8 @@ int pw_flow_compile(const pw_config *cfg, pw_program *out) {
             .rx_card_id    = rx.card_id,
             .tx_local_flow = tx_lfid,
             .rx_local_flow = rx_lfid,
-            .latency_valid = same_card,
+            .latency_valid = same_card && !f->background,
+            .rx_slot_valid = !f->background,
         };
     }
 

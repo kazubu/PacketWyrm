@@ -122,7 +122,9 @@ flows:
     l2:
       src_mac: "02:a5:02:00:00:01"
       dst_mac: "02:a5:02:00:00:02"
-      vlan: 100                    # optional
+      vlan: 100                    # optional, 0..4094
+      pcp: 0                       # optional 0..7, 802.1Q priority; only
+                                   #   emitted when vlan is set
       # ethertype: 0x88b5          # optional: only used by frame_template: eth
       #                            #   (L2RAW). 0/absent = IP-family default
       #                            #   (0x0800 v4 / 0x86DD v6).

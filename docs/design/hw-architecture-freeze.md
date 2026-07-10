@@ -11,7 +11,7 @@ depends on them — so we settle the silicon first.
 
 | Parameter        | Frozen value                          | Rationale |
 |------------------|---------------------------------------|-----------|
-| FPGA             | `xcku3p-ffvb676-1-e`                  | this generation; ~162K LUT, currently 91% used |
+| FPGA             | `xcku3p-ffvb676-1-e`                  | this generation; ~162K LUT (~91% at freeze time; the shipping DMA build now runs ~95%) |
 | Ports / speed    | 2 × SFP+ 10GBASE-R (Taxi PHY)         | no 25G/100G this gen (would need a bigger device + datapath rework) |
 | Data plane       | 64-bit AXIS @ 156.25 MHz (dp_clk)     | sized for 10G; unchanged |
 | Off-chip memory  | none (no DDR/MIG in this design)      | line-rate capture-to-DRAM is OUT of scope this gen |
@@ -42,8 +42,12 @@ discipline the HW counter. Instead:
 So the original "disciplinable counter" (item 1 below) is **dropped**, and
 "atomic snapshot" is moot (the flow snapshot is a BRAM walk, coherent per-flow;
 final loss uses stop→drain→snapshot). The HW timestamp hooks are now in place
-(TX + RX wire-stamps); what remains is SW-side: the PTP/GPIO servo that turns the
-raw cross-card stamps into corrected one-way latencies (needs ≥2 cards).
+(TX + RX wire-stamps), and the SW-side follow-on is **DONE + HW-validated**: the
+J5 GPIO cross-card sync (`pw_gpio_sync`) + the daemon servo now turn the raw
+cross-card stamps into corrected one-way latencies. The correction moved into HW
+(per-flow `lat_correction` table in the RX checker; see `rtl-modules.md`), so
+min/max/avg/histogram all bin the true one-way value — not the earlier SW
+read-time single-offset that smeared them.
 
 ### 1. (DROPPED) PTP-ready disciplinable timestamp
 
@@ -126,8 +130,10 @@ sample instant (not only a snapshot-coherency artifact). Two parts:
 ### 3. CSR / wire-format versioning freeze
 
 Once external SW + saved configs depend on the map, it can't move:
-- bump/define a **capabilities contract** (`CAPABILITIES`, currently `0x6C`) with
-  bits for PTP-timestamp, atomic-snapshot, etc.;
+- bump/define a **capabilities contract** (`PW_PHASE3_CAPABILITIES`, now `0x2D` =
+  DMA | HISTOGRAM | QINQ_PARSER | MIRROR — the pre-DMA value was `0x6C`, with the
+  now-retired CSR-window `CAP_HAS_PUNT` bit) with bits for PTP-timestamp,
+  atomic-snapshot, etc.;
 - add explicit **reserved** fields to `pw_port_stats` / `pw_flow_stats` /
   `pwfpga_match_key` / `pwfpga_flow_config` for forward growth;
 - freeze and version the layout in `csr.h` + `docs/design/csr-map.md`.

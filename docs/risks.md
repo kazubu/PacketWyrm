@@ -3,9 +3,18 @@
 Each risk has a brief mitigation. Risks at the top are the ones most
 likely to derail the schedule and are tackled first.
 
-## 1. AS02MC04 SFP / GTY 10G bring-up
+> **Status (build 0x6a4d2892, phases 0&ndash;8 done):** the schedule-gating
+> bring-up risks (1 SFP/GTY 10G, 2 Vivado/XDC, 3 MAC/PCS, 4 PCIe/BAR, 5 checker
+> correctness, 8 multi-card discovery, 10 counter/snapshot integrity, 12
+> cross-card timestamp sync) are **RESOLVED on hardware** — each is annotated
+> inline below. Their mitigations remain in force. Risks 6, 7, 9, 11, 13, 14
+> stay **OPEN / ongoing** (either steady-state operational concerns or belonging
+> to layers that keep changing).
 
-GTY transceiver settings, reference clock, board layout quirks, and
+## 1. AS02MC04 SFP / GTY 10G bring-up &mdash; RESOLVED (HW)
+
+Dual 10GBASE-R links up on the AS02MC04; loss=0 at line rate. GTY
+transceiver settings, reference clock, board layout quirks, and
 SFP power can all gate link-up. No software work is meaningful until
 this works.
 
@@ -30,11 +39,12 @@ Mitigations:
 - Capture a `lspci -vvv` + GTY status dump as part of every bring-up
   iteration.
 
-## 2. Vivado project / XDC / clock / reset stability
+## 2. Vivado project / XDC / clock / reset stability &mdash; RESOLVED (reproducible)
 
-A flaky project that meets timing today and fails tomorrow blocks
-everyone. Single-source-of-truth XDC and a Vivado project that builds
-from `tcl` scripts (no GUI-edited binaries) are required.
+`project_phase3.tcl` builds the full Phase 1+2+3 bitstream reproducibly and
+closes timing at 156.25 MHz. A flaky project that meets timing today and fails
+tomorrow blocks everyone. Single-source-of-truth XDC and a Vivado project that
+builds from `tcl` scripts (no GUI-edited binaries) are required.
 
 Mitigations:
 
@@ -44,19 +54,21 @@ Mitigations:
   core). NOTE: CI does **not** run Vivado synth/impl/timing/CDC (no Vivado on
   the runners) -- those are checked at build time on the dev box / bring-up.
 
-## 3. MAC / PCS frame transport
+## 3. MAC / PCS frame transport &mdash; RESOLVED (HW)
 
-Even with link-up, MAC errors at line rate make all downstream tests
-unreliable. Validate this before turning on the flow generator.
+Frame transport validated at line rate with loss=0. Even with link-up, MAC
+errors at line rate make all downstream tests unreliable. Validate this before
+turning on the flow generator.
 
 Mitigations:
 
 - Phase 2 explicitly only proves frame transport.
 - TX / RX counters compared over 10^11 packets in a loop test.
 
-## 4. PCIe endpoint / BAR Linux enumeration
+## 4. PCIe endpoint / BAR Linux enumeration &mdash; RESOLVED (HW)
 
-If `lspci` does not see the card with the right BAR size, no host
+`10ee:a502` enumerates; the BAR-mmap backend + a PCIe-DMA slow path both run
+on silicon. If `lspci` does not see the card with the right BAR size, no host
 software can run.
 
 Mitigations:
@@ -67,9 +79,12 @@ Mitigations:
 - `/sys/bus/pci/devices/.../resource0` permissions and udev rules
   documented.
 
-## 5. FPGA timestamp / sequence checker correctness
+## 5. FPGA timestamp / sequence checker correctness &mdash; RESOLVED (HW + sim)
 
-A subtly wrong checker turns the whole tester into a confident liar.
+Checker validated in Verilator + on hardware (loss=0 over line-rate soaks,
+egress HW timestamping). Still the highest-consequence correctness surface, so
+the mitigations below remain mandatory for any checker change. A subtly wrong
+checker turns the whole tester into a confident liar.
 
 Mitigations:
 
@@ -100,10 +115,12 @@ Mitigations:
 - Test BGP, OSPF, LDP-equivalent control protocols end to end.
 - Document container recipes in `configs/examples/`.
 
-## 8. Multi-card discovery + global port mapping
+## 8. Multi-card discovery + global port mapping &mdash; RESOLVED (HW)
 
-A non-deterministic `card_id` assignment makes scripts and operators
-unhappy. Conversely, a static map is brittle when cards are swapped.
+Two-card discovery, BDF-order `card_id` assignment, and cross-card flows are
+HW-validated (pwhost1). A non-deterministic `card_id` assignment makes scripts
+and operators unhappy. Conversely, a static map is brittle when cards are
+swapped.
 
 Mitigations:
 
@@ -111,22 +128,26 @@ Mitigations:
 - YAML can pin a specific PCI BDF to a specific `card_id`.
 - Mismatches between YAML and discovered cards are explicit errors.
 
-## 9. Cross-card flow loss / sequence measurement
+## 9. Cross-card flow loss / sequence measurement &mdash; RESOLVED (HW)
 
-Two FPGAs not sharing a clock domain still need to agree on
-sequence semantics. We rely entirely on the `global_flow_id` and
-the test header magic, not on time.
+Cross-card loss/dup/reorder validated on two cards. Two FPGAs not sharing a
+clock domain still need to agree on sequence semantics. We rely entirely on the
+`global_flow_id` and the test header magic, not on time — so loss/sequence is
+correct regardless of clock alignment.
 
 Mitigations:
 
-- The RX checker's correctness has no dependence on time on the RX
-  card.
-- `latency` is never reported across cards.
+- The RX checker's loss/sequence correctness has no dependence on time on the
+  RX card.
+- Cross-card *latency* is a separate, HW-corrected quantity (J5 GPIO sync +
+  per-flow `lat_correction`; see risk 12), reported with an explicit method
+  flag — it is no longer withheld.
 
-## 10. Long-soak counter overflow / snapshot integrity
+## 10. Long-soak counter overflow / snapshot integrity &mdash; RESOLVED (HW)
 
-Counters that wrap silently lose data; snapshots that tear give
-nonsense.
+64-bit counters + atomic per-flow snapshot latch validated over multi-hour
+line-rate soaks. Counters that wrap silently lose data; snapshots that tear
+give nonsense.
 
 Mitigations:
 
@@ -180,9 +201,10 @@ Mitigations:
 
 ## 14. Operator misconfiguration
 
-Users will request impossible flows (cross-card latency, duplicate
-IDs, etc.). The daemon must refuse politely with actionable
-diagnostics, not crash or pretend.
+Users will request impossible or over-capacity configs (duplicate IDs,
+>32 flows, unknown ports, etc.). The daemon must refuse politely with
+actionable diagnostics, not crash or pretend. (Cross-card latency is no
+longer in this bucket — it is supported via J5 GPIO sync.)
 
 Mitigations:
 

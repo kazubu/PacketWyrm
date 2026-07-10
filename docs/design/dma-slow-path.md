@@ -1,7 +1,12 @@
 # DMA slow-path (host ⇄ FPGA frame movement)
 
-Status: **DESIGN / proposed** (2026-07-03). Replaces the CSR-window inject/punt
-slow path. Prompted by the cRPD 2-node lab: control-plane punt/inject works, but
+Status: **IMPLEMENTED + HW-validated** (P1–P5 complete incl. jumbo, 2026-07-04;
+see §5b/§5c/§6). The document keeps the original design/rationale voice —
+"proposed" wording below is historical; the as-built outcome is recorded inline
+where it diverged from the plan (chiefly §5a-bis vs §5c: the CSR did NOT move to
+`+0x10000`; silicon uses two 64 KB BARs, CSR at BAR0:0). Replaces the CSR-window
+inject/punt slow path. Prompted by the cRPD 2-node lab: control-plane punt/inject
+works, but
 the register-copy windows cap frames at **512 B inject / 2048 B punt** and add
 ~200 ms latency — IS-IS (MTU-padded hellos + LSPs), 1500 B data, and jumbo all
 fail. See [[port-drops-icmpv6-tap]] context and `configs/examples/lab-crpd-2node/`.
@@ -31,10 +36,11 @@ over PCIe using descriptor rings, and the BAR carries only doorbells/indices.
 - **Works under vfio-pci** (Secure Boot / kernel lockdown — the production path).
   Plain sysfs `resource0` mmap **cannot** DMA (no IOMMU IOVA); DMA is vfio-only.
 - **Keep the CSR register map unchanged** (all existing register access, stats,
-  flash, classifier programming stay exactly as-is). NB: the register *map* is
-  unchanged, but enabling the DMA engine relocates the CSR window's *offset
-  within BAR0* to `0x10000` (BAR0 grows to 128 KB — see §5a-bis); the host adds
-  that offset when `HAS_DMA`.
+  flash, classifier programming stay exactly as-is). NB: a pre-silicon probe
+  predicted BAR0 would grow to 128 KB and relocate the CSR to `+0x10000`; on real
+  silicon this did **not** happen — the IP exposes two 64 KB BARs (CSR at BAR0
+  offset 0, unchanged; XDMA control at BAR1), so the CSR base moved nowhere. See
+  §5a-bis (superseded) and §5c point 1 (as-built).
 - **Preserve slow-path metadata**: punt carries `logical_if_id` + ingress port +
   RX wire timestamp; inject carries egress port (+ TX wire timestamp back).
 - **Fit the FPGA**: LUT is at **83.98 % (136 647 / 162 720)** — new RTL must be

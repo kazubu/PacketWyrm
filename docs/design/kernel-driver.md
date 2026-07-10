@@ -85,14 +85,22 @@ loading against any PCI ID for development.
 
 - Registers a `pci_driver` keyed on `10ee:a502`.
 - On `probe()`:
-  1. enables the device,
-  2. requests BAR0,
-  3. ioremaps it,
-  4. reads the identity registers (`device_id`, `version`,
-     `build_id`, `git_hash`, `capabilities`) via the same CSR
-     map the userspace BAR backend uses, and logs them via
-     `pci_info()`.
-- On `remove()`: unmaps and disables.
+  1. `pcim_enable_device()` + `pci_set_master()`,
+  2. requests **and** ioremaps BAR0 in one step
+     (`pcim_iomap_regions(BIT(0))`),
+  3. range-checks that BAR0 is large enough for the identity
+     block before touching it (a short/malformed BAR 404s with
+     `-ENODEV`),
+  4. verifies the `device_id` register reads `0xA502BEEF` and
+     **declines the device** (`-ENODEV`) otherwise — unless the
+     `force_match` module param is set,
+  5. reads the identity registers (`device_id`, `version`,
+     `build_id`, `git_hash`, `capabilities`, `num_ports`,
+     `num_flows`) via the same CSR map offsets the userspace BAR
+     backend uses, and logs them via `pci_info()`.
+- On `remove()`: the device-managed (`pcim_*` / `devm_*`) helpers
+  unmap, release the region, and disable on teardown; `remove()`
+  itself only logs.
 
 This is the minimum that proves the kernel can see the same
 silicon the userspace daemon sees. The rest (netdev registration,
@@ -102,7 +110,7 @@ ndo ops, NAPI, ethtool, devlink) is incremental work on top.
 
 Only one of `packetwyrm.ko` and `packetwyrmd`'s BAR backend can
 own a card at a time. The skeleton's `probe()` claims BAR0 with
-`pci_request_regions`; once loaded, the userspace BAR backend
+`pcim_iomap_regions`; once loaded, the userspace BAR backend
 refuses to open the same BDF with `PW_E_IO`. Switch back by
 `rmmod`-ing the kernel module.
 

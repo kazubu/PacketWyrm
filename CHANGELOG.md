@@ -310,8 +310,8 @@ For where work is going next, see `NEXT-STEPS.md`.
     bit-identical. HW-validated on pwhost1 (build_id 0x6a4bc32d): the 16
     card0→card1 flows went from all-0xFFFFFFFF to min=0/avg=19/max=31, loss=0.
     The residual ~2× direction asymmetry (true one-way ≈63 vs ≈19 ticks) is a
-    calibration issue tracked as Phase 2 in
-    `docs/design/xcard-latency-wrap-fix-plan.md`.
+    calibration issue tracked as Phase 2 (since resolved — see the
+    cross-card latency section of `docs/design/daemon.md`).
   - **Two FPGAs in one IOMMU group: second card failed to open.** Behind
     non-ACS CPU root ports both cards share one VFIO group, and VFIO forbids
     opening a group fd twice. `pw_vfio_open_bar` now shares one group+container

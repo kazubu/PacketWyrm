@@ -10,7 +10,7 @@ and worth investigating. Waivers live in `xdc/phase3_cdc.xdc`.
 | ID | Where | Why it's safe / why waived |
 |----|-------|----------------------------|
 | **CDC-10** ×2 | reset-source merges: `axi_aresetn & mmcm_lock` → `dp_rstn_sync`; `!rst_n_100 \|\| !mmcm_lock` → SFP ctrl reset sync | MMCM lock-loss must **async-assert** reset, but the dependent clock is the MMCM's own output and stops on lock loss — the assert cannot be synchronised. The gate drives only the synchroniser's async-assert; deassert is 2-FF synchronised; a merge glitch only over-asserts (safe). |
-| **TIMING-6 / TIMING-7** ×2 each | timestamp Gray-CDC clock pairs `dp_clk_u → gtwiz_userclk_tx_srcclk_out[0]/[0]_1` (`u_tscdc`) | Intentionally asynchronous (different clock sources, no common primary clock). The crossing is constrained per-port by `set_max_delay -datapath_only` + `set_bus_skew`. Waived **scoped to these two pairs only** (not a clock_groups, which would also drop the max_delay/bus_skew), so a real unconstrained-clock Critical elsewhere still stands out. |
+| **TIMING-6 / TIMING-7** | timestamp Gray-CDC clock pairs, **two CDCs**: the egress stamp `dp_clk_u → gtwiz_userclk_tx_srcclk_out[0]/[0]_1` (`u_tscdc`, per port) **and** the RX ingress wire-stamp `dp_clk → each MAC `sfp_rx_clk`` (`u_rxtscdc`, per port; `pw_ts_gray_cdc`) | Intentionally asynchronous (different clock sources, no common primary clock). Each crossing is constrained per-port by `set_max_delay -datapath_only` + `set_bus_skew` (see `xdc/phase3_cdc.xdc`). Waived **scoped to exactly these clock pairs** (not a clock_groups, which would also drop the max_delay/bus_skew), so a real unconstrained-clock Critical elsewhere still stands out. |
 
 ## Known, left as-is (non-blocking)
 

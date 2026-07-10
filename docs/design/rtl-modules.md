@@ -67,7 +67,14 @@ auto-decapsulates recognized tunnels (outer IP proto 4/41/47/97 →
 IPIP/GRE/EtherIP), re-basing the L3/L4 parse onto the inner frame so the
 classifier keys on the inner test flow (header capture is 176 B — deep enough for
 the deepest TCP test header: VLAN 4 + outer v6 40 + EtherIP 2 + inner eth 14 +
-inner v6 40 + TCP 20 + 32 test = 166 B);
+inner v6 40 + TCP 20 + 32 test = 166 B). The tunnel-descent selector reads
+(GRE protocol-type, EtherIP inner-ethertype) are **length-guarded** (only taken
+when `flen >= l3_off + outer_hlen + enc_hlen`) — `hdr[]` is not cleared between
+frames, so an unguarded read on a truncated encap frame would pick up a previous
+frame's residual bytes. A **flagged GRE** (any of C/K/S set, or version != 0 —
+optional fields the fixed 4-byte descent doesn't parse) is treated as **non-encap**
+and classified on the outer header only. A failed guard likewise falls back to
+non-encap.
 `pw_field_classifier` (latency-2, parallel priority winner) replaced the legacy
 `pw_classifier`; `pw_lat_histogram` replaced the FF histogram; `pw_frame_saf`
 is BRAM-backed (reset-less write + registered read-ahead drain) — freed
@@ -160,6 +167,13 @@ the arithmetic stays off the dp_clk-critical `fb`/`active` write path — a sing
 64 B flow reaches line rate at `burst_size:1` (HW: 14.2 Mpps @ frame_len 64,
 14.88 Mpps @ frame_len 60). See `dp-clk-timing-lessons` (never gate the wide
 `fb` write on fresh arithmetic).
+The per-slot **sequence number and frame-length sweep position commit AT LAUNCH**,
+not at the frame's last beat: with a primed back-to-back launch landing only 2–3
+cycles after the previous frame's last beat (and the precompute pipeline sampling
+`sequence_q`/`cur_len` ~3 cycles *ahead* of a launch), an end-of-frame commit would
+let two closely-spaced launches read the same pre-increment `seq` — a duplicate/skip
+at an idle→line-rate transition. Committing at launch keeps the pipeline reading
+post-commit state.
 `pw_flow_table_bram` holds the flow table in **block RAM** (in the data
 plane, next to the generators). The old approach — a 32-wide registered
 `pw_flow_row_t` array (`flow_rows_o`) fanning out to both generators, each
@@ -209,6 +223,12 @@ multi-flow data plane). The wide-bus `pw_data_plane` / `pw_parser` /
 generator test frame's tx_timestamp with the true departure time, so
 latency measures the DUT, not the tester's TX-FIFO queuing. It detects the
 L3 family (IPv4 0x0800 → tx_ts @62; IPv6 0x86DD → tx_ts @82; +4 if VLAN).
+The tx_ts *stamp* itself is gated on the generator marker (`stamp_ok = is_gen &&
+(inner_v6 | magic_ok)`) — a v4 inner also keys on the magic (its field precedes
+tx_ts in the stream), a v6 inner on the marker alone (its csum fixup runs before
+the magic streams). Crucially `is_gen` is required even for v4: a *forwarded* v4
+test frame (magic present, `tuser=0`) keeps its original end-to-end tx_ts, and
+re-stamping it would corrupt a forwarded v4 TCP checksum.
 For an **encapsulated** frame it decodes the outer IP proto (4/41/47/97) and
 tunnel header in-stream to find the *inner* test header's offset, registering
 it before the deep csum/tx_ts beats so the MAC-CRC data path still reads a
@@ -491,7 +511,9 @@ Two cheap, routable stages:
   difference — while structured test frames get full stats.
 - Verifies the `pwfpga_test_hdr` magic.
 - Tracks per-flow expected sequence, increments
-  `lost / duplicate / out_of_order / late` counters.
+  `lost / duplicate / out_of_order / late` counters. The stats snapshot exports
+  the **last received** sequence (not the internal `expected_seq`) at flow-stats
+  offset 32 — hence `struct pw_flow_stats.last_sequence` in SW/JSON.
 - Computes `rx_timestamp - tx_timestamp` (both from this card's
   `timestamp_unit`) and updates min / max / sum / sample_count plus
   the histogram bin.

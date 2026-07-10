@@ -96,6 +96,32 @@ root for BAR0 mmap.
   - port map (`global_port_id` &harr; `(card_id, local_port_id)`),
   - flow map (`global_flow_id` &rarr; per-card programming).
 - Owns test orchestration state machine (`armed`, `running`, ...).
+- **Explicit start (default).** Flows are programmed **idle**: neither starting
+  the daemon nor `config.load` puts anything on the wire until an explicit
+  `test.start` (or per-flow `flow.start`). `test.start` also re-primes the
+  cross-card `lat_correction` and clears the RX counters for a clean, timebase-
+  corrected baseline; `test.stop` just freezes the (still-readable) counters.
+  Launch with `-a`/`--autostart` to restore the legacy "generate as soon as
+  programmed" behavior. See `rpc-protocol.md` → `test.arm`/`test.start`.
+
+### CLI flags
+
+`packetwyrmd [-e ENV] [-t TEST] [-n] [-v] [-a] [-s INTERVAL_MS] [-S SERVO_MS]
+[-C CAL_TICKS] [-p [ADDR:]PORT] [-F]`:
+
+- `-e ENV` — environment config (default `/etc/packetwyrm/packetwyrm.yaml`;
+  `-c` is an alias). `-t TEST` — initial test config (flows/forwards).
+- `-n` — dry run (parse + validate + compile, then exit). `-v` — verbose.
+- `-a`/`--autostart` — legacy generate-on-program (see above).
+- `-s INTERVAL_MS` — stats print interval (default 5000; 0 = off). This is the
+  console print cadence, distinct from `system.stats_poll_interval_ms`.
+- `-S SERVO_MS` — cross-card `lat_correction` servo period (default 10 ms).
+- `-C CAL_TICKS` — signed cross-card one-way latency calibration (6.4 ns/tick,
+  default 0), added antisymmetrically by card-id order to cancel the direction-
+  asymmetric TX/RX capture bias.
+- `-p [ADDR:]PORT` — bind the Prometheus `/metrics` exporter (`ADDR` defaults
+  to loopback; unauthenticated). `-F`/`--allow-fake` — fall back to the no-op
+  fake backend when a BAR can't be opened (dev/CI only).
 
 ### Card worker
 
@@ -241,30 +267,32 @@ Exports: human table (CLI), JSON, optional Prometheus endpoint.
 ## IPC: control socket
 
 `packetwyrmd` listens on a Unix socket (default
-`/run/packetwyrm/packetwyrmd.sock`). `pktwyrm` connects, sends
-length-prefixed JSON requests, reads JSON responses. The wire schema
-is versioned (`schema_version`).
+`/run/packetwyrm/packetwyrmd.sock`). `pktwyrm` connects, sends a
+length-prefixed JSON request, reads one JSON response, and the daemon closes
+the connection (one request per connection). The full request/response schema
+for every method is in `rpc-protocol.md` (authoritative); the method set the
+daemon dispatches today:
 
-Initial RPCs:
-
-| RPC                  | Purpose                                       |
-|----------------------|-----------------------------------------------|
-| `cards.list`         | back `pktwyrm cards`                          |
-| `ports.list`         | back `pktwyrm ports`                          |
-| `map.show`           | back `pktwyrm map`                            |
-| `link.show`          | per-port link / SFP / PCS state               |
-| `config.load`        | load + validate + activate a YAML config      |
-| `config.get_raw`     | read the env config file (secret redacted)    |
-| `config.get_test`    | read the active test config (flows/forwards)  |
-| `config.save`        | validate + atomically write the env config    |
-| `flow.list`          | global flow table snapshot                    |
-| `flow.start`/`stop`  | per-flow lifecycle                            |
-| `test.arm/start/stop/snapshot` | tester-wide lifecycle               |
-| `stats.snapshot`     | aggregated stats (filterable)                 |
-| `hist.read`          | per-flow latency histogram                    |
-| `classifier.dump`    | debug dump of per-card classifier             |
-| `debug.regs`         | raw register read window                      |
-| `card.reset/disable/enable` | card-level lifecycle                   |
+| RPC                             | Purpose                                    |
+|---------------------------------|--------------------------------------------|
+| `version`                       | daemon version string                      |
+| `cards`                         | card inventory + FPGA identity + SYSMON     |
+| `ports`                         | global-port map                            |
+| `flows`                         | global flow table snapshot                 |
+| `stats`                         | host packet-plane counters (`card` filter) |
+| `ports.stats`                   | per-port wire counters (MAC)               |
+| `tap.stats`                     | per-logical-interface host-plane TAP status |
+| `flow.stats`                    | per-flow RX-checker counters (`id` filter) |
+| `flow.hist`                     | per-flow latency histogram (`id`)          |
+| `flow.preview`                  | build+decode a flow's on-wire frame (offline) |
+| `sfp.info`                      | per-SFP identifier + DOM (`card`/`port`)   |
+| `flow.start`/`flow.stop`        | per-flow generator enable toggle           |
+| `test.arm`/`test.start`/`test.stop` | tester-wide lifecycle (see explicit-start) |
+| `stats.clear`                   | soft-clear RX/port counters + histogram    |
+| `config.load`                   | load + validate + activate a YAML body     |
+| `config.get_raw`                | read the env config file (secret redacted) |
+| `config.get_test`              | read the active test config (flows/forwards)|
+| `config.save`                   | validate + atomically write the env config |
 
 All RPCs are idempotent where it makes sense. Access control is the
 `system.secret` model described above (constant-time secret check; when no

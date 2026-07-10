@@ -175,13 +175,16 @@ and removed.
 6. **[DONE]** Compiler: `classify: header` → hash entries (collision-free seed
    search); punt/forward → field comparators + rules; structured TEST_RX → map.
 
-Each phase is sim-gated. Capacity note: with each slice an exact match, header-
-defined flows are bounded by `NSLICE` distinct header values (4) / `NRULE` rules
-(8) per card. (UDF match window: originally the low 48 bytes; now the full
-`HDR_BYTES` capture so a UDF reaches the inner frame under encap — see "UDF
-window depth" above.) Sized so the byte-mux fits alongside the 32-flow data
-plane on the xcku3p; the
-flow-id map (256) remains for high-count structured test.
+Each phase is sim-gated. Capacity note (as implemented): the field classifier
+has `PWFPGA_NUM_CMP` (12) field comparators + `PWFPGA_NUM_UDF` (2) UDF
+comparators feeding `PWFPGA_NUM_RULE` (32) care-mask rules per card; comparators
+dedup, so punt + forward + `classify: header` flows share that budget.
+Payload-agnostic header classification scales further through the hash exact
+table (`PWFPGA_HASH_DEPTH` = 128). (UDF match window: originally the low 48
+bytes; now the full `HDR_BYTES` (176) capture so a UDF reaches the inner frame
+under encap — see "UDF window depth" above.) Sized so the byte-mux fits
+alongside the 32-flow data plane on the xcku3p; the flow-id map
+(`PWFPGA_FLOWID_MAP_DEPTH` = 256) remains for high-count structured test.
 
 ## Risks / open questions
 - **Arbitrary-offset byte mux** cost — bound offsets to the header window +

@@ -255,4 +255,4 @@ copy is migrated away on load).
   `$(SBINDIR)` with its systemd unit.
 - CI (`.github/workflows/ci.yml`) installs `libssl-dev` (+ `python3` for the
   asset generator), builds it as part of `make`, and exercises the relay +
-  multi-file serving in `make e2e` (`tests/integration/e2e_proxyd.sh`).
+  multi-file serving in `make e2e` (`sw/tests/integration/e2e_proxyd.sh`).

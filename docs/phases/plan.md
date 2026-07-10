@@ -4,6 +4,15 @@ Each phase has an explicit acceptance gate. No phase ships without
 passing its gate; phases are otherwise independent enough to be worked
 in parallel by separate people once their prerequisites are met.
 
+> **Status (see README status table):** Phases 0&ndash;8 are **DONE** (0/4/5/6/7/8
+> in software; 1/2/3 on real AS02MC04 hardware, shipping build `0x6a4d2892`).
+> Phase 9 orchestration landed with the explicit-start test model
+> (`pktwyrm test run`). Phase 10 (timing-sync research) was **superseded** — the
+> J5 GPIO time-sync delivered corrected cross-card latency without the
+> research phase. Phase 11 (kernel netdev) is a **skeleton**. Phase 12 (25G) is
+> still out of scope. The acceptance gates below are kept as the historical
+> definition-of-done for each phase.
+
 ## Phase 0 &mdash; repository skeleton + data model (this commit)
 
 Deliverables: directory tree, design docs, `libpacketwyrm` C data
@@ -131,11 +140,18 @@ Acceptance:
   bring up a BGP / OSPF adjacency through a DUT.
 - Test traffic and routing-control traffic both flow.
 
-## Phase 9 &mdash; multi-card orchestration
+## Phase 9 &mdash; multi-card orchestration &mdash; DONE
 
 Deliverables: `pktwyrm test arm/start/stop`, group operations,
 best-effort synchronised start, per-card degraded state, test
 profile execution.
+
+Delivered: the daemon now stages flows IDLE at program/`config.load` time
+and only puts traffic on the wire at an explicit `test.start` (which clears
+counters and re-primes cross-card correction); `test.arm`/`test.stop` and the
+one-shot `pktwyrm test run [--duration]` (arm+start+wait+stop → per-flow
+PASS/FAIL + CI exit codes) drive it. `-a`/`--autostart` restores the legacy
+generate-on-program behaviour. Cross-card arms report `servo_converged`.
 
 Acceptance:
 
@@ -143,17 +159,21 @@ Acceptance:
 - A degraded card does not block orchestration; its flows are
   marked `unknown`, others continue.
 
-## Phase 10 &mdash; timing synchronisation research
+## Phase 10 &mdash; timing synchronisation research &mdash; SUPERSEDED
 
-Investigative phase. Outputs are an internal report and
-candidate proof-of-concepts. Not required for shipping a usable
-tester; required before claiming cross-card latency support.
+Originally an investigative phase, required before claiming cross-card latency
+support. **Superseded / not needed as a separate phase:** the J5 GPIO
+time-sync (`pw_gpio_sync` + per-flow `lat_correction` table) delivered
+HW-corrected cross-card latency directly (see Phase 7 and
+`design/rtl-modules.md`), at the intrinsic noise floor, without a dedicated
+clock-sync research effort.
 
-## Phase 11 &mdash; optional kernel netdev driver
+## Phase 11 &mdash; optional kernel netdev driver &mdash; SKELETON
 
 Once the userspace TAP daemon is proven, evaluate moving slow-path
 into a kernel driver with multiple netdevs, MSI-X, NAPI, ethtool,
-devlink.
+devlink. A skeleton kernel module exists (`make -C kernel` builds); the
+userspace TAP plane remains the shipping slow path.
 
 ## Phase 12 &mdash; 25G support
 

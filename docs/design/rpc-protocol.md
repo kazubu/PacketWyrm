@@ -87,13 +87,15 @@ SYSMON + err_sticky fields are present only when the bitstream exposes them
 
 `{ "rpc": "flows" }` &rarr; `{ "flows": [ { "id", "name",
 "tx_global_port", "rx_global_port", "tx_card_id", "rx_card_id",
-"latency_valid", "latency_method" } ] }`
+"background", "latency_valid", "latency_method", "enabled" } ] }`
 
-`latency_valid` is now `true` for **both** same-card and cross-card flows
+`latency_valid` is `true` for **both** same-card and cross-card flows
 (cross-card is HW-corrected, see `flow.stats`); `latency_method` is
-`"same-card"` or `"gpio-corrected"` so a client can tell them apart. (Clients
-should key latency-UI off `latency_valid` being true, not off the flow being
-same-card.)
+`"same-card"`, `"gpio-corrected"`, or `"none"` so a client can tell them apart.
+(Clients should key latency-UI off `latency_valid` being true, not off the flow
+being same-card.) `background` is `true` for a TX-only load flow (no RX checker
+slot); such a flow reports `latency_valid:false` + `latency_method:"none"`.
+`enabled` reflects the flow's current generator run-state.
 
 ### `stats`
 
@@ -181,6 +183,7 @@ ns/tick) so a client can compute exact per-flow frame/byte rates as
       "tx_card_id": 0, "rx_card_id": 0,
       "tx_global_port": 0, "rx_global_port": 1,
       "tx_port": "card0.p0", "rx_port": "card0.p1",
+      "read_ok": true,
       "tx_frames": 0, "tx_bytes": 0,
       "rx_frames": 0, "rx_bytes": 0,
       "lost": 0, "duplicate": 0, "out_of_order": 0,
@@ -326,10 +329,15 @@ counters. `start` and `stop` toggle the generator enable bit of every flow.
 > traffic. Launch `packetwyrmd` with `-a`/`--autostart` to restore the legacy
 > "generate as soon as programmed" behavior.
 >
+> `test.arm` additionally returns `programmed` (bool): `false` means the
+> re-push of the compiled program hard-failed, in which case the RX counters
+> are deliberately **not** cleared (so a failed arm can't masquerade as a clean
+> armed state) — re-arm or restart rather than trusting zeroed counters.
+>
 > For cross-card flows, `test.arm`/`test.start` include a `servo_converged`
 > boolean; when false a `warning` field explains the J5 GPIO servo has no
 > coherent offset yet (cross-card latency would read a wrong timebase) — wait
-> for sync and re-arm.
+> for sync and re-arm. (`test.stop` returns neither field.)
 
 > **Not hitless.** `test.arm` (and `config.load` below) re-run
 > `program_backends`, which pulses the data-plane soft reset
@@ -349,6 +357,21 @@ counters. `start` and `stop` toggle the generator enable bit of every flow.
 &rarr;
 ```json
 { "action": "test.start", "changed": 2, "failed": 0 }
+```
+
+### `stats.clear`
+
+Soft-clear (W1C) the RX checker counters, per-port counters and latency
+histogram on every open card, **without** re-pushing the program — a
+standalone re-baseline independent of `test.arm`/`test.start`/`test.stop` (it
+writes the same `STATS_CLEAR` CSR those use).
+
+```json
+{ "rpc": "stats.clear" }
+```
+&rarr;
+```json
+{ "action": "stats.clear", "changed": 2, "failed": 0 }
 ```
 
 ### `config.load`
@@ -517,7 +540,29 @@ and surface the error in a human-friendly form.
 
 ## Prometheus exposition
 
-Independent of the JSON RPC, `packetwyrmd -p PORT` exposes a
-plain HTTP `/metrics` endpoint serving the standard Prometheus
-text format. The metrics map 1:1 onto the host packet plane
-counters; see `packetwyrmd --help` for the latest list.
+Independent of the JSON RPC, `packetwyrmd -p [ADDR:]PORT` exposes a
+plain HTTP `/metrics` endpoint serving the standard Prometheus text format
+(`ADDR` defaults to loopback `127.0.0.1`; the endpoint is unauthenticated, so
+binding `0.0.0.0` is a deliberate opt-in). The exported series now go well
+beyond the host packet plane; the families are:
+
+- `packetwyrm_build_info`, `packetwyrm_card_open`.
+- host-plane bridge counters (`packetwyrm_punt_to_tap_ok/_dropped`,
+  `packetwyrm_tap_to_fpga_ok/_dropped`, `packetwyrm_punt_unknown_lif`), per card.
+- per-flow measurement (`packetwyrm_flow_tx_frames/_rx_frames/_tx_bytes/`
+  `_rx_bytes/_lost_packets/_duplicate_packets/_out_of_order_packets/`
+  `_sequence_gaps/_latency_samples`, `packetwyrm_flow_running`, and
+  `packetwyrm_flow_latency_ns{stat}` / `packetwyrm_flow_jitter_ns{stat}` with
+  `stat` = `min`/`max`/`avg`), labelled `flow`+`name`; latency/jitter emitted
+  only when the flow's `latency_valid`.
+- per-card SYSMON (`packetwyrm_card_temp_celsius`, `_vccint_volts`,
+  `_vccaux_volts`, `_error_sticky`).
+- per-port wire counters (`packetwyrm_port_rx_frames/_tx_frames/_rx_bytes/`
+  `_tx_bytes/_rx_fcs_errors/_rx_bad_frames/_rx_oversize/_rx_undersize/`
+  `_rx_unmatched/_link_up_events/_link_down_events/_block_lock_loss`), labelled
+  `card`+`port`.
+- per-SFP optics from the DOM cache (`packetwyrm_sfp_present`,
+  `_temp_celsius`, `_vcc_volts`, `_tx_bias_ma`, `_tx_power_dbm`,
+  `_rx_power_dbm`), labelled `card`+`port`.
+
+See `promex_build_body()` in the daemon for the authoritative list.
