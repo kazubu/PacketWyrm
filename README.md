@@ -214,6 +214,20 @@ The daemon needs `CAP_NET_ADMIN` to create TAP devices; running it
 as root (or with the udev rule in `scripts/`) is fine for the dev
 container.
 
+## Packaging / releases
+
+```sh
+make -C sw deb        # -> packaging/dist/packetwyrm_<version>_<arch>.deb
+```
+
+Pushing a version tag builds the `.deb` in GitHub Actions and publishes it as a
+release asset (`.github/workflows/release.yml`); the package version comes from
+the tag, so use a leading-digit semver:
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
 ## Documentation
 
 Start here:

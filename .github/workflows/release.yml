@@ -1,0 +1,61 @@
+name: Release
+
+# Push a version tag (e.g. `v0.2.0`) and this builds the Debian package and
+# publishes a GitHub Release with the .deb attached. The package version is
+# derived from the tag by packaging/build-deb.sh (`git describe`), so tag with
+# a leading-digit semver like v1.2.3.
+on:
+  push:
+    tags:
+      - "v*"
+
+# The default GITHUB_TOKEN needs write access to create the release + upload
+# the asset.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: build .deb + publish release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags so build-deb.sh's `git describe --tags` resolves
+          # the pushed tag into the package version (a shallow checkout has none).
+          fetch-depth: 0
+
+      - name: install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config \
+            libyaml-dev libjson-c-dev libssl-dev \
+            python3
+
+      # Gate the release on the unit tests so a tag never ships a broken build.
+      - name: build + unit tests
+        working-directory: sw
+        run: |
+          make -j
+          make test
+
+      - name: build .deb
+        run: make -C sw deb
+
+      - name: inspect package
+        run: |
+          deb=$(ls -t packaging/dist/*.deb | head -1)
+          [ -n "$deb" ] || { echo "no .deb produced"; exit 1; }
+          echo "DEB=$deb" >> "$GITHUB_ENV"
+          echo "== dpkg-deb --info =="; dpkg-deb --info "$deb"
+          echo "== dpkg-deb --contents =="; dpkg-deb --contents "$deb"
+
+      - name: publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$DEB" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag
