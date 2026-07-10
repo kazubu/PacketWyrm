@@ -8,9 +8,36 @@ For where work is going next, see `NEXT-STEPS.md`.
 
 ## v0.1.0 — 2026-07-11
 
-First tagged release. Split-licensed: the host software (`sw/`, shipped in the
-`.deb`) is MIT; the FPGA gateware (`rtl/phase3`, `fpga/`) and the vendored Taxi
-submodule are CERN-OHL-S-2.0. See `LICENSE`, `LICENSE.sw`, `LICENSE.rtl`.
+First tagged release of PacketWyrm — an FPGA-based, line-rate 10G network
+tester (XCKU3P, 2× SFP+ 10GBASE-R). As a first release there is no prior
+version to diff against; this is a snapshot of the full working system.
+
+What's in it:
+
+- **Data plane (FPGA):** 64-bit AXIS packet generator + RX checker at line
+  rate. Per-flow traffic (frame templates, per-packet field modifiers), loss /
+  duplicate / reorder / sequence-gap detection, one-way latency + jitter with a
+  hardware histogram. 32 flows, a generic classifier + flow-id map, IPIP / GRE /
+  EtherIP encap (v4/v6) and stateless TCP generation.
+- **Cross-card:** true one-way latency between two cards via J5 GPIO time-sync
+  (software offset/skew servo + per-flow hardware latency correction).
+- **Host stack (software):** `packetwyrmd` daemon (owns the card over vfio/BAR,
+  JSON-RPC control socket), `pktwyrm` CLI, `libpacketwyrm`, and the
+  `packetwyrm-proxyd` HTTPS gateway serving a Web GUI + remote RPC. Explicit
+  test start/stop, live packet preview, and a no-FPGA fake backend for
+  development.
+- **Observability & ops:** Prometheus exporter + bundled Grafana dashboard,
+  Debian package with systemd units, shell completions and man pages, and a
+  tag-triggered `.deb` release workflow.
+
+Split-licensed: the host software (`sw/`, shipped in the `.deb`) is MIT; the
+FPGA gateware (`rtl/phase3`, `fpga/`) and the vendored Taxi submodule are
+CERN-OHL-S-2.0. See `LICENSE`, `LICENSE.sw`, `LICENSE.rtl`.
+
+Known limitations and next steps are tracked in `README.md` and `NEXT-STEPS.md`.
+The detailed development log that produced this release is preserved below.
+
+## Pre-release development log
 
 ### Added
   - **Generated-frame preview (CLI + Web GUI).** `pktwyrm flow preview
