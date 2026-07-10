@@ -215,7 +215,7 @@ function buildFlowEditor(box, f) {
     }
     const seq = Math.max(0, parseInt(seqIn.value, 10) || 0);
     const my = ++previewGen;
-    const yaml = "flows:\n" + flowYaml(w) + "\n";
+    const yaml = flowYaml(w);   // full `flows:`-rooted YAML doc (js-yaml)
     const r = await rpc({ rpc: "flow.preview", yaml, id: w.id, seq });
     if (my !== previewGen) return;              // a newer seq superseded this one
     out.style.display = "block";

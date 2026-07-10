@@ -25,6 +25,13 @@ For where work is going next, see `NEXT-STEPS.md`.
     salts exactly, so stepping `seq` shows the same variation the wire carries.
 
 ### Changed
+  - **Web GUI YAML is now emitted with js-yaml** (`window.jsyaml.dump`) instead
+    of hand-written string concatenation. The Flows/Forwards editors build a
+    plain object and let the library serialise it, so quoting/escaping is
+    correct by construction (MAC/IPv6 colons, names with YAML-special chars) and
+    the emit side uses the same library as the parse-side syntax check. Verified
+    the daemon accepts the js-yaml output for flow.preview + config.load,
+    including a hostile flow name and block-form modifiers.
   - **`pktwyrm load` now DEPLOYS to the running daemon by default.** Previously
     `pktwyrm load FILE` (without `--socket`) only validated/compiled the file
     offline and silently did nothing to the daemon, while still printing a

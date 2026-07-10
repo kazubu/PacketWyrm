@@ -1,110 +1,119 @@
-/* Test-config YAML emitter (form model -> YAML string; the daemon validates).
- * NOTE: emit-only for now; Phase 3 will move to js-yaml for round-trip parsing. */
+/* Test-config YAML emitter: form model -> plain object -> YAML via the vendored
+ * js-yaml (window.jsyaml.dump). Building an object and letting the library
+ * serialise removes hand-rolled quoting/escaping: MAC/IPv6 colons, names with
+ * YAML-special chars, etc. are quoted correctly by construction, and the emit
+ * side now uses the SAME library as the parse side (validateYaml). */
 import { state } from "./state.mjs";
 
-const yq = v => (typeof v === "string") ? JSON.stringify(v) : String(v);
-
-// A modifier mask is either a hex/decimal number (MAC/IPv4/port/vlan) or an
-// IPv6 address literal (contains ':'); quote the latter, emit the former raw.
-function maskval(v) {
+/* Scalar coercion: plain decimal -> Number (clean unquoted YAML int); hex
+ * (0x..), addresses, names, modes -> string (js-yaml quotes when needed, and
+ * the daemon's u16/u32/u64 parsers accept the quoted text incl. 0x hex). */
+function scalar(v) {
+  if (typeof v === "number" || typeof v === "boolean") return v;
   const s = String(v);
-  return s.includes(":") ? JSON.stringify(s) : s;
+  return /^-?\d+$/.test(s) ? parseInt(s, 10) : s;
 }
+const setv = v => v !== "" && v != null;
 
-export function flowYaml(f) {
-  const L = [];
-  L.push(`  - id: ${f.id}`);
-  if (f.name) L.push(`    name: ${yq(f.name)}`);
-  L.push(`    tx_global_port: ${f.tx}`);
-  L.push(`    rx_global_port: ${f.rx}`);
+/* One flow's form model -> plain object mirroring the YAML schema. */
+export function flowObj(f) {
   const raw = f.frame_template && f.frame_template !== "test";
-  L.push(`    l2:`);
-  L.push(`      src_mac: ${yq(f.src_mac)}`);
-  L.push(`      dst_mac: ${yq(f.dst_mac)}`);
-  if (f.vlan !== "" && f.vlan != null) L.push(`      vlan: ${f.vlan}`);
-  if (f.ethertype !== "" && f.ethertype != null) L.push(`      ethertype: ${f.ethertype}`);
-  if (f.l3 === "ipv6") {
-    L.push(`    ipv6:`);
-    L.push(`      src: ${yq(f.ip_src)}`); L.push(`      dst: ${yq(f.ip_dst)}`);
-    if (f.ttl) L.push(`      hop_limit: ${f.ttl}`);
-  } else {
-    L.push(`    ipv4:`);
-    L.push(`      src: ${yq(f.ip_src)}`); L.push(`      dst: ${yq(f.ip_dst)}`);
-    if (f.ttl) L.push(`      ttl: ${f.ttl}`);
-  }
-  L.push(`    ${f.l4}:`);
-  L.push(`      src_port: ${f.sport}`); L.push(`      dst_port: ${f.dport}`);
-  if (f.l4 === "tcp" && f.tcp_flags) L.push(`      flags: ${f.tcp_flags}`);
-  L.push(`    traffic:`);
-  L.push(`      frame_len: ${f.frame_len}`);
-  L.push(`      ${f.rate_mode === "pps" ? "rate_pps" : "rate_bps"}: ${f.rate}`);
-  L.push(`      payload: ${yq(f.payload)}`);
-  L.push(`      insert_sequence: ${!!f.seq}`);
-  L.push(`      insert_timestamp: ${!!f.ts}`);
-  if (raw) L.push(`      frame_template: ${yq(f.frame_template)}`);
-  // Raw templates carry no test header: no measurements, and RX must classify
-  // on header fields (the daemon validator enforces this -- emit valid YAML).
-  if (!raw) {
-    L.push(`    measurements:`);
-    L.push(`      loss: ${!!f.m_loss}`);
-    L.push(`      latency: ${!!f.m_lat}`);
-    L.push(`      jitter: ${!!f.m_jit}`);
-  }
-  if (raw) L.push(`    classify: header`);
-  else if (f.classify && f.classify !== "map") L.push(`    classify: ${yq(f.classify)}`);
-  if (f.background) L.push(`    background: true`);
-  // match: emit only the set fields (masks are hex; prefixes are ints)
-  const m = f.match || {}, ml = [];
-  const setv = v => v !== "" && v != null;
-  if (setv(m.udp_dst))          ml.push(`      udp_dst: ${m.udp_dst}`);
-  if (setv(m.ipv4_dst))         ml.push(`      ipv4_dst: ${m.ipv4_dst}`);
-  if (setv(m.ipv6_dst_prefix))  ml.push(`      ipv6_dst_prefix: ${m.ipv6_dst_prefix}`);
-  if (setv(m.ipv6_src_prefix))  ml.push(`      ipv6_src_prefix: ${m.ipv6_src_prefix}`);
-  if (ml.length) { L.push(`    match:`); L.push(...ml); }
-  // modifiers: emit only non-static fields
-  const mods = f.mods || {}, dl = [];
+  const o = { id: scalar(f.id) };
+  if (f.name) o.name = String(f.name);
+  o.tx_global_port = scalar(f.tx);
+  o.rx_global_port = scalar(f.rx);
+
+  const l2 = { src_mac: String(f.src_mac), dst_mac: String(f.dst_mac) };
+  if (setv(f.vlan)) l2.vlan = scalar(f.vlan);
+  if (setv(f.ethertype)) l2.ethertype = scalar(f.ethertype);
+  o.l2 = l2;
+
+  const ip = { src: String(f.ip_src), dst: String(f.ip_dst) };
+  if (f.l3 === "ipv6") { if (f.ttl) ip.hop_limit = scalar(f.ttl); o.ipv6 = ip; }
+  else                 { if (f.ttl) ip.ttl = scalar(f.ttl);       o.ipv4 = ip; }
+
+  const l4 = { src_port: scalar(f.sport), dst_port: scalar(f.dport) };
+  if (f.l4 === "tcp" && f.tcp_flags) l4.flags = scalar(f.tcp_flags);
+  o[f.l4] = l4;   // "udp" or "tcp"
+
+  const tr = { frame_len: scalar(f.frame_len) };
+  tr[f.rate_mode === "pps" ? "rate_pps" : "rate_bps"] = scalar(f.rate);
+  tr.payload = String(f.payload);
+  tr.insert_sequence = !!f.seq;
+  tr.insert_timestamp = !!f.ts;
+  if (raw) tr.frame_template = String(f.frame_template);
+  o.traffic = tr;
+
+  // Raw templates carry no test header: no measurements, RX classifies on
+  // header fields (the daemon validator enforces this).
+  if (!raw) o.measurements = { loss: !!f.m_loss, latency: !!f.m_lat, jitter: !!f.m_jit };
+  if (raw) o.classify = "header";
+  else if (f.classify && f.classify !== "map") o.classify = String(f.classify);
+  if (f.background) o.background = true;
+
+  const m = f.match || {}, mo = {};
+  if (setv(m.udp_dst))         mo.udp_dst = scalar(m.udp_dst);
+  if (setv(m.ipv4_dst))        mo.ipv4_dst = scalar(m.ipv4_dst);
+  if (setv(m.ipv6_dst_prefix)) mo.ipv6_dst_prefix = scalar(m.ipv6_dst_prefix);
+  if (setv(m.ipv6_src_prefix)) mo.ipv6_src_prefix = scalar(m.ipv6_src_prefix);
+  if (Object.keys(mo).length) o.match = mo;
+
+  const mods = f.mods || {}, mdo = {};
   for (const k of Object.keys(mods)) {
     const md = mods[k];
     if (!md || !md.mode || md.mode === "static") continue;
-    let s = `      ${k}: { mode: ${yq(md.mode)}`;
-    if (setv(md.mask)) s += `, mask: ${maskval(md.mask)}`;
-    dl.push(s + ` }`);
+    const e = { mode: String(md.mode) };
+    if (setv(md.mask)) e.mask = scalar(md.mask);
+    mdo[k] = e;
   }
-  if (dl.length) { L.push(`    modifiers:`); L.push(...dl); }
-  // encap
+  if (Object.keys(mdo).length) o.modifiers = mdo;
+
   const e = f.encap || {};
   if (e.type && e.type !== "none") {
-    L.push(`    encap:`);
-    L.push(`      type: ${yq(e.type)}`);
-    L.push(`      outer:`);
     const fam = e.l3 === "ipv6" ? "ipv6" : "ipv4";
-    let o = `        ${fam}: { src: ${yq(e.src)}, dst: ${yq(e.dst)}`;
-    if (setv(e.ttl))  o += fam === "ipv6" ? `, hop_limit: ${e.ttl}` : `, ttl: ${e.ttl}`;
-    if (setv(e.dscp)) o += `, dscp: ${e.dscp}`;
-    L.push(o + ` }`);
+    const inner = { src: String(e.src), dst: String(e.dst) };
+    if (setv(e.ttl))  inner[fam === "ipv6" ? "hop_limit" : "ttl"] = scalar(e.ttl);
+    if (setv(e.dscp)) inner.dscp = scalar(e.dscp);
+    const enc = { type: String(e.type), outer: { [fam]: inner } };
     if (e.type === "etherip" && (e.inner_src_mac || e.inner_dst_mac))
-      L.push(`      inner_l2: { src_mac: ${yq(e.inner_src_mac)}, dst_mac: ${yq(e.inner_dst_mac)} }`);
-    if (f.rx_expect && f.rx_expect !== "inner") L.push(`    rx_expect: ${yq(f.rx_expect)}`);
+      enc.inner_l2 = { src_mac: String(e.inner_src_mac || ""), dst_mac: String(e.inner_dst_mac || "") };
+    o.encap = enc;
+    if (f.rx_expect && f.rx_expect !== "inner") o.rx_expect = String(f.rx_expect);
   }
-  return L.join("\n");
+  return o;
 }
 
-export function fwdYaml(r) {
-  const L = [`  - ingress_port: ${r.ingress}`, `    egress_port: ${r.egress}`];
-  if (r.name) L.push(`    name: ${yq(r.name)}`);
-  if (r.priority !== "" && r.priority != null) L.push(`    priority: ${r.priority}`);
-  for (const [k, key] of [["ethertype", "ethertype"], ["ip_proto", "ip_proto"],
-                          ["udp_dst", "udp_dst"], ["vlan", "vlan"]])
-    if (r[k] !== "" && r[k] != null) L.push(`    ${key}: ${r[k]}`);
-  for (const k of ["ipv6_dst", "ipv6_src"]) if (r[k]) L.push(`    ${k}: ${yq(r[k])}`);
-  return L.join("\n");
+/* One forward rule's form model -> plain object. */
+export function fwdObj(r) {
+  const o = { ingress_port: scalar(r.ingress), egress_port: scalar(r.egress) };
+  if (r.name) o.name = String(r.name);
+  if (setv(r.priority)) o.priority = scalar(r.priority);
+  for (const k of ["ethertype", "ip_proto", "udp_dst", "vlan"])
+    if (setv(r[k])) o[k] = scalar(r[k]);
+  for (const k of ["ipv6_dst", "ipv6_src"]) if (r[k]) o[k] = String(r[k]);
+  return o;
 }
 
+/* Serialise an object to YAML via js-yaml. lineWidth:-1 keeps long
+ * addresses/hex on one line; noRefs avoids anchors/aliases. */
+function dumpYaml(obj) {
+  const j = (typeof window !== "undefined") ? window.jsyaml : undefined;
+  if (!j || !j.dump) throw new Error("js-yaml (window.jsyaml) not loaded");
+  return j.dump(obj, { lineWidth: -1, noRefs: true, quotingType: '"' });
+}
+
+/* A single flow as a `flows:`-rooted YAML doc (used by the frame preview). */
+export function flowYaml(f) { return dumpYaml({ flows: [flowObj(f)] }); }
+/* A single forward rule as a `forwards:`-rooted YAML doc. */
+export function fwdYaml(r) { return dumpYaml({ forwards: [fwdObj(r)] }); }
+
+/* The full test config (flows + forwards) the "Write to card" / raw editor use. */
 export function buildTestYaml() {
-  let out = "";
-  if (state.flows.length) out += "flows:\n" + state.flows.map(flowYaml).join("\n") + "\n";
-  if (state.fwds.length)  out += "forwards:\n" + state.fwds.map(fwdYaml).join("\n") + "\n";
-  return out || "flows: []\n";
+  const doc = {};
+  if (state.flows.length) doc.flows = state.flows.map(flowObj);
+  if (state.fwds.length)  doc.forwards = state.fwds.map(fwdObj);
+  if (!doc.flows && !doc.forwards) doc.flows = [];
+  return dumpYaml(doc);
 }
 
 /* ---- validation --------------------------------------------------------- */
