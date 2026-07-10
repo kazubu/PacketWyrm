@@ -39,10 +39,15 @@ if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         # 1.2.3-4-gabc123[-dirty] -> 1.2.3+4.gabc123[.dirty] (deb-friendly).
         VERSION="$(printf '%s' "$desc" | sed 's/-/+/;s/-/./g')"
     else
-        # No tag: 0.1.0+g<short-sha>, with a +dirty marker for an unclean tree.
+        # No tag reachable: this is a PRE-release build heading toward $VERSION,
+        # so it must sort BELOW the eventual release. Use a '~' suffix (dpkg
+        # sorts '~' before everything, even end-of-string): 0.1.0~g<sha> < 0.1.0
+        # < 0.1.0+<n>.g<sha> (a post-tag build). A '+' here would invert that --
+        # the untagged snapshot would outrank both the release and later
+        # post-tag builds. '.dirty' marks an unclean tree.
         sha="$(git -C "$REPO_ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
         git -C "$REPO_ROOT" diff --quiet HEAD 2>/dev/null || sha="${sha}.dirty"
-        VERSION="${VERSION}+g${sha}"
+        VERSION="${VERSION}~g${sha}"
     fi
 fi
 
