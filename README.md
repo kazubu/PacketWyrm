@@ -16,6 +16,38 @@ userspace daemon owns global IDs (`card_id`, `global_port_id`,
 `global_flow_id`, `logical_if_id`); each FPGA bitstream remains
 card-local and identical across slots.
 
+## What you can do with it
+
+- **Generate line-rate 10G test traffic** — up to 32 flows per card, IPv4 /
+  IPv6, UDP / TCP, with per-packet field modifiers (incrementing / random IPs,
+  ports, MACs) and IPIP / GRE / EtherIP encapsulation.
+- **Measure what came back, in hardware** — per-flow loss, duplicates,
+  reordering and sequence gaps, plus one-way latency + jitter (min/avg/max) with
+  a hardware histogram. Cross-card tests get a true one-way timebase over a J5
+  GPIO time-sync.
+- **Peer real routing daemons through the tester** — ARP / ND / LLDP / BGP /
+  OSPF / IS-IS are punted to per-interface TAPs, so FRR / BIRD / cRPD in
+  containers can bring up adjacencies across a DUT while the data plane runs.
+- **Drive and watch it from anywhere** — a CLI (`pktwyrm`), a self-contained
+  Web GUI, a Prometheus exporter with a bundled Grafana dashboard, and a
+  one-shot `test run` that prints a PASS/FAIL verdict for CI.
+- **Develop with no FPGA** — a fake backend runs the entire host stack (config,
+  RPC, TAPs, stats) so everything but the real wire works on any Linux box.
+
+### See it running
+
+The built-in Web GUI (served by `packetwyrm-proxyd`) — 16 flows looping at
+~8 Gb/s aggregate, zero loss, live per-flow latency:
+
+![PacketWyrm Web GUI dashboard](docs/images/web-gui.png)
+
+The bundled Grafana dashboard on the Prometheus exporter — throughput, latency,
+loss and FPGA health at a glance:
+
+![PacketWyrm Grafana dashboard](docs/images/grafana.png)
+
+_(Both captured live against a real AS02MC04 card in loopback.)_
+
 ## Status
 
 The project currently ships:
