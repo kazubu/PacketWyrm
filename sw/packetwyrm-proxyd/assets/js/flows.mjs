@@ -198,20 +198,39 @@ function buildFlowEditor(box, f) {
   // it via the shared libpacketwyrm builder -> single source of truth with the
   // CLI/RTL). Previews the LIVE editor values (w), even before Apply/Write.
   const seqIn = el("input", { type: "number", value: "0", min: "0",
-                              style: "width:80px", title: "packet sequence number" });
+                              style: "width:80px", title: "packet sequence number — the preview updates as you change it" });
   const prevBtn = el("button", { class: "act ghost", text: "👁 Preview frame",
     title: "Decode + hex-dump the generated frame (does not touch the card)" });
   const out = el("pre", { class: "frame-preview", style: "display:none" });
-  prevBtn.addEventListener("click", async () => {
+
+  // Fetch + render the preview for the current seq. `interactive` (the button)
+  // surfaces validation errors; the seq-driven auto-refresh stays silent and a
+  // stale in-flight response is dropped (only the latest seq wins).
+  let previewGen = 0;
+  async function doPreview(interactive) {
     const errs = flowErrors(w);
-    if (errs.length) { showMsg("#flow-msg", "err", "Fix these first:\n• " + errs.join("\n• ")); return; }
+    if (errs.length) {
+      if (interactive) showMsg("#flow-msg", "err", "Fix these first:\n• " + errs.join("\n• "));
+      return;
+    }
     const seq = Math.max(0, parseInt(seqIn.value, 10) || 0);
+    const my = ++previewGen;
     const yaml = "flows:\n" + flowYaml(w) + "\n";
     const r = await rpc({ rpc: "flow.preview", yaml, id: w.id, seq });
+    if (my !== previewGen) return;              // a newer seq superseded this one
     out.style.display = "block";
-    out.textContent = "";
-    if (!r || r.error) { out.textContent = "preview failed: " + (r ? r.error : "no response"); return; }
-    out.textContent = renderPreview(r);
+    out.textContent = (!r || r.error)
+      ? "preview failed: " + (r ? r.error : "no response")
+      : renderPreview(r);
+  }
+  prevBtn.addEventListener("click", () => doPreview(true));
+  // Live-update on seq change once a preview is showing (debounced so holding
+  // the stepper or typing doesn't flood the daemon).
+  let seqTimer = 0;
+  seqIn.addEventListener("input", () => {
+    if (out.style.display === "none") return;   // not previewing yet -> wait for the button
+    clearTimeout(seqTimer);
+    seqTimer = setTimeout(() => doPreview(false), 150);
   });
   box.append(el("div", { class: "row flow-actions" }, [applyBtn, revertBtn, prevBtn,
     el("span", { class: "muted", text: "seq" }), seqIn]));
