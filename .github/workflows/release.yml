@@ -61,12 +61,27 @@ jobs:
             grab && /^## / {exit}
             grab {print}
           ' CHANGELOG.md)
-          if [ -n "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
-            printf '%s\n' "$notes" > /tmp/relnotes.md
-            echo "NOTES_ARG=--notes-file=/tmp/relnotes.md" >> "$GITHUB_ENV"
-          else
+          if [ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
             echo "NOTES_ARG=--generate-notes" >> "$GITHUB_ENV"
+            exit 0
           fi
+          printf '%s\n' "$notes" > /tmp/relnotes.md
+          # GitHub caps the release body at 125000 chars. A big CHANGELOG
+          # section (the pre-release history all lands under v0.1.0) blows past
+          # that, so truncate at a line boundary well under the limit and point
+          # to the full CHANGELOG at this tag.
+          LIMIT=110000
+          if [ "$(wc -c < /tmp/relnotes.md)" -gt "$LIMIT" ]; then
+            repo="${GITHUB_REPOSITORY:-kazubu/PacketWyrm}"
+            head -c "$LIMIT" /tmp/relnotes.md | sed '$d' > /tmp/relnotes.trunc
+            {
+              cat /tmp/relnotes.trunc
+              printf '\n\n---\n\n'
+              printf '_Release notes truncated. See the full changelog for **%s** at_\n' "$GITHUB_REF_NAME"
+              printf 'https://github.com/%s/blob/%s/CHANGELOG.md\n' "$repo" "$GITHUB_REF_NAME"
+            } > /tmp/relnotes.md
+          fi
+          echo "NOTES_ARG=--notes-file=/tmp/relnotes.md" >> "$GITHUB_ENV"
 
       - name: publish GitHub Release
         env:
