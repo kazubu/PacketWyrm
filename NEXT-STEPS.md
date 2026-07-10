@@ -51,24 +51,63 @@ and HW-validated:
   responsive + a11y). `make e2e` (`e2e_proxyd.sh`) green (51/51).
   Design: `docs/design/web-gui.md`.
 
+### Since the last handoff (current shipping build `0x6a4d2892`)
+
+Cross-card + a broad SW/UX/packaging layer landed and are HW-validated on the
+two-card `pwhost1` rig (01:00.0 + 02:00.0, J5 GPIO) and the single-card `arran`
+rig (07:00.0):
+
+- **Cross-card is done** — J5 GPIO time-sync servo + per-flow `lat_correction`
+  give true one-way latency across cards (min/avg/max clean, no smear; HW:
+  bidirectional 32-flow cross-card loss=0/dup=0, gpio-corrected latency ~27–37
+  ticks). RX ingress wire-stamp, the offset/skew servo (`-S`), and one-way
+  calibration (`-C`) are all in. (The "gated on a 2nd card" items below are
+  DONE.)
+- **RTL review sweep** (build `0x6a4d2892`, post-route WNS +0.076): generator
+  commits seq/cur_len AT LAUNCH (fixes a duplicate-seq/skip at idle→line-rate
+  transitions — phantom loss/dup); `ERROR_STATUS` W1C fixed; live histogram read
+  is LOW-then-HIGH with a hi shadow (no 2^32 tearing); `pw_ts_insert` v4 stamp
+  gated on `is_gen` (no re-stamp of forwarded v4 / no v4-TCP csum corruption);
+  parser tunnel-descent length-guarded + flagged-GRE rejected; `pw_dma_slowpath`
+  swallows an out-of-range inject egress + resets with `dp_soft_rst`.
+- **Explicit-start model** — the daemon programs flows IDLE; nothing transmits
+  until `pktwyrm test start` (`-a`/`--autostart` restores legacy). `test start`
+  clears counters + re-primes correction; `test.arm/start` report
+  `servo_converged`.
+- **CLI** — `pktwyrm load` now DEPLOYS by default (`--check` = offline validate);
+  new verbs `test run` (arm+start+wait+stop, PASS/FAIL, CI exit codes),
+  `firmware update` (local direct-card flash + `--boot`), `init` (env skeleton
+  from discovered cards), `flow preview` (decode+hexdump the generated frame,
+  applies per-packet modifiers for `--seq`). errno-hinted connect errors; BDF
+  short forms. JSON key `expected_seq`→`last_seq`; min/jitter-min report 0 (CLI
+  shows `-`) when there are no samples; over-capacity load rejected with numbers.
+- **Prometheus exporter expanded** — besides build/card_open/punt/tap, now card
+  temp/vcc/error, per-port wire counters (`packetwyrm_port_*`), SFP optics
+  (`packetwyrm_sfp_*`), and per-flow (`packetwyrm_flow_*` incl. sequence_gaps /
+  latency_samples / running / latency_ns{stat} / jitter_ns{stat}).
+- **Web GUI + gateway** — `packetwyrm-proxyd` gained a config file
+  (`--config /etc/packetwyrm/proxyd.yaml`) + CSRF/DNS-rebinding gates
+  (`X-PW-Request` header + Host allow-list). The GUI emits YAML via
+  `js-yaml.dump` (not hand-written) and has a live frame-preview panel
+  (`flow.preview` RPC).
+- **Packaging / release** — `make -C sw deb` builds a Debian package (units
+  install disabled, restart-on-upgrade, Grafana dashboard, completions, man
+  pages); a pushed `v*` tag builds + publishes it via
+  `.github/workflows/release.yml`. Deployed on `pwhost1` as a deb-managed
+  systemd install.
+- **User guides** — `docs/guides/` now has installation, configuration,
+  running-tests, cli-reference, web-gui, monitoring, firmware-update, and
+  troubleshooting (see the Documentation map below).
+
 As-built design: `docs/design/csr-map.md`, `docs/design/rtl-modules.md`,
 `docs/design/generic-classifier.md`, `docs/design/hw-architecture-freeze.md`.
 
 ## Branch / tree state
 
-All work is **merged to `main`** (the user pushes — `main` is unpushed).
-Recent tip (newest first):
-
-```
-Merge phase3-gpio-sync-review: pw_gpio_sync review fixes (2 rounds)
-Merge phase3-gpio-sync: J5 GPIO cross-card time sync (pw_gpio_sync)
-Merge phase3-flowtable-word-guard / -review2: post-reset staging guard (per-word)
-Merge phase3-hdr176: HDR_BYTES 160->176 (deepest v6-encap TCP RX)
-Merge phase3-tcp-revival: stateless TCP segment generation (Part C, HW-validated)
-Merge phase3-generator-lut: flow-table CSR staging -> BRAM (-15.7K LUT)
-(earlier) inject/punt wire-timestamps, varlen/RFC2544, hash+field classifiers
-```
-NOTE: `main` is many commits ahead of `origin/main` — the user pushes.
+All work is **merged to `main`**, which is **many commits ahead of
+`origin/main` — the user pushes** (CI/release only run once pushed). For the
+current tip and history use `git log --oneline`; `CHANGELOG.md` (Unreleased) is
+the human-readable "what landed". Do not hardcode a tip here — it goes stale.
 
 Three classification paths coexist (precedence map > hash > field): the flow-id
 map (structured test flows), the hash exact table (high-count payload-agnostic),
@@ -112,27 +151,31 @@ sw/build/<tool> <bdf>`): `pw_card_probe`, `pw_sfp_test`,
 
 ## Remaining / next
 
-**Cross-card time sync via J5 GPIO (alternative to PTP, HW done):** rather than
-discipline to a grandmaster over PTP packets, the cards share a clean hardware
-sync edge over the J5 header (`pw_gpio_sync`): a master drives a periodic pulse, every
-card latches its free-running counter at the edge (no counter step → Gray-CDC
-safe) + an edge sequence, exposed at CSR 0x0130..0x0140. Software pairs equal
-sequence numbers across cards to get the inter-card offset/skew and corrects raw
-timestamps — same SW-correction model as the PTP plan but with a deterministic
-sub-ns edge instead of packet jitter. RTL + CSR + sim done (single-card,
-non-regression verified); the daisy-chain wiring + the SW offset/skew servo need a
-2nd card (and a J5 jumper to validate the loopback).
+**Cross-card is DONE** (was the big "gated on a 2nd card" item). On the
+two-card `pwhost1` rig the J5 GPIO sync (`pw_gpio_sync`, master pulse + edge
+latch, CSR 0x0130..0x0140) + the SW offset/skew servo + per-flow
+`lat_correction` give true one-way cross-card latency; RX ingress wire-stamp is
+in; multi-card cross-card flows + the aggregator run. HW-validated
+(bidirectional 32-flow cross-card, loss=0/dup=0, gpio-corrected latency).
 
-Gated on a **second card** (can't proceed on the single-card rig):
+Genuinely open / next:
 
-1. **RX ingress wire-stamp + full two-clock servo.** The servo-facing
-   TX/RX wire-timestamp exposure is done (#60: punt RX SOF stamp + inject TX
-   egress stamp) and the GPIO sync edge-capture HW is in; the servo loop
-   (offset/skew correction) and a true RX ingress stamp in the MAC clock domain
-   need a second card. (Sync can come from the J5 GPIO daisy-chain above OR PTP.)
-2. **Multi-card** — cross-card flows + orchestration.
+1. **Kernel netdev driver** (`kernel/packetwyrm.c`) — still a probe-only
+   skeleton (no ioctl / mmap / chardev / netdev). The vfio + BAR-mmap userspace
+   path is the supported one; a real in-kernel netdev is future work.
+2. **Cross-card latency deep-underflow edge** — when an RX card's timestamp
+   counter is far behind the TX card's, the raw delta is clamped in the checker
+   (see `pw_test_rx_checker_bram.sv`); the servo keeps the correction valid in
+   normal operation, but the clamp behavior at extreme skew is a known edge to
+   keep an eye on (memory `xcard-latency-wrap-bug`).
+3. **IPv6 low-volume loopback on this rig** — the stock `phase3-ipv6.yaml`
+   reproduces rx≈2 while IPv4 multiflow runs at 345K frames, loss=0. Frames loop
+   clean (loss=0, fcs=0); the low volume is pre-existing and family-agnostic in
+   the generator. Worth a separate DAC / MAC-PCS / classification investigation.
+4. **Push + tag a release** — `main` is unpushed; a `v*` tag triggers the .deb
+   release workflow.
 
-Optional RTL features:
+Optional RTL features (all DONE — kept for context):
 
 3. **Line-rate stateless TCP segment generation — DONE (shipped + HW-validated).**
    Generator emits a fixed-form 20-byte TCP header (data-offset 5, `flags` byte
@@ -189,8 +232,12 @@ payload-agnostic), and the field+UDF comparator classifier (punt/forward/
 few-rule). Variable frame length (RFC2544 + IMIX), the RFC2544 driver, and the
 slow-path TCP SYN generator are done.
 
-**Timing:** the current canonical build (A+B+C TCP + flow-table-staging→BRAM +
-HDR_BYTES 176 + GPIO sync) is build_id `0x6a41dbaf` / git `56a31d1f`: post-route
+**Timing:** the current shipping build is `0x6a4d2892` (the review-sweep RTL,
+post-route WNS +0.076 @156.25 MHz, HW-validated on arran + pwhost1). The
+paragraph below is the *record of how the timing ceiling was reached* (earlier
+build `0x6a41dbaf`); it stays as the hard-won reference, not the current number.
+The prior canonical build (A+B+C TCP + flow-table-staging→BRAM +
+HDR_BYTES 176 + GPIO sync) was build_id `0x6a41dbaf` / git `56a31d1f`: post-route
 **dp_clk WNS +0.201 ns @156.25 MHz**, LUT 88.80% (the gpio module is 60 LUT; the
 rest is run-to-run synth variance — same netlist has landed 83–89%). The worst
 path is in the PCIe vendor IP, not the data plane. Earlier reference point: a FULL
@@ -218,7 +265,8 @@ STATUS). Full hard-won detail is in the `dp-clk-timing-lessons` memory
 | Command                       | Result                              |
 |-------------------------------|-------------------------------------|
 | `make -C sw test`             | host unit assertions                |
-| `make -C sw e2e`              | daemon ↔ CLI smoke                  |
+| `make -C sw e2e`              | daemon ↔ CLI smoke + proxyd/GUI (`e2e_smoke.sh` + `e2e_proxyd.sh`) |
+| `make -C sw deb`              | build the Debian package (`packaging/dist/`) |
 | `make -C sim sim_all`         | Verilator testbench sweep; see `sim/README.md` |
 | `make -C fpga/as02mc04 lint`  | clean (Verilator + Xilinx blackbox) |
 | `make -C sim/cocotb all`      | parser/classifier/flow_gen checks (Icarus) |
@@ -257,13 +305,18 @@ wire-vector sims catch C↔RTL wire-format drift.
 ## Documentation map
 
 - `README.md` — what it is, status, "try it".
-- `docs/guides/getting-started.md` — short walkthrough.
+- **`docs/guides/`** — operator guides (start at `docs/guides/README.md`):
+  getting-started, installation, configuration, running-tests, cli-reference,
+  web-gui, monitoring, firmware-update, troubleshooting.
 - `docs/design/architecture.md` — big picture.
 - `docs/design/csr-map.md` — BAR layout / CSR windows (host ↔ RTL contract).
 - `docs/design/rtl-modules.md` — as-built RTL hierarchy.
 - `docs/design/yaml-schema.md` — config schema (`forwards:` included).
 - `docs/design/daemon.md`, `docs/design/rpc-protocol.md` — daemon / CLI.
-- `docs/design/web-gui.md` — `packetwyrm-proxyd` gateway, Web GUI, `--host`.
+- `docs/design/web-gui.md` — `packetwyrm-proxyd` gateway internals / security.
+- `docs/design/dma-slow-path.md` — the PCIe-DMA punt/inject slow path.
+- `packaging/` — Debian package + Grafana dashboard; `.github/workflows/` — CI +
+  tag-triggered release.
 - `CHANGELOG.md` — ground truth for "what's working".
 
 Welcome aboard.
