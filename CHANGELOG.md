@@ -6,6 +6,30 @@ push and is the source of truth for "what's working today".
 
 For where work is going next, see `NEXT-STEPS.md`.
 
+## Unreleased
+
+### Fixed (code-review sweep)
+
+- **Frame preview: clamp too-short TEST frames instead of overrunning the
+  buffer.** `pw_flow_build_preview()` wrote the 32-byte test header with direct
+  stores that skipped the `PUT()` bounds check; a TEST frame shorter than
+  header+IP+L4+32 could write past `cap` when a caller passed `cap == frame_len`.
+  It now clamps `frame_len` up to the generator's minimum-legal-frame floor
+  (mirroring `flow_compiler`'s `pw_flow_min_legal_frame` / the RTL clamp) and
+  re-checks `frame_len <= cap`, so the preview shows the same frame the HW emits
+  and can no longer overrun the buffer.
+- **Prometheus exporter: escape config-derived label values.** Flow names went
+  into `name="…"` labels unescaped; a name containing `"`, `\`, or a newline
+  could break the `/metrics` exposition or inject bogus series. Added a
+  label-escape helper applied to the flow name.
+- **`pktwyrm flow preview --json`: build output with json-c.** The JSON was
+  hand-printed with the flow name inserted raw, so a name with a quote/backslash/
+  newline produced invalid JSON. It is now assembled via json-c (name and hex
+  properly escaped).
+- **`pktwyrm flow preview --flow ID`: error when the ID is absent.** Previously
+  returned success with no output; it now prints `flow id N not found` and exits
+  non-zero, matching the daemon path.
+
 ## v0.1.0 — 2026-07-11
 
 First tagged release of PacketWyrm — an FPGA-based, line-rate 10G network

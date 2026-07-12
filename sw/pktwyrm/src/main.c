@@ -370,10 +370,11 @@ static int cmd_flow_preview(int argc, char **argv) {
         }
     }
     if (cfg->n_flows == 0) { fprintf(stderr, "no flows in %s\n", path); pw_config_free(cfg); return 1; }
-    int rc = 0;
+    int rc = 0; bool found = false;
     for (size_t i = 0; i < cfg->n_flows; i++) {
         const struct pw_flow *f = &cfg->flows[i];
         if (want >= 0 && (int)f->id != want) continue;
+        found = true;   /* the ID matched; a build failure below is its own error */
         uint8_t buf[9200]; size_t built = 0;
         int len = pw_flow_build_preview(f, seq, buf, sizeof buf, &built);
         if (len < 0) {
@@ -382,10 +383,22 @@ static int cmd_flow_preview(int argc, char **argv) {
             rc = 1; continue;
         }
         if (raw) {
-            printf("{\"flow\":%u,\"name\":\"%s\",\"template\":\"%s\",\"len\":%d,\"seq\":%u,\"hex\":\"",
-                   f->id, f->name, tmpl_name(f->traffic.frame_template), len, seq);
-            for (int b = 0; b < len; b++) printf("%02x", buf[b]);
-            printf("\"}\n");
+            /* Build via json-c so the flow name (and everything else) is escaped
+             * correctly -- a name with a quote/backslash/newline must not produce
+             * invalid JSON. */
+            char *hex = malloc((size_t)len * 2 + 1);
+            if (!hex) { fprintf(stderr, "out of memory\n"); rc = 1; continue; }
+            for (int b = 0; b < len; b++) sprintf(hex + b * 2, "%02x", buf[b]);
+            struct json_object *o = json_object_new_object();
+            json_object_object_add(o, "flow", json_object_new_int((int)f->id));
+            json_object_object_add(o, "name", json_object_new_string(f->name));
+            json_object_object_add(o, "template", json_object_new_string(tmpl_name(f->traffic.frame_template)));
+            json_object_object_add(o, "len", json_object_new_int(len));
+            json_object_object_add(o, "seq", json_object_new_int64(seq));
+            json_object_object_add(o, "hex", json_object_new_string(hex));
+            printf("%s\n", json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN));
+            json_object_put(o);
+            free(hex);
             continue;
         }
         printf("flow %u \"%s\": template=%s  frame_len=%d B (pre-FCS)  packet seq=%u\n",
@@ -441,6 +454,12 @@ static int cmd_flow_preview(int argc, char **argv) {
         if (len > show) printf("  ... +%d payload bytes (zero-filled)\n", len - show);
         printf("  note: timestamp is stamped by HW at egress (shown 0); L4 checksum shown is\n"
                "        computed for this seq with ts=0 (HW re-folds it at egress).\n");
+    }
+    /* A --flow ID that matched nothing is an error, not a silent success (the
+     * daemon path likewise reports "flow id not found"). */
+    if (want >= 0 && !found) {
+        fprintf(stderr, "flow id %d not found in %s\n", want, path);
+        rc = 1;
     }
     pw_config_free(cfg);
     return rc;

@@ -2439,6 +2439,24 @@ static int promex_listen(const char *addr, int port, int *out_fd) {
     return 0;
 }
 
+/* Escape a config-derived string for a Prometheus label VALUE. The exposition
+ * format requires `\`, `"`, and newline to be backslash-escaped; anything else
+ * (quotes/backslashes/newlines in a flow name) would break the /metrics output
+ * or inject bogus series. Always NUL-terminates; truncates safely if needed. */
+static void prom_label_escape(char *dst, size_t dstsz, const char *src) {
+    size_t j = 0;
+    if (dstsz == 0) return;
+    for (const char *p = src ? src : ""; *p && j + 2 < dstsz; p++) {
+        char e = 0;
+        if (*p == '\\') e = '\\';
+        else if (*p == '"') e = '"';
+        else if (*p == '\n') e = 'n';
+        if (e) { dst[j++] = '\\'; dst[j++] = e; }
+        else dst[j++] = *p;
+    }
+    dst[j] = '\0';
+}
+
 static size_t promex_build_body(char *out, size_t cap,
                                 const struct pw_config *cfg,
                                 const struct pw_program *prog,
@@ -2524,6 +2542,7 @@ static size_t promex_build_body(char *out, size_t cap,
                 int id = 0; const char *nm = "";
                 if (json_object_object_get_ex(f, "id", &v)) id = json_object_get_int(v);
                 if (json_object_object_get_ex(f, "name", &v)) nm = json_object_get_string(v);
+                char nm_esc[256]; prom_label_escape(nm_esc, sizeof nm_esc, nm); nm = nm_esc;
                 #define FLOWMETRIC(field, key) do { \
                     if (json_object_object_get_ex(f, key, &v)) \
                         APPENDF("packetwyrm_flow_" field "{flow=\"%d\",name=\"%s\"} %lld\n", \
