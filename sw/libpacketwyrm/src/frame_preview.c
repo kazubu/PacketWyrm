@@ -131,7 +131,17 @@ int pw_flow_build_preview(const struct pw_flow *f, uint32_t seq,
         prefix += 2; /* inner ethertype on the Ethernet */
     }
     size_t inner_iphl = inner_v6 ? 40 : 20;
-    if (frame_len < prefix + inner_iphl + l4hl) return -1;
+    /* TEST frames carry a 32-byte test header as the first payload bytes, so the
+     * frame has a minimum length. The generator (flow_compiler pw_flow_min_legal_
+     * frame) CLAMPS a too-short length UP to this floor, so mirror that here for
+     * RTL parity -- the preview then shows the same frame the HW emits. Clamping
+     * (not just checking) also keeps the direct buf[t+0..31] stores below in
+     * bounds: after the clamp t+32 = prefix+iphl+l4hl+32 <= frame_len, and the
+     * re-check below re-establishes frame_len <= cap. */
+    size_t min_pl = (tmpl == PW_FRAME_TEMPLATE_TEST) ? 32 : 0;
+    size_t min_frame = prefix + inner_iphl + l4hl + min_pl;
+    if (frame_len < min_frame) frame_len = min_frame;   /* RTL clamps up */
+    if (frame_len > cap) return -1;                      /* clamp may exceed buf */
     size_t inner_payload = frame_len - prefix - inner_iphl - l4hl; /* test hdr + pad */
     size_t l4_len = l4hl + inner_payload;              /* UDP len / TCP seg len */
     size_t ip_pl  = (tmpl == PW_FRAME_TEMPLATE_L3RAW) ? inner_payload : l4_len;
